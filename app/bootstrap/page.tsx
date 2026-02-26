@@ -21,6 +21,9 @@ async function bootstrap(formData: FormData) {
     const created = await supabaseAdmin.auth.admin.createUser({ email, password, email_confirm: true });
     if (created.error || !created.data.user) redirect('/bootstrap?error=create');
     userId = created.data.user.id;
+  } else {
+    const updated = await supabaseAdmin.auth.admin.updateUserById(userId, { password, email_confirm: true });
+    if (updated.error) redirect('/bootstrap?error=update');
   }
 
   await supabaseAdmin.from('profiles').upsert({ id: userId, email, is_admin: true, is_active: true }, { onConflict: 'id' });
@@ -30,7 +33,7 @@ async function bootstrap(formData: FormData) {
   }
 
   const signed = await supabase.auth.signInWithPassword({ email, password });
-  if (signed.error) redirect('/login');
+  if (signed.error) redirect('/login?error=1');
   redirect('/admin');
 }
 
