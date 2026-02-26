@@ -8,7 +8,7 @@ export default async function UsersPage() {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-semibold">Users</h1>
-        <Link href="/admin/users/new" className="btn-primary">New user wizard</Link>
+        <Link href="/admin/users/new" className="btn-primary">Add New User</Link>
       </div>
       {data?.map((u) => (
         <Link key={u.id} href={`/admin/users/${u.id}`} className="card block">
