@@ -1,0 +1,23 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --accent: #7c3aed;
+}
+
+body {
+  @apply bg-slate-50 text-slate-900;
+}
+
+.btn-primary {
+  @apply rounded bg-violet-700 px-4 py-2 text-white hover:bg-violet-800;
+}
+
+.input {
+  @apply w-full rounded border border-slate-300 px-3 py-2;
+}
+
+.card {
+  @apply rounded-lg border bg-white p-5 shadow-sm;
+}
