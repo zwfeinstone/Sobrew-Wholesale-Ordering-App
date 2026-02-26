@@ -1,4 +1,4 @@
-# SoBrew Wholesale Ordering Portal
+# Sobrew Wholesale Ordering Portal
 
 Production-ready wholesale ordering portal built with Next.js 14 App Router, TypeScript, Tailwind CSS, Supabase, and Resend.
 
