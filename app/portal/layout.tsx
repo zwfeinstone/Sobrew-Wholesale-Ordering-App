@@ -7,7 +7,7 @@ export default async function PortalLayout({ children }: { children: React.React
     <div>
       <header className="mb-4 border-b bg-white p-4">
         <div className="mx-auto flex max-w-6xl items-center justify-between">
-          <h1 className="font-semibold">SoBrew Portal</h1>
+          <h1 className="font-semibold">Sobrew Portal</h1>
           <nav className="space-x-4 text-sm">
             <Link href="/portal">Catalog</Link>
             <Link href="/portal/cart">Cart</Link>

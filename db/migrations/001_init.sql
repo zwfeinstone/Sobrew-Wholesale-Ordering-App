@@ -11,7 +11,7 @@ create table if not exists app_settings (
 );
 
 insert into app_settings (brand_name, accent_color)
-select 'SoBrew', '#7c3aed'
+select 'Sobrew', '#7c3aed'
 where not exists (select 1 from app_settings);
 
 create table if not exists profiles (

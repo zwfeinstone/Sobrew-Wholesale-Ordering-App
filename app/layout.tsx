@@ -1,7 +1,7 @@
 import './globals.css';
 import { ReactNode } from 'react';
 
-export const metadata = { title: 'SoBrew Wholesale Portal' };
+export const metadata = { title: 'Sobrew Wholesale Portal' };
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (

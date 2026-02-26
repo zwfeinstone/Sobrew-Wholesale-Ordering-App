@@ -38,7 +38,7 @@ export default function BootstrapPage() {
   return (
     <main className="mx-auto flex min-h-screen max-w-md items-center p-4">
       <form action={bootstrap} className="card w-full space-y-4">
-        <h1 className="text-2xl font-semibold">Bootstrap SoBrew Admin</h1>
+        <h1 className="text-2xl font-semibold">Bootstrap Sobrew Admin</h1>
         <input className="input" name="email" type="email" required placeholder="Admin Email" />
         <input className="input" name="password" type="password" required placeholder="Admin Password" />
         <input className="input" name="token" type="password" required placeholder="Bootstrap Token" />

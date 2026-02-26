@@ -24,7 +24,7 @@ export default function LoginPage() {
   return (
     <main className="mx-auto flex min-h-screen max-w-md items-center p-4">
       <form action={login} className="card w-full space-y-4">
-        <h1 className="text-2xl font-semibold">SoBrew Wholesale Login</h1>
+        <h1 className="text-2xl font-semibold">Sobrew Wholesale Login</h1>
         <input className="input" name="email" type="email" required placeholder="Email" />
         <input className="input" name="password" type="password" required placeholder="Password" />
         <button className="btn-primary w-full">Sign in</button>

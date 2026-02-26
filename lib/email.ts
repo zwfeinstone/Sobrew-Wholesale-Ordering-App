@@ -21,7 +21,7 @@ export async function sendOrderEmails(payload: {
   const html = `<h2>Order ${payload.orderId}</h2><p>${payload.customerName} (${payload.customerEmail})</p><table><tr><th>Item</th><th>Qty</th><th>Unit</th><th>Total</th></tr>${rows}</table><p>Subtotal: ${usd(payload.subtotalCents)}</p>`;
 
   await resend.emails.send({ from: env.resendFrom, to: env.sobrewAdminEmail, subject: `New Order ${payload.orderId}`, html });
-  await resend.emails.send({ from: env.resendFrom, to: payload.customerEmail, subject: `Your SoBrew order ${payload.orderId}`, html });
+  await resend.emails.send({ from: env.resendFrom, to: payload.customerEmail, subject: `Your Sobrew order ${payload.orderId}`, html });
 }
 
 export async function sendShippedEmail(to: string, orderId: string) {

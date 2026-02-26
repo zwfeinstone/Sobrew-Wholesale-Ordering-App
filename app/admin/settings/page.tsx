@@ -41,7 +41,7 @@ export default async function SettingsPage() {
     <form action={saveSettings} className="card space-y-3">
       <input type="hidden" name="id" value={settings.id} />
       <h1 className="text-2xl font-semibold">Branding settings</h1>
-      <input className="input" name="brand_name" defaultValue={settings.brand_name ?? 'SoBrew'} />
+      <input className="input" name="brand_name" defaultValue={settings.brand_name ?? 'Sobrew'} />
       <input className="input" name="accent_color" type="color" defaultValue={settings.accent_color ?? '#7c3aed'} />
       <label>Logo <input type="file" name="logo" accept="image/*" /></label>
       <label>Hero <input type="file" name="hero" accept="image/*" /></label>
