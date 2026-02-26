@@ -6,12 +6,12 @@ import { env } from '@/lib/env';
 async function bootstrap(formData: FormData) {
   'use server';
   const token = String(formData.get('token') ?? '');
-  const email = String(formData.get('email') ?? '');
+  const email = String(formData.get('email') ?? '').trim().toLowerCase();
   const password = String(formData.get('password') ?? '');
   if (token !== env.bootstrapToken) redirect('/bootstrap?error=token');
 
   const supabase = await createClient();
-  const { data: settings } = await supabase.from('app_settings').select('id,bootstrap_completed').single();
+  const { data: settings } = await supabaseAdmin.from('app_settings').select('id,bootstrap_completed').single();
   if (settings?.bootstrap_completed) redirect('/login?bootstrap=done');
 
   const existing = await supabaseAdmin.auth.admin.listUsers();
@@ -28,12 +28,13 @@ async function bootstrap(formData: FormData) {
 
   await supabaseAdmin.from('profiles').upsert({ id: userId, email, is_admin: true, is_active: true }, { onConflict: 'id' });
 
+  const signed = await supabase.auth.signInWithPassword({ email, password });
+  if (signed.error) redirect('/bootstrap?error=signin');
+
   if (settings?.id) {
     await supabaseAdmin.from('app_settings').update({ bootstrap_completed: true }).eq('id', settings.id);
   }
 
-  const signed = await supabase.auth.signInWithPassword({ email, password });
-  if (signed.error) redirect('/login?error=1');
   redirect('/admin');
 }
 

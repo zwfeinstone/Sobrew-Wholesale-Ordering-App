@@ -3,7 +3,7 @@ import { createClient } from '@/lib/supabase/server';
 
 async function login(formData: FormData) {
   'use server';
-  const email = String(formData.get('email') ?? '');
+  const email = String(formData.get('email') ?? '').trim().toLowerCase();
   const password = String(formData.get('password') ?? '');
   const supabase = await createClient();
   const { error } = await supabase.auth.signInWithPassword({ email, password });
