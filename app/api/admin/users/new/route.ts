@@ -1,7 +1,7 @@
-import { redirect } from 'next/navigation';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { createClient } from '@/lib/supabase/server';
 import { toCents } from '@/lib/utils';
+import { NextResponse } from 'next/server';
 
 export async function POST(request: Request) {
   const supabase = await createClient();
@@ -31,12 +31,12 @@ export async function POST(request: Request) {
   const selected: string[] = JSON.parse(String(formData.get('selected_json') ?? '[]'));
 
   if (!email || !password) {
-    return Response.redirect(new URL('/admin/users/new?error=missing', request.url));
+    return NextResponse.redirect(new URL('/admin/users/new?error=missing', request.url));
   }
 
   const created = await supabaseAdmin.auth.admin.createUser({ email, password, email_confirm: true });
   if (created.error || !created.data.user) {
-    return Response.redirect(new URL('/admin/users/new?error=1', request.url));
+    return NextResponse.redirect(new URL('/admin/users/new?error=1', request.url));
   }
 
   const userId = created.data.user.id;
@@ -47,5 +47,5 @@ export async function POST(request: Request) {
       selected.map((product_id) => ({ user_id: userId, product_id, price_cents: toCents(String(formData.get(`price_${product_id}`) ?? '0')) }))
     );
   }
-  redirect(`/admin/users/${userId}`);
+  return NextResponse.redirect(new URL(`/admin/users/${userId}`, request.url));
 }
