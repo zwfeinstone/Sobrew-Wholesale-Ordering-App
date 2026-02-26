@@ -12,7 +12,13 @@ type WizardState = {
   is_admin: boolean;
 };
 
-export function UserWizard({ products }: { products: Product[] }) {
+export function UserWizard({
+  products,
+  createUserAction,
+}: {
+  products: Product[];
+  createUserAction: (formData: FormData) => void | Promise<void>;
+}) {
   const [step, setStep] = useState(1);
   const [selected, setSelected] = useState<Record<string, boolean>>({});
   const [state, setState] = useState<WizardState>({
@@ -25,7 +31,7 @@ export function UserWizard({ products }: { products: Product[] }) {
   const selectedProducts = useMemo(() => products.filter((p) => selected[p.id]), [products, selected]);
 
   return (
-    <form action="/admin/users/new" method="post" className="card space-y-4">
+    <form action={createUserAction} className="card space-y-4">
       <input type="hidden" name="selected_json" value={JSON.stringify(selectedProducts.map((p) => p.id))} />
       <input type="hidden" name="is_admin" value={state.is_admin ? 'true' : 'false'} />
       {step === 1 && (
