@@ -19,7 +19,7 @@ export default async function AdminOrderDetail({ params }: { params: { id: strin
   const supabase = await createClient();
   const { data: order } = await supabase.from('orders').select('*,profiles(email,full_name)').eq('id', params.id).single();
   if (!order) return notFound();
-  const { data: items } = await supabase.from('order_items').select('*').eq('order_id', order.id);
+  const { data: items } = await supabase.from('order_items').select('id,qty,product_id,product_name_snapshot,products(name)').eq('order_id', order.id);
 
   return (
     <div className="space-y-4">
@@ -32,7 +32,11 @@ export default async function AdminOrderDetail({ params }: { params: { id: strin
         <button className="btn-primary">Update status</button>
       </form>
       <div className="card">{order.shipping_name} - {order.shipping_address1}, {order.shipping_city}</div>
-      <div className="card space-y-1">{items?.map((i) => <div key={i.id}>{i.product_name_snapshot} x {i.qty}</div>)}</div>
+      <div className="card space-y-1">
+        {items?.map((i: any) => (
+          <div key={i.id}>{i.product_name_snapshot || i.products?.name || i.product_id} x {i.qty}</div>
+        ))}
+      </div>
     </div>
   );
 }
