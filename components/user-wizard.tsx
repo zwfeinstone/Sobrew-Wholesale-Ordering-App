@@ -15,6 +15,7 @@ type WizardState = {
 export function UserWizard({ products }: { products: Product[] }) {
   const [step, setStep] = useState(1);
   const [selected, setSelected] = useState<Record<string, boolean>>({});
+  const [prices, setPrices] = useState<Record<string, string>>({});
   const [state, setState] = useState<WizardState>({
     email: '',
     full_name: '',
@@ -26,8 +27,15 @@ export function UserWizard({ products }: { products: Product[] }) {
 
   return (
     <form action="/api/admin/users/new" method="post" className="card space-y-4">
+      <input type="hidden" name="email" value={state.email} />
+      <input type="hidden" name="full_name" value={state.full_name} />
+      <input type="hidden" name="password" value={state.password} />
+      <input type="hidden" name="notes" value={state.notes} />
       <input type="hidden" name="selected_json" value={JSON.stringify(selectedProducts.map((p) => p.id))} />
       <input type="hidden" name="is_admin" value={state.is_admin ? 'true' : 'false'} />
+      {selectedProducts.map((p) => (
+        <input key={`hidden-price-${p.id}`} type="hidden" name={`price_${p.id}`} value={prices[p.id] ?? '0.00'} />
+      ))}
       {step === 1 && (
         <div className="space-y-2">
           <h2 className="text-xl font-semibold">Step 1: Create user</h2>
@@ -92,7 +100,16 @@ export function UserWizard({ products }: { products: Product[] }) {
           {selectedProducts.map((p) => (
             <div key={p.id}>
               <label>{p.name}</label>
-              <input className="input" name={`price_${p.id}`} type="number" min="0" step="0.01" defaultValue="0.00" required />
+              <input
+                className="input"
+                name={`price_${p.id}`}
+                type="number"
+                min="0"
+                step="0.01"
+                required
+                value={prices[p.id] ?? '0.00'}
+                onChange={(e) => setPrices({ ...prices, [p.id]: e.target.value })}
+              />
             </div>
           ))}
           <button type="button" className="rounded border px-4 py-2" onClick={() => setStep(2)}>Back</button>
