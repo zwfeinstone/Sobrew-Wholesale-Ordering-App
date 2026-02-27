@@ -21,7 +21,7 @@ async function placeOrder(formData: FormData) {
     ? await supabase.from('products').select('id,name').in('id', productIds)
     : { data: [] as any[] };
   const nameMap = new Map((dbProducts ?? []).map((p) => [p.id, p.name]));
-  const cartWithNames = cart.map((item) => ({ ...item, name: nameMap.get(item.product_id) ?? item.name }));
+  const cartWithNames = cart.map((item) => ({ ...item, name: nameMap.get(item.product_id) ?? 'Unknown product' }));
 
   const subtotal = cartWithNames.reduce((sum, i) => sum + i.qty * i.price_cents, 0);
 

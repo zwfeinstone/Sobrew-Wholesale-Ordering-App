@@ -10,16 +10,20 @@ export default async function AdminOrdersPage({ searchParams }: { searchParams: 
 
   const orderIds = (orders ?? []).map((order: any) => order.id);
   const { data: items } = orderIds.length
-    ? await supabase
-        .from('order_items')
-        .select('order_id,product_name_snapshot,products(name)')
-        .in('order_id', orderIds)
+    ? await supabase.from('order_items').select('order_id,product_id,product_name_snapshot').in('order_id', orderIds)
     : { data: [] as any[] };
+
+  const productIds = [...new Set((items ?? []).map((item: any) => item.product_id))];
+  const { data: products } = productIds.length
+    ? await supabase.from('products').select('id,name').in('id', productIds)
+    : { data: [] as any[] };
+  const productNameById = new Map((products ?? []).map((p: any) => [p.id, p.name]));
 
   const firstNameByOrderId = new Map<string, string>();
   for (const item of items ?? []) {
     if (!firstNameByOrderId.has(item.order_id)) {
-      firstNameByOrderId.set(item.order_id, item.product_name_snapshot || (item as any).products?.name || 'Product');
+      const mappedName = productNameById.get(item.product_id);
+      firstNameByOrderId.set(item.order_id, mappedName || item.product_name_snapshot || 'Unknown product');
     }
   }
 
@@ -36,7 +40,7 @@ export default async function AdminOrdersPage({ searchParams }: { searchParams: 
       </form>
       {orders?.map((order: any) => (
         <Link key={order.id} href={`/admin/orders/${order.id}`} className="card block">
-          {firstNameByOrderId.get(order.id) ?? 'Product'} - {order.status} - {order.profiles?.email}
+          {firstNameByOrderId.get(order.id) ?? 'Unknown product'} - {order.status} - {order.profiles?.email}
         </Link>
       ))}
     </div>

@@ -19,7 +19,13 @@ export default async function AdminOrderDetail({ params }: { params: { id: strin
   const supabase = await createClient();
   const { data: order } = await supabase.from('orders').select('*,profiles(email,full_name)').eq('id', params.id).single();
   if (!order) return notFound();
-  const { data: items } = await supabase.from('order_items').select('id,qty,product_name_snapshot,products(name)').eq('order_id', order.id);
+  const { data: items } = await supabase.from('order_items').select('id,qty,product_id,product_name_snapshot').eq('order_id', order.id);
+
+  const productIds = [...new Set((items ?? []).map((item: any) => item.product_id))];
+  const { data: products } = productIds.length
+    ? await supabase.from('products').select('id,name').in('id', productIds)
+    : { data: [] as any[] };
+  const productNameById = new Map((products ?? []).map((p: any) => [p.id, p.name]));
 
   return (
     <div className="space-y-4">
@@ -34,7 +40,7 @@ export default async function AdminOrderDetail({ params }: { params: { id: strin
       <div className="card">{order.shipping_name} - {order.shipping_address1}, {order.shipping_city}</div>
       <div className="card space-y-1">
         {items?.map((i: any) => (
-          <div key={i.id}>{i.product_name_snapshot || i.products?.name || 'Product'} x {i.qty}</div>
+          <div key={i.id}>{productNameById.get(i.product_id) || i.product_name_snapshot || 'Unknown product'} x {i.qty}</div>
         ))}
       </div>
     </div>

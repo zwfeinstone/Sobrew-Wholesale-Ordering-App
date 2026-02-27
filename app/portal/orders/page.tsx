@@ -14,16 +14,20 @@ export default async function OrdersPage() {
 
   const orderIds = (orders ?? []).map((order) => order.id);
   const { data: items } = orderIds.length
-    ? await supabase
-        .from('order_items')
-        .select('order_id,product_name_snapshot,products(name)')
-        .in('order_id', orderIds)
+    ? await supabase.from('order_items').select('order_id,product_id,product_name_snapshot').in('order_id', orderIds)
     : { data: [] as any[] };
+
+  const productIds = [...new Set((items ?? []).map((item: any) => item.product_id))];
+  const { data: products } = productIds.length
+    ? await supabase.from('products').select('id,name').in('id', productIds)
+    : { data: [] as any[] };
+  const productNameById = new Map((products ?? []).map((p: any) => [p.id, p.name]));
 
   const firstNameByOrderId = new Map<string, string>();
   for (const item of items ?? []) {
     if (!firstNameByOrderId.has(item.order_id)) {
-      firstNameByOrderId.set(item.order_id, item.product_name_snapshot || (item as any).products?.name || 'Product');
+      const mappedName = productNameById.get(item.product_id);
+      firstNameByOrderId.set(item.order_id, mappedName || item.product_name_snapshot || 'Unknown product');
     }
   }
 
@@ -32,7 +36,7 @@ export default async function OrdersPage() {
       <h1 className="text-2xl font-semibold">Order history</h1>
       {orders?.map((order) => (
         <Link key={order.id} href={`/portal/orders/${order.id}`} className="card block">
-          {firstNameByOrderId.get(order.id) ?? 'Product'} - {order.status} - {usd(order.subtotal_cents)}
+          {firstNameByOrderId.get(order.id) ?? 'Unknown product'} - {order.status} - {usd(order.subtotal_cents)}
         </Link>
       ))}
     </div>
