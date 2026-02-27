@@ -15,7 +15,15 @@ async function placeOrder(formData: FormData) {
     qty: number;
   }>;
   if (!cart.length) redirect('/portal/cart');
-  const subtotal = cart.reduce((sum, i) => sum + i.qty * i.price_cents, 0);
+
+  const productIds = [...new Set(cart.map((item) => item.product_id))];
+  const { data: dbProducts } = productIds.length
+    ? await supabase.from('products').select('id,name').in('id', productIds)
+    : { data: [] as any[] };
+  const nameMap = new Map((dbProducts ?? []).map((p) => [p.id, p.name]));
+  const cartWithNames = cart.map((item) => ({ ...item, name: nameMap.get(item.product_id) ?? item.name }));
+
+  const subtotal = cartWithNames.reduce((sum, i) => sum + i.qty * i.price_cents, 0);
 
   const { data: order, error } = await supabase
     .from('orders')
@@ -35,7 +43,7 @@ async function placeOrder(formData: FormData) {
   if (error || !order) redirect('/portal/checkout?error=1');
 
   await supabase.from('order_items').insert(
-    cart.map((item) => ({
+    cartWithNames.map((item) => ({
       order_id: order.id,
       product_id: item.product_id,
       product_name_snapshot: item.name,
@@ -50,7 +58,7 @@ async function placeOrder(formData: FormData) {
     customerName: profile?.full_name ?? profile?.email ?? user.email ?? '',
     orderId: order.id,
     shipping: order,
-    items: cart.map((item) => ({ name: item.name, qty: item.qty, price: item.price_cents, line: item.qty * item.price_cents })),
+    items: cartWithNames.map((item) => ({ name: item.name, qty: item.qty, price: item.price_cents, line: item.qty * item.price_cents })),
     subtotalCents: subtotal
   });
 

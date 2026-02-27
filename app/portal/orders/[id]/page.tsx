@@ -12,7 +12,7 @@ export default async function OrderDetail({ params }: { params: { id: string } }
   if (!order) return notFound();
   const { data: items } = await supabase
     .from('order_items')
-    .select('id,qty,line_total_cents,product_id,product_name_snapshot,products(name)')
+    .select('id,qty,line_total_cents,product_name_snapshot,products(name)')
     .eq('order_id', order.id);
 
   return (
@@ -23,7 +23,7 @@ export default async function OrderDetail({ params }: { params: { id: string } }
       <div className="card">
         {items?.map((i: any) => (
           <div key={i.id} className="flex justify-between">
-            <span>{i.product_name_snapshot || i.products?.name || i.product_id} x {i.qty}</span>
+            <span>{i.product_name_snapshot || i.products?.name || 'Product'} x {i.qty}</span>
             <span>{usd(i.line_total_cents)}</span>
           </div>
         ))}
