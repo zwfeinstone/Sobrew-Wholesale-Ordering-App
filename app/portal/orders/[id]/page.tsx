@@ -3,6 +3,7 @@ import { notFound } from 'next/navigation';
 import { ClearCart } from '@/components/cart-client';
 import { requireUser } from '@/lib/auth';
 import { createClient } from '@/lib/supabase/server';
+import { supabaseAdmin } from '@/lib/supabase/admin';
 import { usd } from '@/lib/utils';
 
 export default async function OrderDetail({ params }: { params: { id: string } }) {
@@ -14,7 +15,7 @@ export default async function OrderDetail({ params }: { params: { id: string } }
 
   const productIds = [...new Set((items ?? []).map((item: any) => item.product_id))];
   const { data: products } = productIds.length
-    ? await supabase.from('products').select('id,name').in('id', productIds)
+    ? await supabaseAdmin.from('products').select('id,name').in('id', productIds)
     : { data: [] as any[] };
   const productNameById = new Map((products ?? []).map((p: any) => [p.id, p.name]));
 
