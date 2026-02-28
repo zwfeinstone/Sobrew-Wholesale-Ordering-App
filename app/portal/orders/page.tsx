@@ -15,7 +15,7 @@ export default async function OrdersPage() {
 
   const orderIds = (orders ?? []).map((order) => order.id);
   const { data: items } = orderIds.length
-    ? await supabase.from('order_items').select('order_id,product_id,product_name_snapshot').in('order_id', orderIds)
+    ? await supabase.from('order_items').select('order_id,product_id,product_name_snapshot,qty').in('order_id', orderIds)
     : { data: [] as any[] };
 
   const productIds = [...new Set((items ?? []).map((item: any) => item.product_id))];
@@ -24,12 +24,13 @@ export default async function OrdersPage() {
     : { data: [] as any[] };
   const productNameById = new Map((products ?? []).map((p: any) => [p.id, p.name]));
 
-  const firstNameByOrderId = new Map<string, string>();
+  const lineItemsByOrderId = new Map<string, string[]>();
   for (const item of items ?? []) {
-    if (!firstNameByOrderId.has(item.order_id)) {
-      const mappedName = productNameById.get(item.product_id);
-      firstNameByOrderId.set(item.order_id, mappedName || item.product_name_snapshot || 'Unknown product');
-    }
+    const mappedName = productNameById.get(item.product_id);
+    const itemLabel = `${mappedName || item.product_name_snapshot || 'Unknown product'} x ${item.qty}`;
+    const existingItems = lineItemsByOrderId.get(item.order_id) ?? [];
+    existingItems.push(itemLabel);
+    lineItemsByOrderId.set(item.order_id, existingItems);
   }
 
   return (
@@ -37,7 +38,7 @@ export default async function OrdersPage() {
       <h1 className="text-2xl font-semibold">Order history</h1>
       {orders?.map((order) => (
         <Link key={order.id} href={`/portal/orders/${order.id}`} className="card block">
-          {firstNameByOrderId.get(order.id) ?? 'Unknown product'} - {order.status} - {usd(order.subtotal_cents)}
+          {(lineItemsByOrderId.get(order.id) ?? ['Unknown product']).join(', ')} - {order.status} - {usd(order.subtotal_cents)}
         </Link>
       ))}
     </div>
