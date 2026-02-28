@@ -42,7 +42,7 @@ async function placeOrder(formData: FormData) {
     .single();
   if (error || !order) redirect('/portal/checkout?error=1');
 
-  await supabase.from('order_items').insert(
+  const { error: orderItemsError } = await supabase.from('order_items').insert(
     cartWithNames.map((item) => ({
       order_id: order.id,
       product_id: item.product_id,
@@ -52,6 +52,10 @@ async function placeOrder(formData: FormData) {
       line_total_cents: item.price_cents * item.qty
     }))
   );
+  if (orderItemsError) {
+    await supabase.from('orders').delete().eq('id', order.id);
+    redirect('/portal/checkout?error=1');
+  }
 
   await sendOrderEmails({
     customerEmail: profile?.email ?? user.email ?? '',
