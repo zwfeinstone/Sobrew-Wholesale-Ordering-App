@@ -28,16 +28,24 @@ async function placeOrder(formData: FormData) {
 
   const subtotal = cartWithNames.reduce((sum, i) => sum + i.qty * i.price_cents, 0);
 
+  const { data: lastOrder } = await supabase
+    .from('orders')
+    .select('shipping_name,shipping_address1,shipping_address2,shipping_city,shipping_state,shipping_zip')
+    .eq('user_id', user.id)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
   const { data: order, error } = await supabase
     .from('orders')
     .insert({
       user_id: user.id,
-      shipping_name: profile?.full_name ?? profile?.email ?? user.email ?? '',
-      shipping_address1: '',
-      shipping_address2: '',
-      shipping_city: '',
-      shipping_state: '',
-      shipping_zip: '',
+      shipping_name: lastOrder?.shipping_name ?? profile?.full_name ?? profile?.email ?? user.email ?? '',
+      shipping_address1: lastOrder?.shipping_address1 ?? '',
+      shipping_address2: lastOrder?.shipping_address2 ?? '',
+      shipping_city: lastOrder?.shipping_city ?? '',
+      shipping_state: lastOrder?.shipping_state ?? '',
+      shipping_zip: lastOrder?.shipping_zip ?? '',
       notes: String(formData.get('notes') ?? ''),
       subtotal_cents: subtotal
     })

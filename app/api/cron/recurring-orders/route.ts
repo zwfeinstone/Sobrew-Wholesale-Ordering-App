@@ -11,7 +11,7 @@ function intervalForFrequency(frequency: string) {
 
 export async function POST(req: Request) {
   const providedSecret = req.headers.get('x-cron-secret') ?? '';
-  if (env.cronSecret && providedSecret !== env.cronSecret) {
+  if (!env.cronSecret || providedSecret !== env.cronSecret) {
     return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
   }
 
@@ -99,7 +99,17 @@ export async function POST(req: Request) {
       continue;
     }
 
-    await supabaseAdmin.from('recurring_orders').update({ last_generated_at: new Date().toISOString() }).eq('id', recurringOrder.id);
+    const { error: updateRecurringOrderError } = await supabaseAdmin
+      .from('recurring_orders')
+      .update({ last_generated_at: new Date().toISOString() })
+      .eq('id', recurringOrder.id);
+
+    if (updateRecurringOrderError) {
+      await supabaseAdmin.from('order_items').delete().eq('order_id', newOrder.id);
+      await supabaseAdmin.from('orders').delete().eq('id', newOrder.id);
+      errors.push({ recurringOrderId: recurringOrder.id, message: updateRecurringOrderError.message });
+      continue;
+    }
 
     const recurringProfile = Array.isArray(recurringOrder.profiles) ? recurringOrder.profiles[0] : recurringOrder.profiles;
 
