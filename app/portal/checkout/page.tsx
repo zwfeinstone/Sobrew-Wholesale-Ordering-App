@@ -60,6 +60,7 @@ async function placeOrder(formData: FormData) {
     redirect('/portal/checkout?error=1');
   }
 
+  let recurringCreationFailed = false;
   if (isRecurring && normalizedRecurringFrequency) {
     const { error: recurringOrderError } = await supabase.from('recurring_orders').insert({
       user_id: user.id,
@@ -69,8 +70,8 @@ async function placeOrder(formData: FormData) {
     });
 
     if (recurringOrderError) {
+      recurringCreationFailed = true;
       console.error('Failed to create recurring order', recurringOrderError);
-      redirect(`/portal/orders/${order.id}?placed=1&recurring_error=1`);
     }
   }
 
@@ -83,7 +84,7 @@ async function placeOrder(formData: FormData) {
     subtotalCents: subtotal
   });
 
-  redirect(`/portal/orders/${order.id}?placed=1`);
+  redirect(`/portal/orders/${order.id}?placed=1${recurringCreationFailed ? '&recurring_error=1' : ''}`);
 }
 
 export default function CheckoutPage() {
