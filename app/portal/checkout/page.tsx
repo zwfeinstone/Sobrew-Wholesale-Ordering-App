@@ -69,9 +69,8 @@ async function placeOrder(formData: FormData) {
     });
 
     if (recurringOrderError) {
-      await supabase.from('order_items').delete().eq('order_id', order.id);
-      await supabase.from('orders').delete().eq('id', order.id);
-      redirect('/portal/checkout?error=1');
+      console.error('Failed to create recurring order', recurringOrderError);
+      redirect(`/portal/orders/${order.id}?placed=1&recurring_error=1`);
     }
   }
 
