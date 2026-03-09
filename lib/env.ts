@@ -18,5 +18,6 @@ export const env = {
   resendApiKey: process.env.RESEND_API_KEY ?? '',
   resendFrom: process.env.RESEND_FROM_EMAIL ?? 'hello@sobrew.com',
   sobrewAdminEmail: process.env.SOBREW_ADMIN_EMAIL ?? 'hello@sobrew.com',
-  siteUrl: process.env.NEXT_PUBLIC_SITE_URL ?? 'http://localhost:3000'
+  siteUrl: process.env.NEXT_PUBLIC_SITE_URL ?? 'http://localhost:3000',
+  cronSecret: process.env.CRON_SECRET ?? ''
 };
