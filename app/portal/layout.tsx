@@ -12,6 +12,7 @@ export default async function PortalLayout({ children }: { children: React.React
             <Link href="/portal">Catalog</Link>
             <Link href="/portal/cart">Cart</Link>
             <Link href="/portal/orders">Orders</Link>
+            <Link href="/portal/recurring-orders">Recurring</Link>
             {profile?.is_admin ? <Link href="/admin">Admin</Link> : null}
           </nav>
         </div>
