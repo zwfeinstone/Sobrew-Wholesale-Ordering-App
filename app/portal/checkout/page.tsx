@@ -70,16 +70,38 @@ async function placeOrder(formData: FormData) {
 
   let recurringCreationFailed = false;
   if (isRecurring && normalizedRecurringFrequency) {
-    const { error: recurringOrderError } = await supabase.from('recurring_orders').insert({
-      user_id: user.id,
-      source_order_id: order.id,
-      frequency: normalizedRecurringFrequency,
-      amount_cents: subtotal
-    });
+    const { data: recurringOrder, error: recurringOrderError } = await supabase
+      .from('recurring_orders')
+      .insert({
+        user_id: user.id,
+        source_order_id: order.id,
+        frequency: normalizedRecurringFrequency,
+        amount_cents: subtotal,
+        status: 'active'
+      })
+      .select('id')
+      .single();
 
-    if (recurringOrderError) {
+    if (recurringOrderError || !recurringOrder) {
       recurringCreationFailed = true;
       console.error('Failed to create recurring order', recurringOrderError);
+    } else {
+      const { error: recurringItemsError } = await supabase.from('recurring_order_items').insert(
+        cartWithNames.map((item) => ({
+          recurring_order_id: recurringOrder.id,
+          product_id: item.product_id,
+          product_name_snapshot: item.name,
+          qty: item.qty,
+          unit_price_cents: item.price_cents,
+          line_total_cents: item.qty * item.price_cents
+        }))
+      );
+
+      if (recurringItemsError) {
+        recurringCreationFailed = true;
+        console.error('Failed to create recurring order items', recurringItemsError);
+        await supabase.from('recurring_orders').delete().eq('id', recurringOrder.id);
+      }
     }
   }
 

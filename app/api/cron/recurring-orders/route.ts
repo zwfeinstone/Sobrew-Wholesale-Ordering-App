@@ -17,8 +17,8 @@ export async function POST(req: Request) {
 
   const { data: recurringOrders, error: recurringOrdersError } = await supabaseAdmin
     .from('recurring_orders')
-    .select('id,user_id,source_order_id,frequency,amount_cents,created_at,last_generated_at,profiles(email,full_name)')
-    .eq('active', true);
+    .select('id,user_id,source_order_id,frequency,amount_cents,status,created_at,last_generated_at,profiles(email,full_name)')
+    .eq('status', 'active');
 
   if (recurringOrdersError) {
     return NextResponse.json({ error: recurringOrdersError.message }, { status: 500 });
@@ -49,17 +49,17 @@ export async function POST(req: Request) {
       continue;
     }
 
-    const { data: sourceItems, error: sourceItemsError } = await supabaseAdmin
-      .from('order_items')
+    const { data: recurringItems, error: recurringItemsError } = await supabaseAdmin
+      .from('recurring_order_items')
       .select('product_id,product_name_snapshot,qty,unit_price_cents,line_total_cents')
-      .eq('order_id', sourceOrder.id);
+      .eq('recurring_order_id', recurringOrder.id);
 
-    if (sourceItemsError || !sourceItems?.length) {
-      errors.push({ recurringOrderId: recurringOrder.id, message: sourceItemsError?.message ?? 'Missing source order items' });
+    if (recurringItemsError || !recurringItems?.length) {
+      errors.push({ recurringOrderId: recurringOrder.id, message: recurringItemsError?.message ?? 'Missing recurring order items' });
       continue;
     }
 
-    const subtotal = recurringOrder.amount_cents;
+    const subtotal = recurringItems.reduce((sum, item) => sum + (item.line_total_cents ?? 0), 0);
 
     const { data: newOrder, error: newOrderError } = await supabaseAdmin
       .from('orders')
@@ -83,7 +83,7 @@ export async function POST(req: Request) {
     }
 
     const { error: newItemsError } = await supabaseAdmin.from('order_items').insert(
-      sourceItems.map((item) => ({
+      recurringItems.map((item) => ({
         order_id: newOrder.id,
         product_id: item.product_id,
         product_name_snapshot: item.product_name_snapshot,
@@ -118,7 +118,7 @@ export async function POST(req: Request) {
       customerName: recurringProfile?.full_name ?? recurringProfile?.email ?? '',
       orderId: newOrder.id,
       shipping: newOrder,
-      items: sourceItems.map((item) => ({
+      items: recurringItems.map((item) => ({
         name: item.product_name_snapshot ?? 'Unknown product',
         qty: item.qty,
         price: item.unit_price_cents,
