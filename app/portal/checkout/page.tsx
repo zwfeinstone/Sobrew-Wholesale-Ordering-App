@@ -22,19 +22,30 @@ async function placeOrder(formData: FormData) {
     : { data: [] as any[] };
   const nameMap = new Map((dbProducts ?? []).map((p) => [p.id, p.name]));
   const cartWithNames = cart.map((item) => ({ ...item, name: nameMap.get(item.product_id) ?? 'Unknown product' }));
+  const isRecurring = String(formData.get('is_recurring') ?? '') === 'on';
+  const recurringFrequency = String(formData.get('recurring_frequency') ?? '');
+  const normalizedRecurringFrequency = recurringFrequency === '2_weeks' || recurringFrequency === 'monthly' ? recurringFrequency : null;
 
   const subtotal = cartWithNames.reduce((sum, i) => sum + i.qty * i.price_cents, 0);
+
+  const { data: lastOrder } = await supabase
+    .from('orders')
+    .select('shipping_name,shipping_address1,shipping_address2,shipping_city,shipping_state,shipping_zip')
+    .eq('user_id', user.id)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
 
   const { data: order, error } = await supabase
     .from('orders')
     .insert({
       user_id: user.id,
-      shipping_name: String(formData.get('shipping_name') ?? ''),
-      shipping_address1: String(formData.get('shipping_address1') ?? ''),
-      shipping_address2: String(formData.get('shipping_address2') ?? ''),
-      shipping_city: String(formData.get('shipping_city') ?? ''),
-      shipping_state: String(formData.get('shipping_state') ?? ''),
-      shipping_zip: String(formData.get('shipping_zip') ?? ''),
+      shipping_name: lastOrder?.shipping_name ?? profile?.full_name ?? profile?.email ?? user.email ?? '',
+      shipping_address1: lastOrder?.shipping_address1 ?? '',
+      shipping_address2: lastOrder?.shipping_address2 ?? '',
+      shipping_city: lastOrder?.shipping_city ?? '',
+      shipping_state: lastOrder?.shipping_state ?? '',
+      shipping_zip: lastOrder?.shipping_zip ?? '',
       notes: String(formData.get('notes') ?? ''),
       subtotal_cents: subtotal
     })
@@ -57,6 +68,43 @@ async function placeOrder(formData: FormData) {
     redirect('/portal/checkout?error=1');
   }
 
+  let recurringCreationFailed = false;
+  if (isRecurring && normalizedRecurringFrequency) {
+    const { data: recurringOrder, error: recurringOrderError } = await supabase
+      .from('recurring_orders')
+      .insert({
+        user_id: user.id,
+        source_order_id: order.id,
+        frequency: normalizedRecurringFrequency,
+        amount_cents: subtotal,
+        status: 'active'
+      })
+      .select('id')
+      .single();
+
+    if (recurringOrderError || !recurringOrder) {
+      recurringCreationFailed = true;
+      console.error('Failed to create recurring order', recurringOrderError);
+    } else {
+      const { error: recurringItemsError } = await supabase.from('recurring_order_items').insert(
+        cartWithNames.map((item) => ({
+          recurring_order_id: recurringOrder.id,
+          product_id: item.product_id,
+          product_name_snapshot: item.name,
+          qty: item.qty,
+          unit_price_cents: item.price_cents,
+          line_total_cents: item.qty * item.price_cents
+        }))
+      );
+
+      if (recurringItemsError) {
+        recurringCreationFailed = true;
+        console.error('Failed to create recurring order items', recurringItemsError);
+        await supabase.from('recurring_orders').delete().eq('id', recurringOrder.id);
+      }
+    }
+  }
+
   await sendOrderEmails({
     customerEmail: profile?.email ?? user.email ?? '',
     customerName: profile?.full_name ?? profile?.email ?? user.email ?? '',
@@ -66,7 +114,7 @@ async function placeOrder(formData: FormData) {
     subtotalCents: subtotal
   });
 
-  redirect(`/portal/orders/${order.id}?placed=1`);
+  redirect(`/portal/orders/${order.id}?placed=1${recurringCreationFailed ? '&recurring_error=1' : ''}`);
 }
 
 export default function CheckoutPage() {
@@ -74,13 +122,15 @@ export default function CheckoutPage() {
     <form action={placeOrder} className="card space-y-3">
       <h1 className="text-2xl font-semibold">Checkout</h1>
       <CheckoutCartField />
-      <input className="input" name="shipping_name" required placeholder="Shipping Name" />
-      <input className="input" name="shipping_address1" required placeholder="Address 1" />
-      <input className="input" name="shipping_address2" placeholder="Address 2" />
-      <input className="input" name="shipping_city" required placeholder="City" />
-      <input className="input" name="shipping_state" required placeholder="State" />
-      <input className="input" name="shipping_zip" required placeholder="Zip" />
       <textarea className="input" name="notes" placeholder="Notes" />
+      <label className="flex items-center gap-2 text-sm text-neutral-700">
+        <input type="checkbox" name="is_recurring" />
+        Make this order recurring
+      </label>
+      <select className="input" name="recurring_frequency" defaultValue="2_weeks">
+        <option value="2_weeks">Every 2 weeks</option>
+        <option value="monthly">Monthly</option>
+      </select>
       <button className="btn-primary">Place order</button>
     </form>
   );
