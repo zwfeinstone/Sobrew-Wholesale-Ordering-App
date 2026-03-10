@@ -48,6 +48,16 @@ function normalizeStatus(order: RecurringOrderRow) {
   return 'active';
 }
 
+
+function isNextRedirectError(error: unknown) {
+  return Boolean(
+    error &&
+      typeof error === 'object' &&
+      'digest' in error &&
+      typeof (error as { digest?: unknown }).digest === 'string' &&
+      (error as { digest: string }).digest.startsWith('NEXT_REDIRECT')
+  );
+}
 function statusClasses(status: string) {
   if (status === 'active') return 'bg-emerald-100 text-emerald-700';
   if (status === 'paused') return 'bg-amber-100 text-amber-700';
@@ -116,6 +126,7 @@ async function updateRecurringItem(formData: FormData) {
 
     redirect('/portal/recurring-orders?success=saved');
   } catch (error) {
+    if (isNextRedirectError(error)) throw error;
     console.error('[recurring-orders] updateRecurringItem fatal', { userId, error });
     redirect('/portal/recurring-orders?error=save_failed');
   }
@@ -154,6 +165,7 @@ async function setRecurringStatus(formData: FormData) {
 
     redirect('/portal/recurring-orders?success=status_updated');
   } catch (error) {
+    if (isNextRedirectError(error)) throw error;
     console.error('[recurring-orders] setRecurringStatus fatal', { userId, error });
     redirect('/portal/recurring-orders?error=status_failed');
   }
@@ -289,6 +301,7 @@ export default async function RecurringOrdersPage({ searchParams }: { searchPara
       </div>
     );
   } catch (error) {
+    if (isNextRedirectError(error)) throw error;
     console.error('[recurring-orders] page render fatal', { userId, error });
     return <div className="card text-sm text-red-700">Unable to load recurring orders right now.</div>;
   }
