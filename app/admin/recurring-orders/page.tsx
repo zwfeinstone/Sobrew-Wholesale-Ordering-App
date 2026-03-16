@@ -20,11 +20,19 @@ async function updateRecurringOrder(formData: FormData) {
   if (!['2_weeks', 'monthly'].includes(frequency)) redirect('/admin/recurring-orders?error=invalid_frequency');
   if (!['active', 'paused', 'canceled'].includes(status)) redirect('/admin/recurring-orders?error=invalid_status');
 
-  const updates: { frequency: string; status: string; active?: boolean } = { frequency, status };
-  if (status === 'active') updates.active = true;
-  if (status === 'paused' || status === 'canceled') updates.active = false;
+  const active = status === 'active';
+  const updates: { frequency: string; status: string; active: boolean } = { frequency, status, active };
 
-  const updateResult = await supabase.from('recurring_orders').update(updates).eq('id', recurringOrderId).select('id');
+  let updateResult = await supabase.from('recurring_orders').update(updates).eq('id', recurringOrderId).select('id');
+
+  if (updateResult.error) {
+    const legacyResult = await supabase
+      .from('recurring_orders')
+      .update({ frequency, active })
+      .eq('id', recurringOrderId)
+      .select('id');
+    updateResult = legacyResult;
+  }
 
   const statusQuery = statusFilter ? `status=${encodeURIComponent(statusFilter)}&` : '';
   if (updateResult.error) redirect(`/admin/recurring-orders?${statusQuery}error=save_failed`);
