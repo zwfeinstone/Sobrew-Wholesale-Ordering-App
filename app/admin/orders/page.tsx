@@ -3,27 +3,38 @@ import { redirect } from 'next/navigation';
 import { sendShippedEmail } from '@/lib/email';
 import { createClient } from '@/lib/supabase/server';
 
+const allowedOrderStatuses = new Set(['New', 'Processing', 'Shipped']);
+
 async function updateStatus(formData: FormData) {
   'use server';
   const supabase = await createClient();
-  const id = String(formData.get('id'));
-  const status = String(formData.get('status'));
+  const id = String(formData.get('id') ?? '');
+  const status = String(formData.get('status') ?? '');
   const statusFilter = String(formData.get('statusFilter') ?? '');
+
+  const statusQuery = statusFilter ? `status=${encodeURIComponent(statusFilter)}&` : '';
+  if (!id) redirect(`/admin/orders?${statusQuery}error=missing_id`);
+  if (!allowedOrderStatuses.has(status)) redirect(`/admin/orders?${statusQuery}error=invalid_status`);
 
   const { data: order } = await supabase.from('orders').select('id,status,profiles(email)').eq('id', id).single();
   const orderUpdateResult = await supabase.from('orders').update({ status }).eq('id', id).select('id');
 
-  if (!orderUpdateResult.error && orderUpdateResult.data?.length && order?.status !== 'Shipped' && status === 'Shipped' && (order as any)?.profiles?.email) {
+  if (orderUpdateResult.error) redirect(`/admin/orders?${statusQuery}error=save_failed`);
+  if (!orderUpdateResult.data?.length) redirect(`/admin/orders?${statusQuery}error=not_found`);
+
+  if (order?.status !== 'Shipped' && status === 'Shipped' && (order as any)?.profiles?.email) {
     await sendShippedEmail((order as any).profiles.email, id);
   }
 
-  const nextSearch = statusFilter ? `?status=${encodeURIComponent(statusFilter)}` : '';
+  const nextSearch = statusFilter ? `?status=${encodeURIComponent(statusFilter)}&success=updated` : '?success=updated';
   redirect(`/admin/orders${nextSearch}`);
 }
 
 export default async function AdminOrdersPage({ searchParams }: { searchParams: Record<string, string | string[] | undefined> }) {
   const supabase = await createClient();
   const status = typeof searchParams.status === 'string' ? searchParams.status : '';
+  const error = typeof searchParams.error === 'string' ? searchParams.error : '';
+  const success = typeof searchParams.success === 'string' ? searchParams.success : '';
   let query = supabase.from('orders').select('id,status,created_at,profiles(email)').order('created_at', { ascending: false });
   if (status) query = query.eq('status', status);
   const { data: orders } = await query.limit(100);
@@ -50,6 +61,8 @@ export default async function AdminOrdersPage({ searchParams }: { searchParams: 
   return (
     <div className="space-y-4">
       <h1 className="text-2xl font-semibold">Orders</h1>
+      {success === 'updated' ? <div className="card text-sm text-green-700">Order status updated.</div> : null}
+      {error ? <div className="card text-sm text-red-700">Unable to update order status ({error}).</div> : null}
       <form className="card flex gap-2">
         <select className="input" name="status" defaultValue={status}>
           <option value="">All statuses</option>
