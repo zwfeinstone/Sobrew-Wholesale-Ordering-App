@@ -18,7 +18,11 @@ async function updateRecurringOrder(formData: FormData) {
   if (status === 'active') updates.active = true;
   if (status === 'paused' || status === 'canceled') updates.active = false;
 
-  await supabase.from('recurring_orders').update(updates).eq('id', recurringOrderId);
+  const updateResult = await supabase.from('recurring_orders').update(updates).eq('id', recurringOrderId).select('id');
+
+  const statusQuery = statusFilter ? `status=${encodeURIComponent(statusFilter)}&` : '';
+  if (updateResult.error) redirect(`/admin/recurring-orders?${statusQuery}error=save_failed`);
+  if (!updateResult.data?.length) redirect(`/admin/recurring-orders?${statusQuery}error=not_found`);
 
   const nextSearch = statusFilter ? `?status=${encodeURIComponent(statusFilter)}&success=updated` : '?success=updated';
   redirect(`/admin/recurring-orders${nextSearch}`);
