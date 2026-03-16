@@ -1,5 +1,25 @@
 import Link from 'next/link';
+import { redirect } from 'next/navigation';
+import { sendShippedEmail } from '@/lib/email';
 import { createClient } from '@/lib/supabase/server';
+
+async function updateStatus(formData: FormData) {
+  'use server';
+  const supabase = await createClient();
+  const id = String(formData.get('id'));
+  const status = String(formData.get('status'));
+  const statusFilter = String(formData.get('statusFilter') ?? '');
+
+  const { data: order } = await supabase.from('orders').select('id,status,profiles(email)').eq('id', id).single();
+  await supabase.from('orders').update({ status }).eq('id', id);
+
+  if (order?.status !== 'Shipped' && status === 'Shipped' && (order as any)?.profiles?.email) {
+    await sendShippedEmail((order as any).profiles.email, id);
+  }
+
+  const nextSearch = statusFilter ? `?status=${encodeURIComponent(statusFilter)}` : '';
+  redirect(`/admin/orders${nextSearch}`);
+}
 
 export default async function AdminOrdersPage({ searchParams }: { searchParams: Record<string, string | string[] | undefined> }) {
   const supabase = await createClient();
@@ -39,9 +59,21 @@ export default async function AdminOrdersPage({ searchParams }: { searchParams: 
         <a className="rounded border px-3 py-2" href="/api/export/orders">Export CSV</a>
       </form>
       {orders?.map((order: any) => (
-        <Link key={order.id} href={`/admin/orders/${order.id}`} className="card block">
-          {firstNameByOrderId.get(order.id) ?? 'Unknown product'} - {order.status} - {order.profiles?.email}
-        </Link>
+        <div key={order.id} className="card flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+          <Link href={`/admin/orders/${order.id}`} className="block font-medium hover:underline">
+            {firstNameByOrderId.get(order.id) ?? 'Unknown product'} - {order.profiles?.email}
+          </Link>
+          <form action={updateStatus} className="flex items-center gap-2">
+            <input type="hidden" name="id" value={order.id} />
+            <input type="hidden" name="statusFilter" value={status} />
+            <select className="input" name="status" defaultValue={order.status}>
+              <option>New</option>
+              <option>Processing</option>
+              <option>Shipped</option>
+            </select>
+            <button className="btn-primary" type="submit">Save</button>
+          </form>
+        </div>
       ))}
     </div>
   );
