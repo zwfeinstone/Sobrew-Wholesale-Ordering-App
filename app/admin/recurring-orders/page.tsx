@@ -31,6 +31,7 @@ export default async function AdminRecurringOrdersPage({ searchParams }: { searc
   let recurringQuery = supabase
     .from('recurring_orders')
     .select('id,user_id,frequency,status,amount_cents,created_at,last_generated_at,profiles(email,full_name)')
+    .neq('status', 'canceled')
     .order('created_at', { ascending: false });
 
   if (statusFilter) recurringQuery = recurringQuery.eq('status', statusFilter);
@@ -76,7 +77,6 @@ export default async function AdminRecurringOrdersPage({ searchParams }: { searc
           <option value="">All statuses</option>
           <option value="active">Active</option>
           <option value="paused">Paused</option>
-          <option value="canceled">Canceled</option>
         </select>
         <button className="btn-primary" type="submit">Filter</button>
       </form>
