@@ -5,7 +5,7 @@ import { createClient } from '@/lib/supabase/server';
 async function updateRecurringOrder(formData: FormData) {
   'use server';
   const supabase = await createClient();
-  const recurringOrderId = String(formData.get('id'));
+  const recurringOrderId = String(formData.get('id') ?? '');
   const frequency = String(formData.get('frequency'));
   const status = String(formData.get('status'));
   const statusFilter = String(formData.get('statusFilter') ?? '');
