@@ -33,6 +33,11 @@ async function updateRecurringOrder(formData: FormData) {
   let updateResult = await supabase.from('recurring_orders').update(updates).eq('id', recurringOrderId).select('id');
 
   if (isMissingStatusColumnError(updateResult.error)) {
+    if (status === 'canceled') {
+      const statusQuery = statusFilter ? `status=${encodeURIComponent(statusFilter)}&` : '';
+      redirect(`/admin/recurring-orders?${statusQuery}error=legacy_canceled_unsupported`);
+    }
+
     const legacyResult = await supabase
       .from('recurring_orders')
       .update({ frequency, active })
@@ -55,6 +60,7 @@ export default async function AdminRecurringOrdersPage({ searchParams }: { searc
 
   let recurringOrders: any[] = [];
   let loadError = false;
+  let isLegacySchema = false;
 
   let recurringQuery = supabase
     .from('recurring_orders')
@@ -66,6 +72,7 @@ export default async function AdminRecurringOrdersPage({ searchParams }: { searc
   const recurringResult = await recurringQuery.limit(200);
 
   if (recurringResult.error) {
+    isLegacySchema = isMissingStatusColumnError(recurringResult.error);
     let legacyQuery = supabase
       .from('recurring_orders')
       .select('id,user_id,frequency,active,amount_cents,created_at,last_generated_at,profiles(email,full_name)')
@@ -118,6 +125,12 @@ export default async function AdminRecurringOrdersPage({ searchParams }: { searc
       {success === 'updated' ? <div className="card text-sm text-green-700">Recurring order updated.</div> : null}
       {error ? <div className="card text-sm text-red-700">Unable to save recurring order ({error}).</div> : null}
       {loadError ? <div className="card text-sm text-red-700">Unable to load recurring orders right now.</div> : null}
+      {error === 'legacy_canceled_unsupported' ? (
+        <div className="card text-sm text-amber-700">This database uses legacy recurring-order status storage. Canceled status is unavailable until the recurring status migration is applied.</div>
+      ) : null}
+      {isLegacySchema ? (
+        <div className="card text-sm text-amber-700">Legacy schema detected: recurring orders support Active and Paused only.</div>
+      ) : null}
 
       <form className="card flex gap-2">
         <select className="input" name="status" defaultValue={statusFilter}>
@@ -187,7 +200,7 @@ export default async function AdminRecurringOrdersPage({ searchParams }: { searc
               <select className="input" name="status" defaultValue={currentStatus}>
                 <option value="active">Active</option>
                 <option value="paused">Paused</option>
-                <option value="canceled">Canceled</option>
+                {!isLegacySchema ? <option value="canceled">Canceled</option> : null}
               </select>
               <button className="btn-primary" type="submit">Save changes</button>
             </form>

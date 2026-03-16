@@ -1,11 +1,18 @@
 import Link from 'next/link';
 import { createClient } from '@/lib/supabase/server';
 
+function isMissingStatusColumnError(error: { message?: string; details?: string; code?: string } | null) {
+  if (!error) return false;
+  const text = `${error.message ?? ''} ${error.details ?? ''}`.toLowerCase();
+  return text.includes('status') && (text.includes('column') || text.includes('schema cache') || error.code === 'PGRST204');
+}
+
 export default async function AdminCanceledRecurringOrdersPage() {
   const supabase = await createClient();
 
   let recurringOrders: any[] = [];
   let loadError = false;
+  let legacySchemaUnsupported = false;
 
   const canceledQueryResult = await supabase
     .from('recurring_orders')
@@ -15,17 +22,10 @@ export default async function AdminCanceledRecurringOrdersPage() {
     .limit(200);
 
   if (canceledQueryResult.error) {
-    const legacyCanceledResult = await supabase
-      .from('recurring_orders')
-      .select('id,user_id,frequency,active,amount_cents,created_at,last_generated_at,profiles(email,full_name)')
-      .eq('active', false)
-      .order('created_at', { ascending: false })
-      .limit(200);
-
-    if (legacyCanceledResult.error) {
-      loadError = true;
+    if (isMissingStatusColumnError(canceledQueryResult.error)) {
+      legacySchemaUnsupported = true;
     } else {
-      recurringOrders = legacyCanceledResult.data ?? [];
+      loadError = true;
     }
   } else {
     recurringOrders = canceledQueryResult.data ?? [];
@@ -60,6 +60,9 @@ export default async function AdminCanceledRecurringOrdersPage() {
       <p className="text-sm text-slate-600">Only canceled recurring orders are shown on this page.</p>
 
       {loadError ? <div className="card text-sm text-red-700">Unable to load canceled recurring orders right now.</div> : null}
+      {legacySchemaUnsupported ? (
+        <div className="card text-sm text-amber-700">This environment uses the legacy recurring-order schema. Canceled status is unavailable until the recurring status migration is applied.</div>
+      ) : null}
       {!loadError && !recurringOrders.length ? <div className="card text-sm text-slate-600">No canceled recurring orders found.</div> : null}
 
       {!loadError && recurringOrders.map((order: any) => {
