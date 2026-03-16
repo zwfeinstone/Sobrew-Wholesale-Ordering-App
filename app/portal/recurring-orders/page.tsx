@@ -146,6 +146,17 @@ async function setRecurringStatus(formData: FormData) {
       redirect('/portal/recurring-orders?error=invalid_status');
     }
 
+    if (status === 'canceled') {
+      const deleteResult = await supabase
+        .from('recurring_orders')
+        .delete()
+        .eq('id', recurringOrderId)
+        .eq('user_id', userId);
+      logQueryError('recurring_orders.delete canceled order', deleteResult.error, { userId, recurringOrderId, status });
+      if (deleteResult.error) redirect('/portal/recurring-orders?error=status_failed');
+      redirect('/portal/recurring-orders?success=status_updated');
+    }
+
     const statusUpdateResult = await supabase
       .from('recurring_orders')
       .update({ status })
@@ -182,6 +193,7 @@ export default async function RecurringOrdersPage({ searchParams }: { searchPara
       .from('recurring_orders')
       .select('*')
       .eq('user_id', userId)
+      .neq('status', 'canceled')
       .order('created_at', { ascending: false });
     logQueryError('recurring_orders.select *', recurringOrdersResult.error, { userId });
 
