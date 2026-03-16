@@ -146,6 +146,17 @@ async function setRecurringStatus(formData: FormData) {
       redirect('/portal/recurring-orders?error=invalid_status');
     }
 
+    if (status === 'canceled') {
+      const deleteResult = await supabase
+        .from('recurring_orders')
+        .delete()
+        .eq('id', recurringOrderId)
+        .eq('user_id', userId);
+      logQueryError('recurring_orders.delete canceled order', deleteResult.error, { userId, recurringOrderId, status });
+      if (deleteResult.error) redirect('/portal/recurring-orders?error=status_failed');
+      redirect('/portal/recurring-orders?success=status_updated');
+    }
+
     const statusUpdateResult = await supabase
       .from('recurring_orders')
       .update({ status })
@@ -189,7 +200,7 @@ export default async function RecurringOrdersPage({ searchParams }: { searchPara
       return <div className="card text-sm text-red-700">Unable to load recurring orders right now.</div>;
     }
 
-    const recurringOrders = (recurringOrdersResult.data ?? []) as RecurringOrderRow[];
+    const recurringOrders = ((recurringOrdersResult.data ?? []) as RecurringOrderRow[]).filter((order) => normalizeStatus(order) !== 'canceled');
     const recurringOrderIds = recurringOrders.map((order) => order.id);
 
     const recurringItemsResult = recurringOrderIds.length
