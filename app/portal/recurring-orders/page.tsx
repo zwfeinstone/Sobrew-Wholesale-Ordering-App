@@ -189,7 +189,7 @@ export default async function RecurringOrdersPage({ searchParams }: { searchPara
       return <div className="card text-sm text-red-700">Unable to load recurring orders right now.</div>;
     }
 
-    const recurringOrders = (recurringOrdersResult.data ?? []) as RecurringOrderRow[];
+    const recurringOrders = ((recurringOrdersResult.data ?? []) as RecurringOrderRow[]).filter((order) => normalizeStatus(order) !== 'canceled');
     const recurringOrderIds = recurringOrders.map((order) => order.id);
 
     const recurringItemsResult = recurringOrderIds.length
