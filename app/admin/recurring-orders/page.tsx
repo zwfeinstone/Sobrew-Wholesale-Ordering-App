@@ -8,6 +8,13 @@ function normalizeStatus(order: { status?: string | null; active?: boolean | nul
   return 'active';
 }
 
+
+function isMissingStatusColumnError(error: { message?: string; details?: string; code?: string } | null) {
+  if (!error) return false;
+  const text = `${error.message ?? ''} ${error.details ?? ''}`.toLowerCase();
+  return text.includes('status') && (text.includes('column') || text.includes('schema cache') || error.code === 'PGRST204');
+}
+
 async function updateRecurringOrder(formData: FormData) {
   'use server';
   const supabase = await createClient();
@@ -25,7 +32,7 @@ async function updateRecurringOrder(formData: FormData) {
 
   let updateResult = await supabase.from('recurring_orders').update(updates).eq('id', recurringOrderId).select('id');
 
-  if (updateResult.error) {
+  if (isMissingStatusColumnError(updateResult.error)) {
     const legacyResult = await supabase
       .from('recurring_orders')
       .update({ frequency, active })
