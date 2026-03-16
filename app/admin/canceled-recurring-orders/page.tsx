@@ -4,14 +4,34 @@ import { createClient } from '@/lib/supabase/server';
 export default async function AdminCanceledRecurringOrdersPage() {
   const supabase = await createClient();
 
-  const { data: recurringOrders } = await supabase
+  let recurringOrders: any[] = [];
+  let loadError = false;
+
+  const canceledQueryResult = await supabase
     .from('recurring_orders')
     .select('id,user_id,frequency,status,amount_cents,created_at,last_generated_at,profiles(email,full_name)')
     .eq('status', 'canceled')
     .order('created_at', { ascending: false })
     .limit(200);
 
-  const recurringOrderIds = (recurringOrders ?? []).map((order: any) => order.id);
+  if (canceledQueryResult.error) {
+    const legacyCanceledResult = await supabase
+      .from('recurring_orders')
+      .select('id,user_id,frequency,active,amount_cents,created_at,last_generated_at,profiles(email,full_name)')
+      .eq('active', false)
+      .order('created_at', { ascending: false })
+      .limit(200);
+
+    if (legacyCanceledResult.error) {
+      loadError = true;
+    } else {
+      recurringOrders = legacyCanceledResult.data ?? [];
+    }
+  } else {
+    recurringOrders = canceledQueryResult.data ?? [];
+  }
+
+  const recurringOrderIds = recurringOrders.map((order: any) => order.id);
   const { data: recurringItems } = recurringOrderIds.length
     ? await supabase
         .from('recurring_order_items')
@@ -39,9 +59,10 @@ export default async function AdminCanceledRecurringOrdersPage() {
       <h1 className="text-2xl font-semibold">Canceled recurring orders</h1>
       <p className="text-sm text-slate-600">Only canceled recurring orders are shown on this page.</p>
 
-      {!recurringOrders?.length ? <div className="card text-sm text-slate-600">No canceled recurring orders found.</div> : null}
+      {loadError ? <div className="card text-sm text-red-700">Unable to load canceled recurring orders right now.</div> : null}
+      {!loadError && !recurringOrders.length ? <div className="card text-sm text-slate-600">No canceled recurring orders found.</div> : null}
 
-      {recurringOrders?.map((order: any) => {
+      {!loadError && recurringOrders.map((order: any) => {
         const items = itemsByRecurringOrderId.get(order.id) ?? [];
         return (
           <div key={order.id} className="card space-y-3">
