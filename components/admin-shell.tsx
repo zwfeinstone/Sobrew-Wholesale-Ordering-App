@@ -5,6 +5,8 @@ export function AdminShell({ children, newOrders }: { children: ReactNode; newOr
   const links = [
     ['Dashboard', '/admin'],
     ['Orders', '/admin/orders'],
+    ['Recurring Orders', '/admin/recurring-orders'],
+    ['Canceled Recurring Orders', '/admin/canceled-recurring-orders'],
     ['Order Form', '/admin/order-form'],
     ['Users', '/admin/users'],
     ['Products', '/admin/products'],
