@@ -193,6 +193,7 @@ export default async function RecurringOrdersPage({ searchParams }: { searchPara
       .from('recurring_orders')
       .select('*')
       .eq('user_id', userId)
+      .neq('status', 'canceled')
       .order('created_at', { ascending: false });
     logQueryError('recurring_orders.select *', recurringOrdersResult.error, { userId });
 
