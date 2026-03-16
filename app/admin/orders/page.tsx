@@ -11,9 +11,9 @@ async function updateStatus(formData: FormData) {
   const statusFilter = String(formData.get('statusFilter') ?? '');
 
   const { data: order } = await supabase.from('orders').select('id,status,profiles(email)').eq('id', id).single();
-  await supabase.from('orders').update({ status }).eq('id', id);
+  const orderUpdateResult = await supabase.from('orders').update({ status }).eq('id', id).select('id');
 
-  if (order?.status !== 'Shipped' && status === 'Shipped' && (order as any)?.profiles?.email) {
+  if (!orderUpdateResult.error && orderUpdateResult.data?.length && order?.status !== 'Shipped' && status === 'Shipped' && (order as any)?.profiles?.email) {
     await sendShippedEmail((order as any).profiles.email, id);
   }
 
