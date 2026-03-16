@@ -57,6 +57,7 @@ async function updateRecurringOrder(formData: FormData) {
 export default async function AdminRecurringOrdersPage({ searchParams }: { searchParams: Record<string, string | string[] | undefined> }) {
   const supabase = await createClient();
   const statusFilter = typeof searchParams.status === 'string' ? searchParams.status : '';
+  const hasUnsupportedStatusFilter = Boolean(statusFilter) && !['active', 'paused'].includes(statusFilter);
 
   let recurringOrders: any[] = [];
   let loadError = false;
@@ -73,20 +74,25 @@ export default async function AdminRecurringOrdersPage({ searchParams }: { searc
 
   if (recurringResult.error) {
     isLegacySchema = isMissingStatusColumnError(recurringResult.error);
-    let legacyQuery = supabase
-      .from('recurring_orders')
-      .select('id,user_id,frequency,active,amount_cents,created_at,last_generated_at,profiles(email,full_name)')
-      .order('created_at', { ascending: false });
-
-    if (statusFilter === 'active') legacyQuery = legacyQuery.eq('active', true);
-    if (statusFilter === 'paused') legacyQuery = legacyQuery.eq('active', false);
-
-    const legacyResult = await legacyQuery.limit(200);
-    if (legacyResult.error) {
-      loadError = true;
+    if (hasUnsupportedStatusFilter) {
+      recurringOrders = [];
     } else {
-      recurringOrders = legacyResult.data ?? [];
+      let legacyQuery = supabase
+        .from('recurring_orders')
+        .select('id,user_id,frequency,active,amount_cents,created_at,last_generated_at,profiles(email,full_name)')
+        .order('created_at', { ascending: false });
+
+      if (statusFilter === 'active') legacyQuery = legacyQuery.eq('active', true);
+      if (statusFilter === 'paused') legacyQuery = legacyQuery.eq('active', false);
+
+      const legacyResult = await legacyQuery.limit(200);
+      if (legacyResult.error) {
+        loadError = true;
+      } else {
+        recurringOrders = legacyResult.data ?? [];
+      }
     }
+
   } else {
     recurringOrders = recurringResult.data ?? [];
   }
@@ -130,6 +136,9 @@ export default async function AdminRecurringOrdersPage({ searchParams }: { searc
       ) : null}
       {isLegacySchema ? (
         <div className="card text-sm text-amber-700">Legacy schema detected: recurring orders support Active and Paused only.</div>
+      ) : null}
+      {isLegacySchema && hasUnsupportedStatusFilter ? (
+        <div className="card text-sm text-amber-700">Unsupported status filter for legacy schema. Showing no results.</div>
       ) : null}
 
       <form className="card flex gap-2">
