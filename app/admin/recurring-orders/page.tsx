@@ -2,6 +2,12 @@ import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { createClient } from '@/lib/supabase/server';
 
+function normalizeStatus(order: { status?: string | null; active?: boolean | null }) {
+  if (order.status) return order.status;
+  if (typeof order.active === 'boolean') return order.active ? 'active' : 'paused';
+  return 'active';
+}
+
 async function updateRecurringOrder(formData: FormData) {
   'use server';
   const supabase = await createClient();
@@ -32,17 +38,38 @@ export default async function AdminRecurringOrdersPage({ searchParams }: { searc
   const supabase = await createClient();
   const statusFilter = typeof searchParams.status === 'string' ? searchParams.status : '';
 
+  let recurringOrders: any[] = [];
+  let loadError = false;
+
   let recurringQuery = supabase
     .from('recurring_orders')
     .select('id,user_id,frequency,status,amount_cents,created_at,last_generated_at,profiles(email,full_name)')
     .neq('status', 'canceled')
     .order('created_at', { ascending: false });
-
   if (statusFilter) recurringQuery = recurringQuery.eq('status', statusFilter);
 
-  const { data: recurringOrders } = await recurringQuery.limit(200);
+  const recurringResult = await recurringQuery.limit(200);
 
-  const recurringOrderIds = (recurringOrders ?? []).map((order: any) => order.id);
+  if (recurringResult.error) {
+    let legacyQuery = supabase
+      .from('recurring_orders')
+      .select('id,user_id,frequency,active,amount_cents,created_at,last_generated_at,profiles(email,full_name)')
+      .order('created_at', { ascending: false });
+
+    if (statusFilter === 'active') legacyQuery = legacyQuery.eq('active', true);
+    if (statusFilter === 'paused') legacyQuery = legacyQuery.eq('active', false);
+
+    const legacyResult = await legacyQuery.limit(200);
+    if (legacyResult.error) {
+      loadError = true;
+    } else {
+      recurringOrders = legacyResult.data ?? [];
+    }
+  } else {
+    recurringOrders = recurringResult.data ?? [];
+  }
+
+  const recurringOrderIds = recurringOrders.map((order: any) => order.id);
   const { data: recurringItems } = recurringOrderIds.length
     ? await supabase
         .from('recurring_order_items')
@@ -75,6 +102,7 @@ export default async function AdminRecurringOrdersPage({ searchParams }: { searc
 
       {success === 'updated' ? <div className="card text-sm text-green-700">Recurring order updated.</div> : null}
       {error ? <div className="card text-sm text-red-700">Unable to save recurring order ({error}).</div> : null}
+      {loadError ? <div className="card text-sm text-red-700">Unable to load recurring orders right now.</div> : null}
 
       <form className="card flex gap-2">
         <select className="input" name="status" defaultValue={statusFilter}>
@@ -85,10 +113,11 @@ export default async function AdminRecurringOrdersPage({ searchParams }: { searc
         <button className="btn-primary" type="submit">Filter</button>
       </form>
 
-      {!recurringOrders?.length ? <div className="card text-sm text-slate-600">No recurring orders found.</div> : null}
+      {!loadError && !recurringOrders.length ? <div className="card text-sm text-slate-600">No recurring orders found.</div> : null}
 
-      {recurringOrders?.map((order: any) => {
+      {!loadError && recurringOrders.map((order: any) => {
         const items = itemsByRecurringOrderId.get(order.id) ?? [];
+        const currentStatus = normalizeStatus(order);
         return (
           <div key={order.id} className="card space-y-3">
             <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
@@ -140,7 +169,7 @@ export default async function AdminRecurringOrdersPage({ searchParams }: { searc
                 <option value="monthly">Monthly</option>
               </select>
               <label className="text-sm text-slate-600">Status</label>
-              <select className="input" name="status" defaultValue={order.status}>
+              <select className="input" name="status" defaultValue={currentStatus}>
                 <option value="active">Active</option>
                 <option value="paused">Paused</option>
                 <option value="canceled">Canceled</option>
