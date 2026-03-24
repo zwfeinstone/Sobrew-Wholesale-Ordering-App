@@ -1,6 +1,8 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
+import StatusToast from '@/components/status-toast';
 import { sendShippedEmail } from '@/lib/email';
+import { getOrderItemSummaries } from '@/lib/order-items';
 import { createClient } from '@/lib/supabase/server';
 
 async function updateStatus(formData: FormData) {
@@ -14,16 +16,25 @@ async function updateStatus(formData: FormData) {
   const orderUpdateResult = await supabase.from('orders').update({ status }).eq('id', id).select('id');
 
   if (!orderUpdateResult.error && orderUpdateResult.data?.length && order?.status !== 'Shipped' && status === 'Shipped' && (order as any)?.profiles?.email) {
-    await sendShippedEmail((order as any).profiles.email, id);
+    const items = await getOrderItemSummaries(supabase, id);
+    await sendShippedEmail((order as any).profiles.email, items);
   }
 
-  const nextSearch = statusFilter ? `?status=${encodeURIComponent(statusFilter)}` : '';
+  const query = new URLSearchParams();
+  if (statusFilter) query.set('status', statusFilter);
+  if (orderUpdateResult.error || !orderUpdateResult.data?.length) {
+    query.set('toast', 'status_error');
+  } else {
+    query.set('toast', 'status_updated');
+  }
+  const nextSearch = query.toString() ? `?${query.toString()}` : '';
   redirect(`/admin/orders${nextSearch}`);
 }
 
 export default async function AdminOrdersPage({ searchParams }: { searchParams: Record<string, string | string[] | undefined> }) {
   const supabase = await createClient();
   const status = typeof searchParams.status === 'string' ? searchParams.status : '';
+  const toast = typeof searchParams.toast === 'string' ? searchParams.toast : '';
   let query = supabase.from('orders').select('id,status,created_at,profiles(email)').order('created_at', { ascending: false });
   if (status) query = query.eq('status', status);
   const { data: orders } = await query.limit(100);
@@ -49,6 +60,8 @@ export default async function AdminOrdersPage({ searchParams }: { searchParams: 
 
   return (
     <div className="space-y-4">
+      {toast === 'status_updated' ? <StatusToast message="Order status updated." tone="success" /> : null}
+      {toast === 'status_error' ? <StatusToast message="Order status update failed." tone="error" /> : null}
       <h1 className="text-2xl font-semibold">Orders</h1>
       <form className="card flex gap-2">
         <select className="input" name="status" defaultValue={status}>

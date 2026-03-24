@@ -28,7 +28,6 @@ export default function LoginPage() {
         <input className="input" name="email" type="email" required placeholder="Email" />
         <input className="input" name="password" type="password" required placeholder="Password" />
         <button className="btn-primary w-full">Sign in</button>
-        <a className="text-sm text-violet-700" href="/bootstrap">Bootstrap first admin</a>
       </form>
     </main>
   );
