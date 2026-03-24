@@ -1,0 +1,20 @@
+[35mapp/admin/canceled-recurring-orders/page.tsx[m[36m:[m[32m17[m[36m:[m  const [1;31mcancel[medQueryResult = await supabase
+[35mapp/admin/canceled-recurring-orders/page.tsx[m[36m:[m[32m20[m[36m:[m    .eq('status', '[1;31mcancel[med')
+[35mapp/admin/canceled-recurring-orders/page.tsx[m[36m:[m[32m24[m[36m:[m  if ([1;31mcancel[medQueryResult.error) {
+[35mapp/admin/canceled-recurring-orders/page.tsx[m[36m:[m[32m25[m[36m:[m    if (isMissingStatusColumnError([1;31mcancel[medQueryResult.error)) {
+[35mapp/admin/canceled-recurring-orders/page.tsx[m[36m:[m[32m31[m[36m:[m    recurringOrders = [1;31mcancel[medQueryResult.data ?? [];
+[35mapp/admin/canceled-recurring-orders/page.tsx[m[36m:[m[32m60[m[36m:[m      <p className="text-sm text-slate-600">Only [1;31mcancel[med recurring orders are shown on this page.</p>
+[35mapp/admin/canceled-recurring-orders/page.tsx[m[36m:[m[32m62[m[36m:[m      {loadError ? <div className="card text-sm text-red-700">Unable to load [1;31mcancel[med recurring orders right now.</div> : null}
+[35mapp/admin/canceled-recurring-orders/page.tsx[m[36m:[m[32m66[m[36m:[m      {!loadError && !recurringOrders.length ? <div className="card text-sm text-slate-600">No [1;31mcancel[med recurring orders found.</div> : null}
+[35mapp/admin/recurring-orders/page.tsx[m[36m:[m[32m28[m[36m:[m  if (!['active', 'paused', '[1;31mcancel[med'].includes(status)) redirect('/admin/recurring-orders?error=invalid_status');
+[35mapp/admin/recurring-orders/page.tsx[m[36m:[m[32m36[m[36m:[m    if (status === '[1;31mcancel[med') {
+[35mapp/admin/recurring-orders/page.tsx[m[36m:[m[32m38[m[36m:[m      redirect(`/admin/recurring-orders?${statusQuery}error=legacy_[1;31mcancel[med_unsupported`);
+[35mapp/admin/recurring-orders/page.tsx[m[36m:[m[32m69[m[36m:[m    .neq('status', '[1;31mcancel[med')
+[35mapp/admin/recurring-orders/page.tsx[m[36m:[m[32m160[m[36m:[m      {error === 'legacy_[1;31mcancel[med_unsupported' ? (
+[35mapp/admin/recurring-orders/page.tsx[m[36m:[m[32m238[m[36m:[m                {!isLegacySchema ? <option value="[1;31mcancel[med">Canceled</option> : null}
+[35mapp/portal/recurring-orders/page.tsx[m[36m:[m[32m145[m[36m:[m    if (!recurringOrderId || !['active', 'paused', '[1;31mcancel[med'].includes(status)) {
+[35mapp/portal/recurring-orders/page.tsx[m[36m:[m[32m149[m[36m:[m    if (status === '[1;31mcancel[med') {
+[35mapp/portal/recurring-orders/page.tsx[m[36m:[m[32m155[m[36m:[m      logQueryError('recurring_orders.delete [1;31mcancel[med order', deleteResult.error, { userId, recurringOrderId, status });
+[35mapp/portal/recurring-orders/page.tsx[m[36m:[m[32m196[m[36m:[m      .neq('status', '[1;31mcancel[med')
+[35mapp/portal/recurring-orders/page.tsx[m[36m:[m[32m204[m[36m:[m    const recurringOrders = ((recurringOrdersResult.data ?? []) as RecurringOrderRow[]).filter((order) => normalizeStatus(order) !== '[1;31mcancel[med');
+[35mapp/portal/recurring-orders/page.tsx[m[36m:[m[32m306[m[36m:[m                  <input type="hidden" name="status" value="[1;31mcancel[med" />

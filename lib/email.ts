@@ -7,6 +7,7 @@ const ADMIN_EMAIL = 'hello@sobrew.com';
 const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
 
 type Line = { name: string; qty: number; price: number; line: number };
+type ShippedLine = { name: string; qty: number };
 
 type OrderEmailPayload = {
   customerEmail: string;
@@ -23,6 +24,14 @@ function buildOrderHtml(payload: OrderEmailPayload) {
     .join('');
 
   return `<h2>Order ${payload.orderId}</h2><p>${payload.customerName} (${payload.customerEmail})</p><table><tr><th>Item</th><th>Qty</th><th>Unit</th><th>Total</th></tr>${rows}</table><p>Subtotal: ${usd(payload.subtotalCents)}</p>`;
+}
+
+function buildCustomerOrderHtml(payload: OrderEmailPayload) {
+  const itemRows = payload.items
+    .map((item) => `<li>${item.name} x ${item.qty}</li>`)
+    .join('');
+
+  return `<p>Thank you for your order!</p><p>Items purchased:</p><ul>${itemRows}</ul><p>Total: ${usd(payload.subtotalCents)}</p>`;
 }
 
 export async function sendAdminNotificationEmail(payload: OrderEmailPayload) {
@@ -52,13 +61,13 @@ export async function sendOrderEmail(payload: OrderEmailPayload) {
     return;
   }
 
-  const html = buildOrderHtml(payload);
+  const html = buildCustomerOrderHtml(payload);
 
   try {
     const response = await resend.emails.send({
       from: RESEND_FROM,
       to: payload.customerEmail,
-      subject: `Your Sobrew order ${payload.orderId}`,
+      subject: 'Thank You For Your Order!',
       html,
     });
     console.log('Customer confirmation email sent', response);
@@ -72,18 +81,23 @@ export async function sendOrderEmails(payload: OrderEmailPayload) {
   await sendOrderEmail(payload);
 }
 
-export async function sendShippedEmail(to: string, orderId: string) {
+export async function sendShippedEmail(to: string, items: ShippedLine[]) {
   if (!resend) {
     console.error('Resend disabled: missing RESEND_API_KEY');
     return;
   }
 
+  const itemRows = items
+    .map((item) => `<li>${item.name} x ${item.qty}</li>`)
+    .join('');
+  const itemsHtml = itemRows ? `<p>Items in this shipment:</p><ul>${itemRows}</ul>` : '<p>Items in this shipment:</p><p>Unavailable</p>';
+
   try {
     const response = await resend.emails.send({
       from: RESEND_FROM,
       to,
-      subject: `Order ${orderId} shipped`,
-      html: `<p>Your order <strong>${orderId}</strong> has been shipped.</p>`,
+      subject: 'Your Order Has Been Shipped!',
+      html: `<p>Thank you for your business!</p>${itemsHtml}`,
     });
     console.log('Shipped email sent', response);
   } catch (error) {
