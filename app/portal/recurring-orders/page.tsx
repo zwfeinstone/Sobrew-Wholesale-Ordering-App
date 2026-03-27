@@ -1,8 +1,7 @@
 import { redirect } from 'next/navigation';
 import { requireUser } from '@/lib/auth';
+import { daysForRecurringFrequency, isRecurringFrequency, RECURRING_FREQUENCY_OPTIONS } from '@/lib/recurring';
 import { createClient } from '@/lib/supabase/server';
-
-const allowedFrequencies = new Set(['2_weeks', 'monthly']);
 
 type SupabaseErrorShape = {
   message?: string;
@@ -37,7 +36,8 @@ function nextOrderDate(frequency: string, anchorDate: string | null) {
   if (!anchorDate) return 'N/A';
   const date = new Date(anchorDate);
   if (Number.isNaN(date.getTime())) return 'N/A';
-  const daysToAdd = frequency === '2_weeks' ? 14 : 30;
+  const daysToAdd = daysForRecurringFrequency(frequency);
+  if (!daysToAdd) return 'N/A';
   date.setDate(date.getDate() + daysToAdd);
   return date.toLocaleDateString();
 }
@@ -77,7 +77,7 @@ async function updateRecurringItem(formData: FormData) {
     const frequency = String(formData.get('frequency') ?? '');
     const qty = Number(formData.get('qty'));
 
-    if (!recurringOrderId || !recurringItemId || !allowedFrequencies.has(frequency) || !Number.isInteger(qty) || qty < 1) {
+    if (!recurringOrderId || !recurringItemId || !isRecurringFrequency(frequency) || !Number.isInteger(qty) || qty < 1) {
       redirect('/portal/recurring-orders?error=invalid_input');
     }
 
@@ -254,30 +254,37 @@ export default async function RecurringOrdersPage({ searchParams }: { searchPara
 
     return (
       <div className="space-y-4">
-        <h1 className="text-2xl font-semibold">Recurring orders</h1>
+        <section className="panel">
+          <span className="eyebrow">Recurring Orders</span>
+          <h1 className="page-title mt-4">Manage your recurring shipments</h1>
+          <p className="page-subtitle mt-3">Update quantities and frequency, pause shipments, or cancel schedules whenever your center&apos;s needs change.</p>
+        </section>
 
-        {searchParams?.success ? <div className="rounded border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-700">Saved successfully.</div> : null}
-        {searchParams?.error ? <div className="rounded border border-red-200 bg-red-50 p-3 text-sm text-red-700">Could not save your changes.</div> : null}
+        {searchParams?.success ? <div className="rounded-[1.5rem] border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-700">Saved successfully.</div> : null}
+        {searchParams?.error ? <div className="rounded-[1.5rem] border border-red-200 bg-red-50 p-4 text-sm text-red-700">Could not save your changes.</div> : null}
 
         {!recurringOrders.length ? <div className="card text-sm text-slate-600">No recurring orders yet.</div> : null}
 
         {recurringOrders.map((order) => {
           const currentStatus = normalizeStatus(order);
           return (
-            <div key={order.id} className="card space-y-3">
-              <div className="flex items-center justify-between">
-                <div className="text-sm text-slate-600">Next order date: {nextOrderDate(order.frequency, order.last_generated_at ?? order.created_at)}</div>
-                <span className={`rounded px-2 py-1 text-xs font-medium ${statusClasses(currentStatus)}`}>{currentStatus}</span>
+            <div key={order.id} className="card space-y-4">
+              <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                <div>
+                  <p className="text-sm uppercase tracking-[0.18em] text-slate-500">Next order date</p>
+                  <p className="mt-2 text-lg font-semibold text-slate-950">{nextOrderDate(order.frequency, order.last_generated_at ?? order.created_at)}</p>
+                </div>
+                <span className={`rounded-full px-3 py-1 text-xs font-medium uppercase tracking-[0.14em] ${statusClasses(currentStatus)}`}>{currentStatus}</span>
               </div>
 
               <div className="space-y-2">
                 {(itemsByOrderId.get(order.id) ?? []).map((item) => (
-                  <form key={item.id} action={updateRecurringItem} className="grid gap-2 rounded border p-3 md:grid-cols-5 md:items-end">
+                  <form key={item.id} action={updateRecurringItem} className="grid gap-3 rounded-[1.5rem] border border-slate-200 bg-white/60 p-4 md:grid-cols-5 md:items-end">
                     <input type="hidden" name="recurring_order_id" value={order.id} />
                     <input type="hidden" name="recurring_item_id" value={item.id} />
                     <div className="md:col-span-2">
-                      <div className="text-xs text-slate-500">Product</div>
-                      <div className="text-sm font-medium">{item.product_name_snapshot ?? 'Unknown product'}</div>
+                      <div className="text-xs uppercase tracking-[0.18em] text-slate-500">Product</div>
+                      <div className="mt-2 text-sm font-medium text-slate-950">{item.product_name_snapshot ?? 'Unknown product'}</div>
                     </div>
                     <label className="text-sm">
                       <span className="mb-1 block text-xs text-slate-500">Quantity</span>
@@ -286,8 +293,9 @@ export default async function RecurringOrdersPage({ searchParams }: { searchPara
                     <label className="text-sm">
                       <span className="mb-1 block text-xs text-slate-500">Frequency</span>
                       <select className="input" name="frequency" defaultValue={order.frequency}>
-                        <option value="2_weeks">Every 2 weeks</option>
-                        <option value="monthly">Monthly</option>
+                        {RECURRING_FREQUENCY_OPTIONS.map((option) => (
+                          <option key={option.value} value={option.value}>{option.label}</option>
+                        ))}
                       </select>
                     </label>
                     <button className="btn-primary" type="submit">Save</button>
@@ -295,16 +303,16 @@ export default async function RecurringOrdersPage({ searchParams }: { searchPara
                 ))}
               </div>
 
-              <div className="flex gap-2">
+              <div className="flex gap-3">
                 <form action={setRecurringStatus}>
                   <input type="hidden" name="recurring_order_id" value={order.id} />
                   <input type="hidden" name="status" value={currentStatus === 'paused' ? 'active' : 'paused'} />
-                  <button className="rounded border px-3 py-2 text-sm" type="submit">{currentStatus === 'paused' ? 'Resume' : 'Pause'}</button>
+                  <button className="btn-secondary" type="submit">{currentStatus === 'paused' ? 'Resume' : 'Pause'}</button>
                 </form>
                 <form action={setRecurringStatus}>
                   <input type="hidden" name="recurring_order_id" value={order.id} />
                   <input type="hidden" name="status" value="canceled" />
-                  <button className="rounded border px-3 py-2 text-sm text-red-700" type="submit">Cancel</button>
+                  <button className="rounded-full border border-rose-200 px-4 py-2.5 text-sm font-semibold text-rose-700 transition-all duration-200 hover:bg-rose-50" type="submit">Cancel</button>
                 </form>
               </div>
             </div>

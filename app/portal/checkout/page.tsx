@@ -3,6 +3,7 @@ import { CheckoutCartField } from '@/components/cart-client';
 import { requireUser } from '@/lib/auth';
 import { createClient } from '@/lib/supabase/server';
 import { sendOrderEmails } from '@/lib/email';
+import { isRecurringFrequency, RECURRING_FREQUENCY_OPTIONS } from '@/lib/recurring';
 
 async function placeOrder(formData: FormData) {
   'use server';
@@ -24,7 +25,7 @@ async function placeOrder(formData: FormData) {
   const cartWithNames = cart.map((item) => ({ ...item, name: nameMap.get(item.product_id) ?? 'Unknown product' }));
   const isRecurring = String(formData.get('is_recurring') ?? '') === 'on';
   const recurringFrequency = String(formData.get('recurring_frequency') ?? '');
-  const normalizedRecurringFrequency = recurringFrequency === '2_weeks' || recurringFrequency === 'monthly' ? recurringFrequency : null;
+  const normalizedRecurringFrequency = isRecurringFrequency(recurringFrequency) ? recurringFrequency : null;
 
   const subtotal = cartWithNames.reduce((sum, i) => sum + i.qty * i.price_cents, 0);
 
@@ -119,19 +120,34 @@ async function placeOrder(formData: FormData) {
 
 export default function CheckoutPage() {
   return (
-    <form action={placeOrder} className="card space-y-3">
-      <h1 className="text-2xl font-semibold">Checkout</h1>
-      <CheckoutCartField />
-      <textarea className="input" name="notes" placeholder="Notes" />
-      <label className="flex items-center gap-2 text-sm text-neutral-700">
-        <input type="checkbox" name="is_recurring" />
-        Make this order recurring
-      </label>
-      <select className="input" name="recurring_frequency" defaultValue="2_weeks">
-        <option value="2_weeks">Every 2 weeks</option>
-        <option value="monthly">Monthly</option>
-      </select>
-      <button className="btn-primary">Place order</button>
+    <form action={placeOrder} className="space-y-6">
+      <section className="panel">
+        <span className="eyebrow">Checkout</span>
+        <h1 className="page-title mt-4">Place your order</h1>
+        <p className="page-subtitle mt-3">Add any final notes, optionally turn this into a recurring order, and submit when everything looks right.</p>
+      </section>
+      <section className="card space-y-5">
+        <CheckoutCartField />
+        <div className="space-y-2">
+          <label className="text-sm font-medium text-slate-700">Notes</label>
+          <textarea className="input min-h-28" name="notes" placeholder="Delivery notes, special handling, or anything your team should know." />
+        </div>
+        <div className="rounded-[1.5rem] border border-slate-200 bg-white/60 p-4">
+          <label className="flex items-center gap-3 text-sm font-medium text-slate-800">
+            <input type="checkbox" name="is_recurring" />
+            Make this order recurring
+          </label>
+          <div className="mt-4">
+            <label className="mb-2 block text-sm font-medium text-slate-700">Recurring frequency</label>
+            <select className="input" name="recurring_frequency" defaultValue="2_weeks">
+              {RECURRING_FREQUENCY_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+        <button className="btn-primary">Place order</button>
+      </section>
     </form>
   );
 }

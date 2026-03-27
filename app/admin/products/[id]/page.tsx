@@ -35,16 +35,21 @@ export default async function ProductPage({ params }: { params: { id: string } }
   const { data: product } = await supabase.from('products').select('*').eq('id', params.id).single();
   if (!product) return notFound();
   return (
-    <div className="space-y-4">
-      <form action={updateProduct} className="card space-y-2">
+    <div className="space-y-6">
+      <section className="panel">
+        <span className="eyebrow">Catalog Admin</span>
+        <h1 className="page-title mt-4">Edit product</h1>
+        <p className="page-subtitle mt-3">Update availability, refresh product copy, or upload a cleaner product image.</p>
+      </section>
+      <form action={updateProduct} className="card space-y-4">
         <input type="hidden" name="id" value={product.id} />
         <input className="input" name="name" defaultValue={product.name} required />
-        <textarea className="input" name="description" defaultValue={product.description ?? ''} />
-        <label><input type="checkbox" name="active" defaultChecked={product.active} /> Active</label>
-        <input type="file" name="image" accept="image/*" />
+        <textarea className="input min-h-28" name="description" defaultValue={product.description ?? ''} />
+        <label className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-white/60 px-4 py-3 text-sm font-medium text-slate-700"><input type="checkbox" name="active" defaultChecked={product.active} /> Active</label>
+        <input className="input" type="file" name="image" accept="image/*" />
         <button className="btn-primary">Save</button>
       </form>
-      <form action={removeProduct}><input type="hidden" name="id" value={product.id} /><button className="rounded border px-3 py-2">Delete</button></form>
+      <form action={removeProduct}><input type="hidden" name="id" value={product.id} /><button className="rounded-full border border-rose-200 px-4 py-2.5 text-sm font-semibold text-rose-700 transition-all duration-200 hover:bg-rose-50">Delete</button></form>
     </div>
   );
 }

@@ -20,20 +20,28 @@ export default async function OrderDetail({ params }: { params: { id: string } }
   const productNameById = new Map((products ?? []).map((p: any) => [p.id, p.name]));
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-6">
       <ClearCart />
-      <h1 className="text-2xl font-semibold">Order {order.id}</h1>
-      <p>Status: {order.status}</p>
-      <div className="card">
+      <section className="panel">
+        <span className="eyebrow">Order Details</span>
+        <h1 className="page-title mt-4">Your order is {order.status.toLowerCase()}.</h1>
+        <p className="page-subtitle mt-3">Review the items in this order and head back to the catalog whenever you are ready to reorder.</p>
+      </section>
+      <div className="card space-y-3">
         {items?.map((i: any) => (
-          <div key={i.id} className="flex justify-between">
+          <div key={i.id} className="flex items-center justify-between gap-4 border-b border-slate-100 pb-3 last:border-b-0 last:pb-0">
             <span>{productNameById.get(i.product_id) || i.product_name_snapshot || 'Unknown product'} x {i.qty}</span>
-            <span>{usd(i.line_total_cents)}</span>
+            <span className="font-semibold text-slate-950">{usd(i.line_total_cents)}</span>
           </div>
         ))}
       </div>
-      <div>Subtotal: {usd(order.subtotal_cents)}</div>
-      <Link className="btn-primary inline-block" href="/portal">Reorder</Link>
+      <div className="card flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <p className="text-sm uppercase tracking-[0.18em] text-slate-500">Subtotal</p>
+          <p className="mt-2 text-3xl font-semibold text-slate-950">{usd(order.subtotal_cents)}</p>
+        </div>
+        <Link className="btn-primary inline-flex" href="/portal">Reorder</Link>
+      </div>
     </div>
   );
 }

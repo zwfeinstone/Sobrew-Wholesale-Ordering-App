@@ -20,18 +20,52 @@ export default async function PortalPage() {
   const priceMap = new Map((prices ?? []).map((row) => [row.product_id, row.price_cents]));
 
   return (
-    <div className="grid gap-4 md:grid-cols-3">
-      {products?.map((product) => {
-        const price = priceMap.get(product.id) ?? 0;
-        return (
-          <div key={product.id} className="card space-y-2">
-            <h2 className="font-semibold">{product.name}</h2>
-            <p className="text-sm text-slate-600">{product.description}</p>
-            <p className="font-semibold">{usd(price)}</p>
-            <AddToCartButton product={{ product_id: product.id, name: product.name, price_cents: price }} />
+    <div className="space-y-6">
+      <section className="panel overflow-hidden">
+        <div className="grid gap-6 lg:grid-cols-[1.2fr_0.8fr] lg:items-end">
+          <div className="space-y-4">
+            <span className="eyebrow">Assigned Catalog</span>
+            <div>
+              <h1 className="page-title">Order faster with a cleaner, center-specific catalog.</h1>
+              <p className="page-subtitle mt-3">Everything below is tailored to your account, with your pricing ready to add straight into the cart.</p>
+            </div>
           </div>
-        );
-      })}
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="stat-card">
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Available Products</p>
+              <p className="mt-2 text-3xl font-semibold text-slate-950">{products?.length ?? 0}</p>
+            </div>
+            <div className="stat-card">
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Signed In</p>
+              <p className="mt-2 text-base font-semibold text-slate-950">{user.email}</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">
+        {products?.map((product) => {
+          const price = priceMap.get(product.id) ?? 0;
+          return (
+            <div key={product.id} className="card flex h-full flex-col justify-between gap-5">
+              <div className="space-y-4">
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <h2 className="text-xl font-semibold tracking-tight text-slate-950">{product.name}</h2>
+                    <p className="mt-2 text-sm leading-6 text-slate-500">{product.description || 'No description available.'}</p>
+                  </div>
+                  <div className="rounded-full bg-teal-50 px-3 py-1 text-sm font-semibold text-teal-700">{usd(price)}</div>
+                </div>
+                <div className="rounded-[1.5rem] border border-dashed border-slate-200 bg-white/50 p-4">
+                  <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Ready To Order</p>
+                  <p className="mt-2 text-sm text-slate-600">Add this product to your cart with your assigned wholesale pricing.</p>
+                </div>
+              </div>
+              <AddToCartButton product={{ product_id: product.id, name: product.name, price_cents: price }} />
+            </div>
+          );
+        })}
+      </section>
     </div>
   );
 }

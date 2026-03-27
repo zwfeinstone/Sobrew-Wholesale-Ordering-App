@@ -28,17 +28,55 @@ export default async function AdminDashboard() {
   }
 
   return (
-    <div className="space-y-4">
-      <h1 className="text-2xl font-semibold">Dashboard</h1>
-      <div className="card">New orders: {newOrders ?? 0}</div>
-      <div className="card space-y-2">
-        <h2 className="font-semibold">Recent orders</h2>
+    <div className="space-y-6">
+      <section className="panel">
+        <div className="grid gap-6 lg:grid-cols-[1.2fr_0.8fr] lg:items-end">
+          <div className="space-y-4">
+            <span className="eyebrow">Operations Snapshot</span>
+            <div>
+              <h1 className="page-title">Keep wholesale fulfillment moving with less friction.</h1>
+              <p className="page-subtitle mt-3">Review what needs action, jump into new orders quickly, and stay on top of recurring demand from one streamlined admin workspace.</p>
+            </div>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="stat-card">
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">New Orders</p>
+              <p className="mt-2 text-4xl font-semibold text-slate-950">{newOrders ?? 0}</p>
+              <p className="mt-2 text-sm text-slate-500">Orders currently waiting for review.</p>
+            </div>
+            <div className="stat-card">
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Recent Activity</p>
+              <p className="mt-2 text-4xl font-semibold text-slate-950">{recent?.length ?? 0}</p>
+              <p className="mt-2 text-sm text-slate-500">Most recent orders shown below.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section className="card space-y-4">
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <h2 className="text-xl font-semibold tracking-tight text-slate-950">Recent orders</h2>
+            <p className="mt-1 text-sm text-slate-500">Open any order to update status, check items, or confirm shipment progress.</p>
+          </div>
+          <Link href="/admin/orders" className="btn-secondary">View all orders</Link>
+        </div>
         {recent?.map((order: any) => (
-          <Link key={order.id} href={`/admin/orders/${order.id}`} className="block rounded border p-2">
-            {firstNameByOrderId.get(order.id) ?? 'Unknown product'} - {order.status} - {order.profiles?.email}
+          <Link
+            key={order.id}
+            href={`/admin/orders/${order.id}`}
+            className="flex items-center justify-between gap-4 rounded-[1.5rem] border border-slate-200/70 bg-white/70 px-4 py-4 transition-all duration-200 hover:-translate-y-0.5 hover:border-teal-200 hover:bg-white"
+          >
+            <div>
+              <p className="font-semibold text-slate-950">{firstNameByOrderId.get(order.id) ?? 'Unknown product'}</p>
+              <p className="mt-1 text-sm text-slate-500">{order.profiles?.email}</p>
+            </div>
+            <div className="text-right">
+              <p className="rounded-full bg-slate-100 px-3 py-1 text-sm font-medium text-slate-700">{order.status}</p>
+            </div>
           </Link>
         ))}
-      </div>
+      </section>
     </div>
   );
 }
