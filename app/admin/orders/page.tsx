@@ -59,22 +59,27 @@ export default async function AdminOrdersPage({ searchParams }: { searchParams: 
   }
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-6">
       {toast === 'status_updated' ? <StatusToast message="Order status updated." tone="success" /> : null}
       {toast === 'status_error' ? <StatusToast message="Order status update failed." tone="error" /> : null}
-      <h1 className="text-2xl font-semibold">Orders</h1>
-      <form className="card flex gap-2">
+      <section className="panel">
+        <span className="eyebrow">Order Queue</span>
+        <h1 className="page-title mt-4">Manage wholesale orders</h1>
+        <p className="page-subtitle mt-3">Filter by status, review the latest requests, and update fulfillment without losing context.</p>
+      </section>
+      <form className="card flex flex-col gap-3 md:flex-row">
         <select className="input" name="status" defaultValue={status}>
           <option value="">All statuses</option>
           <option>New</option><option>Processing</option><option>Shipped</option>
         </select>
         <button className="btn-primary">Filter</button>
-        <a className="rounded border px-3 py-2" href="/api/export/orders">Export CSV</a>
+        <a className="btn-secondary" href="/api/export/orders">Export CSV</a>
       </form>
       {orders?.map((order: any) => (
-        <div key={order.id} className="card flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
-          <Link href={`/admin/orders/${order.id}`} className="block font-medium hover:underline">
-            {firstNameByOrderId.get(order.id) ?? 'Unknown product'} - {order.profiles?.email}
+        <div key={order.id} className="card flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+          <Link href={`/admin/orders/${order.id}`} className="block">
+            <p className="text-lg font-semibold text-slate-950">{firstNameByOrderId.get(order.id) ?? 'Unknown product'}</p>
+            <p className="mt-2 text-sm text-slate-500">{order.profiles?.email}</p>
           </Link>
           <form action={updateStatus} className="flex items-center gap-2">
             <input type="hidden" name="id" value={order.id} />

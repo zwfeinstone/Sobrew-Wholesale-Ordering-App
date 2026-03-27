@@ -14,12 +14,18 @@ async function createProduct(formData: FormData) {
 
 export default function NewProductPage() {
   return (
-    <form action={createProduct} className="card space-y-3">
-      <h1 className="text-2xl font-semibold">New product</h1>
-      <input className="input" name="name" required placeholder="Name" />
-      <input className="input" name="sku" required placeholder="SKU" />
-      <textarea className="input" name="description" placeholder="Description" />
-      <button className="btn-primary">Create</button>
+    <form action={createProduct} className="space-y-6">
+      <section className="panel">
+        <span className="eyebrow">Catalog Admin</span>
+        <h1 className="page-title mt-4">Create a new product</h1>
+        <p className="page-subtitle mt-3">Add a new item to the wholesale catalog with a clear name, SKU, and description.</p>
+      </section>
+      <section className="card space-y-4">
+        <input className="input" name="name" required placeholder="Name" />
+        <input className="input" name="sku" required placeholder="SKU" />
+        <textarea className="input min-h-28" name="description" placeholder="Description" />
+        <button className="btn-primary">Create</button>
+      </section>
     </form>
   );
 }

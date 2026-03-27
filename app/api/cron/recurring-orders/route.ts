@@ -1,12 +1,12 @@
 import { NextResponse } from 'next/server';
 import { sendOrderEmails } from '@/lib/email';
 import { env } from '@/lib/env';
+import { daysForRecurringFrequency } from '@/lib/recurring';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 
 function intervalForFrequency(frequency: string) {
-  if (frequency === '2_weeks') return 1000 * 60 * 60 * 24 * 14;
-  if (frequency === 'monthly') return 1000 * 60 * 60 * 24 * 30;
-  return null;
+  const days = daysForRecurringFrequency(frequency);
+  return days ? 1000 * 60 * 60 * 24 * days : null;
 }
 
 export async function POST(req: Request) {

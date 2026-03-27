@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
+import { isRecurringFrequency, RECURRING_FREQUENCY_OPTIONS } from '@/lib/recurring';
 import { createClient } from '@/lib/supabase/server';
 
 async function updateRecurringOrder(formData: FormData) {
@@ -11,7 +12,7 @@ async function updateRecurringOrder(formData: FormData) {
   const statusFilter = String(formData.get('statusFilter') ?? '');
 
   if (!recurringOrderId) redirect('/admin/recurring-orders?error=missing_id');
-  if (!['2_weeks', 'monthly'].includes(frequency)) redirect('/admin/recurring-orders?error=invalid_frequency');
+  if (!isRecurringFrequency(frequency)) redirect('/admin/recurring-orders?error=invalid_frequency');
   if (!['active', 'paused', 'canceled'].includes(status)) redirect('/admin/recurring-orders?error=invalid_status');
 
   const updates: { frequency: string; status: string; active?: boolean } = { frequency, status };
@@ -69,14 +70,17 @@ export default async function AdminRecurringOrdersPage({ searchParams }: { searc
   const success = typeof searchParams.success === 'string' ? searchParams.success : '';
 
   return (
-    <div className="space-y-4">
-      <h1 className="text-2xl font-semibold">Recurring orders</h1>
-      <p className="text-sm text-slate-600">Manage recurring schedules for all centers and quickly adjust status/frequency from one page.</p>
+    <div className="space-y-6">
+      <section className="panel">
+        <span className="eyebrow">Recurring Admin</span>
+        <h1 className="page-title mt-4">Recurring orders</h1>
+        <p className="page-subtitle mt-3">Manage recurring schedules for all centers and quickly adjust status or frequency from one streamlined page.</p>
+      </section>
 
       {success === 'updated' ? <div className="card text-sm text-green-700">Recurring order updated.</div> : null}
       {error ? <div className="card text-sm text-red-700">Unable to save recurring order ({error}).</div> : null}
 
-      <form className="card flex gap-2">
+      <form className="card flex flex-col gap-3 md:flex-row">
         <select className="input" name="status" defaultValue={statusFilter}>
           <option value="">All statuses</option>
           <option value="active">Active</option>
@@ -90,7 +94,7 @@ export default async function AdminRecurringOrdersPage({ searchParams }: { searc
       {recurringOrders?.map((order: any) => {
         const items = itemsByRecurringOrderId.get(order.id) ?? [];
         return (
-          <div key={order.id} className="card space-y-3">
+          <div key={order.id} className="card space-y-4">
             <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
               <div>
                 <div className="text-sm text-slate-500">Center</div>
@@ -121,8 +125,8 @@ export default async function AdminRecurringOrdersPage({ searchParams }: { searc
               </div>
             </div>
 
-            <div className="rounded border p-2 text-sm">
-              <div className="mb-1 font-medium">Products</div>
+            <div className="rounded-[1.5rem] border border-slate-200 bg-white/60 p-4 text-sm">
+              <div className="mb-2 font-medium text-slate-950">Products</div>
               {!items.length ? <div className="text-slate-600">No items found</div> : null}
               {items.map((item) => (
                 <div key={item.id} className="text-slate-700">
@@ -131,13 +135,14 @@ export default async function AdminRecurringOrdersPage({ searchParams }: { searc
               ))}
             </div>
 
-            <form action={updateRecurringOrder} className="flex flex-wrap items-center gap-2">
+            <form action={updateRecurringOrder} className="flex flex-wrap items-center gap-3">
               <input type="hidden" name="id" value={order.id} />
               <input type="hidden" name="statusFilter" value={statusFilter} />
               <label className="text-sm text-slate-600">Frequency</label>
               <select className="input" name="frequency" defaultValue={order.frequency}>
-                <option value="2_weeks">Every 2 weeks</option>
-                <option value="monthly">Monthly</option>
+                {RECURRING_FREQUENCY_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>{option.label}</option>
+                ))}
               </select>
               <label className="text-sm text-slate-600">Status</label>
               <select className="input" name="status" defaultValue={order.status}>

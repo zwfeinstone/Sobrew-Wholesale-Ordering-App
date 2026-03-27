@@ -41,21 +41,31 @@ export default async function AdminOrderDetail({
   const productNameById = new Map((products ?? []).map((p: any) => [p.id, p.name]));
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-6">
       {toast === 'status_updated' ? <StatusToast message="Order status updated." tone="success" /> : null}
       {toast === 'status_error' ? <StatusToast message="Order status update failed." tone="error" /> : null}
-      <h1 className="text-2xl font-semibold">Order {order.id}</h1>
-      <form action={updateStatus} className="card flex gap-2">
+      <section className="panel">
+        <span className="eyebrow">Order Detail</span>
+        <h1 className="page-title mt-4">Order overview</h1>
+        <p className="page-subtitle mt-3">Update fulfillment status, verify shipping details, and review the ordered products below.</p>
+      </section>
+      <form action={updateStatus} className="card flex flex-col gap-3 md:flex-row md:items-center">
         <input type="hidden" name="id" value={order.id} />
         <select className="input" name="status" defaultValue={order.status}>
           <option>New</option><option>Processing</option><option>Shipped</option>
         </select>
         <button className="btn-primary">Update status</button>
       </form>
-      <div className="card">{order.shipping_name} - {order.shipping_address1}, {order.shipping_city}</div>
-      <div className="card space-y-1">
+      <div className="card">
+        <p className="text-xs uppercase tracking-[0.18em] text-slate-500">Shipping</p>
+        <p className="mt-3 text-lg font-semibold text-slate-950">{order.shipping_name}</p>
+        <p className="mt-2 text-sm text-slate-600">{order.shipping_address1}, {order.shipping_city}</p>
+      </div>
+      <div className="card space-y-3">
         {items?.map((i: any) => (
-          <div key={i.id}>{productNameById.get(i.product_id) || i.product_name_snapshot || 'Unknown product'} x {i.qty}</div>
+          <div key={i.id} className="flex items-center justify-between gap-4 border-b border-slate-100 pb-3 last:border-b-0 last:pb-0">
+            <span>{productNameById.get(i.product_id) || i.product_name_snapshot || 'Unknown product'} x {i.qty}</span>
+          </div>
         ))}
       </div>
     </div>
