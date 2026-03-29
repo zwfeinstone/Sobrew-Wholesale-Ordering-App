@@ -8,7 +8,8 @@
     "start": "next start",
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
-    "check": "npm run typecheck && npm run lint"
+    "check": "npm run typecheck && npm run lint",
+    "cron:recurring": "node scripts/run-recurring-cron.mjs"
   },
   "dependencies": {
     "@supabase/ssr": "^0.5.2",

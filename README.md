@@ -20,6 +20,7 @@ Copy `.env.example` to `.env.local` and configure:
 - `NEXT_PUBLIC_SUPABASE_URL`
 - `NEXT_PUBLIC_SUPABASE_ANON_KEY`
 - `SUPABASE_SERVICE_ROLE_KEY`
+- `CRON_SECRET`
 - `NEXT_PUBLIC_SITE_URL`
 - `ADMIN_BOOTSTRAP_TOKEN`
 - `RESEND_API_KEY`
@@ -40,6 +41,19 @@ Copy `.env.example` to `.env.local` and configure:
 npm install
 npm run dev
 ```
+
+## Running recurring orders locally
+Recurring orders only generate when the cron endpoint is called.
+
+1. Set `CRON_SECRET` in `.env.local`.
+2. Start the app with `npm run dev`.
+3. In a second terminal, run:
+
+```bash
+npm run cron:recurring
+```
+
+That script sends a `POST` request to `NEXT_PUBLIC_SITE_URL` (default `http://localhost:3000`) with the required `x-cron-secret` header.
 
 ## Bootstrap first admin (no dashboard day-to-day)
 Visit `/bootstrap` and submit email/password/token. If token matches `ADMIN_BOOTSTRAP_TOKEN` and bootstrap not completed, app creates/elevates the admin profile and locks bootstrap afterward.

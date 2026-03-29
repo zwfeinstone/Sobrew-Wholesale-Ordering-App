@@ -5,6 +5,16 @@ import StatusToast from '@/components/status-toast';
 
 type Item = { product_id: string; name: string; price_cents: number; qty: number };
 
+function mergeCartItems(existing: Item[], incoming: Item[]) {
+  const next = [...existing];
+  for (const item of incoming) {
+    const found = next.find((cartItem) => cartItem.product_id === item.product_id);
+    if (found) found.qty += item.qty;
+    else next.push({ ...item });
+  }
+  return next;
+}
+
 export function AddToCartButton({ product }: { product: Omit<Item, 'qty'> }) {
   const [showToast, setShowToast] = useState(false);
 
@@ -17,15 +27,35 @@ export function AddToCartButton({ product }: { product: Omit<Item, 'qty'> }) {
         onClick={() => {
           const raw = localStorage.getItem('cart') ?? '[]';
           const cart = JSON.parse(raw) as Item[];
-          const found = cart.find((c) => c.product_id === product.product_id);
-          if (found) found.qty += 1;
-          else cart.push({ ...product, qty: 1 });
-          localStorage.setItem('cart', JSON.stringify(cart));
+          localStorage.setItem('cart', JSON.stringify(mergeCartItems(cart, [{ ...product, qty: 1 }])));
           setShowToast(false);
           window.setTimeout(() => setShowToast(true), 0);
         }}
       >
         Add to cart
+      </button>
+    </>
+  );
+}
+
+export function ReorderButton({ items }: { items: Item[] }) {
+  const [showToast, setShowToast] = useState(false);
+
+  return (
+    <>
+      {showToast ? <StatusToast message="Order added to cart." tone="success" /> : null}
+      <button
+        className="btn-secondary"
+        type="button"
+        onClick={() => {
+          const raw = localStorage.getItem('cart') ?? '[]';
+          const cart = JSON.parse(raw) as Item[];
+          localStorage.setItem('cart', JSON.stringify(mergeCartItems(cart, items)));
+          setShowToast(false);
+          window.setTimeout(() => setShowToast(true), 0);
+        }}
+      >
+        Reorder
       </button>
     </>
   );

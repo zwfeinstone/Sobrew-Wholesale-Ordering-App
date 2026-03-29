@@ -6,6 +6,14 @@ import { createClient } from '@/lib/supabase/server';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { usd } from '@/lib/utils';
 
+function formatOrderTimestamp(value: string | null) {
+  if (!value) return 'Unknown';
+  return new Date(value).toLocaleString('en-US', {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  });
+}
+
 export default async function OrderDetail({ params }: { params: { id: string } }) {
   const { user } = await requireUser();
   const supabase = await createClient();
@@ -26,6 +34,7 @@ export default async function OrderDetail({ params }: { params: { id: string } }
         <span className="eyebrow">Order Details</span>
         <h1 className="page-title mt-4">Your order is {order.status.toLowerCase()}.</h1>
         <p className="page-subtitle mt-3">Review the items in this order and head back to the catalog whenever you are ready to reorder.</p>
+        <p className="mt-4 text-sm font-medium text-slate-600">Placed {formatOrderTimestamp(order.created_at)}</p>
       </section>
       <div className="card space-y-3">
         {items?.map((i: any) => (

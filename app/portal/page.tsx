@@ -22,22 +22,22 @@ export default async function PortalPage() {
   return (
     <div className="space-y-6">
       <section className="panel overflow-hidden">
-        <div className="grid gap-6 lg:grid-cols-[1.2fr_0.8fr] lg:items-end">
-          <div className="space-y-4">
-            <span className="eyebrow">Assigned Catalog</span>
+        <div className="grid gap-6 lg:grid-cols-[1fr_auto] lg:items-center">
+          <div className="max-w-2xl space-y-4">
+            <span className="eyebrow">Sobrew Catalog</span>
             <div>
-              <h1 className="page-title">Order faster with a cleaner, center-specific catalog.</h1>
-              <p className="page-subtitle mt-3">Everything below is tailored to your account, with your pricing ready to add straight into the cart.</p>
+              <h1 className="page-title">Welcome to Your Sobrew Catalog</h1>
+              <p className="page-subtitle mt-3">Great coffee with a greater purpose. Every order supports recovery.</p>
             </div>
           </div>
-          <div className="grid gap-3 sm:grid-cols-2">
+          <div className="grid gap-3 sm:grid-cols-2 lg:w-[22rem]">
             <div className="stat-card">
               <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Available Products</p>
               <p className="mt-2 text-3xl font-semibold text-slate-950">{products?.length ?? 0}</p>
             </div>
             <div className="stat-card">
               <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Signed In</p>
-              <p className="mt-2 text-base font-semibold text-slate-950">{user.email}</p>
+              <p className="mt-2 break-all text-base font-semibold text-slate-950">{user.email}</p>
             </div>
           </div>
         </div>
@@ -58,7 +58,7 @@ export default async function PortalPage() {
                 </div>
                 <div className="rounded-[1.5rem] border border-dashed border-slate-200 bg-white/50 p-4">
                   <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Ready To Order</p>
-                  <p className="mt-2 text-sm text-slate-600">Add this product to your cart with your assigned wholesale pricing.</p>
+                  <p className="mt-2 text-sm text-slate-600">Add this product to your cart when you&apos;re ready to place your next order.</p>
                 </div>
               </div>
               <AddToCartButton product={{ product_id: product.id, name: product.name, price_cents: price }} />
