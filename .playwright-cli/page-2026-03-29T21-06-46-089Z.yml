@@ -1,0 +1,46 @@
+- generic [ref=e1]:
+  - alert [ref=e24]
+  - generic [ref=e25]:
+    - banner [ref=e26]:
+      - generic [ref=e27]:
+        - generic [ref=e28]:
+          - generic [ref=e29]: Wholesale Portal
+          - heading "Sobrew Ordering" [level=1] [ref=e30]
+        - generic [ref=e31]:
+          - navigation [ref=e32]:
+            - link "Catalog" [ref=e33] [cursor=pointer]:
+              - /url: /portal
+            - link "Cart" [ref=e34] [cursor=pointer]:
+              - /url: /portal/cart
+            - link "Orders" [active] [ref=e35] [cursor=pointer]:
+              - /url: /portal/orders
+            - link "Recurring" [ref=e36] [cursor=pointer]:
+              - /url: /portal/recurring-orders
+            - link "Settings" [ref=e37] [cursor=pointer]:
+              - /url: /portal/settings
+          - button "Log out" [ref=e39] [cursor=pointer]
+    - main [ref=e40]:
+      - generic [ref=e155]:
+        - generic [ref=e156]:
+          - generic [ref=e157]: Past Orders
+          - heading "Order history" [level=1] [ref=e158]
+          - paragraph [ref=e159]: Track previous purchases, review line items, and quickly reorder when you need to restock.
+        - paragraph [ref=e161]: Page 1
+        - generic [ref=e163]:
+          - link "Prod QA Product B 1774818087244 x 1, Prod QA Product A 1774818087244 x 3 Placed Mar 29, 2026, 9:06 PM" [ref=e164] [cursor=pointer]:
+            - /url: /portal/orders/15cb17a1-76b1-4970-9622-7263f747bbda
+            - paragraph [ref=e165]: Prod QA Product B 1774818087244 x 1, Prod QA Product A 1774818087244 x 3
+            - paragraph [ref=e166]: Placed Mar 29, 2026, 9:06 PM
+          - generic [ref=e167]:
+            - generic [ref=e168]: New
+            - generic [ref=e169]: $60.47
+            - button "Reorder" [ref=e170] [cursor=pointer]
+        - generic [ref=e172]:
+          - link "Prod QA Product B 1774818087244 x 1, Prod QA Product A 1774818087244 x 1 Placed Mar 29, 2026, 9:04 PM" [ref=e173] [cursor=pointer]:
+            - /url: /portal/orders/f138fb77-7b7c-4d24-ba84-24f90a5c4f3e
+            - paragraph [ref=e174]: Prod QA Product B 1774818087244 x 1, Prod QA Product A 1774818087244 x 1
+            - paragraph [ref=e175]: Placed Mar 29, 2026, 9:04 PM
+          - generic [ref=e176]:
+            - generic [ref=e177]: New
+            - generic [ref=e178]: $35.79
+            - button "Reorder" [ref=e179] [cursor=pointer]
