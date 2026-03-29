@@ -112,14 +112,14 @@ export default async function ArchivedOrdersPage({
           <option value="created_desc">Newest ordered</option>
           <option value="created_asc">Oldest ordered</option>
         </select>
-        <button className="btn-primary" type="submit">Apply</button>
+        <button className="btn-primary w-full md:w-auto" type="submit">Apply</button>
       </form>
 
-      <div className="flex items-center justify-between gap-3">
+      <div className="flex flex-col items-start gap-3 sm:flex-row sm:items-center sm:justify-between">
         <p className="text-sm text-slate-500">Page {page}</p>
-        <div className="flex items-center gap-3">
-          {page > 1 ? <Link href={buildPageHref(page - 1, sort, nameFilter)} className="btn-secondary">Previous</Link> : null}
-          {hasNextPage ? <Link href={buildPageHref(page + 1, sort, nameFilter)} className="btn-secondary">Next</Link> : null}
+        <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row sm:items-center">
+          {page > 1 ? <Link href={buildPageHref(page - 1, sort, nameFilter)} className="btn-secondary w-full sm:w-auto">Previous</Link> : null}
+          {hasNextPage ? <Link href={buildPageHref(page + 1, sort, nameFilter)} className="btn-secondary w-full sm:w-auto">Next</Link> : null}
         </div>
       </div>
 
@@ -131,9 +131,9 @@ export default async function ArchivedOrdersPage({
           href={`/admin/orders/${order.id}`}
           className="card block transition-all duration-200 hover:-translate-y-0.5 hover:bg-white/95"
         >
-          <p className="text-lg font-semibold text-slate-950">{(itemLabelsByOrderId.get(order.id) ?? ['Unknown product']).join(', ')}</p>
+          <p className="break-words text-lg font-semibold text-slate-950">{(itemLabelsByOrderId.get(order.id) ?? ['Unknown product']).join(', ')}</p>
           <p className="mt-2 text-sm font-medium text-slate-700">{order.centers?.name || 'Unknown center'}</p>
-          <p className="mt-1 text-sm text-slate-500">{order.profiles?.email || 'No login email on file'}</p>
+          <p className="mt-1 break-all text-sm text-slate-500">{order.profiles?.email || 'No login email on file'}</p>
           <div className="mt-3 flex flex-wrap items-center gap-3 text-sm text-slate-500">
             <span>Placed {formatOrderTimestamp(order.created_at)}</span>
             <span>Archived {formatOrderTimestamp(order.archived_at)}</span>

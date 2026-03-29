@@ -22,7 +22,7 @@ export function AddToCartButton({ product }: { product: Omit<Item, 'qty'> }) {
     <>
       {showToast ? <StatusToast message={`${product.name} added to cart.`} tone="success" /> : null}
       <button
-        className="btn-primary"
+        className="btn-primary w-full sm:w-auto"
         type="button"
         onClick={() => {
           const raw = localStorage.getItem('cart') ?? '[]';
@@ -45,7 +45,7 @@ export function ReorderButton({ items }: { items: Item[] }) {
     <>
       {showToast ? <StatusToast message="Order added to cart." tone="success" /> : null}
       <button
-        className="btn-secondary"
+        className="btn-secondary w-full sm:w-auto"
         type="button"
         onClick={() => {
           const raw = localStorage.getItem('cart') ?? '[]';
@@ -85,13 +85,13 @@ export function CartTable() {
       ) : null}
       {items.map((item) => (
         <div key={item.product_id} className="card flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-          <div>
+          <div className="min-w-0">
             <p className="text-lg font-semibold text-slate-950">{item.name}</p>
             <p className="mt-1 text-sm text-slate-500">${(item.price_cents / 100).toFixed(2)} each</p>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
             <input
-              className="input w-20"
+              className="input w-full sm:w-24"
               value={item.qty}
               min={1}
               type="number"
@@ -99,7 +99,7 @@ export function CartTable() {
                 save(items.map((i) => (i.product_id === item.product_id ? { ...i, qty: Number(e.target.value) } : i)))
               }
             />
-            <button className="btn-secondary px-3 py-2" type="button" onClick={() => save(items.filter((i) => i.product_id !== item.product_id))}>
+            <button className="btn-secondary w-full px-3 py-2 sm:w-auto" type="button" onClick={() => save(items.filter((i) => i.product_id !== item.product_id))}>
               Remove
             </button>
           </div>
@@ -111,7 +111,7 @@ export function CartTable() {
             <p className="text-sm uppercase tracking-[0.18em] text-slate-500">Order subtotal</p>
             <p className="mt-2 text-3xl font-semibold text-slate-950">${(subtotal / 100).toFixed(2)}</p>
           </div>
-          <a href="/portal/checkout" className="btn-primary inline-flex">Checkout</a>
+          <a href="/portal/checkout" className="btn-primary inline-flex w-full sm:w-auto">Checkout</a>
         </div>
       ) : null}
     </div>

@@ -136,9 +136,9 @@ export default function CheckoutPage() {
           <textarea className="input min-h-28" name="notes" placeholder="Delivery notes, special handling, or anything your team should know." />
         </div>
         <div className="rounded-[1.5rem] border border-slate-200 bg-white/60 p-4">
-          <label className="flex items-center gap-3 text-sm font-medium text-slate-800">
+          <label className="flex items-start gap-3 text-sm font-medium text-slate-800 sm:items-center">
             <input type="checkbox" name="is_recurring" />
-            Make this order recurring
+            <span>Make this order recurring</span>
           </label>
           <div className="mt-4">
             <label className="mb-2 block text-sm font-medium text-slate-700">Recurring frequency</label>
@@ -149,7 +149,7 @@ export default function CheckoutPage() {
             </select>
           </div>
         </div>
-        <button className="btn-primary">Place order</button>
+        <button className="btn-primary w-full sm:w-auto">Place order</button>
       </section>
     </form>
   );

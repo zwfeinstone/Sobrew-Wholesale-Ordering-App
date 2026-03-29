@@ -132,8 +132,8 @@ export default async function AdminOrdersPage({ searchParams }: { searchParams: 
           <option value="">All statuses</option>
           <option>New</option><option>Processing</option><option>Shipped</option>
         </select>
-        <button className="btn-primary">Filter</button>
-        <a className="btn-secondary" href="/api/export/orders">Export CSV</a>
+        <button className="btn-primary w-full md:w-auto">Filter</button>
+        <a className="btn-secondary w-full md:w-auto" href="/api/export/orders">Export CSV</a>
       </form>
       <form id="archive-orders-form" action={archiveSelectedOrders} className="card flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
         <input type="hidden" name="statusFilter" value={status} />
@@ -141,9 +141,9 @@ export default async function AdminOrdersPage({ searchParams }: { searchParams: 
           <p className="text-sm font-semibold text-slate-950">Archive completed orders</p>
           <p className="mt-1 text-sm text-slate-500">Select `Processing` or `Shipped` orders, then archive them in one batch.</p>
         </div>
-        <div className="flex flex-wrap items-center gap-3">
+        <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row sm:flex-wrap sm:items-center sm:justify-end">
           <AdminOrderBulkControls />
-          <button className="btn-primary" type="submit">Archive selected</button>
+          <button className="btn-primary w-full sm:w-auto" type="submit">Archive selected</button>
         </div>
       </form>
       {orders?.map((order: any) => (
@@ -158,29 +158,29 @@ export default async function AdminOrdersPage({ searchParams }: { searchParams: 
               type="checkbox"
               value={order.id}
             />
-            <Link href={`/admin/orders/${order.id}`} className="block flex-1">
-              <p className="text-lg font-semibold text-slate-950">{(itemLabelsByOrderId.get(order.id) ?? ['Unknown product']).join(', ')}</p>
+            <Link href={`/admin/orders/${order.id}`} className="block flex-1 min-w-0">
+              <p className="break-words text-lg font-semibold text-slate-950">{(itemLabelsByOrderId.get(order.id) ?? ['Unknown product']).join(', ')}</p>
               <p className="mt-2 text-sm font-medium text-slate-700">{order.centers?.name || 'Unknown center'}</p>
-              <p className="mt-1 text-sm text-slate-500">{order.profiles?.email || 'No login email on file'}</p>
+              <p className="mt-1 break-all text-sm text-slate-500">{order.profiles?.email || 'No login email on file'}</p>
               <p className="mt-1 text-sm text-slate-500">Placed {formatOrderTimestamp(order.created_at)}</p>
             </Link>
           </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <form action={updateStatus} className="flex items-center gap-2">
+          <div className="flex w-full flex-col gap-2 md:w-auto md:flex-row md:flex-wrap md:items-center md:justify-end">
+            <form action={updateStatus} className="flex w-full flex-col gap-2 sm:flex-row sm:items-center md:w-auto">
               <input type="hidden" name="id" value={order.id} />
               <input type="hidden" name="statusFilter" value={status} />
-              <select className="input" name="status" defaultValue={order.status}>
+              <select className="input w-full sm:min-w-[11rem]" name="status" defaultValue={order.status}>
                 <option>New</option>
                 <option>Processing</option>
                 <option>Shipped</option>
               </select>
-              <button className="btn-primary" type="submit">Save</button>
+              <button className="btn-primary w-full sm:w-auto" type="submit">Save</button>
             </form>
             {['Processing', 'Shipped'].includes(order.status) ? (
-              <form action={archiveOrder}>
+              <form action={archiveOrder} className="w-full md:w-auto">
                 <input type="hidden" name="id" value={order.id} />
                 <input type="hidden" name="statusFilter" value={status} />
-                <button className="btn-secondary" type="submit">Archive</button>
+                <button className="btn-secondary w-full md:w-auto" type="submit">Archive</button>
               </form>
             ) : null}
           </div>

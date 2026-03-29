@@ -37,7 +37,7 @@ export function UserWizard({ products }: { products: Product[] }) {
       {selectedProducts.map((product) => (
         <input key={`hidden-price-${product.id}`} type="hidden" name={`price_${product.id}`} value={prices[product.id] ?? '0.00'} />
       ))}
-      <div className="grid gap-2 sm:grid-cols-4">
+      <div className="grid gap-2 grid-cols-2 lg:grid-cols-4">
         {stepLabels.map((label, index) => (
           <div
             key={label}
@@ -94,7 +94,7 @@ export function UserWizard({ products }: { products: Product[] }) {
             value={state.password}
             onChange={(event) => setState({ ...state, password: event.target.value })}
           />
-          <button type="button" className="btn-primary" onClick={() => setStep(2)}>
+          <button type="button" className="btn-primary w-full sm:w-auto" onClick={() => setStep(2)}>
             Next
           </button>
         </div>
@@ -106,14 +106,14 @@ export function UserWizard({ products }: { products: Product[] }) {
             <p className="mt-1 text-sm text-slate-500">Choose which products everyone at this center should see in their shared catalog.</p>
           </div>
           {products.map((product) => (
-            <label key={product.id} className="flex items-center justify-between rounded-2xl border border-slate-200 bg-white/70 px-4 py-3">
+            <label key={product.id} className="flex items-start justify-between gap-3 rounded-2xl border border-slate-200 bg-white/70 px-4 py-3 sm:items-center">
               <span className="font-medium text-slate-900">{product.name}</span>
               <input type="checkbox" checked={!!selected[product.id]} onChange={(event) => setSelected({ ...selected, [product.id]: event.target.checked })} />
             </label>
           ))}
-          <div className="flex gap-3">
-            <button type="button" className="btn-secondary" onClick={() => setStep(1)}>Back</button>
-            <button type="button" className="btn-primary" onClick={() => setStep(3)}>Next</button>
+          <div className="flex flex-col gap-3 sm:flex-row">
+            <button type="button" className="btn-secondary w-full sm:w-auto" onClick={() => setStep(1)}>Back</button>
+            <button type="button" className="btn-primary w-full sm:w-auto" onClick={() => setStep(3)}>Next</button>
           </div>
         </div>
       )}
@@ -138,9 +138,9 @@ export function UserWizard({ products }: { products: Product[] }) {
               />
             </div>
           ))}
-          <div className="flex gap-3">
-            <button type="button" className="btn-secondary" onClick={() => setStep(2)}>Back</button>
-            <button type="button" className="btn-primary" onClick={() => setStep(4)}>Next</button>
+          <div className="flex flex-col gap-3 sm:flex-row">
+            <button type="button" className="btn-secondary w-full sm:w-auto" onClick={() => setStep(2)}>Back</button>
+            <button type="button" className="btn-primary w-full sm:w-auto" onClick={() => setStep(4)}>Next</button>
           </div>
         </div>
       )}
@@ -167,9 +167,9 @@ export function UserWizard({ products }: { products: Product[] }) {
               <p className="mt-1 text-sm text-slate-500">{selectedProducts.map((product) => product.name).join(', ') || 'No products selected yet.'}</p>
             </div>
           </div>
-          <div className="flex gap-3">
-            <button type="button" className="btn-secondary" onClick={() => setStep(3)}>Back</button>
-            <button className="btn-primary">Create Center</button>
+          <div className="flex flex-col gap-3 sm:flex-row">
+            <button type="button" className="btn-secondary w-full sm:w-auto" onClick={() => setStep(3)}>Back</button>
+            <button className="btn-primary w-full sm:w-auto">Create Center</button>
           </div>
         </div>
       )}

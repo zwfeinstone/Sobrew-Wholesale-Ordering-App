@@ -180,7 +180,7 @@ function StatChart({ buckets, color }: { buckets: ChartBucket[]; color: string }
 
   return (
     <div className="space-y-3">
-      <div className="overflow-hidden rounded-[1.5rem] border border-slate-200 bg-white/55 p-4">
+      <div className="overflow-hidden rounded-[1.5rem] border border-slate-200 bg-white/55 p-3 sm:p-4">
         <svg viewBox={`0 0 ${width} ${height}`} className="h-36 w-full" preserveAspectRatio="none" aria-hidden="true">
           {values.map((value, index) => {
             const barWidth = width / values.length;
@@ -197,7 +197,7 @@ function StatChart({ buckets, color }: { buckets: ChartBucket[]; color: string }
           })}
         </svg>
       </div>
-      <div className="grid grid-cols-3 gap-2 text-xs text-slate-500 sm:grid-cols-6">
+      <div className="grid grid-cols-2 gap-2 text-xs text-slate-500 sm:grid-cols-3 xl:grid-cols-6">
         {buckets.slice(-6).map((bucket) => (
           <div key={bucket.key} className="rounded-xl bg-white/50 px-3 py-2 text-center">
             <div className="font-semibold text-slate-700">{bucket.label}</div>
@@ -221,17 +221,17 @@ function FilterForm({
   otherFilters: Record<string, string>;
 }) {
   return (
-    <form className="flex flex-wrap items-center gap-2">
+    <form className="flex flex-col items-stretch gap-2 sm:flex-row sm:flex-wrap sm:items-center">
       {Object.entries(otherFilters).map(([name, hiddenValue]) => (
         <input key={name} type="hidden" name={name} value={hiddenValue} />
       ))}
       <label className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">{label}</label>
-      <select className="input max-w-[12rem]" name={field} defaultValue={value}>
+      <select className="input w-full sm:max-w-[12rem]" name={field} defaultValue={value}>
         {TIME_RANGE_OPTIONS.map((option) => (
           <option key={option.value} value={option.value}>{option.label}</option>
         ))}
       </select>
-      <button className="btn-secondary" type="submit">Apply</button>
+      <button className="btn-secondary w-full sm:w-auto" type="submit">Apply</button>
     </form>
   );
 }
@@ -267,7 +267,7 @@ function StatCard({
       <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
         <div>
           <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">{title}</p>
-          <p className="mt-3 text-4xl font-semibold text-slate-950">{value}</p>
+          <p className="mt-3 text-3xl font-semibold text-slate-950 sm:text-4xl">{value}</p>
           <p className="mt-2 text-sm text-slate-500">{description}</p>
         </div>
         <FilterForm label="Range" field={filterField} value={filterValue} otherFilters={otherFilters} />
@@ -386,25 +386,25 @@ export default async function AdminDashboard({
       </section>
 
       <section className="card space-y-4">
-        <div className="flex items-center justify-between gap-4">
+        <div className="flex flex-col items-start gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <h2 className="text-xl font-semibold tracking-tight text-slate-950">Recent orders</h2>
             <p className="mt-1 text-sm text-slate-500">Open any order to update status, check items, or confirm shipment progress.</p>
           </div>
-          <Link href="/admin/orders" className="btn-secondary">View all orders</Link>
+          <Link href="/admin/orders" className="btn-secondary w-full sm:w-auto">View all orders</Link>
         </div>
         {recent?.map((order: any) => (
           <Link
             key={order.id}
             href={`/admin/orders/${order.id}`}
-            className="flex items-center justify-between gap-4 rounded-[1.5rem] border border-slate-200/70 bg-white/70 px-4 py-4 transition-all duration-200 hover:-translate-y-0.5 hover:border-teal-200 hover:bg-white"
+            className="flex flex-col gap-3 rounded-[1.5rem] border border-slate-200/70 bg-white/70 px-4 py-4 transition-all duration-200 hover:-translate-y-0.5 hover:border-teal-200 hover:bg-white sm:flex-row sm:items-center sm:justify-between"
           >
-            <div>
+            <div className="min-w-0">
               <p className="font-semibold text-slate-950">{firstNameByOrderId.get(order.id) ?? 'Unknown product'}</p>
               <p className="mt-1 text-sm font-medium text-slate-700">{order.centers?.name || 'Unknown center'}</p>
-              <p className="mt-1 text-sm text-slate-500">{order.profiles?.email || 'No login email on file'}</p>
+              <p className="mt-1 break-all text-sm text-slate-500">{order.profiles?.email || 'No login email on file'}</p>
             </div>
-            <div className="text-right">
+            <div className="self-start text-left sm:self-auto sm:text-right">
               <p className="rounded-full bg-slate-100 px-3 py-1 text-sm font-medium text-slate-700">{order.status}</p>
             </div>
           </Link>

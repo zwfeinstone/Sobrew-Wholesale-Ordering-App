@@ -68,7 +68,7 @@ export default async function PortalSettingsPage({
       <section className="card space-y-5">
         <div>
           <p className="text-xs uppercase tracking-[0.18em] text-slate-500">Signed in as</p>
-          <p className="mt-2 text-lg font-semibold text-slate-950">{profile?.email}</p>
+          <p className="mt-2 break-all text-lg font-semibold text-slate-950">{profile?.email}</p>
         </div>
 
         <form action={updatePassword} className="space-y-4">
@@ -80,7 +80,7 @@ export default async function PortalSettingsPage({
             <label className="text-sm font-medium text-slate-700">Confirm new password</label>
             <input className="input" name="confirm_password" type="password" minLength={8} required placeholder="Confirm your new password" />
           </div>
-          <button className="btn-primary" type="submit">Save new password</button>
+          <button className="btn-primary w-full sm:w-auto" type="submit">Save new password</button>
         </form>
       </section>
     </div>

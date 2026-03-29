@@ -39,7 +39,7 @@ export default async function OrderDetail({ params }: { params: { id: string } }
       </section>
       <div className="card space-y-3">
         {items?.map((i: any) => (
-          <div key={i.id} className="flex items-center justify-between gap-4 border-b border-slate-100 pb-3 last:border-b-0 last:pb-0">
+          <div key={i.id} className="flex flex-col gap-2 border-b border-slate-100 pb-3 last:border-b-0 last:pb-0 sm:flex-row sm:items-center sm:justify-between">
             <span>{productNameById.get(i.product_id) || i.product_name_snapshot || 'Unknown product'} x {i.qty}</span>
             <span className="font-semibold text-slate-950">{usd(i.line_total_cents)}</span>
           </div>
@@ -50,7 +50,7 @@ export default async function OrderDetail({ params }: { params: { id: string } }
           <p className="text-sm uppercase tracking-[0.18em] text-slate-500">Subtotal</p>
           <p className="mt-2 text-3xl font-semibold text-slate-950">{usd(order.subtotal_cents)}</p>
         </div>
-        <Link className="btn-primary inline-flex" href="/portal">Reorder</Link>
+        <Link className="btn-primary inline-flex w-full sm:w-auto" href="/portal">Reorder</Link>
       </div>
     </div>
   );

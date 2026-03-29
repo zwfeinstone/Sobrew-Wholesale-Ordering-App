@@ -88,9 +88,9 @@ export default async function AdminOrderDetail({
         <select className="input" name="status" defaultValue={order.status}>
           <option>New</option><option>Processing</option><option>Shipped</option>
         </select>
-        <button className="btn-primary">Update status</button>
+        <button className="btn-primary w-full md:w-auto">Update status</button>
         {!order.archived_at && ['Processing', 'Shipped'].includes(order.status) ? (
-          <button formAction={archiveOrder} className="btn-secondary" type="submit">Archive order</button>
+          <button formAction={archiveOrder} className="btn-secondary w-full md:w-auto" type="submit">Archive order</button>
         ) : null}
       </form>
       <div className="card">
@@ -100,7 +100,7 @@ export default async function AdminOrderDetail({
       </div>
       <div className="card space-y-3">
         {items?.map((i: any) => (
-          <div key={i.id} className="flex items-center justify-between gap-4 border-b border-slate-100 pb-3 last:border-b-0 last:pb-0">
+          <div key={i.id} className="flex flex-col gap-2 border-b border-slate-100 pb-3 last:border-b-0 last:pb-0 sm:flex-row sm:items-center sm:justify-between">
             <span>{productNameById.get(i.product_id) || i.product_name_snapshot || 'Unknown product'} x {i.qty}</span>
           </div>
         ))}

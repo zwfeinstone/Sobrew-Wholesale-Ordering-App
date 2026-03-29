@@ -91,14 +91,14 @@ export default async function SettingsPage({
           <span className="block">Hero image</span>
           <input className="input" type="file" name="hero" accept="image/*" />
         </label>
-        <button className="btn-primary">Save</button>
+        <button className="btn-primary w-full sm:w-auto">Save</button>
       </form>
 
       <section className="card space-y-5">
         <div>
           <p className="text-xs uppercase tracking-[0.18em] text-slate-500">Admin account</p>
           <h2 className="mt-2 text-2xl font-semibold tracking-tight text-slate-950">Change password</h2>
-          <p className="mt-2 text-sm text-slate-500">{email}</p>
+          <p className="mt-2 break-all text-sm text-slate-500">{email}</p>
         </div>
 
         {passwordSuccess === 'password_updated' ? (
@@ -134,7 +134,7 @@ export default async function SettingsPage({
             <label className="text-sm font-medium text-slate-700">Confirm new password</label>
             <input className="input" name="confirm_password" type="password" minLength={8} required placeholder="Confirm your new password" />
           </div>
-          <button className="btn-primary" type="submit">Save new password</button>
+          <button className="btn-primary w-full sm:w-auto" type="submit">Save new password</button>
         </form>
       </section>
     </div>
