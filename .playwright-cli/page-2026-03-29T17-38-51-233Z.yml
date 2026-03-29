@@ -1,0 +1,175 @@
+- generic [active] [ref=e1]:
+  - alert [ref=e24]
+  - generic [ref=e25]:
+    - complementary [ref=e26]:
+      - generic [ref=e27]:
+        - generic [ref=e28]:
+          - generic [ref=e29]: Admin Console
+          - generic [ref=e30]:
+            - heading "Sobrew Admin" [level=2] [ref=e31]
+            - paragraph [ref=e32]: Manage orders, customers, products, and recurring schedules in one place.
+        - generic [ref=e33]:
+          - paragraph [ref=e34]: Needs Attention
+          - paragraph [ref=e35]: "0"
+          - paragraph [ref=e36]: New orders awaiting review.
+        - button "Log out" [ref=e38] [cursor=pointer]
+      - navigation [ref=e39]:
+        - link "Dashboard" [ref=e40] [cursor=pointer]:
+          - /url: /admin
+          - generic [ref=e41]: Dashboard
+        - link "Orders" [ref=e42] [cursor=pointer]:
+          - /url: /admin/orders
+          - generic [ref=e43]: Orders
+        - link "Archived Orders" [ref=e44] [cursor=pointer]:
+          - /url: /admin/archived-orders
+          - generic [ref=e45]: Archived Orders
+        - link "Recurring Orders" [ref=e46] [cursor=pointer]:
+          - /url: /admin/recurring-orders
+          - generic [ref=e47]: Recurring Orders
+        - link "Canceled Recurring Orders" [ref=e48] [cursor=pointer]:
+          - /url: /admin/canceled-recurring-orders
+          - generic [ref=e49]: Canceled Recurring Orders
+        - link "Order Form" [ref=e50] [cursor=pointer]:
+          - /url: /admin/order-form
+          - generic [ref=e51]: Order Form
+        - link "Centers" [ref=e52] [cursor=pointer]:
+          - /url: /admin/users
+          - generic [ref=e53]: Centers
+        - link "Products" [ref=e54] [cursor=pointer]:
+          - /url: /admin/products
+          - generic [ref=e55]: Products
+        - link "Settings" [ref=e56] [cursor=pointer]:
+          - /url: /admin/settings
+          - generic [ref=e57]: Settings
+    - main [ref=e58]:
+      - generic [ref=e60]:
+        - generic [ref=e62]:
+          - generic [ref=e63]:
+            - generic [ref=e64]: Operations Snapshot
+            - generic [ref=e65]:
+              - heading "Keep wholesale fulfillment moving with less friction." [level=1] [ref=e66]
+              - paragraph [ref=e67]: Track order volume, revenue, and customer growth from one dashboard without leaving the admin workspace.
+          - generic [ref=e68]:
+            - generic [ref=e69]:
+              - paragraph [ref=e70]: New Orders
+              - paragraph [ref=e71]: "0"
+              - paragraph [ref=e72]: Orders currently waiting for review.
+            - generic [ref=e73]:
+              - paragraph [ref=e74]: Recent Activity
+              - paragraph [ref=e75]: "0"
+              - paragraph [ref=e76]: Most recent active orders shown below.
+        - generic [ref=e77]:
+          - generic [ref=e78]:
+            - generic [ref=e79]:
+              - generic [ref=e80]:
+                - paragraph [ref=e81]: Orders
+                - paragraph [ref=e82]: "33"
+                - paragraph [ref=e83]: Total orders placed in the selected time range.
+              - generic [ref=e84]:
+                - generic [ref=e85]: Range
+                - combobox [ref=e86]:
+                  - option "This week"
+                  - option "This month" [selected]
+                  - option "This year"
+                  - option "Previous years"
+                  - option "Lifetime"
+                - button "Apply" [ref=e87] [cursor=pointer]
+            - generic [ref=e88]:
+              - img [ref=e90]
+              - generic [ref=e148]:
+                - generic [ref=e149]:
+                  - generic [ref=e150]: Mar 23
+                  - generic [ref=e151]: "0"
+                - generic [ref=e152]:
+                  - generic [ref=e153]: Mar 24
+                  - generic [ref=e154]: "6"
+                - generic [ref=e155]:
+                  - generic [ref=e156]: Mar 25
+                  - generic [ref=e157]: "0"
+                - generic [ref=e158]:
+                  - generic [ref=e159]: Mar 26
+                  - generic [ref=e160]: "0"
+                - generic [ref=e161]:
+                  - generic [ref=e162]: Mar 27
+                  - generic [ref=e163]: "2"
+                - generic [ref=e164]:
+                  - generic [ref=e165]: Mar 28
+                  - generic [ref=e166]: "0"
+          - generic [ref=e167]:
+            - generic [ref=e168]:
+              - generic [ref=e169]:
+                - paragraph [ref=e170]: Revenue
+                - paragraph [ref=e171]: $750.00
+                - paragraph [ref=e172]: Gross order revenue captured across the selected time range.
+              - generic [ref=e173]:
+                - generic [ref=e174]: Range
+                - combobox [ref=e175]:
+                  - option "This week"
+                  - option "This month" [selected]
+                  - option "This year"
+                  - option "Previous years"
+                  - option "Lifetime"
+                - button "Apply" [ref=e176] [cursor=pointer]
+            - generic [ref=e177]:
+              - img [ref=e179]
+              - generic [ref=e237]:
+                - generic [ref=e238]:
+                  - generic [ref=e239]: Mar 23
+                  - generic [ref=e240]: $0
+                - generic [ref=e241]:
+                  - generic [ref=e242]: Mar 24
+                  - generic [ref=e243]: $160
+                - generic [ref=e244]:
+                  - generic [ref=e245]: Mar 25
+                  - generic [ref=e246]: $0
+                - generic [ref=e247]:
+                  - generic [ref=e248]: Mar 26
+                  - generic [ref=e249]: $0
+                - generic [ref=e250]:
+                  - generic [ref=e251]: Mar 27
+                  - generic [ref=e252]: $30
+                - generic [ref=e253]:
+                  - generic [ref=e254]: Mar 28
+                  - generic [ref=e255]: $0
+          - generic [ref=e256]:
+            - generic [ref=e257]:
+              - generic [ref=e258]:
+                - paragraph [ref=e259]: New Users
+                - paragraph [ref=e260]: "2"
+                - paragraph [ref=e261]: New customer accounts created in the selected time range.
+              - generic [ref=e262]:
+                - generic [ref=e263]: Range
+                - combobox [ref=e264]:
+                  - option "This week"
+                  - option "This month" [selected]
+                  - option "This year"
+                  - option "Previous years"
+                  - option "Lifetime"
+                - button "Apply" [ref=e265] [cursor=pointer]
+            - generic [ref=e266]:
+              - img [ref=e268]
+              - generic [ref=e325]:
+                - generic [ref=e326]:
+                  - generic [ref=e327]: Mar 23
+                  - generic [ref=e328]: "0"
+                - generic [ref=e329]:
+                  - generic [ref=e330]: Mar 24
+                  - generic [ref=e331]: "0"
+                - generic [ref=e332]:
+                  - generic [ref=e333]: Mar 25
+                  - generic [ref=e334]: "0"
+                - generic [ref=e335]:
+                  - generic [ref=e336]: Mar 26
+                  - generic [ref=e337]: "0"
+                - generic [ref=e338]:
+                  - generic [ref=e339]: Mar 27
+                  - generic [ref=e340]: "0"
+                - generic [ref=e341]:
+                  - generic [ref=e342]: Mar 28
+                  - generic [ref=e343]: "0"
+        - generic [ref=e345]:
+          - generic [ref=e346]:
+            - heading "Recent orders" [level=2] [ref=e347]
+            - paragraph [ref=e348]: Open any order to update status, check items, or confirm shipment progress.
+          - link "View all orders" [ref=e349] [cursor=pointer]:
+            - /url: /admin/orders

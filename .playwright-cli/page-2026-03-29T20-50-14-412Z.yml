@@ -1,0 +1,110 @@
+- generic [ref=e1]:
+  - generic [ref=e2]:
+    - complementary [ref=e3]:
+      - generic [ref=e4]:
+        - generic [ref=e5]:
+          - generic [ref=e6]: Admin Console
+          - generic [ref=e7]:
+            - heading "Sobrew Admin" [level=2] [ref=e8]
+            - paragraph [ref=e9]: Manage orders, customers, products, and recurring schedules in one place.
+        - generic [ref=e10]:
+          - paragraph [ref=e11]: Needs Attention
+          - paragraph [ref=e12]: "0"
+          - paragraph [ref=e13]: New orders awaiting review.
+        - button "Log out" [ref=e15] [cursor=pointer]
+      - navigation [ref=e16]:
+        - link "Dashboard" [ref=e17] [cursor=pointer]:
+          - /url: /admin
+          - generic [ref=e18]: Dashboard
+        - link "Orders" [ref=e19] [cursor=pointer]:
+          - /url: /admin/orders
+          - generic [ref=e20]: Orders
+        - link "Archived Orders" [ref=e21] [cursor=pointer]:
+          - /url: /admin/archived-orders
+          - generic [ref=e22]: Archived Orders
+        - link "Recurring Orders" [ref=e23] [cursor=pointer]:
+          - /url: /admin/recurring-orders
+          - generic [ref=e24]: Recurring Orders
+        - link "Canceled Recurring Orders" [ref=e25] [cursor=pointer]:
+          - /url: /admin/canceled-recurring-orders
+          - generic [ref=e26]: Canceled Recurring Orders
+        - link "Order Form" [ref=e27] [cursor=pointer]:
+          - /url: /admin/order-form
+          - generic [ref=e28]: Order Form
+        - link "Centers" [ref=e29] [cursor=pointer]:
+          - /url: /admin/users
+          - generic [ref=e30]: Centers
+        - link "Products" [ref=e31] [cursor=pointer]:
+          - /url: /admin/products
+          - generic [ref=e32]: Products
+        - link "Settings" [ref=e33] [cursor=pointer]:
+          - /url: /admin/settings
+          - generic [ref=e34]: Settings
+    - main [ref=e35]:
+      - generic [ref=e37]:
+        - generic [ref=e97]: Center settings saved.
+        - generic [ref=e38]:
+          - generic [ref=e39]: Center Admin
+          - heading "Codex Wizard Center 1774817090419" [level=1] [ref=e40]
+          - paragraph [ref=e41]: Manage shared pricing, add or remove center logins, and keep center history intact even when staff changes.
+        - generic [ref=e42]:
+          - generic [ref=e43]:
+            - generic [ref=e44]:
+              - generic [ref=e45]:
+                - text: Center name
+                - textbox [ref=e46]: Codex Wizard Center 1774817090419
+              - generic [ref=e47]:
+                - checkbox "Active center" [checked] [ref=e48]
+                - text: Active center
+            - generic [ref=e49]:
+              - text: Center notes
+              - textbox [active] [ref=e50]: QA wizard center updated
+          - generic [ref=e51]:
+            - heading "Shared product visibility + pricing" [level=2] [ref=e52]
+            - generic [ref=e53]:
+              - generic [ref=e54]:
+                - checkbox "Nitro Keg" [ref=e55]
+                - text: Nitro Keg
+              - spinbutton [ref=e56]: "0.00"
+            - generic [ref=e57]:
+              - generic [ref=e58]:
+                - checkbox "Cold Brew Concentrate" [ref=e59]
+                - text: Cold Brew Concentrate
+              - spinbutton [ref=e60]: "0.00"
+            - generic [ref=e61]:
+              - generic [ref=e62]:
+                - checkbox "Codex Wizard Product A 1774817090419" [checked] [ref=e63]
+                - text: Codex Wizard Product A 1774817090419
+              - spinbutton [ref=e64]: "15.67"
+            - generic [ref=e65]:
+              - generic [ref=e66]:
+                - checkbox "Codex Wizard Product B 1774817090419" [ref=e67]
+                - text: Codex Wizard Product B 1774817090419
+              - spinbutton [ref=e68]: "0.00"
+          - button "Save Center" [ref=e69] [cursor=pointer]
+        - generic [ref=e70]:
+          - generic [ref=e71]:
+            - heading "Add login" [level=2] [ref=e72]
+            - paragraph [ref=e73]: Create another login for this center. Every login will share the same catalog, order history, and recurring orders.
+          - generic [ref=e74]:
+            - textbox "Login name" [ref=e75]
+            - textbox "Email address" [ref=e76]
+            - textbox "Temporary password" [ref=e77]
+            - button "Add Login" [ref=e78] [cursor=pointer]
+        - generic [ref=e79]:
+          - generic [ref=e80]:
+            - heading "Center logins" [level=2] [ref=e81]
+            - paragraph [ref=e82]: Update login names, deactivate access, reset passwords, or remove a login from this center.
+          - generic [ref=e83]:
+            - generic [ref=e84]:
+              - paragraph [ref=e85]: Center User One
+              - paragraph [ref=e86]: codex-center1-1774817090419@example.com
+            - generic [ref=e87]:
+              - textbox "Login name" [ref=e88]: Center User One
+              - textbox "Leave blank to keep password" [ref=e89]
+              - generic [ref=e90]:
+                - checkbox "Active" [checked] [ref=e91]
+                - text: Active
+              - button "Save Login" [ref=e92] [cursor=pointer]
+            - button "Remove Login" [ref=e94] [cursor=pointer]
+  - alert [ref=e95]

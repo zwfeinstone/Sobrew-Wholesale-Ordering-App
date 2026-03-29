@@ -1,0 +1,20 @@
+- generic [active] [ref=e1]:
+  - alert [ref=e24]: Sobrew Wholesale Portal
+  - main [ref=e193]:
+    - generic [ref=e194]:
+      - generic [ref=e197]:
+        - generic [ref=e198]: Purpose In Every Pour
+        - generic [ref=e199]:
+          - heading "Welcome to Sobrew Wholesale" [level=1] [ref=e200]
+          - paragraph [ref=e201]: More than coffee, every order helps someone take a step toward recovery. A portion of every purchase directly supports the recovery community.
+        - paragraph [ref=e204]: Wholesale ordering with a direct community impact built into every purchase.
+      - generic [ref=e206]:
+        - generic [ref=e207]:
+          - generic [ref=e208]: Sign In
+          - heading "Welcome back" [level=2] [ref=e209]
+          - paragraph [ref=e210]: Use your wholesale portal credentials to access orders, cart, and recurring shipments.
+        - paragraph [ref=e211]: Your account is inactive. Please contact Sobrew for access.
+        - generic [ref=e212]:
+          - textbox "Email address" [ref=e213]
+          - textbox "Password" [ref=e214]
+        - button "Sign in" [ref=e215] [cursor=pointer]

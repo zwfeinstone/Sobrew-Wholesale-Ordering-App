@@ -1,0 +1,14 @@
+{
+  "suffix": 1774817090419,
+  "adminId": "2276d04e-2435-4577-8f64-bbe711ec04a4",
+  "adminEmail": "codex-admin-1774817090419@example.com",
+  "adminPassword": "CodexAdmin123!",
+  "productIds": [
+    "7b8837ec-e8de-48ff-b559-15f1cabd5371",
+    "2f1036a7-2144-46ef-8943-1f9a5dd984bb"
+  ],
+  "productNames": [
+    "Codex Wizard Product A 1774817090419",
+    "Codex Wizard Product B 1774817090419"
+  ]
+}

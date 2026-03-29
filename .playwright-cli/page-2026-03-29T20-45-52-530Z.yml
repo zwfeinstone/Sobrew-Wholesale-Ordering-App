@@ -1,0 +1,80 @@
+- generic [ref=e1]:
+  - alert [ref=e24]
+  - generic [ref=e25]:
+    - complementary [ref=e26]:
+      - generic [ref=e27]:
+        - generic [ref=e28]:
+          - generic [ref=e29]: Admin Console
+          - generic [ref=e30]:
+            - heading "Sobrew Admin" [level=2] [ref=e31]
+            - paragraph [ref=e32]: Manage orders, customers, products, and recurring schedules in one place.
+        - generic [ref=e33]:
+          - paragraph [ref=e34]: Needs Attention
+          - paragraph [ref=e35]: "0"
+          - paragraph [ref=e36]: New orders awaiting review.
+        - button "Log out" [ref=e38] [cursor=pointer]
+      - navigation [ref=e39]:
+        - link "Dashboard" [ref=e40] [cursor=pointer]:
+          - /url: /admin
+          - generic [ref=e41]: Dashboard
+        - link "Orders" [ref=e42] [cursor=pointer]:
+          - /url: /admin/orders
+          - generic [ref=e43]: Orders
+        - link "Archived Orders" [ref=e44] [cursor=pointer]:
+          - /url: /admin/archived-orders
+          - generic [ref=e45]: Archived Orders
+        - link "Recurring Orders" [ref=e46] [cursor=pointer]:
+          - /url: /admin/recurring-orders
+          - generic [ref=e47]: Recurring Orders
+        - link "Canceled Recurring Orders" [ref=e48] [cursor=pointer]:
+          - /url: /admin/canceled-recurring-orders
+          - generic [ref=e49]: Canceled Recurring Orders
+        - link "Order Form" [ref=e50] [cursor=pointer]:
+          - /url: /admin/order-form
+          - generic [ref=e51]: Order Form
+        - link "Centers" [active] [ref=e52] [cursor=pointer]:
+          - /url: /admin/users
+          - generic [ref=e53]: Centers
+        - link "Products" [ref=e54] [cursor=pointer]:
+          - /url: /admin/products
+          - generic [ref=e55]: Products
+        - link "Settings" [ref=e56] [cursor=pointer]:
+          - /url: /admin/settings
+          - generic [ref=e57]: Settings
+    - main [ref=e58]:
+      - generic [ref=e350]:
+        - generic [ref=e351]:
+          - generic [ref=e352]:
+            - generic [ref=e353]: Center Admin
+            - heading "Centers" [level=1] [ref=e354]
+            - paragraph [ref=e355]: Create centers, add or remove login access, and keep product pricing tied to the center instead of a single employee account.
+          - link "Add Center" [ref=e356] [cursor=pointer]:
+            - /url: /admin/users/new
+        - link "Zach Treatment Active center • 1 active login(s) • 1 total login(s)" [ref=e358] [cursor=pointer]:
+          - /url: /admin/users/347c69d5-ade8-4868-93bf-f2a287a05a28
+          - paragraph [ref=e359]: Zach Treatment
+          - paragraph [ref=e360]: Active center • 1 active login(s) • 1 total login(s)
+        - generic [ref=e361]:
+          - generic [ref=e362]:
+            - generic [ref=e363]: Admin Accounts
+            - heading "Admin logins" [level=2] [ref=e364]
+          - link "Codex QA Admin codex-admin-1774817090419@example.com Active" [ref=e365] [cursor=pointer]:
+            - /url: /admin/users/2276d04e-2435-4577-8f64-bbe711ec04a4
+            - paragraph [ref=e366]: Codex QA Admin
+            - paragraph [ref=e367]: codex-admin-1774817090419@example.com
+            - paragraph [ref=e368]: Active
+          - link "yancey.spangler@sobrew.com yancey.spangler@sobrew.com Active" [ref=e369] [cursor=pointer]:
+            - /url: /admin/users/f02094a3-f48e-4f23-8451-3b3b1dcf14f2
+            - paragraph [ref=e370]: yancey.spangler@sobrew.com
+            - paragraph [ref=e371]: yancey.spangler@sobrew.com
+            - paragraph [ref=e372]: Active
+          - link "zach@sobrew.com zach@sobrew.com Active" [ref=e373] [cursor=pointer]:
+            - /url: /admin/users/fef15c09-4eec-4fc8-8432-3bb06939205f
+            - paragraph [ref=e374]: zach@sobrew.com
+            - paragraph [ref=e375]: zach@sobrew.com
+            - paragraph [ref=e376]: Active
+          - link "hello@sobrew.com hello@sobrew.com Active" [ref=e377] [cursor=pointer]:
+            - /url: /admin/users/7d6dfb3a-3581-48fd-937f-01e6211fdaa9
+            - paragraph [ref=e378]: hello@sobrew.com
+            - paragraph [ref=e379]: hello@sobrew.com
+            - paragraph [ref=e380]: Active

@@ -1,0 +1,59 @@
+- generic [active] [ref=e1]:
+  - alert [ref=e24]
+  - generic [ref=e26]:
+    - banner [ref=e27]:
+      - generic [ref=e28]:
+        - generic [ref=e29]:
+          - generic [ref=e30]: Wholesale Portal
+          - heading "Sobrew Ordering" [level=1] [ref=e31]
+        - generic [ref=e32]:
+          - navigation [ref=e33]:
+            - link "Catalog" [ref=e34] [cursor=pointer]:
+              - /url: /portal
+            - link "Cart" [ref=e35] [cursor=pointer]:
+              - /url: /portal/cart
+            - link "Orders" [ref=e36] [cursor=pointer]:
+              - /url: /portal/orders
+            - link "Recurring" [ref=e37] [cursor=pointer]:
+              - /url: /portal/recurring-orders
+            - link "Settings" [ref=e38] [cursor=pointer]:
+              - /url: /portal/settings
+          - button "Log out" [ref=e40] [cursor=pointer]
+    - main [ref=e41]:
+      - generic [ref=e42]:
+        - generic [ref=e44]:
+          - generic [ref=e45]:
+            - generic [ref=e46]: Sobrew Catalog
+            - generic [ref=e47]:
+              - heading "Welcome to Your Sobrew Catalog" [level=1] [ref=e48]
+              - paragraph [ref=e49]: Great coffee with a greater purpose. Every order supports recovery.
+          - generic [ref=e50]:
+            - generic [ref=e51]:
+              - paragraph [ref=e52]: Available Products
+              - paragraph [ref=e53]: "2"
+            - generic [ref=e54]:
+              - paragraph [ref=e55]: Signed In
+              - paragraph [ref=e56]: codex-center2-1774805748555@example.com
+        - generic [ref=e57]:
+          - generic [ref=e58]:
+            - generic [ref=e59]:
+              - generic [ref=e60]:
+                - generic [ref=e61]:
+                  - heading "Codex Test Product B 1774805748555" [level=2] [ref=e62]
+                  - paragraph [ref=e63]: QA product 2
+                - generic [ref=e64]: $23.45
+              - generic [ref=e65]:
+                - paragraph [ref=e66]: Ready To Order
+                - paragraph [ref=e67]: Add this product to your cart when you're ready to place your next order.
+            - button "Add to cart" [ref=e68] [cursor=pointer]
+          - generic [ref=e69]:
+            - generic [ref=e70]:
+              - generic [ref=e71]:
+                - generic [ref=e72]:
+                  - heading "Codex Test Product A 1774805748555" [level=2] [ref=e73]
+                  - paragraph [ref=e74]: QA product 1
+                - generic [ref=e75]: $12.34
+              - generic [ref=e76]:
+                - paragraph [ref=e77]: Ready To Order
+                - paragraph [ref=e78]: Add this product to your cart when you're ready to place your next order.
+            - button "Add to cart" [ref=e79] [cursor=pointer]

@@ -1,0 +1,64 @@
+- generic [ref=e2]:
+  - complementary [ref=e3]:
+    - generic [ref=e4]:
+      - generic [ref=e5]:
+        - generic [ref=e6]: Admin Console
+        - generic [ref=e7]:
+          - heading "Sobrew Admin" [level=2] [ref=e8]
+          - paragraph [ref=e9]: Manage orders, customers, products, and recurring schedules in one place.
+      - generic [ref=e10]:
+        - paragraph [ref=e11]: Needs Attention
+        - paragraph [ref=e12]: "0"
+        - paragraph [ref=e13]: New orders awaiting review.
+      - button "Log out" [ref=e15] [cursor=pointer]
+    - navigation [ref=e16]:
+      - link "Dashboard" [ref=e17] [cursor=pointer]:
+        - /url: /admin
+        - generic [ref=e18]: Dashboard
+      - link "Orders" [ref=e19] [cursor=pointer]:
+        - /url: /admin/orders
+        - generic [ref=e20]: Orders
+      - link "Archived Orders" [ref=e21] [cursor=pointer]:
+        - /url: /admin/archived-orders
+        - generic [ref=e22]: Archived Orders
+      - link "Recurring Orders" [ref=e23] [cursor=pointer]:
+        - /url: /admin/recurring-orders
+        - generic [ref=e24]: Recurring Orders
+      - link "Canceled Recurring Orders" [ref=e25] [cursor=pointer]:
+        - /url: /admin/canceled-recurring-orders
+        - generic [ref=e26]: Canceled Recurring Orders
+      - link "Order Form" [ref=e27] [cursor=pointer]:
+        - /url: /admin/order-form
+        - generic [ref=e28]: Order Form
+      - link "Centers" [ref=e29] [cursor=pointer]:
+        - /url: /admin/users
+        - generic [ref=e30]: Centers
+      - link "Products" [ref=e31] [cursor=pointer]:
+        - /url: /admin/products
+        - generic [ref=e32]: Products
+      - link "Settings" [ref=e33] [cursor=pointer]:
+        - /url: /admin/settings
+        - generic [ref=e34]: Settings
+  - main [ref=e35]:
+    - generic [ref=e37]:
+      - generic [ref=e38]:
+        - generic [ref=e39]: Center Admin
+        - heading "Create center wizard" [level=1] [ref=e40]
+        - paragraph [ref=e41]: Set up a new center, create its first login, and assign shared products and pricing in one guided flow.
+      - generic [ref=e42]: Could not create the center right now. Check the login email and try again.
+      - generic [ref=e43]:
+        - generic [ref=e44]:
+          - generic [ref=e45]: 1. Center details
+          - generic [ref=e46]: 2. Assign products
+          - generic [ref=e47]: 3. Set prices
+          - generic [ref=e48]: 4. Review
+        - generic [ref=e49]:
+          - generic [ref=e50]:
+            - 'heading "Step 1: Create center + first login" [level=2] [ref=e51]'
+            - paragraph [ref=e52]: Start with the center details, then set up the first login that will access the shared center data.
+          - textbox "Center name" [ref=e53]
+          - textbox "Center notes" [ref=e54]
+          - textbox "First login name" [ref=e55]
+          - textbox "First login email" [ref=e56]
+          - textbox "Temporary password" [ref=e57]
+          - button "Next" [ref=e58] [cursor=pointer]

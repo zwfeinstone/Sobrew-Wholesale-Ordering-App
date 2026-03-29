@@ -64,6 +64,39 @@ function statusClasses(status: string) {
   return 'bg-slate-200 text-slate-700';
 }
 
+async function updateRecurringFrequency(formData: FormData) {
+  'use server';
+  let userId = 'unknown';
+  let centerId = 'unknown';
+  try {
+    const { user, profile } = await requireUser();
+    userId = user.id;
+    centerId = profile?.center_id ?? user.id;
+    const supabase = await createClient();
+
+    const recurringOrderId = String(formData.get('recurring_order_id') ?? '');
+    const frequency = String(formData.get('frequency') ?? '');
+
+    if (!recurringOrderId || !isRecurringFrequency(frequency)) {
+      redirect('/portal/recurring-orders?error=invalid_input');
+    }
+
+    const orderUpdateResult = await supabase
+      .from('recurring_orders')
+      .update({ frequency })
+      .eq('id', recurringOrderId)
+      .eq('center_id', centerId);
+    logQueryError('recurring_orders.update frequency', orderUpdateResult.error, { userId, centerId, recurringOrderId, frequency });
+    if (orderUpdateResult.error) redirect('/portal/recurring-orders?error=save_failed');
+
+    redirect('/portal/recurring-orders?success=saved');
+  } catch (error) {
+    if (isNextRedirectError(error)) throw error;
+    console.error('[recurring-orders] updateRecurringFrequency fatal', { userId, centerId, error });
+    redirect('/portal/recurring-orders?error=save_failed');
+  }
+}
+
 async function updateRecurringItem(formData: FormData) {
   'use server';
   let userId = 'unknown';
@@ -76,10 +109,9 @@ async function updateRecurringItem(formData: FormData) {
 
     const recurringOrderId = String(formData.get('recurring_order_id') ?? '');
     const recurringItemId = String(formData.get('recurring_item_id') ?? '');
-    const frequency = String(formData.get('frequency') ?? '');
     const qty = Number(formData.get('qty'));
 
-    if (!recurringOrderId || !recurringItemId || !isRecurringFrequency(frequency) || !Number.isInteger(qty) || qty < 1) {
+    if (!recurringOrderId || !recurringItemId || !Number.isInteger(qty) || qty < 1) {
       redirect('/portal/recurring-orders?error=invalid_input');
     }
 
@@ -94,14 +126,6 @@ async function updateRecurringItem(formData: FormData) {
     if (recurringItemResult.error || !recurringItem || recurringItem.recurring_order_id !== recurringOrderId) {
       redirect('/portal/recurring-orders?error=not_found');
     }
-
-    const orderUpdateResult = await supabase
-      .from('recurring_orders')
-      .update({ frequency })
-      .eq('id', recurringOrderId)
-      .eq('center_id', centerId);
-    logQueryError('recurring_orders.update frequency', orderUpdateResult.error, { userId, centerId, recurringOrderId, frequency });
-    if (orderUpdateResult.error) redirect('/portal/recurring-orders?error=save_failed');
 
     const itemUpdateResult = await supabase
       .from('recurring_order_items')
@@ -285,12 +309,25 @@ export default async function RecurringOrdersPage({ searchParams }: { searchPara
                 <span className={`rounded-full px-3 py-1 text-xs font-medium uppercase tracking-[0.14em] ${statusClasses(currentStatus)}`}>{currentStatus}</span>
               </div>
 
+              <form action={updateRecurringFrequency} className="grid gap-3 rounded-[1.5rem] border border-slate-200 bg-white/60 p-4 md:grid-cols-[minmax(0,1fr)_auto] md:items-end">
+                <input type="hidden" name="recurring_order_id" value={order.id} />
+                <label className="text-sm">
+                  <span className="mb-1 block text-xs text-slate-500">Shipment frequency</span>
+                  <select className="input" name="frequency" defaultValue={order.frequency}>
+                    {RECURRING_FREQUENCY_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>{option.label}</option>
+                    ))}
+                  </select>
+                </label>
+                <button className="btn-secondary" type="submit">Save Schedule</button>
+              </form>
+
               <div className="space-y-2">
                 {(itemsByOrderId.get(order.id) ?? []).map((item) => (
-                  <form key={item.id} action={updateRecurringItem} className="grid gap-3 rounded-[1.5rem] border border-slate-200 bg-white/60 p-4 md:grid-cols-5 md:items-end">
+                  <form key={item.id} action={updateRecurringItem} className="grid gap-3 rounded-[1.5rem] border border-slate-200 bg-white/60 p-4 md:grid-cols-[minmax(0,1fr)_10rem_auto] md:items-end">
                     <input type="hidden" name="recurring_order_id" value={order.id} />
                     <input type="hidden" name="recurring_item_id" value={item.id} />
-                    <div className="md:col-span-2">
+                    <div>
                       <div className="text-xs uppercase tracking-[0.18em] text-slate-500">Product</div>
                       <div className="mt-2 text-sm font-medium text-slate-950">{item.product_name_snapshot ?? 'Unknown product'}</div>
                     </div>
@@ -298,15 +335,7 @@ export default async function RecurringOrdersPage({ searchParams }: { searchPara
                       <span className="mb-1 block text-xs text-slate-500">Quantity</span>
                       <input className="input" type="number" name="qty" min={1} defaultValue={item.qty} />
                     </label>
-                    <label className="text-sm">
-                      <span className="mb-1 block text-xs text-slate-500">Frequency</span>
-                      <select className="input" name="frequency" defaultValue={order.frequency}>
-                        {RECURRING_FREQUENCY_OPTIONS.map((option) => (
-                          <option key={option.value} value={option.value}>{option.label}</option>
-                        ))}
-                      </select>
-                    </label>
-                    <button className="btn-primary" type="submit">Save</button>
+                    <button className="btn-primary" type="submit">Save Quantity</button>
                   </form>
                 ))}
               </div>

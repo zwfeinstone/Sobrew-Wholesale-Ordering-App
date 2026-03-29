@@ -12,11 +12,9 @@ export async function requireUser() {
     .single();
   const center = Array.isArray(profile?.centers) ? profile.centers[0] : profile?.centers;
   if (!profile?.is_active) {
-    await supabase.auth.signOut();
     redirect('/login?inactive=1');
   }
   if (!profile?.is_admin && (!profile?.center_id || center?.is_active === false)) {
-    await supabase.auth.signOut();
     redirect('/login?inactive=1');
   }
   return { user: data.user, profile: profile ? { ...profile, center } : profile };

@@ -1,0 +1,43 @@
+- generic [ref=e1]:
+  - generic [ref=e2]:
+    - banner [ref=e3]:
+      - generic [ref=e4]:
+        - generic [ref=e5]:
+          - generic [ref=e6]: Wholesale Portal
+          - heading "Sobrew Ordering" [level=1] [ref=e7]
+        - generic [ref=e8]:
+          - navigation [ref=e9]:
+            - link "Catalog" [ref=e10] [cursor=pointer]:
+              - /url: /portal
+            - link "Cart" [ref=e11] [cursor=pointer]:
+              - /url: /portal/cart
+            - link "Orders" [ref=e12] [cursor=pointer]:
+              - /url: /portal/orders
+            - link "Recurring" [ref=e13] [cursor=pointer]:
+              - /url: /portal/recurring-orders
+            - link "Settings" [ref=e14] [cursor=pointer]:
+              - /url: /portal/settings
+          - button "Log out" [ref=e16] [cursor=pointer]
+    - main [ref=e17]:
+      - generic [ref=e18]:
+        - generic [ref=e19]:
+          - generic [ref=e20]: Checkout
+          - heading "Place your order" [level=1] [ref=e21]
+          - paragraph [ref=e22]: Add any final notes, optionally turn this into a recurring order, and submit when everything looks right.
+        - generic [ref=e23]:
+          - generic [ref=e24]:
+            - text: Notes
+            - textbox "Delivery notes, special handling, or anything your team should know." [ref=e25]
+          - generic [ref=e26]:
+            - generic [ref=e27]:
+              - checkbox "Make this order recurring" [checked] [ref=e28]
+              - text: Make this order recurring
+            - generic [ref=e29]:
+              - generic [ref=e30]: Recurring frequency
+              - combobox [ref=e31]:
+                - option "Every 1 week" [selected]
+                - option "Every 2 weeks"
+                - option "Every 3 weeks"
+                - option "Every 4 weeks"
+          - button "Place order" [active] [ref=e32] [cursor=pointer]
+  - alert [ref=e33]
