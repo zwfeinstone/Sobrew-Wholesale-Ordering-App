@@ -4,6 +4,7 @@ import { requireUser } from '@/lib/auth';
 
 export default async function PortalLayout({ children }: { children: React.ReactNode }) {
   const { profile } = await requireUser();
+  const centerName = !profile?.is_admin ? profile?.center?.name?.trim() : '';
   return (
     <div className="min-h-screen">
       <header className="sticky top-0 z-30 border-b border-white/40 bg-white/65 px-3 py-3 backdrop-blur-xl sm:px-4 sm:py-4">
@@ -11,6 +12,9 @@ export default async function PortalLayout({ children }: { children: React.React
           <div className="min-w-0">
             <span className="eyebrow">Wholesale Portal</span>
             <h1 className="mt-2 text-xl font-semibold tracking-tight text-slate-950">Sobrew Ordering</h1>
+            {centerName ? (
+              <p className="mt-3 text-sm font-medium text-slate-950">{centerName}</p>
+            ) : null}
           </div>
           <div className="flex flex-col gap-3 text-sm sm:flex-row sm:items-center sm:justify-between">
             <nav className="flex gap-2 overflow-x-auto pb-1 text-sm [scrollbar-width:none] [-ms-overflow-style:none] sm:flex-wrap sm:overflow-visible sm:pb-0">
