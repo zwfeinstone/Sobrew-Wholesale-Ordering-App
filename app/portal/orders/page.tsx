@@ -76,21 +76,21 @@ export default async function OrdersPage({
         <h1 className="page-title mt-4">Order history</h1>
         <p className="page-subtitle mt-3">Track previous purchases, review line items, and quickly reorder when you need to restock.</p>
       </section>
-      <div className="flex items-center justify-between gap-3">
+      <div className="flex flex-col items-start gap-3 sm:flex-row sm:items-center sm:justify-between">
         <p className="text-sm text-slate-500">Page {page}</p>
-        <div className="flex items-center gap-3">
-          {page > 1 ? <Link href={`/portal/orders?page=${page - 1}`} className="btn-secondary">Previous</Link> : null}
-          {hasNextPage ? <Link href={`/portal/orders?page=${page + 1}`} className="btn-secondary">Next</Link> : null}
+        <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row sm:items-center">
+          {page > 1 ? <Link href={`/portal/orders?page=${page - 1}`} className="btn-secondary w-full sm:w-auto">Previous</Link> : null}
+          {hasNextPage ? <Link href={`/portal/orders?page=${page + 1}`} className="btn-secondary w-full sm:w-auto">Next</Link> : null}
         </div>
       </div>
       {orders?.map((order) => (
         <div key={order.id} className="card transition-all duration-200 hover:-translate-y-0.5 hover:bg-white/95">
           <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-            <Link href={`/portal/orders/${order.id}`} className="block flex-1">
-              <p className="text-lg font-semibold text-slate-950">{(lineItemsByOrderId.get(order.id) ?? ['Unknown product']).join(', ')}</p>
+            <Link href={`/portal/orders/${order.id}`} className="block flex-1 min-w-0">
+              <p className="break-words text-lg font-semibold text-slate-950">{(lineItemsByOrderId.get(order.id) ?? ['Unknown product']).join(', ')}</p>
               <p className="mt-2 text-sm text-slate-500">Placed {formatOrderTimestamp(order.created_at)}</p>
             </Link>
-            <div className="flex flex-wrap items-center gap-3">
+            <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row sm:flex-wrap sm:items-center sm:justify-end">
               <span className="rounded-full bg-slate-100 px-3 py-1 text-sm font-medium text-slate-700">{order.status}</span>
               <span className="text-lg font-semibold text-slate-950">{usd(order.subtotal_cents)}</span>
               <ReorderButton items={reorderItemsByOrderId.get(order.id) ?? []} />

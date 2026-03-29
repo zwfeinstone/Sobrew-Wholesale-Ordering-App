@@ -15,6 +15,7 @@
 
 html {
   min-height: 100%;
+  -webkit-text-size-adjust: 100%;
 }
 
 body {
@@ -25,6 +26,7 @@ body {
     radial-gradient(circle at top left, rgba(45, 212, 191, 0.18), transparent 30%),
     radial-gradient(circle at top right, rgba(250, 204, 21, 0.14), transparent 26%),
     linear-gradient(180deg, #f8fafc 0%, #eef6f4 42%, #f8fafc 100%);
+  overflow-x: hidden;
 }
 
 a {
@@ -128,6 +130,33 @@ a {
 .nav-pill:hover {
   background: rgba(255, 255, 255, 0.72);
   color: var(--ink);
+}
+
+@media (max-width: 640px) {
+  .card {
+    @apply rounded-[1.75rem] p-4;
+  }
+
+  .panel {
+    @apply rounded-[1.75rem] p-5;
+  }
+
+  .page-title {
+    @apply text-[2rem] leading-tight;
+  }
+
+  .page-subtitle {
+    @apply text-sm leading-6;
+  }
+
+  .btn-primary,
+  .btn-secondary {
+    @apply min-h-[3rem];
+  }
+
+  .input {
+    font-size: 16px;
+  }
 }
 
 @media print {

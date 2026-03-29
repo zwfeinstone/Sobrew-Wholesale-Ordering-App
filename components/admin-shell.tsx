@@ -18,8 +18,8 @@ export function AdminShell({ children, newOrders }: { children: ReactNode; newOr
   return (
     <div className="min-h-screen md:flex">
       <AdminRealtimeSync />
-      <aside className="border-b border-white/40 bg-white/70 p-4 backdrop-blur-xl md:min-h-screen md:w-72 md:border-b-0 md:border-r md:px-5 md:py-6">
-        <div className="card space-y-6 p-5">
+      <aside className="border-b border-white/40 bg-white/70 p-3 backdrop-blur-xl sm:p-4 md:min-h-screen md:w-72 md:border-b-0 md:border-r md:px-5 md:py-6">
+        <div className="card space-y-6 p-4 sm:p-5">
           <div className="space-y-3">
             <span className="eyebrow">Admin Console</span>
             <div>
@@ -34,11 +34,11 @@ export function AdminShell({ children, newOrders }: { children: ReactNode; newOr
           </div>
           <LogoutButton className="btn-secondary w-full" />
         </div>
-        <nav className="mt-4 space-y-2">
+        <nav className="mt-4 grid gap-2 sm:grid-cols-2 md:block md:space-y-2">
           {links.map(([name, href]) => (
             <Link
               key={href}
-              className="flex items-center justify-between rounded-2xl border border-transparent bg-white/45 px-4 py-3 text-sm font-medium text-slate-700 transition-all duration-200 hover:-translate-y-0.5 hover:border-white/60 hover:bg-white/90 hover:text-slate-950"
+              className="flex min-h-[3rem] items-center justify-between rounded-2xl border border-transparent bg-white/45 px-4 py-3 text-sm font-medium text-slate-700 transition-all duration-200 hover:-translate-y-0.5 hover:border-white/60 hover:bg-white/90 hover:text-slate-950"
               href={href}
             >
               <span>{name}</span>
@@ -47,7 +47,7 @@ export function AdminShell({ children, newOrders }: { children: ReactNode; newOr
           ))}
         </nav>
       </aside>
-      <main className="flex-1 px-4 py-6 md:px-8 md:py-8">
+      <main className="flex-1 px-3 py-5 sm:px-4 md:px-8 md:py-8">
         <div className="mx-auto max-w-6xl">{children}</div>
       </main>
     </div>

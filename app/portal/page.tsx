@@ -50,12 +50,12 @@ export default async function PortalPage() {
           return (
             <div key={product.id} className="card flex h-full flex-col justify-between gap-5">
               <div className="space-y-4">
-                <div className="flex items-start justify-between gap-4">
-                  <div>
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                  <div className="min-w-0">
                     <h2 className="text-xl font-semibold tracking-tight text-slate-950">{product.name}</h2>
                     <p className="mt-2 text-sm leading-6 text-slate-500">{product.description || 'No description available.'}</p>
                   </div>
-                  <div className="rounded-full bg-teal-50 px-3 py-1 text-sm font-semibold text-teal-700">{usd(price)}</div>
+                  <div className="self-start rounded-full bg-teal-50 px-3 py-1 text-sm font-semibold text-teal-700">{usd(price)}</div>
                 </div>
                 <div className="rounded-[1.5rem] border border-dashed border-slate-200 bg-white/50 p-4">
                   <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Ready To Order</p>

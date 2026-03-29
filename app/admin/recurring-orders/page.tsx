@@ -96,7 +96,7 @@ export default async function AdminRecurringOrdersPage({ searchParams }: { searc
           <option value="active">Active</option>
           <option value="paused">Paused</option>
         </select>
-        <button className="btn-primary" type="submit">Filter</button>
+        <button className="btn-primary w-full md:w-auto" type="submit">Filter</button>
       </form>
 
       {!recurringOrders?.length ? <div className="card text-sm text-slate-600">No recurring orders found.</div> : null}
@@ -106,10 +106,10 @@ export default async function AdminRecurringOrdersPage({ searchParams }: { searc
         return (
           <div key={order.id} className="card space-y-4">
             <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
-              <div>
+              <div className="min-w-0">
                 <div className="text-sm text-slate-500">Center</div>
                 <div className="font-medium">{order.centers?.name || 'Unknown center'}</div>
-                <div className="text-sm text-slate-600">{order.profiles?.email || 'No login email on file'}</div>
+                <div className="break-all text-sm text-slate-600">{order.profiles?.email || 'No login email on file'}</div>
               </div>
               <Link className="text-sm text-slate-700 underline" href={`/admin/users/${order.center_id}`}>
                 View center profile
@@ -149,22 +149,22 @@ export default async function AdminRecurringOrdersPage({ searchParams }: { searc
               ))}
             </div>
 
-            <form action={updateRecurringOrder} className="flex flex-wrap items-center gap-3">
+            <form action={updateRecurringOrder} className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
               <input type="hidden" name="id" value={order.id} />
               <input type="hidden" name="statusFilter" value={statusFilter} />
               <label className="text-sm text-slate-600">Frequency</label>
-              <select className="input" name="frequency" defaultValue={order.frequency}>
+              <select className="input w-full sm:w-auto" name="frequency" defaultValue={order.frequency}>
                 {RECURRING_FREQUENCY_OPTIONS.map((option) => (
                   <option key={option.value} value={option.value}>{option.label}</option>
                 ))}
               </select>
               <label className="text-sm text-slate-600">Status</label>
-              <select className="input" name="status" defaultValue={order.status}>
+              <select className="input w-full sm:w-auto" name="status" defaultValue={order.status}>
                 <option value="active">Active</option>
                 <option value="paused">Paused</option>
                 <option value="canceled">Canceled</option>
               </select>
-              <button className="btn-primary" type="submit">Save changes</button>
+              <button className="btn-primary w-full sm:w-auto" type="submit">Save changes</button>
             </form>
           </div>
         );

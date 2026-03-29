@@ -21,13 +21,13 @@ export default async function UsersPage() {
 
   return (
     <div className="space-y-8">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <span className="eyebrow">Center Admin</span>
           <h1 className="page-title mt-4">Centers</h1>
           <p className="page-subtitle mt-3">Create centers, add or remove login access, and keep product pricing tied to the center instead of a single employee account.</p>
         </div>
-        <Link href="/admin/users/new" className="btn-primary">Add Center</Link>
+        <Link href="/admin/users/new" className="btn-primary w-full sm:w-auto">Add Center</Link>
       </div>
 
       <section className="space-y-4">
@@ -36,7 +36,7 @@ export default async function UsersPage() {
           <Link key={center.id} href={`/admin/users/${center.id}`} className="card block transition-all duration-200 hover:-translate-y-0.5 hover:bg-white/95">
             <p className="text-lg font-semibold text-slate-950">{center.name}</p>
             <p className="mt-2 text-sm text-slate-500">
-              {center.is_active ? 'Active center' : 'Inactive center'} • {activeMemberCountsByCenterId.get(center.id) ?? 0} active login(s) • {memberCountsByCenterId.get(center.id) ?? 0} total login(s)
+              {center.is_active ? 'Active center' : 'Inactive center'} - {activeMemberCountsByCenterId.get(center.id) ?? 0} active login(s) - {memberCountsByCenterId.get(center.id) ?? 0} total login(s)
             </p>
           </Link>
         ))}
@@ -51,7 +51,7 @@ export default async function UsersPage() {
         {adminUsers?.map((user: any) => (
           <Link key={user.id} href={`/admin/users/${user.id}`} className="card block transition-all duration-200 hover:-translate-y-0.5 hover:bg-white/95">
             <p className="text-lg font-semibold text-slate-950">{user.full_name || user.email}</p>
-            <p className="mt-2 text-sm text-slate-500">{user.email}</p>
+            <p className="mt-2 break-all text-sm text-slate-500">{user.email}</p>
             <p className="mt-2 text-sm text-slate-500">{!user.is_active ? 'Deactivated' : 'Active'}</p>
           </Link>
         ))}

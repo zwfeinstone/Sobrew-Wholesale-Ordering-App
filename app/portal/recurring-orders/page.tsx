@@ -319,7 +319,7 @@ export default async function RecurringOrdersPage({ searchParams }: { searchPara
                     ))}
                   </select>
                 </label>
-                <button className="btn-secondary" type="submit">Save Schedule</button>
+                <button className="btn-secondary w-full md:w-auto" type="submit">Save Schedule</button>
               </form>
 
               <div className="space-y-2">
@@ -335,21 +335,21 @@ export default async function RecurringOrdersPage({ searchParams }: { searchPara
                       <span className="mb-1 block text-xs text-slate-500">Quantity</span>
                       <input className="input" type="number" name="qty" min={1} defaultValue={item.qty} />
                     </label>
-                    <button className="btn-primary" type="submit">Save Quantity</button>
+                    <button className="btn-primary w-full md:w-auto" type="submit">Save Quantity</button>
                   </form>
                 ))}
               </div>
 
-              <div className="flex gap-3">
-                <form action={setRecurringStatus}>
+              <div className="flex flex-col gap-3 sm:flex-row">
+                <form action={setRecurringStatus} className="w-full sm:w-auto">
                   <input type="hidden" name="recurring_order_id" value={order.id} />
                   <input type="hidden" name="status" value={currentStatus === 'paused' ? 'active' : 'paused'} />
-                  <button className="btn-secondary" type="submit">{currentStatus === 'paused' ? 'Resume' : 'Pause'}</button>
+                  <button className="btn-secondary w-full" type="submit">{currentStatus === 'paused' ? 'Resume' : 'Pause'}</button>
                 </form>
-                <form action={setRecurringStatus}>
+                <form action={setRecurringStatus} className="w-full sm:w-auto">
                   <input type="hidden" name="recurring_order_id" value={order.id} />
                   <input type="hidden" name="status" value="canceled" />
-                  <button className="rounded-full border border-rose-200 px-4 py-2.5 text-sm font-semibold text-rose-700 transition-all duration-200 hover:bg-rose-50" type="submit">Cancel</button>
+                  <button className="w-full rounded-full border border-rose-200 px-4 py-2.5 text-sm font-semibold text-rose-700 transition-all duration-200 hover:bg-rose-50" type="submit">Cancel</button>
                 </form>
               </div>
             </div>

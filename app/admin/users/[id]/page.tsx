@@ -244,7 +244,7 @@ export default async function UserDetailPage({
             ))}
           </section>
 
-          <button className="btn-primary">Save Center</button>
+          <button className="btn-primary w-full sm:w-auto">Save Center</button>
         </form>
 
         <section className="card space-y-4">
@@ -257,7 +257,7 @@ export default async function UserDetailPage({
             <input className="input" name="full_name" placeholder="Login name" />
             <input className="input" name="email" type="email" required placeholder="Email address" />
             <input className="input" name="password" type="password" minLength={8} required placeholder="Temporary password" />
-            <button className="btn-primary" type="submit">Add Login</button>
+            <button className="btn-primary w-full md:w-auto" type="submit">Add Login</button>
           </form>
         </section>
 
@@ -271,7 +271,7 @@ export default async function UserDetailPage({
             <div key={member.id} className="card space-y-4">
               <div>
                 <p className="text-lg font-semibold text-slate-950">{member.full_name || member.email}</p>
-                <p className="mt-1 text-sm text-slate-500">{member.email}</p>
+                <p className="mt-1 break-all text-sm text-slate-500">{member.email}</p>
               </div>
               <form action={updateCenterLogin} className="grid gap-3 md:grid-cols-[1.2fr_1fr_auto_auto] md:items-center">
                 <input type="hidden" name="center_id" value={center.id} />
@@ -282,12 +282,12 @@ export default async function UserDetailPage({
                   <input type="checkbox" name="is_active" defaultChecked={member.is_active} />
                   Active
                 </label>
-                <button className="btn-primary" type="submit">Save Login</button>
+                <button className="btn-primary w-full md:w-auto" type="submit">Save Login</button>
               </form>
-              <form action={removeCenterLogin}>
+              <form action={removeCenterLogin} className="w-full md:w-auto">
                 <input type="hidden" name="center_id" value={center.id} />
                 <input type="hidden" name="member_id" value={member.id} />
-                <button className="btn-secondary" type="submit">Remove Login</button>
+                <button className="btn-secondary w-full md:w-auto" type="submit">Remove Login</button>
               </form>
             </div>
           ))}
@@ -320,7 +320,7 @@ export default async function UserDetailPage({
           Active (uncheck to deactivate)
         </label>
       </section>
-      <button className="btn-primary">Save</button>
+      <button className="btn-primary w-full sm:w-auto">Save</button>
     </form>
   );
 }
