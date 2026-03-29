@@ -10,9 +10,18 @@ const TIME_RANGE_OPTIONS = [
   { value: 'lifetime', label: 'Lifetime' },
 ] as const;
 
+const DAY_IN_MS = 24 * 60 * 60 * 1000;
+const PAGE_SIZE = 8;
+
 type TimeRange = (typeof TIME_RANGE_OPTIONS)[number]['value'];
 
+type MetricRow = {
+  created_at: string | null;
+  subtotal_cents?: number | null;
+};
+
 type Bucket = {
+  key: string;
   label: string;
   value: number;
 };
@@ -33,8 +42,7 @@ function startOfDay(date: Date) {
 
 function startOfWeek(date: Date) {
   const next = startOfDay(date);
-  const diff = next.getDay();
-  next.setDate(next.getDate() - diff);
+  next.setDate(next.getDate() - next.getDay());
   return next;
 }
 
@@ -47,9 +55,7 @@ function startOfYear(date: Date) {
 }
 
 function addDays(date: Date, days: number) {
-  const next = new Date(date);
-  next.setDate(next.getDate() + days);
-  return next;
+  return new Date(date.getTime() + days * DAY_IN_MS);
 }
 
 function formatBucketLabel(date: Date, range: TimeRange) {
@@ -58,107 +64,86 @@ function formatBucketLabel(date: Date, range: TimeRange) {
   return date.toLocaleDateString('en-US', { month: 'short' });
 }
 
+function keyForDate(date: Date, range: TimeRange) {
+  if (range === 'week' || range === 'month') {
+    return `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
+  }
+  if (range === 'year') {
+    return `${date.getFullYear()}-${date.getMonth()}`;
+  }
+  return String(date.getFullYear());
+}
+
 function getRangeBounds(range: TimeRange, now: Date) {
-  const end = new Date(now);
-  if (range === 'week') return { start: startOfWeek(now), end };
-  if (range === 'month') return { start: startOfMonth(now), end };
-  if (range === 'year') return { start: startOfYear(now), end };
-  if (range === 'previous_years') return { start: null, end: startOfYear(now) };
-  return { start: null, end: null };
+  if (range === 'week') return { start: startOfWeek(now), end: null as Date | null };
+  if (range === 'month') return { start: startOfMonth(now), end: null as Date | null };
+  if (range === 'year') return { start: startOfYear(now), end: null as Date | null };
+  if (range === 'previous_years') return { start: null as Date | null, end: startOfYear(now) };
+  return { start: null as Date | null, end: null as Date | null };
 }
 
-function rowInRange(dateValue: string | null, range: TimeRange, now: Date) {
-  if (!dateValue) return false;
-  const date = new Date(dateValue);
-  if (Number.isNaN(date.getTime())) return false;
+function applyRangeToQuery(query: any, column: string, range: TimeRange, now: Date) {
   const { start, end } = getRangeBounds(range, now);
-  if (range === 'previous_years') return date < (end as Date);
-  if (start && date < start) return false;
-  if (end && date > end) return false;
-  return true;
+  let nextQuery = query;
+  if (start) nextQuery = nextQuery.gte(column, start.toISOString());
+  if (end) nextQuery = nextQuery.lt(column, end.toISOString());
+  return nextQuery;
 }
 
-function filterRows<T>(rows: T[], getDate: (row: T) => string | null, range: TimeRange, now: Date) {
-  return rows.filter((row) => rowInRange(getDate(row), range, now));
-}
-
-function buildBuckets<T>(
-  rows: T[],
-  getDate: (row: T) => string | null,
-  getValue: (row: T) => number,
-  range: TimeRange,
-  now: Date,
-): Bucket[] {
+function buildPredefinedBuckets(range: TimeRange, now: Date): Bucket[] | null {
   if (range === 'week') {
     const start = startOfWeek(now);
-    const keys = Array.from({ length: 7 }, (_, index) => addDays(start, index));
-    return keys.map((date) => ({
-      label: formatBucketLabel(date, range),
-      value: rows
-        .filter((row) => {
-          const value = getDate(row);
-          if (!value) return false;
-          const rowDate = new Date(value);
-          return startOfDay(rowDate).getTime() === startOfDay(date).getTime();
-        })
-        .reduce((sum, row) => sum + getValue(row), 0),
-    }));
+    return Array.from({ length: 7 }, (_, index) => {
+      const date = addDays(start, index);
+      return { key: keyForDate(date, range), label: formatBucketLabel(date, range), value: 0 };
+    });
   }
 
   if (range === 'month') {
     const start = startOfMonth(now);
     const today = startOfDay(now);
-    const buckets: Bucket[] = [];
-    for (let date = new Date(start); date <= today; date = addDays(date, 1)) {
-      buckets.push({
-        label: formatBucketLabel(date, range),
-        value: rows
-          .filter((row) => {
-            const value = getDate(row);
-            if (!value) return false;
-            return startOfDay(new Date(value)).getTime() === startOfDay(date).getTime();
-          })
-          .reduce((sum, row) => sum + getValue(row), 0),
-      });
-    }
-    return buckets;
+    const dayCount = Math.floor((today.getTime() - start.getTime()) / DAY_IN_MS) + 1;
+    return Array.from({ length: dayCount }, (_, index) => {
+      const date = addDays(start, index);
+      return { key: keyForDate(date, range), label: formatBucketLabel(date, range), value: 0 };
+    });
   }
 
   if (range === 'year') {
-    const buckets: Bucket[] = [];
-    for (let month = 0; month <= now.getMonth(); month += 1) {
-      const monthDate = new Date(now.getFullYear(), month, 1);
-      buckets.push({
-        label: formatBucketLabel(monthDate, range),
-        value: rows
-          .filter((row) => {
-            const value = getDate(row);
-            if (!value) return false;
-            const rowDate = new Date(value);
-            return rowDate.getFullYear() === now.getFullYear() && rowDate.getMonth() === month;
-          })
-          .reduce((sum, row) => sum + getValue(row), 0),
-      });
-    }
-    return buckets;
+    return Array.from({ length: now.getMonth() + 1 }, (_, monthIndex) => {
+      const date = new Date(now.getFullYear(), monthIndex, 1);
+      return { key: keyForDate(date, range), label: formatBucketLabel(date, range), value: 0 };
+    });
   }
 
-  if (range === 'previous_years' || range === 'lifetime') {
-    const yearMap = new Map<number, number>();
+  return null;
+}
+
+function buildBuckets(rows: MetricRow[], range: TimeRange, now: Date, getValue: (row: MetricRow) => number) {
+  const predefined = buildPredefinedBuckets(range, now);
+  if (predefined) {
+    const bucketMap = new Map(predefined.map((bucket) => [bucket.key, bucket]));
     for (const row of rows) {
-      const value = getDate(row);
-      if (!value) continue;
-      const rowDate = new Date(value);
-      if (Number.isNaN(rowDate.getTime())) continue;
-      if (range === 'previous_years' && rowDate.getFullYear() >= now.getFullYear()) continue;
-      yearMap.set(rowDate.getFullYear(), (yearMap.get(rowDate.getFullYear()) ?? 0) + getValue(row));
+      if (!row.created_at) continue;
+      const date = new Date(row.created_at);
+      if (Number.isNaN(date.getTime())) continue;
+      const bucket = bucketMap.get(keyForDate(date, range));
+      if (bucket) bucket.value += getValue(row);
     }
-
-    const years = [...yearMap.keys()].sort((a, b) => a - b);
-    return years.map((year) => ({ label: String(year), value: yearMap.get(year) ?? 0 }));
+    return predefined;
   }
 
-  return [];
+  const yearMap = new Map<number, number>();
+  for (const row of rows) {
+    if (!row.created_at) continue;
+    const date = new Date(row.created_at);
+    if (Number.isNaN(date.getTime())) continue;
+    yearMap.set(date.getFullYear(), (yearMap.get(date.getFullYear()) ?? 0) + getValue(row));
+  }
+
+  return [...yearMap.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([year, value]) => ({ key: String(year), label: String(year), value }));
 }
 
 function buildPath(values: number[], width: number, height: number) {
@@ -171,6 +156,15 @@ function buildPath(values: number[], width: number, height: number) {
       return `${index === 0 ? 'M' : 'L'} ${x.toFixed(2)} ${y.toFixed(2)}`;
     })
     .join(' ');
+}
+
+function formatCompactCurrency(cents: number) {
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: 'USD',
+    notation: 'compact',
+    maximumFractionDigits: 1,
+  }).format(cents / 100);
 }
 
 function StatChart({ buckets, color }: { buckets: ChartBucket[]; color: string }) {
@@ -193,19 +187,19 @@ function StatChart({ buckets, color }: { buckets: ChartBucket[]; color: string }
             const x = index * barWidth + barWidth * 0.15;
             const barHeight = (value / max) * height;
             const y = height - barHeight;
-            return <rect key={buckets[index].label} x={x} y={y} width={barWidth * 0.7} height={Math.max(barHeight, 4)} rx="10" fill={color} opacity="0.18" />;
+            return <rect key={buckets[index].key} x={x} y={y} width={barWidth * 0.7} height={Math.max(barHeight, 4)} rx="10" fill={color} opacity="0.18" />;
           })}
           <path d={path} fill="none" stroke={color} strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
           {values.map((value, index) => {
             const x = values.length === 1 ? width / 2 : (index / (values.length - 1)) * width;
             const y = height - (value / max) * height;
-            return <circle key={`${buckets[index].label}-point`} cx={x} cy={y} r="4" fill={color} />;
+            return <circle key={`${buckets[index].key}-point`} cx={x} cy={y} r="4" fill={color} />;
           })}
         </svg>
       </div>
       <div className="grid grid-cols-3 gap-2 text-xs text-slate-500 sm:grid-cols-6">
         {buckets.slice(-6).map((bucket) => (
-          <div key={bucket.label} className="rounded-xl bg-white/50 px-3 py-2 text-center">
+          <div key={bucket.key} className="rounded-xl bg-white/50 px-3 py-2 text-center">
             <div className="font-semibold text-slate-700">{bucket.label}</div>
             <div className="mt-1">{bucket.displayValue}</div>
           </div>
@@ -213,15 +207,6 @@ function StatChart({ buckets, color }: { buckets: ChartBucket[]; color: string }
       </div>
     </div>
   );
-}
-
-function formatCompactCurrency(cents: number) {
-  return new Intl.NumberFormat('en-US', {
-    style: 'currency',
-    currency: 'USD',
-    notation: 'compact',
-    maximumFractionDigits: 1,
-  }).format(cents / 100);
 }
 
 function FilterForm({
@@ -304,11 +289,16 @@ export default async function AdminDashboard({
   const revenueRange = normalizeTimeRange(searchParams?.revenueRange);
   const usersRange = normalizeTimeRange(searchParams?.usersRange);
 
-  const [{ count: newOrders }, { data: recent }, { data: orderStatsRows }, { data: userStatsRows }] = await Promise.all([
-    supabase.from('orders').select('*', { head: true, count: 'exact' }).eq('status', 'New').is('archived_at', null),
-    supabase.from('orders').select('id,status,created_at,profiles(email)').is('archived_at', null).order('created_at', { ascending: false }).limit(8),
-    supabase.from('orders').select('id,created_at,subtotal_cents'),
-    supabase.from('profiles').select('id,created_at'),
+  const ordersMetricQuery = applyRangeToQuery(supabase.from('orders').select('created_at'), 'created_at', ordersRange, now);
+  const revenueMetricQuery = applyRangeToQuery(supabase.from('orders').select('created_at,subtotal_cents'), 'created_at', revenueRange, now);
+  const usersMetricQuery = applyRangeToQuery(supabase.from('profiles').select('created_at'), 'created_at', usersRange, now);
+
+  const [{ count: newOrders }, { data: recent }, { data: orderMetricRows }, { data: revenueMetricRows }, { data: userMetricRows }] = await Promise.all([
+    supabase.from('orders').select('id', { head: true, count: 'exact' }).eq('status', 'New').is('archived_at', null),
+    supabase.from('orders').select('id,status,created_at,profiles(email)').is('archived_at', null).order('created_at', { ascending: false }).limit(PAGE_SIZE),
+    ordersMetricQuery,
+    revenueMetricQuery,
+    usersMetricQuery,
   ]);
 
   const orderIds = (recent ?? []).map((order: any) => order.id);
@@ -320,25 +310,20 @@ export default async function AdminDashboard({
   const { data: products } = productIds.length
     ? await supabase.from('products').select('id,name').in('id', productIds)
     : { data: [] as any[] };
-  const productNameById = new Map((products ?? []).map((p: any) => [p.id, p.name]));
+  const productNameById = new Map((products ?? []).map((product: any) => [product.id, product.name]));
 
   const firstNameByOrderId = new Map<string, string>();
   for (const item of items ?? []) {
     if (!firstNameByOrderId.has(item.order_id)) {
-      const mappedName = productNameById.get(item.product_id);
-      firstNameByOrderId.set(item.order_id, mappedName || item.product_name_snapshot || 'Unknown product');
+      firstNameByOrderId.set(item.order_id, productNameById.get(item.product_id) || item.product_name_snapshot || 'Unknown product');
     }
   }
 
-  const ordersInRange = filterRows(orderStatsRows ?? [], (row: any) => row.created_at, ordersRange, now);
-  const revenueInRange = filterRows(orderStatsRows ?? [], (row: any) => row.created_at, revenueRange, now);
-  const usersInRange = filterRows(userStatsRows ?? [], (row: any) => row.created_at, usersRange, now);
+  const orderBuckets = buildBuckets((orderMetricRows ?? []) as MetricRow[], ordersRange, now, () => 1);
+  const revenueBuckets = buildBuckets((revenueMetricRows ?? []) as MetricRow[], revenueRange, now, (row) => row.subtotal_cents ?? 0);
+  const userBuckets = buildBuckets((userMetricRows ?? []) as MetricRow[], usersRange, now, () => 1);
 
-  const orderBuckets = buildBuckets(ordersInRange, (row: any) => row.created_at, () => 1, ordersRange, now);
-  const revenueBuckets = buildBuckets(revenueInRange, (row: any) => row.created_at, (row: any) => row.subtotal_cents ?? 0, revenueRange, now);
-  const userBuckets = buildBuckets(usersInRange, (row: any) => row.created_at, () => 1, usersRange, now);
-
-  const totalRevenueCents = revenueInRange.reduce((sum: number, row: any) => sum + (row.subtotal_cents ?? 0), 0);
+  const totalRevenueCents = ((revenueMetricRows ?? []) as MetricRow[]).reduce((sum, row) => sum + (row.subtotal_cents ?? 0), 0);
 
   return (
     <div className="space-y-6">
@@ -369,7 +354,7 @@ export default async function AdminDashboard({
       <section className="grid gap-5 xl:grid-cols-3">
         <StatCard
           title="Orders"
-          value={ordersInRange.length.toLocaleString()}
+          value={(orderMetricRows?.length ?? 0).toLocaleString()}
           tone="#0f766e"
           description="Total orders placed in the selected time range."
           buckets={orderBuckets}
@@ -390,7 +375,7 @@ export default async function AdminDashboard({
         />
         <StatCard
           title="New Users"
-          value={usersInRange.length.toLocaleString()}
+          value={(userMetricRows?.length ?? 0).toLocaleString()}
           tone="#2563eb"
           description="New customer accounts created in the selected time range."
           buckets={userBuckets}

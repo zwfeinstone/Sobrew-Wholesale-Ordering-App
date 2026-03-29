@@ -1,12 +1,22 @@
 import Link from 'next/link';
 import { createClient } from '@/lib/supabase/server';
 
+const PAGE_SIZE = 25;
+
 function formatOrderTimestamp(value: string | null) {
   if (!value) return 'Unknown';
   return new Date(value).toLocaleString('en-US', {
     dateStyle: 'medium',
     timeStyle: 'short',
   });
+}
+
+function buildPageHref(page: number, sort: string, nameFilter: string) {
+  const params = new URLSearchParams();
+  params.set('page', String(page));
+  params.set('sort', sort);
+  if (nameFilter) params.set('name', nameFilter);
+  return `/admin/archived-orders?${params.toString()}`;
 }
 
 export default async function ArchivedOrdersPage({
@@ -17,6 +27,10 @@ export default async function ArchivedOrdersPage({
   const supabase = await createClient();
   const sort = typeof searchParams?.sort === 'string' ? searchParams.sort : 'archived_desc';
   const nameFilter = typeof searchParams?.name === 'string' ? searchParams.name.trim() : '';
+  const pageParam = typeof searchParams?.page === 'string' ? Number(searchParams.page) : 1;
+  const page = Number.isInteger(pageParam) && pageParam > 0 ? pageParam : 1;
+  const from = (page - 1) * PAGE_SIZE;
+  const to = from + PAGE_SIZE;
 
   let ordersQuery = supabase
     .from('orders')
@@ -42,7 +56,9 @@ export default async function ArchivedOrdersPage({
       break;
   }
 
-  const { data: orders } = await ordersQuery.limit(200);
+  const { data: orderRows } = await ordersQuery.range(from, to);
+  const orders = (orderRows ?? []).slice(0, PAGE_SIZE);
+  const hasNextPage = (orderRows?.length ?? 0) > PAGE_SIZE;
 
   const orderIds = (orders ?? []).map((order: any) => order.id);
   const { data: items } = orderIds.length
@@ -81,6 +97,14 @@ export default async function ArchivedOrdersPage({
         </select>
         <button className="btn-primary" type="submit">Apply</button>
       </form>
+
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-sm text-slate-500">Page {page}</p>
+        <div className="flex items-center gap-3">
+          {page > 1 ? <Link href={buildPageHref(page - 1, sort, nameFilter)} className="btn-secondary">Previous</Link> : null}
+          {hasNextPage ? <Link href={buildPageHref(page + 1, sort, nameFilter)} className="btn-secondary">Next</Link> : null}
+        </div>
+      </div>
 
       {!orders?.length ? <div className="card text-sm text-slate-600">No archived orders yet.</div> : null}
 

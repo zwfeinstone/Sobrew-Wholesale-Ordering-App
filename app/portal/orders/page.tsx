@@ -5,6 +5,8 @@ import { createClient } from '@/lib/supabase/server';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { usd } from '@/lib/utils';
 
+const PAGE_SIZE = 25;
+
 function formatOrderTimestamp(value: string | null) {
   if (!value) return 'Unknown';
   return new Date(value).toLocaleString('en-US', {
@@ -13,14 +15,27 @@ function formatOrderTimestamp(value: string | null) {
   });
 }
 
-export default async function OrdersPage() {
+export default async function OrdersPage({
+  searchParams,
+}: {
+  searchParams?: Record<string, string | string[] | undefined>;
+}) {
   const { user } = await requireUser();
   const supabase = await createClient();
-  const { data: orders } = await supabase
+  const pageParam = typeof searchParams?.page === 'string' ? Number(searchParams.page) : 1;
+  const page = Number.isInteger(pageParam) && pageParam > 0 ? pageParam : 1;
+  const from = (page - 1) * PAGE_SIZE;
+  const to = from + PAGE_SIZE;
+
+  const { data: orderRows } = await supabase
     .from('orders')
     .select('id,status,subtotal_cents,created_at')
     .eq('user_id', user.id)
-    .order('created_at', { ascending: false });
+    .order('created_at', { ascending: false })
+    .range(from, to);
+
+  const orders = (orderRows ?? []).slice(0, PAGE_SIZE);
+  const hasNextPage = (orderRows?.length ?? 0) > PAGE_SIZE;
 
   const orderIds = (orders ?? []).map((order) => order.id);
   const { data: items } = orderIds.length
@@ -60,6 +75,13 @@ export default async function OrdersPage() {
         <h1 className="page-title mt-4">Order history</h1>
         <p className="page-subtitle mt-3">Track previous purchases, review line items, and quickly reorder when you need to restock.</p>
       </section>
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-sm text-slate-500">Page {page}</p>
+        <div className="flex items-center gap-3">
+          {page > 1 ? <Link href={`/portal/orders?page=${page - 1}`} className="btn-secondary">Previous</Link> : null}
+          {hasNextPage ? <Link href={`/portal/orders?page=${page + 1}`} className="btn-secondary">Next</Link> : null}
+        </div>
+      </div>
       {orders?.map((order) => (
         <div key={order.id} className="card transition-all duration-200 hover:-translate-y-0.5 hover:bg-white/95">
           <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
