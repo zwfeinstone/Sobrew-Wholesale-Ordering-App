@@ -7,14 +7,19 @@ export async function requireUser() {
   if (!data.user) redirect('/login');
   const { data: profile } = await supabase
     .from('profiles')
-    .select('id,is_admin,is_active,email,full_name,avatar_url')
+    .select('id,is_admin,is_active,email,full_name,avatar_url,center_id,centers(id,name,is_active)')
     .eq('id', data.user.id)
     .single();
+  const center = Array.isArray(profile?.centers) ? profile.centers[0] : profile?.centers;
   if (!profile?.is_active) {
     await supabase.auth.signOut();
     redirect('/login?inactive=1');
   }
-  return { user: data.user, profile };
+  if (!profile?.is_admin && (!profile?.center_id || center?.is_active === false)) {
+    await supabase.auth.signOut();
+    redirect('/login?inactive=1');
+  }
+  return { user: data.user, profile: profile ? { ...profile, center } : profile };
 }
 
 export async function requireAdmin() {

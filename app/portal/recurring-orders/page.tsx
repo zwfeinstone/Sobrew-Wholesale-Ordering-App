@@ -67,9 +67,11 @@ function statusClasses(status: string) {
 async function updateRecurringItem(formData: FormData) {
   'use server';
   let userId = 'unknown';
+  let centerId = 'unknown';
   try {
-    const { user } = await requireUser();
+    const { user, profile } = await requireUser();
     userId = user.id;
+    centerId = profile?.center_id ?? user.id;
     const supabase = await createClient();
 
     const recurringOrderId = String(formData.get('recurring_order_id') ?? '');
@@ -97,8 +99,8 @@ async function updateRecurringItem(formData: FormData) {
       .from('recurring_orders')
       .update({ frequency })
       .eq('id', recurringOrderId)
-      .eq('user_id', userId);
-    logQueryError('recurring_orders.update frequency', orderUpdateResult.error, { userId, recurringOrderId, frequency });
+      .eq('center_id', centerId);
+    logQueryError('recurring_orders.update frequency', orderUpdateResult.error, { userId, centerId, recurringOrderId, frequency });
     if (orderUpdateResult.error) redirect('/portal/recurring-orders?error=save_failed');
 
     const itemUpdateResult = await supabase
@@ -120,14 +122,14 @@ async function updateRecurringItem(formData: FormData) {
       .from('recurring_orders')
       .update({ amount_cents: amount })
       .eq('id', recurringOrderId)
-      .eq('user_id', userId);
-    logQueryError('recurring_orders.update amount_cents', totalUpdateResult.error, { userId, recurringOrderId, amount });
+      .eq('center_id', centerId);
+    logQueryError('recurring_orders.update amount_cents', totalUpdateResult.error, { userId, centerId, recurringOrderId, amount });
     if (totalUpdateResult.error) redirect('/portal/recurring-orders?error=save_failed');
 
     redirect('/portal/recurring-orders?success=saved');
   } catch (error) {
     if (isNextRedirectError(error)) throw error;
-    console.error('[recurring-orders] updateRecurringItem fatal', { userId, error });
+    console.error('[recurring-orders] updateRecurringItem fatal', { userId, centerId, error });
     redirect('/portal/recurring-orders?error=save_failed');
   }
 }
@@ -135,9 +137,11 @@ async function updateRecurringItem(formData: FormData) {
 async function setRecurringStatus(formData: FormData) {
   'use server';
   let userId = 'unknown';
+  let centerId = 'unknown';
   try {
-    const { user } = await requireUser();
+    const { user, profile } = await requireUser();
     userId = user.id;
+    centerId = profile?.center_id ?? user.id;
     const supabase = await createClient();
 
     const recurringOrderId = String(formData.get('recurring_order_id') ?? '');
@@ -151,8 +155,8 @@ async function setRecurringStatus(formData: FormData) {
         .from('recurring_orders')
         .delete()
         .eq('id', recurringOrderId)
-        .eq('user_id', userId);
-      logQueryError('recurring_orders.delete canceled order', deleteResult.error, { userId, recurringOrderId, status });
+        .eq('center_id', centerId);
+      logQueryError('recurring_orders.delete canceled order', deleteResult.error, { userId, centerId, recurringOrderId, status });
       if (deleteResult.error) redirect('/portal/recurring-orders?error=status_failed');
       redirect('/portal/recurring-orders?success=status_updated');
     }
@@ -161,41 +165,43 @@ async function setRecurringStatus(formData: FormData) {
       .from('recurring_orders')
       .update({ status })
       .eq('id', recurringOrderId)
-      .eq('user_id', userId);
-    logQueryError('recurring_orders.update status', statusUpdateResult.error, { userId, recurringOrderId, status });
+      .eq('center_id', centerId);
+    logQueryError('recurring_orders.update status', statusUpdateResult.error, { userId, centerId, recurringOrderId, status });
 
     if (statusUpdateResult.error) {
       const legacyStatusResult = await supabase
         .from('recurring_orders')
         .update({ active: status === 'active' })
         .eq('id', recurringOrderId)
-        .eq('user_id', userId);
-      logQueryError('recurring_orders.update active (legacy fallback)', legacyStatusResult.error, { userId, recurringOrderId, status });
+        .eq('center_id', centerId);
+      logQueryError('recurring_orders.update active (legacy fallback)', legacyStatusResult.error, { userId, centerId, recurringOrderId, status });
       if (legacyStatusResult.error) redirect('/portal/recurring-orders?error=status_failed');
     }
 
     redirect('/portal/recurring-orders?success=status_updated');
   } catch (error) {
     if (isNextRedirectError(error)) throw error;
-    console.error('[recurring-orders] setRecurringStatus fatal', { userId, error });
+    console.error('[recurring-orders] setRecurringStatus fatal', { userId, centerId, error });
     redirect('/portal/recurring-orders?error=status_failed');
   }
 }
 
 export default async function RecurringOrdersPage({ searchParams }: { searchParams?: { success?: string; error?: string } }) {
   let userId = 'unknown';
+  let centerId = 'unknown';
   try {
-    const { user } = await requireUser();
+    const { user, profile } = await requireUser();
     userId = user.id;
+    centerId = profile?.center_id ?? user.id;
     const supabase = await createClient();
 
     const recurringOrdersResult = await supabase
       .from('recurring_orders')
       .select('id,frequency,status,active,created_at,last_generated_at,source_order_id')
-      .eq('user_id', userId)
+      .eq('center_id', centerId)
       .neq('status', 'canceled')
       .order('created_at', { ascending: false });
-    logQueryError('recurring_orders.select recurring order summary fields', recurringOrdersResult.error, { userId });
+    logQueryError('recurring_orders.select recurring order summary fields', recurringOrdersResult.error, { userId, centerId });
 
     if (recurringOrdersResult.error) {
       return <div className="card text-sm text-red-700">Unable to load recurring orders right now.</div>;
@@ -212,6 +218,7 @@ export default async function RecurringOrdersPage({ searchParams }: { searchPara
       : { data: [] as any[], error: null as any };
     logQueryError('recurring_order_items.select by recurring_order_id', recurringItemsResult.error, {
       userId,
+      centerId,
       recurringOrderCount: recurringOrderIds.length
     });
 
@@ -228,6 +235,7 @@ export default async function RecurringOrdersPage({ searchParams }: { searchPara
         : { data: [] as any[], error: null as any };
       logQueryError('order_items.select legacy fallback by source order_id', sourceItemsResult.error, {
         userId,
+        centerId,
         sourceOrderCount: sourceOrderIds.length
       });
 
@@ -322,7 +330,7 @@ export default async function RecurringOrdersPage({ searchParams }: { searchPara
     );
   } catch (error) {
     if (isNextRedirectError(error)) throw error;
-    console.error('[recurring-orders] page render fatal', { userId, error });
+    console.error('[recurring-orders] page render fatal', { userId, centerId, error });
     return <div className="card text-sm text-red-700">Unable to load recurring orders right now.</div>;
   }
 }

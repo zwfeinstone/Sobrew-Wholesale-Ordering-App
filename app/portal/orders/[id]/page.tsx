@@ -15,9 +15,10 @@ function formatOrderTimestamp(value: string | null) {
 }
 
 export default async function OrderDetail({ params }: { params: { id: string } }) {
-  const { user } = await requireUser();
+  const { user, profile } = await requireUser();
   const supabase = await createClient();
-  const { data: order } = await supabase.from('orders').select('*').eq('id', params.id).eq('user_id', user.id).single();
+  const centerId = profile?.center_id ?? user.id;
+  const { data: order } = await supabase.from('orders').select('*').eq('id', params.id).eq('center_id', centerId).single();
   if (!order) return notFound();
   const { data: items } = await supabase.from('order_items').select('id,qty,line_total_cents,product_id,product_name_snapshot').eq('order_id', order.id);
 

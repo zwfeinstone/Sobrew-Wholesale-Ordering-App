@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { AdminOrderBulkControls } from '@/components/admin-order-bulk-controls';
 import StatusToast from '@/components/status-toast';
+import { getCenterLoginEmails } from '@/lib/center-logins';
 import { sendShippedEmail } from '@/lib/email';
 import { getOrderItemSummaries } from '@/lib/order-items';
 import { createClient } from '@/lib/supabase/server';
@@ -21,12 +22,13 @@ async function updateStatus(formData: FormData) {
   const status = String(formData.get('status'));
   const statusFilter = String(formData.get('statusFilter') ?? '');
 
-  const { data: order } = await supabase.from('orders').select('id,status,profiles(email)').eq('id', id).single();
+  const { data: order } = await supabase.from('orders').select('id,status,center_id,profiles(email)').eq('id', id).single();
   const orderUpdateResult = await supabase.from('orders').update({ status }).eq('id', id).select('id');
 
-  if (!orderUpdateResult.error && orderUpdateResult.data?.length && order?.status !== 'Shipped' && status === 'Shipped' && (order as any)?.profiles?.email) {
+  if (!orderUpdateResult.error && orderUpdateResult.data?.length && order?.status !== 'Shipped' && status === 'Shipped') {
     const items = await getOrderItemSummaries(supabase, id);
-    await sendShippedEmail((order as any).profiles.email, items);
+    const centerEmails = await getCenterLoginEmails(supabase, (order as any).center_id);
+    await sendShippedEmail(centerEmails.length ? centerEmails : (order as any).profiles.email, items);
   }
 
   const query = new URLSearchParams();
@@ -90,7 +92,7 @@ export default async function AdminOrdersPage({ searchParams }: { searchParams: 
   const supabase = await createClient();
   const status = typeof searchParams.status === 'string' ? searchParams.status : '';
   const toast = typeof searchParams.toast === 'string' ? searchParams.toast : '';
-  let query = supabase.from('orders').select('id,status,created_at,profiles(email,full_name)').is('archived_at', null).order('created_at', { ascending: false });
+  let query = supabase.from('orders').select('id,status,created_at,profiles(email),centers(name)').is('archived_at', null).order('created_at', { ascending: false });
   if (status) query = query.eq('status', status);
   const { data: orders } = await query.limit(100);
 
@@ -158,8 +160,8 @@ export default async function AdminOrdersPage({ searchParams }: { searchParams: 
             />
             <Link href={`/admin/orders/${order.id}`} className="block flex-1">
               <p className="text-lg font-semibold text-slate-950">{(itemLabelsByOrderId.get(order.id) ?? ['Unknown product']).join(', ')}</p>
-              <p className="mt-2 text-sm font-medium text-slate-700">{order.profiles?.full_name || 'Unknown center'}</p>
-              <p className="mt-1 text-sm text-slate-500">{order.profiles?.email}</p>
+              <p className="mt-2 text-sm font-medium text-slate-700">{order.centers?.name || 'Unknown center'}</p>
+              <p className="mt-1 text-sm text-slate-500">{order.profiles?.email || 'No login email on file'}</p>
               <p className="mt-1 text-sm text-slate-500">Placed {formatOrderTimestamp(order.created_at)}</p>
             </Link>
           </div>

@@ -4,12 +4,13 @@ import { usd } from '@/lib/utils';
 import { AddToCartButton } from '@/components/cart-client';
 
 export default async function PortalPage() {
-  const { user } = await requireUser();
+  const { user, profile } = await requireUser();
   const supabase = await createClient();
+  const centerId = profile?.center_id ?? user.id;
 
   const [{ data: assigned }, { data: prices }] = await Promise.all([
-    supabase.from('user_products').select('product_id').eq('user_id', user.id),
-    supabase.from('user_product_prices').select('product_id,price_cents').eq('user_id', user.id),
+    supabase.from('user_products').select('product_id').eq('center_id', centerId),
+    supabase.from('user_product_prices').select('product_id,price_cents').eq('center_id', centerId),
   ]);
 
   const productIds = (assigned ?? []).map((row) => row.product_id);

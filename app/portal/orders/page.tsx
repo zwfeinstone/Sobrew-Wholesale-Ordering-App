@@ -20,8 +20,9 @@ export default async function OrdersPage({
 }: {
   searchParams?: Record<string, string | string[] | undefined>;
 }) {
-  const { user } = await requireUser();
+  const { user, profile } = await requireUser();
   const supabase = await createClient();
+  const centerId = profile?.center_id ?? user.id;
   const pageParam = typeof searchParams?.page === 'string' ? Number(searchParams.page) : 1;
   const page = Number.isInteger(pageParam) && pageParam > 0 ? pageParam : 1;
   const from = (page - 1) * PAGE_SIZE;
@@ -30,7 +31,7 @@ export default async function OrdersPage({
   const { data: orderRows } = await supabase
     .from('orders')
     .select('id,status,subtotal_cents,created_at')
-    .eq('user_id', user.id)
+    .eq('center_id', centerId)
     .order('created_at', { ascending: false })
     .range(from, to);
 

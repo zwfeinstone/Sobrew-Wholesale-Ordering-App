@@ -2,6 +2,12 @@ import Link from 'next/link';
 import { createClient } from '@/lib/supabase/server';
 import { OrderFormPrint } from '@/components/order-form-print';
 
+type CenterOption = {
+  id: string;
+  name: string;
+  is_active: boolean;
+};
+
 export default async function AdminOrderFormPage({
   searchParams
 }: {
@@ -11,17 +17,17 @@ export default async function AdminOrderFormPage({
   const centerId = typeof searchParams.center === 'string' ? searchParams.center : '';
 
   const { data: centers } = await supabase
-    .from('profiles')
-    .select('id,email,full_name')
-    .eq('is_admin', false)
+    .from('centers')
+    .select('id,name,is_active')
     .eq('is_active', true)
-    .order('email', { ascending: true });
+    .order('name', { ascending: true });
 
-  let selectedCenter = centers?.find((c) => c.id === centerId) ?? null;
+  let selectedCenter = (centers as CenterOption[] | null)?.find((center) => center.id === centerId) ?? null;
   if (!selectedCenter && centers?.length) {
-    selectedCenter = centers[0];
+    selectedCenter = centers[0] as CenterOption;
   }
 
+  let selectedCenterEmail = '';
   let lines: Array<{
     product_id: string;
     name: string;
@@ -31,18 +37,35 @@ export default async function AdminOrderFormPage({
   }> = [];
 
   if (selectedCenter) {
-    const { data } = await supabase
-      .from('user_products')
-      .select('product_id,products(name,sku,image_url),user_product_prices(price_cents)')
-      .eq('user_id', selectedCenter.id);
+    const [{ data: assigned }, { data: prices }, { data: products }, { data: centerLogin }] = await Promise.all([
+      supabase.from('user_products').select('product_id').eq('center_id', selectedCenter.id),
+      supabase.from('user_product_prices').select('product_id,price_cents').eq('center_id', selectedCenter.id),
+      supabase.from('products').select('id,name,sku,image_url').eq('active', true),
+      supabase
+        .from('profiles')
+        .select('email')
+        .eq('center_id', selectedCenter.id)
+        .eq('is_active', true)
+        .eq('is_admin', false)
+        .order('created_at', { ascending: true })
+        .limit(1)
+        .maybeSingle(),
+    ]);
 
-    lines = (data ?? []).map((row: any) => ({
-      product_id: row.product_id,
-      name: row.products?.name ?? '',
-      sku: row.products?.sku ?? '',
-      image_url: row.products?.image_url ?? null,
-      price_cents: row.user_product_prices?.[0]?.price_cents ?? 0
-    }));
+    selectedCenterEmail = centerLogin?.email ?? '';
+
+    const assignedIds = new Set((assigned ?? []).map((row) => row.product_id));
+    const priceMap = new Map((prices ?? []).map((row) => [row.product_id, row.price_cents]));
+
+    lines = (products ?? [])
+      .filter((product: any) => assignedIds.has(product.id))
+      .map((product: any) => ({
+        product_id: product.id,
+        name: product.name ?? '',
+        sku: product.sku ?? '',
+        image_url: product.image_url ?? null,
+        price_cents: priceMap.get(product.id) ?? 0
+      }));
   }
 
   return (
@@ -54,9 +77,9 @@ export default async function AdminOrderFormPage({
             <div>
               <label className="mb-1 block text-sm font-medium">Center</label>
               <select className="input min-w-72" name="center" defaultValue={selectedCenter?.id ?? ''}>
-                {centers.map((center) => (
+                {centers.map((center: any) => (
                   <option key={center.id} value={center.id}>
-                    {center.full_name || center.email}
+                    {center.name}
                   </option>
                 ))}
               </select>
@@ -66,17 +89,17 @@ export default async function AdminOrderFormPage({
             </button>
           </form>
         ) : (
-          <p className="text-sm text-slate-600">No active centers found. Create users in Admin → Users first.</p>
+          <p className="text-sm text-slate-600">No active centers found. Create centers in Admin {'>'} Centers first.</p>
         )}
       </div>
 
       {selectedCenter ? (
-        <OrderFormPrint center={selectedCenter} products={lines} />
+        <OrderFormPrint center={{ id: selectedCenter.id, name: selectedCenter.name, email: selectedCenterEmail }} products={lines} />
       ) : (
         <div className="card">
           <p>No center selected.</p>
           <Link className="text-violet-700" href="/admin/users">
-            Go to Users
+            Go to Centers
           </Link>
         </div>
       )}

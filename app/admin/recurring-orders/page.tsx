@@ -35,7 +35,7 @@ export default async function AdminRecurringOrdersPage({ searchParams }: { searc
 
   let recurringQuery = supabase
     .from('recurring_orders')
-    .select('id,user_id,frequency,status,amount_cents,created_at,last_generated_at,profiles(email,full_name)')
+    .select('id,user_id,center_id,frequency,status,amount_cents,created_at,last_generated_at,profiles(email),centers(name)')
     .neq('status', 'canceled')
     .order('created_at', { ascending: false });
 
@@ -98,10 +98,10 @@ export default async function AdminRecurringOrdersPage({ searchParams }: { searc
             <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
               <div>
                 <div className="text-sm text-slate-500">Center</div>
-                <div className="font-medium">{order.profiles?.full_name || order.profiles?.email || 'Unknown center'}</div>
-                <div className="text-sm text-slate-600">{order.profiles?.email || 'No email on file'}</div>
+                <div className="font-medium">{order.centers?.name || 'Unknown center'}</div>
+                <div className="text-sm text-slate-600">{order.profiles?.email || 'No login email on file'}</div>
               </div>
-              <Link className="text-sm text-slate-700 underline" href={`/admin/users/${order.user_id}`}>
+              <Link className="text-sm text-slate-700 underline" href={`/admin/users/${order.center_id}`}>
                 View center profile
               </Link>
             </div>
