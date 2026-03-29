@@ -191,11 +191,11 @@ export default async function RecurringOrdersPage({ searchParams }: { searchPara
 
     const recurringOrdersResult = await supabase
       .from('recurring_orders')
-      .select('*')
+      .select('id,frequency,status,active,created_at,last_generated_at,source_order_id')
       .eq('user_id', userId)
       .neq('status', 'canceled')
       .order('created_at', { ascending: false });
-    logQueryError('recurring_orders.select *', recurringOrdersResult.error, { userId });
+    logQueryError('recurring_orders.select recurring order summary fields', recurringOrdersResult.error, { userId });
 
     if (recurringOrdersResult.error) {
       return <div className="card text-sm text-red-700">Unable to load recurring orders right now.</div>;

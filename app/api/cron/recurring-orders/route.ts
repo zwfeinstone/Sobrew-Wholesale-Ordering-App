@@ -28,34 +28,61 @@ export async function POST(req: Request) {
   let created = 0;
   const errors: Array<{ recurringOrderId: string; message: string }> = [];
 
-  for (const recurringOrder of recurringOrders ?? []) {
+  const dueRecurringOrders = (recurringOrders ?? []).filter((recurringOrder) => {
     const intervalMs = intervalForFrequency(recurringOrder.frequency);
-    if (!intervalMs) continue;
+    if (!intervalMs) return false;
 
     const anchorDate = recurringOrder.last_generated_at ?? recurringOrder.created_at;
-    if (!anchorDate) continue;
+    if (!anchorDate) return false;
 
     const nextRunAt = new Date(anchorDate).getTime() + intervalMs;
-    if (nextRunAt > now) continue;
+    return nextRunAt <= now;
+  });
 
-    const { data: sourceOrder, error: sourceOrderError } = await supabaseAdmin
+  if (!dueRecurringOrders.length) {
+    return NextResponse.json({ created, errors });
+  }
+
+  const sourceOrderIds = [...new Set(dueRecurringOrders.map((recurringOrder) => recurringOrder.source_order_id).filter(Boolean))];
+  const recurringOrderIds = dueRecurringOrders.map((recurringOrder) => recurringOrder.id);
+
+  const [{ data: sourceOrders, error: sourceOrdersError }, { data: allRecurringItems, error: recurringItemsError }] = await Promise.all([
+    supabaseAdmin
       .from('orders')
       .select('id,shipping_name,shipping_address1,shipping_address2,shipping_city,shipping_state,shipping_zip')
-      .eq('id', recurringOrder.source_order_id)
-      .single();
+      .in('id', sourceOrderIds),
+    supabaseAdmin
+      .from('recurring_order_items')
+      .select('recurring_order_id,product_id,product_name_snapshot,qty,unit_price_cents,line_total_cents')
+      .in('recurring_order_id', recurringOrderIds),
+  ]);
 
-    if (sourceOrderError || !sourceOrder) {
-      errors.push({ recurringOrderId: recurringOrder.id, message: sourceOrderError?.message ?? 'Missing source order' });
+  if (sourceOrdersError) {
+    return NextResponse.json({ error: sourceOrdersError.message }, { status: 500 });
+  }
+
+  if (recurringItemsError) {
+    return NextResponse.json({ error: recurringItemsError.message }, { status: 500 });
+  }
+
+  const sourceOrderById = new Map((sourceOrders ?? []).map((sourceOrder) => [sourceOrder.id, sourceOrder]));
+  const recurringItemsByOrderId = new Map<string, typeof allRecurringItems>();
+  for (const item of allRecurringItems ?? []) {
+    const existing = recurringItemsByOrderId.get(item.recurring_order_id) ?? [];
+    existing.push(item);
+    recurringItemsByOrderId.set(item.recurring_order_id, existing);
+  }
+
+  for (const recurringOrder of dueRecurringOrders) {
+    const sourceOrder = sourceOrderById.get(recurringOrder.source_order_id);
+    if (!sourceOrder) {
+      errors.push({ recurringOrderId: recurringOrder.id, message: 'Missing source order' });
       continue;
     }
 
-    const { data: recurringItems, error: recurringItemsError } = await supabaseAdmin
-      .from('recurring_order_items')
-      .select('product_id,product_name_snapshot,qty,unit_price_cents,line_total_cents')
-      .eq('recurring_order_id', recurringOrder.id);
-
-    if (recurringItemsError || !recurringItems?.length) {
-      errors.push({ recurringOrderId: recurringOrder.id, message: recurringItemsError?.message ?? 'Missing recurring order items' });
+    const recurringItems = recurringItemsByOrderId.get(recurringOrder.id);
+    if (!recurringItems?.length) {
+      errors.push({ recurringOrderId: recurringOrder.id, message: 'Missing recurring order items' });
       continue;
     }
 
