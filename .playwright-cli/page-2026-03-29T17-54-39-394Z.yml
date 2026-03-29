@@ -1,0 +1,35 @@
+- generic [ref=e2]:
+  - banner [ref=e3]:
+    - generic [ref=e4]:
+      - generic [ref=e5]:
+        - generic [ref=e6]: Wholesale Portal
+        - heading "Sobrew Ordering" [level=1] [ref=e7]
+      - generic [ref=e8]:
+        - navigation [ref=e9]:
+          - link "Catalog" [ref=e10] [cursor=pointer]:
+            - /url: /portal
+          - link "Cart" [ref=e11] [cursor=pointer]:
+            - /url: /portal/cart
+          - link "Orders" [ref=e12] [cursor=pointer]:
+            - /url: /portal/orders
+          - link "Recurring" [ref=e13] [cursor=pointer]:
+            - /url: /portal/recurring-orders
+          - link "Settings" [ref=e14] [cursor=pointer]:
+            - /url: /portal/settings
+        - button "Log out" [ref=e16] [cursor=pointer]
+  - main [ref=e17]:
+    - generic [ref=e18]:
+      - generic [ref=e19]:
+        - generic [ref=e20]: Past Orders
+        - heading "Order history" [level=1] [ref=e21]
+        - paragraph [ref=e22]: Track previous purchases, review line items, and quickly reorder when you need to restock.
+      - paragraph [ref=e24]: Page 1
+      - generic [ref=e26]:
+        - link "Codex Test Product B 1774805748555 x 1, Codex Test Product A 1774805748555 x 1 Placed Mar 29, 2026, 12:53 PM" [ref=e27] [cursor=pointer]:
+          - /url: /portal/orders/c2c76c6a-1203-4294-97f7-e7b1869930eb
+          - paragraph [ref=e28]: Codex Test Product B 1774805748555 x 1, Codex Test Product A 1774805748555 x 1
+          - paragraph [ref=e29]: Placed Mar 29, 2026, 12:53 PM
+        - generic [ref=e30]:
+          - generic [ref=e31]: New
+          - generic [ref=e32]: $35.79
+          - button "Reorder" [ref=e33] [cursor=pointer]

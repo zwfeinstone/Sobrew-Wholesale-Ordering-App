@@ -1,0 +1,67 @@
+- generic [ref=e1]:
+  - alert [ref=e24]
+  - generic [ref=e25]:
+    - banner [ref=e26]:
+      - generic [ref=e27]:
+        - generic [ref=e28]:
+          - generic [ref=e29]: Wholesale Portal
+          - heading "Sobrew Ordering" [level=1] [ref=e30]
+        - generic [ref=e31]:
+          - navigation [ref=e32]:
+            - link "Catalog" [ref=e33] [cursor=pointer]:
+              - /url: /portal
+            - link "Cart" [ref=e34] [cursor=pointer]:
+              - /url: /portal/cart
+            - link "Orders" [ref=e35] [cursor=pointer]:
+              - /url: /portal/orders
+            - link "Recurring" [ref=e36] [cursor=pointer]:
+              - /url: /portal/recurring-orders
+            - link "Settings" [ref=e37] [cursor=pointer]:
+              - /url: /portal/settings
+          - button "Log out" [ref=e39] [cursor=pointer]
+    - main [ref=e40]:
+      - generic [ref=e79]:
+        - generic [ref=e80]:
+          - generic [ref=e81]: Recurring Orders
+          - heading "Manage your recurring shipments" [level=1] [ref=e82]
+          - paragraph [ref=e83]: Update quantities and frequency, pause shipments, or cancel schedules whenever your center's needs change.
+        - generic [ref=e84]:
+          - generic [ref=e85]:
+            - generic [ref=e86]:
+              - paragraph [ref=e87]: Next order date
+              - paragraph [ref=e88]: 4/5/2026
+            - generic [ref=e89]: active
+          - generic [ref=e90]:
+            - generic [ref=e91]:
+              - generic [ref=e92]:
+                - generic [ref=e93]: Product
+                - generic [ref=e94]: Codex Test Product B 1774805748555
+              - generic [ref=e95]:
+                - generic [ref=e96]: Quantity
+                - spinbutton "Quantity" [ref=e97]: "1"
+              - generic [ref=e98]:
+                - generic [ref=e99]: Frequency
+                - combobox "Frequency" [ref=e100]:
+                  - option "Every 1 week" [selected]
+                  - option "Every 2 weeks"
+                  - option "Every 3 weeks"
+                  - option "Every 4 weeks"
+              - button "Save" [ref=e101] [cursor=pointer]
+            - generic [ref=e102]:
+              - generic [ref=e103]:
+                - generic [ref=e104]: Product
+                - generic [ref=e105]: Codex Test Product A 1774805748555
+              - generic [ref=e106]:
+                - generic [ref=e107]: Quantity
+                - spinbutton "Quantity" [active] [ref=e108]: "3"
+              - generic [ref=e109]:
+                - generic [ref=e110]: Frequency
+                - combobox "Frequency" [ref=e111]:
+                  - option "Every 1 week"
+                  - option "Every 2 weeks" [selected]
+                  - option "Every 3 weeks"
+                  - option "Every 4 weeks"
+              - button "Save" [ref=e112] [cursor=pointer]
+          - generic [ref=e113]:
+            - button "Pause" [ref=e115] [cursor=pointer]
+            - button "Cancel" [ref=e117] [cursor=pointer]

@@ -1,0 +1,30 @@
+- dialog "Unhandled Runtime Error" [ref=e260]:
+  - generic [ref=e261]:
+    - generic [ref=e262]:
+      - generic [ref=e263]:
+        - navigation [ref=e264]:
+          - button "previous" [disabled] [ref=e265]:
+            - img "previous" [ref=e266]
+          - button "next" [disabled] [ref=e268]:
+            - img "next" [ref=e269]
+          - generic [ref=e271]: 1 of 1 error
+          - generic [ref=e272]:
+            - text: Next.js (14.2.30) is outdated
+            - link "(learn more)" [ref=e274] [cursor=pointer]:
+              - /url: https://nextjs.org/docs/messages/version-staleness
+        - button "Close" [ref=e275] [cursor=pointer]:
+          - img [ref=e277]
+      - heading "Unhandled Runtime Error" [level=1] [ref=e280]
+      - paragraph [ref=e281]:
+        - text: "Error: Cookies can only be modified in a Server Action or Route Handler. Read more:"
+        - link "https://nextjs.org/docs/app/api-reference/functions/cookies#cookiessetname-value-options" [ref=e282] [cursor=pointer]:
+          - /url: https://nextjs.org/docs/app/api-reference/functions/cookies#cookiessetname-value-options
+    - generic [ref=e283]:
+      - heading "Source" [level=2] [ref=e284]
+      - generic [ref=e285]:
+        - link "lib\\supabase\\server.ts (16:21) @ set" [ref=e287] [cursor=pointer]:
+          - generic [ref=e288]: lib\supabase\server.ts (16:21) @ set
+          - img [ref=e289]
+        - generic [ref=e293]: "14 | }, 15 | remove(name: string, options: Record<string, unknown>) { > 16 | cookieStore.set({ name, value: '', ...options }); | ^ 17 | } 18 | } 19 | });"
+      - heading "Call Stack" [level=2] [ref=e294]
+      - button "Show collapsed frames" [ref=e295] [cursor=pointer]

@@ -34,12 +34,20 @@ export async function middleware(request: NextRequest) {
     return NextResponse.redirect(new URL('/login', request.url));
   }
 
-  if (user && request.nextUrl.pathname.startsWith('/admin')) {
-    const { data: profile } = await supabase.from('profiles').select('is_admin,is_active').eq('id', user.id).single();
-    if (!profile?.is_active) {
+  if (user && isProtected) {
+    const { data: profile } = await supabase
+      .from('profiles')
+      .select('is_admin,is_active,center_id,centers(is_active)')
+      .eq('id', user.id)
+      .single();
+    const center = Array.isArray(profile?.centers) ? profile.centers[0] : profile?.centers;
+
+    if (!profile?.is_active || (!profile?.is_admin && (!profile?.center_id || center?.is_active === false))) {
+      await supabase.auth.signOut();
       return NextResponse.redirect(new URL('/login?inactive=1', request.url));
     }
-    if (!profile?.is_admin) {
+
+    if (request.nextUrl.pathname.startsWith('/admin') && !profile?.is_admin) {
       return NextResponse.redirect(new URL('/portal', request.url));
     }
   }

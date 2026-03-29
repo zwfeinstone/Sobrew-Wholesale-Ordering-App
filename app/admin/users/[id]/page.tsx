@@ -3,18 +3,39 @@ import { createClient } from '@/lib/supabase/server';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { toCents } from '@/lib/utils';
 
+function isNextRedirectError(error: unknown) {
+  return Boolean(
+    error &&
+      typeof error === 'object' &&
+      'digest' in error &&
+      typeof (error as { digest?: unknown }).digest === 'string' &&
+      (error as { digest: string }).digest.startsWith('NEXT_REDIRECT')
+  );
+}
+
 async function syncCenterCatalog(centerId: string, formData: FormData) {
   const selected = formData.getAll('product_id').map(String);
 
-  await supabaseAdmin.from('user_products').delete().eq('center_id', centerId);
-  await supabaseAdmin.from('user_product_prices').delete().eq('center_id', centerId);
+  const deleteProductsResult = await supabaseAdmin.from('user_products').delete().eq('center_id', centerId);
+  if (deleteProductsResult.error) {
+    throw deleteProductsResult.error;
+  }
+
+  const deletePricesResult = await supabaseAdmin.from('user_product_prices').delete().eq('center_id', centerId);
+  if (deletePricesResult.error) {
+    throw deletePricesResult.error;
+  }
 
   if (!selected.length) {
     return;
   }
 
-  await supabaseAdmin.from('user_products').insert(selected.map((product_id) => ({ center_id: centerId, product_id })));
-  await supabaseAdmin.from('user_product_prices').upsert(
+  const insertProductsResult = await supabaseAdmin.from('user_products').insert(selected.map((product_id) => ({ center_id: centerId, product_id })));
+  if (insertProductsResult.error) {
+    throw insertProductsResult.error;
+  }
+
+  const upsertPricesResult = await supabaseAdmin.from('user_product_prices').upsert(
     selected.map((product_id) => ({
       center_id: centerId,
       product_id,
@@ -22,6 +43,9 @@ async function syncCenterCatalog(centerId: string, formData: FormData) {
     })),
     { onConflict: 'center_id,product_id' }
   );
+  if (upsertPricesResult.error) {
+    throw upsertPricesResult.error;
+  }
 }
 
 async function updateCenter(formData: FormData) {
@@ -29,17 +53,26 @@ async function updateCenter(formData: FormData) {
   const centerId = String(formData.get('center_id') ?? '');
   if (!centerId) redirect('/admin/users');
 
-  await supabaseAdmin
-    .from('centers')
-    .update({
-      name: String(formData.get('name') ?? '').trim() || 'Unnamed center',
-      notes: String(formData.get('notes') ?? ''),
-      is_active: formData.get('is_active') === 'on',
-    })
-    .eq('id', centerId);
+  try {
+    const centerUpdateResult = await supabaseAdmin
+      .from('centers')
+      .update({
+        name: String(formData.get('name') ?? '').trim() || 'Unnamed center',
+        notes: String(formData.get('notes') ?? ''),
+        is_active: formData.get('is_active') === 'on',
+      })
+      .eq('id', centerId);
+    if (centerUpdateResult.error) {
+      throw centerUpdateResult.error;
+    }
 
-  await syncCenterCatalog(centerId, formData);
-  redirect(`/admin/users/${centerId}?success=center_saved`);
+    await syncCenterCatalog(centerId, formData);
+    redirect(`/admin/users/${centerId}?success=center_saved`);
+  } catch (error) {
+    if (isNextRedirectError(error)) throw error;
+    console.error('[admin-centers] updateCenter failed', { centerId, error });
+    redirect(`/admin/users/${centerId}?error=center_save_failed`);
+  }
 }
 
 async function addCenterLogin(formData: FormData) {

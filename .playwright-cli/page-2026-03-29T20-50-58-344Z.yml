@@ -1,0 +1,47 @@
+- generic [active] [ref=e1]:
+  - alert [ref=e24]
+  - generic [ref=e25]:
+    - banner [ref=e26]:
+      - generic [ref=e27]:
+        - generic [ref=e28]:
+          - generic [ref=e29]: Wholesale Portal
+          - heading "Sobrew Ordering" [level=1] [ref=e30]
+        - generic [ref=e31]:
+          - navigation [ref=e32]:
+            - link "Catalog" [ref=e33] [cursor=pointer]:
+              - /url: /portal
+            - link "Cart" [ref=e34] [cursor=pointer]:
+              - /url: /portal/cart
+            - link "Orders" [ref=e35] [cursor=pointer]:
+              - /url: /portal/orders
+            - link "Recurring" [ref=e36] [cursor=pointer]:
+              - /url: /portal/recurring-orders
+            - link "Settings" [ref=e37] [cursor=pointer]:
+              - /url: /portal/settings
+          - button "Log out" [ref=e39] [cursor=pointer]
+    - main [ref=e40]:
+      - generic [ref=e41]:
+        - generic [ref=e43]:
+          - generic [ref=e44]:
+            - generic [ref=e45]: Sobrew Catalog
+            - generic [ref=e46]:
+              - heading "Welcome to Your Sobrew Catalog" [level=1] [ref=e47]
+              - paragraph [ref=e48]: Great coffee with a greater purpose. Every order supports recovery.
+          - generic [ref=e49]:
+            - generic [ref=e50]:
+              - paragraph [ref=e51]: Available Products
+              - paragraph [ref=e52]: "1"
+            - generic [ref=e53]:
+              - paragraph [ref=e54]: Signed In
+              - paragraph [ref=e55]: codex-center1-1774817090419@example.com
+        - generic [ref=e57]:
+          - generic [ref=e58]:
+            - generic [ref=e59]:
+              - generic [ref=e60]:
+                - heading "Codex Wizard Product A 1774817090419" [level=2] [ref=e61]
+                - paragraph [ref=e62]: QA wizard product 1
+              - generic [ref=e63]: $15.67
+            - generic [ref=e64]:
+              - paragraph [ref=e65]: Ready To Order
+              - paragraph [ref=e66]: Add this product to your cart when you're ready to place your next order.
+          - button "Add to cart" [ref=e67] [cursor=pointer]

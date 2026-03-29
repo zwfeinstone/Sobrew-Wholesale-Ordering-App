@@ -1,0 +1,68 @@
+- generic [active] [ref=e1]:
+  - alert [ref=e24]
+  - generic [ref=e25]:
+    - complementary [ref=e26]:
+      - generic [ref=e27]:
+        - generic [ref=e28]:
+          - generic [ref=e29]: Admin Console
+          - generic [ref=e30]:
+            - heading "Sobrew Admin" [level=2] [ref=e31]
+            - paragraph [ref=e32]: Manage orders, customers, products, and recurring schedules in one place.
+        - generic [ref=e33]:
+          - paragraph [ref=e34]: Needs Attention
+          - paragraph [ref=e35]: "0"
+          - paragraph [ref=e36]: New orders awaiting review.
+        - button "Log out" [ref=e38] [cursor=pointer]
+      - navigation [ref=e39]:
+        - link "Dashboard" [ref=e40] [cursor=pointer]:
+          - /url: /admin
+          - generic [ref=e41]: Dashboard
+        - link "Orders" [ref=e42] [cursor=pointer]:
+          - /url: /admin/orders
+          - generic [ref=e43]: Orders
+        - link "Archived Orders" [ref=e44] [cursor=pointer]:
+          - /url: /admin/archived-orders
+          - generic [ref=e45]: Archived Orders
+        - link "Recurring Orders" [ref=e46] [cursor=pointer]:
+          - /url: /admin/recurring-orders
+          - generic [ref=e47]: Recurring Orders
+        - link "Canceled Recurring Orders" [ref=e48] [cursor=pointer]:
+          - /url: /admin/canceled-recurring-orders
+          - generic [ref=e49]: Canceled Recurring Orders
+        - link "Order Form" [ref=e50] [cursor=pointer]:
+          - /url: /admin/order-form
+          - generic [ref=e51]: Order Form
+        - link "Centers" [ref=e52] [cursor=pointer]:
+          - /url: /admin/users
+          - generic [ref=e53]: Centers
+        - link "Products" [ref=e54] [cursor=pointer]:
+          - /url: /admin/products
+          - generic [ref=e55]: Products
+        - link "Settings" [ref=e56] [cursor=pointer]:
+          - /url: /admin/settings
+          - generic [ref=e57]: Settings
+    - main [ref=e58]:
+      - generic [ref=e381]:
+        - generic [ref=e382]:
+          - generic [ref=e383]: Center Admin
+          - heading "Create center wizard" [level=1] [ref=e384]
+          - paragraph [ref=e385]: Set up a new center, create its first login, and assign shared products and pricing in one guided flow.
+        - generic [ref=e386]:
+          - generic [ref=e387]:
+            - generic [ref=e388]: 1. Center details
+            - generic [ref=e389]: 2. Assign products
+            - generic [ref=e390]: 3. Set prices
+            - generic [ref=e391]: 4. Review
+          - generic [ref=e421]:
+            - generic [ref=e422]:
+              - 'heading "Step 3: Set prices" [level=2] [ref=e423]'
+              - paragraph [ref=e424]: Set shared pricing for the selected center catalog.
+            - generic [ref=e425]:
+              - generic [ref=e426]: Codex Wizard Product A 1774817090419
+              - spinbutton [ref=e427]: "0.00"
+            - generic [ref=e428]:
+              - generic [ref=e429]: Codex Wizard Product B 1774817090419
+              - spinbutton [ref=e430]: "0.00"
+            - generic [ref=e431]:
+              - button "Back" [ref=e432] [cursor=pointer]
+              - button "Next" [ref=e433] [cursor=pointer]

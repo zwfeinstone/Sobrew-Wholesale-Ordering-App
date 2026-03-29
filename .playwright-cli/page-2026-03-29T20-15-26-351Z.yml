@@ -1,0 +1,46 @@
+- generic [ref=e1]:
+  - alert [ref=e24]
+  - generic [ref=e25]:
+    - banner [ref=e26]:
+      - generic [ref=e27]:
+        - generic [ref=e28]:
+          - generic [ref=e29]: Wholesale Portal
+          - heading "Sobrew Ordering" [level=1] [ref=e30]
+        - generic [ref=e31]:
+          - navigation [ref=e32]:
+            - link "Catalog" [ref=e33] [cursor=pointer]:
+              - /url: /portal
+            - link "Cart" [ref=e34] [cursor=pointer]:
+              - /url: /portal/cart
+            - link "Orders" [active] [ref=e35] [cursor=pointer]:
+              - /url: /portal/orders
+            - link "Recurring" [ref=e36] [cursor=pointer]:
+              - /url: /portal/recurring-orders
+            - link "Settings" [ref=e37] [cursor=pointer]:
+              - /url: /portal/settings
+          - button "Log out" [ref=e39] [cursor=pointer]
+    - main [ref=e40]:
+      - generic [ref=e196]:
+        - generic [ref=e197]:
+          - generic [ref=e198]: Past Orders
+          - heading "Order history" [level=1] [ref=e199]
+          - paragraph [ref=e200]: Track previous purchases, review line items, and quickly reorder when you need to restock.
+        - paragraph [ref=e202]: Page 1
+        - generic [ref=e204]:
+          - link "Codex Test Product B 1774805748555 x 1, Codex Test Product A 1774805748555 x 3 Placed Mar 29, 2026, 3:14 PM" [ref=e205] [cursor=pointer]:
+            - /url: /portal/orders/a8a008ce-fe21-47da-ae65-91e7e8d6e0fc
+            - paragraph [ref=e206]: Codex Test Product B 1774805748555 x 1, Codex Test Product A 1774805748555 x 3
+            - paragraph [ref=e207]: Placed Mar 29, 2026, 3:14 PM
+          - generic [ref=e208]:
+            - generic [ref=e209]: New
+            - generic [ref=e210]: $60.47
+            - button "Reorder" [ref=e211] [cursor=pointer]
+        - generic [ref=e213]:
+          - link "Codex Test Product B 1774805748555 x 1, Codex Test Product A 1774805748555 x 1 Placed Mar 29, 2026, 12:53 PM" [ref=e214] [cursor=pointer]:
+            - /url: /portal/orders/c2c76c6a-1203-4294-97f7-e7b1869930eb
+            - paragraph [ref=e215]: Codex Test Product B 1774805748555 x 1, Codex Test Product A 1774805748555 x 1
+            - paragraph [ref=e216]: Placed Mar 29, 2026, 12:53 PM
+          - generic [ref=e217]:
+            - generic [ref=e218]: New
+            - generic [ref=e219]: $35.79
+            - button "Reorder" [ref=e220] [cursor=pointer]

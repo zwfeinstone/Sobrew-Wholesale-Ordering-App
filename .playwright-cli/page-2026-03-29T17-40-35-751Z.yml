@@ -1,0 +1,74 @@
+- generic [active] [ref=e1]:
+  - alert [ref=e24]
+  - generic [ref=e25]:
+    - complementary [ref=e26]:
+      - generic [ref=e27]:
+        - generic [ref=e28]:
+          - generic [ref=e29]: Admin Console
+          - generic [ref=e30]:
+            - heading "Sobrew Admin" [level=2] [ref=e31]
+            - paragraph [ref=e32]: Manage orders, customers, products, and recurring schedules in one place.
+        - generic [ref=e33]:
+          - paragraph [ref=e34]: Needs Attention
+          - paragraph [ref=e35]: "0"
+          - paragraph [ref=e36]: New orders awaiting review.
+        - button "Log out" [ref=e38] [cursor=pointer]
+      - navigation [ref=e39]:
+        - link "Dashboard" [ref=e40] [cursor=pointer]:
+          - /url: /admin
+          - generic [ref=e41]: Dashboard
+        - link "Orders" [ref=e42] [cursor=pointer]:
+          - /url: /admin/orders
+          - generic [ref=e43]: Orders
+        - link "Archived Orders" [ref=e44] [cursor=pointer]:
+          - /url: /admin/archived-orders
+          - generic [ref=e45]: Archived Orders
+        - link "Recurring Orders" [ref=e46] [cursor=pointer]:
+          - /url: /admin/recurring-orders
+          - generic [ref=e47]: Recurring Orders
+        - link "Canceled Recurring Orders" [ref=e48] [cursor=pointer]:
+          - /url: /admin/canceled-recurring-orders
+          - generic [ref=e49]: Canceled Recurring Orders
+        - link "Order Form" [ref=e50] [cursor=pointer]:
+          - /url: /admin/order-form
+          - generic [ref=e51]: Order Form
+        - link "Centers" [ref=e52] [cursor=pointer]:
+          - /url: /admin/users
+          - generic [ref=e53]: Centers
+        - link "Products" [ref=e54] [cursor=pointer]:
+          - /url: /admin/products
+          - generic [ref=e55]: Products
+        - link "Settings" [ref=e56] [cursor=pointer]:
+          - /url: /admin/settings
+          - generic [ref=e57]: Settings
+    - main [ref=e58]:
+      - generic [ref=e381]:
+        - generic [ref=e382]:
+          - generic [ref=e383]: Center Admin
+          - heading "Create center wizard" [level=1] [ref=e384]
+          - paragraph [ref=e385]: Set up a new center, create its first login, and assign shared products and pricing in one guided flow.
+        - generic [ref=e386]:
+          - generic [ref=e387]:
+            - generic [ref=e388]: 1. Center details
+            - generic [ref=e389]: 2. Assign products
+            - generic [ref=e390]: 3. Set prices
+            - generic [ref=e391]: 4. Review
+          - generic [ref=e402]:
+            - generic [ref=e403]:
+              - 'heading "Step 2: Assign products" [level=2] [ref=e404]'
+              - paragraph [ref=e405]: Choose which products everyone at this center should see in their shared catalog.
+            - generic [ref=e406]:
+              - generic [ref=e407]: Nitro Keg
+              - checkbox "Nitro Keg" [ref=e408]
+            - generic [ref=e409]:
+              - generic [ref=e410]: Cold Brew Concentrate
+              - checkbox "Cold Brew Concentrate" [ref=e411]
+            - generic [ref=e412]:
+              - generic [ref=e413]: Codex Test Product A 1774805748555
+              - checkbox "Codex Test Product A 1774805748555" [ref=e414]
+            - generic [ref=e415]:
+              - generic [ref=e416]: Codex Test Product B 1774805748555
+              - checkbox "Codex Test Product B 1774805748555" [ref=e417]
+            - generic [ref=e418]:
+              - button "Back" [ref=e419] [cursor=pointer]
+              - button "Next" [ref=e420] [cursor=pointer]

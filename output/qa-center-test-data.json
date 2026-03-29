@@ -1,0 +1,18 @@
+{
+  "suffix": 1774816631974,
+  "centerId": "a7448344-f702-48f9-a1a9-5e888e8143ca",
+  "adminId": "e6b31e9c-b02a-4456-a704-8c6630194830",
+  "adminEmail": "codex-admin-1774816631974@example.com",
+  "adminPassword": "CodexAdmin123!",
+  "user1Id": "f6910e8a-a1b9-463c-b47c-3e1cc11872f4",
+  "user1Email": "codex-center1-1774816631974@example.com",
+  "user2Id": "6e1173c1-b249-478a-b1fd-72202800aa50",
+  "user2Email": "codex-center2-1774816631974@example.com",
+  "userPassword": "CenterUser123!",
+  "productIds": [
+    "d04101b6-f554-410c-9d93-f58d17f21445",
+    "3be2e104-cbec-427f-8088-4707f63b678c"
+  ],
+  "orderId": "e08966f2-df56-4572-82f2-ac9c2a77a8dc",
+  "recurringOrderId": "b8f94f34-4735-4507-a3b9-0da9b32cdd15"
+}
