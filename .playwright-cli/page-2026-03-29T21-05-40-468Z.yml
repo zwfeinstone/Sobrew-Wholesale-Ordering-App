@@ -1,0 +1,63 @@
+- generic [ref=e1]:
+  - generic [ref=e2]:
+    - banner [ref=e3]:
+      - generic [ref=e4]:
+        - generic [ref=e5]:
+          - generic [ref=e6]: Wholesale Portal
+          - heading "Sobrew Ordering" [level=1] [ref=e7]
+        - generic [ref=e8]:
+          - navigation [ref=e9]:
+            - link "Catalog" [ref=e10] [cursor=pointer]:
+              - /url: /portal
+            - link "Cart" [ref=e11] [cursor=pointer]:
+              - /url: /portal/cart
+            - link "Orders" [ref=e12] [cursor=pointer]:
+              - /url: /portal/orders
+            - link "Recurring" [ref=e13] [cursor=pointer]:
+              - /url: /portal/recurring-orders
+            - link "Settings" [ref=e14] [cursor=pointer]:
+              - /url: /portal/settings
+          - button "Log out" [ref=e16] [cursor=pointer]
+    - main [ref=e17]:
+      - generic [ref=e52]:
+        - generic [ref=e53]:
+          - generic [ref=e54]: Recurring Orders
+          - heading "Manage your recurring shipments" [level=1] [ref=e55]
+          - paragraph [ref=e56]: Update quantities and frequency, pause shipments, or cancel schedules whenever your center's needs change.
+        - generic [ref=e90]: Saved successfully.
+        - generic [ref=e57]:
+          - generic [ref=e58]:
+            - generic [ref=e59]:
+              - paragraph [ref=e60]: Next order date
+              - paragraph [ref=e61]: 4/12/2026
+            - generic [ref=e62]: active
+          - generic [ref=e63]:
+            - generic [ref=e64]:
+              - generic [ref=e65]: Shipment frequency
+              - combobox "Shipment frequency" [ref=e66]:
+                - option "Every 1 week"
+                - option "Every 2 weeks" [selected]
+                - option "Every 3 weeks"
+                - option "Every 4 weeks"
+            - button "Save Schedule" [ref=e67] [cursor=pointer]
+          - generic [ref=e68]:
+            - generic [ref=e69]:
+              - generic [ref=e70]:
+                - generic [ref=e71]: Product
+                - generic [ref=e72]: Prod QA Product B 1774818087244
+              - generic [ref=e73]:
+                - generic [ref=e74]: Quantity
+                - spinbutton "Quantity" [ref=e75]: "1"
+              - button "Save Quantity" [ref=e76] [cursor=pointer]
+            - generic [ref=e77]:
+              - generic [ref=e78]:
+                - generic [ref=e79]: Product
+                - generic [ref=e80]: Prod QA Product A 1774818087244
+              - generic [ref=e81]:
+                - generic [ref=e82]: Quantity
+                - spinbutton "Quantity" [ref=e83]: "3"
+              - button "Save Quantity" [active] [ref=e84] [cursor=pointer]
+          - generic [ref=e85]:
+            - button "Pause" [ref=e87] [cursor=pointer]
+            - button "Cancel" [ref=e89] [cursor=pointer]
+  - alert [ref=e33]

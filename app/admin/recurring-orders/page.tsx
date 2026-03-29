@@ -1,7 +1,17 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
-import { isRecurringFrequency, RECURRING_FREQUENCY_OPTIONS } from '@/lib/recurring';
+import { daysForRecurringFrequency, isRecurringFrequency, RECURRING_FREQUENCY_OPTIONS } from '@/lib/recurring';
 import { createClient } from '@/lib/supabase/server';
+
+function nextOrderDate(frequency: string, anchorDate: string | null) {
+  if (!anchorDate) return 'N/A';
+  const date = new Date(anchorDate);
+  if (Number.isNaN(date.getTime())) return 'N/A';
+  const daysToAdd = daysForRecurringFrequency(frequency);
+  if (!daysToAdd) return 'N/A';
+  date.setDate(date.getDate() + daysToAdd);
+  return date.toLocaleDateString();
+}
 
 async function updateRecurringOrder(formData: FormData) {
   'use server';
@@ -106,7 +116,7 @@ export default async function AdminRecurringOrdersPage({ searchParams }: { searc
               </Link>
             </div>
 
-            <div className="grid gap-2 text-sm text-slate-700 md:grid-cols-4">
+            <div className="grid gap-2 text-sm text-slate-700 md:grid-cols-5">
               <div>
                 <div className="text-slate-500">Total</div>
                 <div>${(order.amount_cents / 100).toFixed(2)}</div>
@@ -114,6 +124,10 @@ export default async function AdminRecurringOrdersPage({ searchParams }: { searc
               <div>
                 <div className="text-slate-500">Created</div>
                 <div>{new Date(order.created_at).toLocaleDateString()}</div>
+              </div>
+              <div>
+                <div className="text-slate-500">Next order date</div>
+                <div>{nextOrderDate(order.frequency, order.last_generated_at ?? order.created_at)}</div>
               </div>
               <div>
                 <div className="text-slate-500">Last generated</div>

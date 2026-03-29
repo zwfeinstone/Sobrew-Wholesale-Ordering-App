@@ -1,0 +1,41 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e2]:
+    - banner [ref=e3]:
+      - generic [ref=e4]:
+        - generic [ref=e5]:
+          - generic [ref=e6]: Wholesale Portal
+          - heading "Sobrew Ordering" [level=1] [ref=e7]
+        - generic [ref=e8]:
+          - navigation [ref=e9]:
+            - link "Catalog" [ref=e10] [cursor=pointer]:
+              - /url: /portal
+            - link "Cart" [ref=e11] [cursor=pointer]:
+              - /url: /portal/cart
+            - link "Orders" [ref=e12] [cursor=pointer]:
+              - /url: /portal/orders
+            - link "Recurring" [ref=e13] [cursor=pointer]:
+              - /url: /portal/recurring-orders
+            - link "Settings" [ref=e14] [cursor=pointer]:
+              - /url: /portal/settings
+          - button "Log out" [ref=e16] [cursor=pointer]
+    - main [ref=e17]:
+      - generic [ref=e34]:
+        - generic [ref=e35]:
+          - generic [ref=e36]: Order Details
+          - heading "Your order is new." [level=1] [ref=e37]
+          - paragraph [ref=e38]: Review the items in this order and head back to the catalog whenever you are ready to reorder.
+          - paragraph [ref=e39]: Placed Mar 29, 2026, 9:04 PM
+        - generic [ref=e40]:
+          - generic [ref=e41]:
+            - generic [ref=e42]: Prod QA Product B 1774818087244 x 1
+            - generic [ref=e43]: $23.45
+          - generic [ref=e44]:
+            - generic [ref=e45]: Prod QA Product A 1774818087244 x 1
+            - generic [ref=e46]: $12.34
+        - generic [ref=e47]:
+          - generic [ref=e48]:
+            - paragraph [ref=e49]: Subtotal
+            - paragraph [ref=e50]: $35.79
+          - link "Reorder" [ref=e51] [cursor=pointer]:
+            - /url: /portal
+  - alert [ref=e33]

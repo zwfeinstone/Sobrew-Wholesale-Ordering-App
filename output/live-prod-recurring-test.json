@@ -1,0 +1,18 @@
+{
+  "suffix": 1774818087244,
+  "centerId": "94a6fba3-4a6d-44cc-a9e3-0fa7cb2c035e",
+  "centerName": "Prod QA Center 1774818087244",
+  "user1Id": "f0c1bc83-4b36-4d99-97c5-4f816de0dd66",
+  "user1Email": "prod-qa-center1-1774818087244@example.com",
+  "user2Id": "b94a3d9f-8b98-4ddb-9f93-8a5bc9972f26",
+  "user2Email": "prod-qa-center2-1774818087244@example.com",
+  "userPassword": "CenterUser123!",
+  "productIds": [
+    "c9abecaf-ef19-496f-b4a8-bc2bf569d7d9",
+    "e45cfdfe-17e6-43f0-b7f1-66802d0940c8"
+  ],
+  "productNames": [
+    "Prod QA Product A 1774818087244",
+    "Prod QA Product B 1774818087244"
+  ]
+}
