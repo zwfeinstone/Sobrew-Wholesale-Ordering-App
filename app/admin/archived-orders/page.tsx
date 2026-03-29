@@ -31,14 +31,31 @@ export default async function ArchivedOrdersPage({
   const page = Number.isInteger(pageParam) && pageParam > 0 ? pageParam : 1;
   const from = (page - 1) * PAGE_SIZE;
   const to = from + PAGE_SIZE;
+  const [matchingCenters, matchingProfiles] = nameFilter
+    ? await Promise.all([
+        supabase.from('centers').select('id').ilike('name', `%${nameFilter}%`),
+        supabase.from('profiles').select('id').ilike('email', `%${nameFilter}%`).eq('is_admin', false),
+      ])
+    : [{ data: [] as any[] }, { data: [] as any[] }];
 
   let ordersQuery = supabase
     .from('orders')
-    .select('id,status,created_at,archived_at,profiles(email,full_name)')
+    .select('id,status,created_at,archived_at,profiles(email),centers(name)')
     .not('archived_at', 'is', null);
 
   if (nameFilter) {
-    ordersQuery = ordersQuery.or(`full_name.ilike.%${nameFilter}%,email.ilike.%${nameFilter}%`, { foreignTable: 'profiles' });
+    const centerIds = (matchingCenters.data ?? []).map((center: any) => center.id);
+    const userIds = (matchingProfiles.data ?? []).map((profile: any) => profile.id);
+    const filters = [
+      centerIds.length ? `center_id.in.(${centerIds.join(',')})` : '',
+      userIds.length ? `user_id.in.(${userIds.join(',')})` : '',
+    ].filter(Boolean);
+
+    if (!filters.length) {
+      ordersQuery = ordersQuery.eq('id', '00000000-0000-0000-0000-000000000000');
+    } else {
+      ordersQuery = ordersQuery.or(filters.join(','));
+    }
   }
 
   switch (sort) {
@@ -115,8 +132,8 @@ export default async function ArchivedOrdersPage({
           className="card block transition-all duration-200 hover:-translate-y-0.5 hover:bg-white/95"
         >
           <p className="text-lg font-semibold text-slate-950">{(itemLabelsByOrderId.get(order.id) ?? ['Unknown product']).join(', ')}</p>
-          <p className="mt-2 text-sm font-medium text-slate-700">{order.profiles?.full_name || 'Unknown center'}</p>
-          <p className="mt-1 text-sm text-slate-500">{order.profiles?.email}</p>
+          <p className="mt-2 text-sm font-medium text-slate-700">{order.centers?.name || 'Unknown center'}</p>
+          <p className="mt-1 text-sm text-slate-500">{order.profiles?.email || 'No login email on file'}</p>
           <div className="mt-3 flex flex-wrap items-center gap-3 text-sm text-slate-500">
             <span>Placed {formatOrderTimestamp(order.created_at)}</span>
             <span>Archived {formatOrderTimestamp(order.archived_at)}</span>

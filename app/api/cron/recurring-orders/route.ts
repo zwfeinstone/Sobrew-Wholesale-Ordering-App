@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { getCenterLoginEmails } from '@/lib/center-logins';
 import { sendOrderEmails } from '@/lib/email';
 import { env } from '@/lib/env';
 import { daysForRecurringFrequency } from '@/lib/recurring';
@@ -17,7 +18,7 @@ export async function POST(req: Request) {
 
   const { data: recurringOrders, error: recurringOrdersError } = await supabaseAdmin
     .from('recurring_orders')
-    .select('id,user_id,source_order_id,frequency,amount_cents,status,created_at,last_generated_at,profiles(email,full_name)')
+    .select('id,user_id,center_id,source_order_id,frequency,amount_cents,status,created_at,last_generated_at,profiles(email,full_name),centers(name)')
     .eq('status', 'active');
 
   if (recurringOrdersError) {
@@ -91,6 +92,7 @@ export async function POST(req: Request) {
     const { data: newOrder, error: newOrderError } = await supabaseAdmin
       .from('orders')
       .insert({
+        center_id: recurringOrder.center_id,
         user_id: recurringOrder.user_id,
         shipping_name: sourceOrder.shipping_name ?? '',
         shipping_address1: sourceOrder.shipping_address1 ?? '',
@@ -139,10 +141,12 @@ export async function POST(req: Request) {
     }
 
     const recurringProfile = Array.isArray(recurringOrder.profiles) ? recurringOrder.profiles[0] : recurringOrder.profiles;
+    const recurringCenter = Array.isArray(recurringOrder.centers) ? recurringOrder.centers[0] : recurringOrder.centers;
+    const centerEmails = await getCenterLoginEmails(supabaseAdmin, recurringOrder.center_id);
 
     await sendOrderEmails({
-      customerEmail: recurringProfile?.email ?? '',
-      customerName: recurringProfile?.full_name ?? recurringProfile?.email ?? '',
+      customerEmail: centerEmails.length ? centerEmails : recurringProfile?.email ?? '',
+      customerName: recurringCenter?.name ?? recurringProfile?.full_name ?? recurringProfile?.email ?? '',
       orderId: newOrder.id,
       shipping: newOrder,
       items: recurringItems.map((item) => ({

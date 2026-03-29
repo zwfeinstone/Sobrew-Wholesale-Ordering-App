@@ -9,6 +9,7 @@ async function placeOrder(formData: FormData) {
   'use server';
   const { user, profile } = await requireUser();
   const supabase = await createClient();
+  const centerId = profile?.center_id ?? user.id;
   const cart = JSON.parse(String(formData.get('cart_json') ?? '[]')) as Array<{
     product_id: string;
     name: string;
@@ -32,7 +33,7 @@ async function placeOrder(formData: FormData) {
   const { data: lastOrder } = await supabase
     .from('orders')
     .select('shipping_name,shipping_address1,shipping_address2,shipping_city,shipping_state,shipping_zip')
-    .eq('user_id', user.id)
+    .eq('center_id', centerId)
     .order('created_at', { ascending: false })
     .limit(1)
     .maybeSingle();
@@ -40,6 +41,7 @@ async function placeOrder(formData: FormData) {
   const { data: order, error } = await supabase
     .from('orders')
     .insert({
+      center_id: centerId,
       user_id: user.id,
       shipping_name: lastOrder?.shipping_name ?? profile?.full_name ?? profile?.email ?? user.email ?? '',
       shipping_address1: lastOrder?.shipping_address1 ?? '',
@@ -74,6 +76,7 @@ async function placeOrder(formData: FormData) {
     const { data: recurringOrder, error: recurringOrderError } = await supabase
       .from('recurring_orders')
       .insert({
+        center_id: centerId,
         user_id: user.id,
         source_order_id: order.id,
         frequency: normalizedRecurringFrequency,
@@ -108,7 +111,7 @@ async function placeOrder(formData: FormData) {
 
   await sendOrderEmails({
     customerEmail: profile?.email ?? user.email ?? '',
-    customerName: profile?.full_name ?? profile?.email ?? user.email ?? '',
+    customerName: profile?.center?.name ?? profile?.full_name ?? profile?.email ?? user.email ?? '',
     orderId: order.id,
     shipping: order,
     items: cartWithNames.map((item) => ({ name: item.name, qty: item.qty, price: item.price_cents, line: item.qty * item.price_cents })),

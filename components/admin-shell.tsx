@@ -11,7 +11,7 @@ export function AdminShell({ children, newOrders }: { children: ReactNode; newOr
     ['Recurring Orders', '/admin/recurring-orders'],
     ['Canceled Recurring Orders', '/admin/canceled-recurring-orders'],
     ['Order Form', '/admin/order-form'],
-    ['Users', '/admin/users'],
+    ['Centers', '/admin/users'],
     ['Products', '/admin/products'],
     ['Settings', '/admin/settings']
   ];

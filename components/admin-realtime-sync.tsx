@@ -8,6 +8,7 @@ const REFRESH_DEBOUNCE_MS = 500;
 const ADMIN_SYNC_TABLES = [
   'orders',
   'order_items',
+  'centers',
   'profiles',
   'products',
   'recurring_orders',

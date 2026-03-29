@@ -13,8 +13,8 @@ type Line = {
 
 type Center = {
   id: string;
+  name: string;
   email: string;
-  full_name: string | null;
 };
 
 export function OrderFormPrint({
@@ -24,7 +24,7 @@ export function OrderFormPrint({
   center: Center;
   products: Line[];
 }) {
-  const centerLabel = useMemo(() => center.full_name || center.email, [center]);
+  const centerLabel = useMemo(() => center.name || center.email, [center]);
 
   return (
     <div className="space-y-4 print:space-y-2">
@@ -39,7 +39,7 @@ export function OrderFormPrint({
           <div>
             <h2 className="text-2xl font-semibold">Sobrew Order Form</h2>
             <p className="text-sm text-slate-600">Center: {centerLabel}</p>
-            <p className="text-sm text-slate-600">Email: {center.email}</p>
+            <p className="text-sm text-slate-600">Email: {center.email || 'No active login on file'}</p>
           </div>
           <div className="text-right text-sm text-slate-600">Date: {new Date().toLocaleDateString()}</div>
         </div>

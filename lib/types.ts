@@ -6,6 +6,7 @@ export type Profile = {
   notes: string | null;
   is_admin: boolean;
   is_active: boolean;
+  center_id?: string | null;
 };
 
 export type Product = {
@@ -18,7 +19,7 @@ export type Product = {
 };
 
 export type PriceRow = {
-  user_id: string;
+  center_id: string;
   product_id: string;
   price_cents: number;
 };

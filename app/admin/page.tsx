@@ -295,7 +295,7 @@ export default async function AdminDashboard({
 
   const [{ count: newOrders }, { data: recent }, { data: orderMetricRows }, { data: revenueMetricRows }, { data: userMetricRows }] = await Promise.all([
     supabase.from('orders').select('id', { head: true, count: 'exact' }).eq('status', 'New').is('archived_at', null),
-    supabase.from('orders').select('id,status,created_at,profiles(email)').is('archived_at', null).order('created_at', { ascending: false }).limit(PAGE_SIZE),
+    supabase.from('orders').select('id,status,created_at,profiles(email),centers(name)').is('archived_at', null).order('created_at', { ascending: false }).limit(PAGE_SIZE),
     ordersMetricQuery,
     revenueMetricQuery,
     usersMetricQuery,
@@ -401,7 +401,8 @@ export default async function AdminDashboard({
           >
             <div>
               <p className="font-semibold text-slate-950">{firstNameByOrderId.get(order.id) ?? 'Unknown product'}</p>
-              <p className="mt-1 text-sm text-slate-500">{order.profiles?.email}</p>
+              <p className="mt-1 text-sm font-medium text-slate-700">{order.centers?.name || 'Unknown center'}</p>
+              <p className="mt-1 text-sm text-slate-500">{order.profiles?.email || 'No login email on file'}</p>
             </div>
             <div className="text-right">
               <p className="rounded-full bg-slate-100 px-3 py-1 text-sm font-medium text-slate-700">{order.status}</p>

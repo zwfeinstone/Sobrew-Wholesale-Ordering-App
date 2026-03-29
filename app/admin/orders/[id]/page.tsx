@@ -1,5 +1,6 @@
 import { notFound, redirect } from 'next/navigation';
 import StatusToast from '@/components/status-toast';
+import { getCenterLoginEmails } from '@/lib/center-logins';
 import { createClient } from '@/lib/supabase/server';
 import { sendShippedEmail } from '@/lib/email';
 import { getOrderItemSummaries } from '@/lib/order-items';
@@ -17,11 +18,12 @@ async function updateStatus(formData: FormData) {
   const supabase = await createClient();
   const id = String(formData.get('id'));
   const status = String(formData.get('status'));
-  const { data: order } = await supabase.from('orders').select('id,user_id,status,profiles(email)').eq('id', id).single();
+  const { data: order } = await supabase.from('orders').select('id,user_id,center_id,status,profiles(email)').eq('id', id).single();
   const orderUpdateResult = await supabase.from('orders').update({ status }).eq('id', id).select('id');
-  if (!orderUpdateResult.error && orderUpdateResult.data?.length && order?.status !== 'Shipped' && status === 'Shipped' && (order as any)?.profiles?.email) {
+  if (!orderUpdateResult.error && orderUpdateResult.data?.length && order?.status !== 'Shipped' && status === 'Shipped') {
     const items = await getOrderItemSummaries(supabase, id);
-    await sendShippedEmail((order as any).profiles.email, items);
+    const centerEmails = await getCenterLoginEmails(supabase, (order as any).center_id);
+    await sendShippedEmail(centerEmails.length ? centerEmails : (order as any).profiles.email, items);
   }
   const query = new URLSearchParams({
     toast: orderUpdateResult.error || !orderUpdateResult.data?.length ? 'status_error' : 'status_updated',
@@ -53,7 +55,7 @@ export default async function AdminOrderDetail({
 }) {
   const supabase = await createClient();
   const toast = typeof searchParams.toast === 'string' ? searchParams.toast : '';
-  const { data: order } = await supabase.from('orders').select('*,profiles(email,full_name)').eq('id', params.id).single();
+  const { data: order } = await supabase.from('orders').select('*,profiles(email,full_name),centers(name)').eq('id', params.id).single();
   if (!order) return notFound();
   const { data: items } = await supabase.from('order_items').select('id,qty,product_id,product_name_snapshot').eq('order_id', order.id);
 
@@ -73,6 +75,8 @@ export default async function AdminOrderDetail({
         <span className="eyebrow">Order Detail</span>
         <h1 className="page-title mt-4">Order overview</h1>
         <p className="page-subtitle mt-3">Update fulfillment status, verify shipping details, and review the ordered products below.</p>
+        <p className="mt-4 text-sm font-medium text-slate-600">Center {order.centers?.name || 'Unknown center'}</p>
+        <p className="mt-1 text-sm font-medium text-slate-600">Submitted by {order.profiles?.email || 'Unknown login'}</p>
         <p className="mt-4 text-sm font-medium text-slate-600">Placed {formatOrderTimestamp(order.created_at)}</p>
         {order.archived_at ? <p className="mt-2 text-sm font-medium text-slate-600">Archived {formatOrderTimestamp(order.archived_at)}</p> : null}
       </section>

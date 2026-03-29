@@ -10,7 +10,7 @@ type Line = { name: string; qty: number; price: number; line: number };
 type ShippedLine = { name: string; qty: number };
 
 type OrderEmailPayload = {
-  customerEmail: string;
+  customerEmail: string | string[];
   customerName: string;
   orderId: string;
   shipping: Record<string, string | null>;
@@ -61,12 +61,18 @@ export async function sendOrderEmail(payload: OrderEmailPayload) {
     return;
   }
 
+  const recipients = Array.isArray(payload.customerEmail) ? payload.customerEmail.filter(Boolean) : [payload.customerEmail].filter(Boolean);
+  if (!recipients.length) {
+    console.error('Customer confirmation email skipped: missing recipient');
+    return;
+  }
+
   const html = buildCustomerOrderHtml(payload);
 
   try {
     const response = await resend.emails.send({
       from: RESEND_FROM,
-      to: payload.customerEmail,
+      to: recipients,
       subject: 'Thank You For Your Order!',
       html,
     });
@@ -81,9 +87,15 @@ export async function sendOrderEmails(payload: OrderEmailPayload) {
   await sendOrderEmail(payload);
 }
 
-export async function sendShippedEmail(to: string, items: ShippedLine[]) {
+export async function sendShippedEmail(to: string | string[], items: ShippedLine[]) {
   if (!resend) {
     console.error('Resend disabled: missing RESEND_API_KEY');
+    return;
+  }
+
+  const recipients = Array.isArray(to) ? to.filter(Boolean) : [to].filter(Boolean);
+  if (!recipients.length) {
+    console.error('Shipped email skipped: missing recipient');
     return;
   }
 
@@ -95,7 +107,7 @@ export async function sendShippedEmail(to: string, items: ShippedLine[]) {
   try {
     const response = await resend.emails.send({
       from: RESEND_FROM,
-      to,
+      to: recipients,
       subject: 'Your Order Has Been Shipped!',
       html: `<p>Thank you for your business!</p>${itemsHtml}`,
     });
