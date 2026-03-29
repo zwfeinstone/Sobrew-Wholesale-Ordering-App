@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { ReactNode } from 'react';
+import { AdminRealtimeSync } from '@/components/admin-realtime-sync';
 import { LogoutButton } from '@/components/logout-button';
 
 export function AdminShell({ children, newOrders }: { children: ReactNode; newOrders: number }) {
@@ -16,6 +17,7 @@ export function AdminShell({ children, newOrders }: { children: ReactNode; newOr
   ];
   return (
     <div className="min-h-screen md:flex">
+      <AdminRealtimeSync />
       <aside className="border-b border-white/40 bg-white/70 p-4 backdrop-blur-xl md:min-h-screen md:w-72 md:border-b-0 md:border-r md:px-5 md:py-6">
         <div className="card space-y-6 p-5">
           <div className="space-y-3">
