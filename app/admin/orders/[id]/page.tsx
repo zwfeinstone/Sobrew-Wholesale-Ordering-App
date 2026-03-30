@@ -58,6 +58,7 @@ export default async function AdminOrderDetail({
   const { data: order } = await supabase.from('orders').select('*,profiles(email,full_name),centers(name)').eq('id', params.id).single();
   if (!order) return notFound();
   const { data: items } = await supabase.from('order_items').select('id,qty,product_id,product_name_snapshot').eq('order_id', order.id);
+  const orderNotes = typeof order.notes === 'string' ? order.notes.trim() : '';
 
   const productIds = [...new Set((items ?? []).map((item: any) => item.product_id))];
   const { data: products } = productIds.length
@@ -98,6 +99,12 @@ export default async function AdminOrderDetail({
         <p className="mt-3 text-lg font-semibold text-slate-950">{order.shipping_name}</p>
         <p className="mt-2 text-sm text-slate-600">{order.shipping_address1}, {order.shipping_city}</p>
       </div>
+      {orderNotes ? (
+        <div className="card">
+          <p className="text-xs uppercase tracking-[0.18em] text-slate-500">Special note</p>
+          <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-slate-700">{orderNotes}</p>
+        </div>
+      ) : null}
       <div className="card space-y-3">
         {items?.map((i: any) => (
           <div key={i.id} className="flex flex-col gap-2 border-b border-slate-100 pb-3 last:border-b-0 last:pb-0 sm:flex-row sm:items-center sm:justify-between">
