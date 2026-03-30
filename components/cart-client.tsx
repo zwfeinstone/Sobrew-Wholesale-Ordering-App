@@ -96,6 +96,11 @@ export function CartTable() {
     saveCartItems(next);
   };
 
+  const updateQty = (productId: string, nextQty: number) => {
+    const normalizedQty = Math.max(1, Number.isFinite(nextQty) ? Math.trunc(nextQty) : 1);
+    save(items.map((item) => (item.product_id === productId ? { ...item, qty: normalizedQty } : item)));
+  };
+
   const subtotal = items.reduce((sum, item) => sum + item.qty * item.price_cents, 0);
 
   return (
@@ -114,15 +119,33 @@ export function CartTable() {
             <p className="mt-1 text-sm text-slate-500">${(item.price_cents / 100).toFixed(2)} each</p>
           </div>
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-            <input
-              className="input w-full sm:w-24"
-              value={item.qty}
-              min={1}
-              type="number"
-              onChange={(e) =>
-                save(items.map((i) => (i.product_id === item.product_id ? { ...i, qty: Number(e.target.value) } : i)))
-              }
-            />
+            <div className="flex items-center justify-between rounded-full border border-slate-200 bg-white/80 p-1 shadow-sm sm:justify-start">
+              <button
+                aria-label={`Decrease quantity for ${item.name}`}
+                className="btn-secondary h-11 w-11 shrink-0 px-0 py-0 sm:h-10 sm:w-10"
+                disabled={item.qty <= 1}
+                type="button"
+                onClick={() => updateQty(item.product_id, item.qty - 1)}
+              >
+                -
+              </button>
+              <input
+                aria-label={`Quantity for ${item.name}`}
+                className="w-14 bg-transparent px-2 text-center text-base font-semibold text-slate-950 outline-none"
+                value={item.qty}
+                min={1}
+                type="number"
+                onChange={(e) => updateQty(item.product_id, Number(e.target.value))}
+              />
+              <button
+                aria-label={`Increase quantity for ${item.name}`}
+                className="btn-primary h-11 w-11 shrink-0 px-0 py-0 sm:h-10 sm:w-10"
+                type="button"
+                onClick={() => updateQty(item.product_id, item.qty + 1)}
+              >
+                +
+              </button>
+            </div>
             <button className="btn-secondary w-full px-3 py-2 sm:w-auto" type="button" onClick={() => save(items.filter((i) => i.product_id !== item.product_id))}>
               Remove
             </button>
