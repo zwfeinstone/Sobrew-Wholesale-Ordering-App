@@ -4,6 +4,8 @@ import { useEffect, useState } from 'react';
 import StatusToast from '@/components/status-toast';
 
 type Item = { product_id: string; name: string; price_cents: number; qty: number };
+const CART_STORAGE_KEY = 'cart';
+export const CART_UPDATED_EVENT = 'sobrew-cart-updated';
 
 function mergeCartItems(existing: Item[], incoming: Item[]) {
   const next = [...existing];
@@ -13,6 +15,23 @@ function mergeCartItems(existing: Item[], incoming: Item[]) {
     else next.push({ ...item });
   }
   return next;
+}
+
+function readCartItems() {
+  try {
+    return JSON.parse(localStorage.getItem(CART_STORAGE_KEY) ?? '[]') as Item[];
+  } catch {
+    return [];
+  }
+}
+
+function saveCartItems(next: Item[]) {
+  localStorage.setItem(CART_STORAGE_KEY, JSON.stringify(next));
+  window.dispatchEvent(new CustomEvent(CART_UPDATED_EVENT));
+}
+
+export function readCartItemCount() {
+  return readCartItems().reduce((sum, item) => sum + Math.max(0, Number(item.qty) || 0), 0);
 }
 
 export function AddToCartButton({ product }: { product: Omit<Item, 'qty'> }) {
@@ -25,9 +44,8 @@ export function AddToCartButton({ product }: { product: Omit<Item, 'qty'> }) {
         className="btn-primary w-full sm:w-auto"
         type="button"
         onClick={() => {
-          const raw = localStorage.getItem('cart') ?? '[]';
-          const cart = JSON.parse(raw) as Item[];
-          localStorage.setItem('cart', JSON.stringify(mergeCartItems(cart, [{ ...product, qty: 1 }])));
+          const cart = readCartItems();
+          saveCartItems(mergeCartItems(cart, [{ ...product, qty: 1 }]));
           setShowToast(false);
           window.setTimeout(() => setShowToast(true), 0);
         }}
@@ -48,9 +66,8 @@ export function ReorderButton({ items }: { items: Item[] }) {
         className="btn-secondary w-full sm:w-auto"
         type="button"
         onClick={() => {
-          const raw = localStorage.getItem('cart') ?? '[]';
-          const cart = JSON.parse(raw) as Item[];
-          localStorage.setItem('cart', JSON.stringify(mergeCartItems(cart, items)));
+          const cart = readCartItems();
+          saveCartItems(mergeCartItems(cart, items));
           setShowToast(false);
           window.setTimeout(() => setShowToast(true), 0);
         }}
@@ -64,12 +81,19 @@ export function ReorderButton({ items }: { items: Item[] }) {
 export function CartTable() {
   const [items, setItems] = useState<Item[]>([]);
   useEffect(() => {
-    setItems(JSON.parse(localStorage.getItem('cart') ?? '[]'));
+    const syncItems = () => setItems(readCartItems());
+    syncItems();
+    window.addEventListener(CART_UPDATED_EVENT, syncItems as EventListener);
+    window.addEventListener('storage', syncItems);
+    return () => {
+      window.removeEventListener(CART_UPDATED_EVENT, syncItems as EventListener);
+      window.removeEventListener('storage', syncItems);
+    };
   }, []);
 
   const save = (next: Item[]) => {
     setItems(next);
-    localStorage.setItem('cart', JSON.stringify(next));
+    saveCartItems(next);
   };
 
   const subtotal = items.reduce((sum, item) => sum + item.qty * item.price_cents, 0);
@@ -121,14 +145,15 @@ export function CartTable() {
 export function CheckoutCartField() {
   const [value, setValue] = useState('[]');
   useEffect(() => {
-    setValue(localStorage.getItem('cart') ?? '[]');
+    setValue(JSON.stringify(readCartItems()));
   }, []);
   return <input type="hidden" name="cart_json" value={value} />;
 }
 
 export function ClearCart() {
   useEffect(() => {
-    localStorage.removeItem('cart');
+    localStorage.removeItem(CART_STORAGE_KEY);
+    window.dispatchEvent(new CustomEvent(CART_UPDATED_EVENT));
   }, []);
   return null;
 }
