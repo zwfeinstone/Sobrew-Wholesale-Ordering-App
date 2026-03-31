@@ -1,4 +1,5 @@
 import { notFound, redirect } from 'next/navigation';
+import ConfirmSubmitButton from '@/components/confirm-submit-button';
 import StatusToast from '@/components/status-toast';
 import { getCenterLoginEmails } from '@/lib/center-logins';
 import { createClient } from '@/lib/supabase/server';
@@ -46,6 +47,25 @@ async function archiveOrder(formData: FormData) {
   redirect(`/admin/orders/${id}?toast=${archiveResult.error || !archiveResult.data?.length ? 'archive_error' : 'archive_success'}`);
 }
 
+async function deleteOrder(formData: FormData) {
+  'use server';
+  const supabase = await createClient();
+  const id = String(formData.get('id') ?? '');
+  if (!id) redirect('/admin/orders?toast=delete_error');
+
+  const { count: recurringCount } = await supabase
+    .from('recurring_orders')
+    .select('id', { count: 'exact', head: true })
+    .eq('source_order_id', id);
+
+  const deleteResult = await supabase.from('orders').delete().eq('id', id).select('id');
+  if (deleteResult.error || !deleteResult.data?.length) {
+    redirect(`/admin/orders/${id}?toast=delete_error`);
+  }
+
+  redirect(`/admin/orders?toast=${(recurringCount ?? 0) > 0 ? 'delete_success_with_recurring' : 'delete_success'}`);
+}
+
 export default async function AdminOrderDetail({
   params,
   searchParams,
@@ -58,6 +78,10 @@ export default async function AdminOrderDetail({
   const { data: order } = await supabase.from('orders').select('*,profiles(email,full_name),centers(name)').eq('id', params.id).single();
   if (!order) return notFound();
   const { data: items } = await supabase.from('order_items').select('id,qty,product_id,product_name_snapshot').eq('order_id', order.id);
+  const { count: recurringCount } = await supabase
+    .from('recurring_orders')
+    .select('id', { count: 'exact', head: true })
+    .eq('source_order_id', order.id);
   const orderNotes = typeof order.notes === 'string' ? order.notes.trim() : '';
 
   const productIds = [...new Set((items ?? []).map((item: any) => item.product_id))];
@@ -72,6 +96,7 @@ export default async function AdminOrderDetail({
       {toast === 'status_error' ? <StatusToast message="Order status update failed." tone="error" /> : null}
       {toast === 'archive_success' ? <StatusToast message="Order archived." tone="success" /> : null}
       {toast === 'archive_error' ? <StatusToast message="Unable to archive this order." tone="error" /> : null}
+      {toast === 'delete_error' ? <StatusToast message="Unable to delete this order." tone="error" /> : null}
       <section className="panel">
         <span className="eyebrow">Order Detail</span>
         <h1 className="page-title mt-4">Order overview</h1>
@@ -84,16 +109,36 @@ export default async function AdminOrderDetail({
       {order.archived_at ? (
         <div className="card text-sm text-slate-600">This order is archived and no longer appears in the active orders list.</div>
       ) : null}
-      <form action={updateStatus} className="card flex flex-col gap-3 md:flex-row md:items-center">
-        <input type="hidden" name="id" value={order.id} />
-        <select className="input" name="status" defaultValue={order.status}>
-          <option>New</option><option>Processing</option><option>Shipped</option>
-        </select>
-        <button className="btn-primary w-full md:w-auto">Update status</button>
-        {!order.archived_at && ['Processing', 'Shipped'].includes(order.status) ? (
-          <button formAction={archiveOrder} className="btn-secondary w-full md:w-auto" type="submit">Archive order</button>
-        ) : null}
-      </form>
+      <div className="card flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+        <form action={updateStatus} className="flex flex-1 flex-col gap-3 md:flex-row md:items-center">
+          <input type="hidden" name="id" value={order.id} />
+          <select className="input" name="status" defaultValue={order.status}>
+            <option>New</option><option>Processing</option><option>Shipped</option>
+          </select>
+          <button className="btn-primary w-full md:w-auto">Update status</button>
+        </form>
+        <div className="flex w-full flex-col gap-3 md:w-auto md:flex-row md:flex-wrap md:justify-end">
+          {!order.archived_at && ['Processing', 'Shipped'].includes(order.status) ? (
+            <form action={archiveOrder} className="w-full md:w-auto">
+              <input type="hidden" name="id" value={order.id} />
+              <button className="btn-secondary w-full md:w-auto" type="submit">Archive order</button>
+            </form>
+          ) : null}
+          <form action={deleteOrder} className="w-full md:w-auto">
+            <input type="hidden" name="id" value={order.id} />
+            <ConfirmSubmitButton
+              className="w-full rounded-full border border-rose-200 px-4 py-2.5 text-sm font-semibold text-rose-700 transition-all duration-200 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-70 md:w-auto"
+              confirmMessage={
+                (recurringCount ?? 0) > 0
+                  ? 'Delete this order permanently? This will also delete the recurring schedule created from it. This action cannot be undone.'
+                  : 'Delete this order permanently? This action cannot be undone.'
+              }
+              label="Delete order"
+              pendingLabel="Deleting..."
+            />
+          </form>
+        </div>
+      </div>
       <div className="card">
         <p className="text-xs uppercase tracking-[0.18em] text-slate-500">Shipping</p>
         <p className="mt-3 text-lg font-semibold text-slate-950">{order.shipping_name}</p>

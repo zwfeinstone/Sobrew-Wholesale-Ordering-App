@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { AdminOrderBulkControls } from '@/components/admin-order-bulk-controls';
+import ConfirmSubmitButton from '@/components/confirm-submit-button';
 import StatusToast from '@/components/status-toast';
 import { getCenterLoginEmails } from '@/lib/center-logins';
 import { sendShippedEmail } from '@/lib/email';
@@ -88,6 +89,36 @@ async function archiveSelectedOrders(formData: FormData) {
   redirect(`/admin/orders?${query.toString()}`);
 }
 
+async function deleteOrder(formData: FormData) {
+  'use server';
+  const supabase = await createClient();
+  const id = String(formData.get('id') ?? '');
+  const statusFilter = String(formData.get('statusFilter') ?? '');
+  const query = new URLSearchParams();
+  if (statusFilter) query.set('status', statusFilter);
+
+  if (!id) {
+    query.set('toast', 'delete_error');
+    redirect(`/admin/orders?${query.toString()}`);
+  }
+
+  const { count: recurringCount } = await supabase
+    .from('recurring_orders')
+    .select('id', { count: 'exact', head: true })
+    .eq('source_order_id', id);
+
+  const deleteResult = await supabase.from('orders').delete().eq('id', id).select('id');
+  query.set(
+    'toast',
+    deleteResult.error || !deleteResult.data?.length
+      ? 'delete_error'
+      : (recurringCount ?? 0) > 0
+        ? 'delete_success_with_recurring'
+        : 'delete_success'
+  );
+  redirect(`/admin/orders?${query.toString()}`);
+}
+
 export default async function AdminOrdersPage({ searchParams }: { searchParams: Record<string, string | string[] | undefined> }) {
   const supabase = await createClient();
   const status = typeof searchParams.status === 'string' ? searchParams.status : '';
@@ -106,6 +137,10 @@ export default async function AdminOrdersPage({ searchParams }: { searchParams: 
     ? await supabase.from('products').select('id,name').in('id', productIds)
     : { data: [] as any[] };
   const productNameById = new Map((products ?? []).map((p: any) => [p.id, p.name]));
+  const { data: recurringOrders } = orderIds.length
+    ? await supabase.from('recurring_orders').select('source_order_id').in('source_order_id', orderIds)
+    : { data: [] as any[] };
+  const recurringSourceOrderIds = new Set((recurringOrders ?? []).map((order: any) => order.source_order_id).filter(Boolean));
 
   const itemLabelsByOrderId = new Map<string, string[]>();
   for (const item of items ?? []) {
@@ -122,6 +157,9 @@ export default async function AdminOrdersPage({ searchParams }: { searchParams: 
       {toast === 'status_error' ? <StatusToast message="Order status update failed." tone="error" /> : null}
       {toast === 'archive_success' ? <StatusToast message="Order archive updated." tone="success" /> : null}
       {toast === 'archive_error' ? <StatusToast message="Unable to archive the selected order(s)." tone="error" /> : null}
+      {toast === 'delete_success' ? <StatusToast message="Order deleted." tone="success" /> : null}
+      {toast === 'delete_success_with_recurring' ? <StatusToast message="Order and linked recurring schedule deleted." tone="success" /> : null}
+      {toast === 'delete_error' ? <StatusToast message="Unable to delete this order." tone="error" /> : null}
       <section className="panel">
         <span className="eyebrow">Order Queue</span>
         <h1 className="page-title mt-4">Manage wholesale orders</h1>
@@ -183,6 +221,20 @@ export default async function AdminOrdersPage({ searchParams }: { searchParams: 
                 <button className="btn-secondary w-full md:w-auto" type="submit">Archive</button>
               </form>
             ) : null}
+            <form action={deleteOrder} className="w-full md:w-auto">
+              <input type="hidden" name="id" value={order.id} />
+              <input type="hidden" name="statusFilter" value={status} />
+              <ConfirmSubmitButton
+                className="w-full rounded-full border border-rose-200 px-4 py-2.5 text-sm font-semibold text-rose-700 transition-all duration-200 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-70 md:w-auto"
+                confirmMessage={
+                  recurringSourceOrderIds.has(order.id)
+                    ? 'Delete this order permanently? This will also delete the recurring schedule created from it. This action cannot be undone.'
+                    : 'Delete this order permanently? This action cannot be undone.'
+                }
+                label="Delete"
+                pendingLabel="Deleting..."
+              />
+            </form>
           </div>
         </div>
       ))}
