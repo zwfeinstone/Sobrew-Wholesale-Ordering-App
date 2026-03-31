@@ -1,4 +1,5 @@
 import { redirect } from 'next/navigation';
+import LoginSubmitButton from '@/components/login-submit-button';
 import { createClient } from '@/lib/supabase/server';
 
 async function login(formData: FormData) {
@@ -58,7 +59,7 @@ export default function LoginPage({ searchParams }: { searchParams: Record<strin
               <input className="input" name="email" type="email" required placeholder="Email address" />
               <input className="input" name="password" type="password" required placeholder="Password" />
             </div>
-            <button className="btn-primary w-full">Sign in</button>
+            <LoginSubmitButton />
           </form>
         </section>
       </div>
