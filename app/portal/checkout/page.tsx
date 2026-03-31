@@ -1,9 +1,15 @@
+import { randomUUID } from 'crypto';
 import { redirect } from 'next/navigation';
 import { CheckoutCartField } from '@/components/cart-client';
+import CheckoutSubmitButton from '@/components/checkout-submit-button';
 import { requireUser } from '@/lib/auth';
 import { createClient } from '@/lib/supabase/server';
 import { sendOrderEmails } from '@/lib/email';
 import { isRecurringFrequency, RECURRING_FREQUENCY_OPTIONS } from '@/lib/recurring';
+
+function isDuplicateSubmissionError(error: { code?: string; message?: string } | null) {
+  return error?.code === '23505' && error.message?.includes('orders_submission_id_idx');
+}
 
 async function placeOrder(formData: FormData) {
   'use server';
@@ -27,6 +33,7 @@ async function placeOrder(formData: FormData) {
   const isRecurring = String(formData.get('is_recurring') ?? '') === 'on';
   const recurringFrequency = String(formData.get('recurring_frequency') ?? '');
   const normalizedRecurringFrequency = isRecurringFrequency(recurringFrequency) ? recurringFrequency : null;
+  const submissionId = String(formData.get('submission_id') ?? '').trim() || null;
 
   const subtotal = cartWithNames.reduce((sum, i) => sum + i.qty * i.price_cents, 0);
 
@@ -42,6 +49,7 @@ async function placeOrder(formData: FormData) {
     .from('orders')
     .insert({
       center_id: centerId,
+      submission_id: submissionId,
       user_id: user.id,
       shipping_name: lastOrder?.shipping_name ?? profile?.full_name ?? profile?.email ?? user.email ?? '',
       shipping_address1: lastOrder?.shipping_address1 ?? '',
@@ -54,6 +62,16 @@ async function placeOrder(formData: FormData) {
     })
     .select('id,shipping_name,shipping_address1,shipping_address2,shipping_city,shipping_state,shipping_zip')
     .single();
+  if (isDuplicateSubmissionError(error) && submissionId) {
+    const { data: existingOrder } = await supabase
+      .from('orders')
+      .select('id')
+      .eq('submission_id', submissionId)
+      .maybeSingle();
+    if (existingOrder) {
+      redirect(`/portal/orders/${existingOrder.id}?placed=1`);
+    }
+  }
   if (error || !order) redirect('/portal/checkout?error=1');
 
   const { error: orderItemsError } = await supabase.from('order_items').insert(
@@ -122,6 +140,8 @@ async function placeOrder(formData: FormData) {
 }
 
 export default function CheckoutPage() {
+  const submissionId = randomUUID();
+
   return (
     <form action={placeOrder} className="space-y-6">
       <section className="panel">
@@ -131,6 +151,7 @@ export default function CheckoutPage() {
       </section>
       <section className="card space-y-5">
         <CheckoutCartField />
+        <input type="hidden" name="submission_id" value={submissionId} />
         <div className="space-y-2">
           <label className="text-sm font-medium text-slate-700">Notes</label>
           <textarea className="input min-h-28" name="notes" placeholder="Delivery notes, special handling, or anything your team should know." />
@@ -149,7 +170,7 @@ export default function CheckoutPage() {
             </select>
           </div>
         </div>
-        <button className="btn-primary w-full sm:w-auto">Place order</button>
+        <CheckoutSubmitButton />
       </section>
     </form>
   );
