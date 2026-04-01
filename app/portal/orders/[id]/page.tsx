@@ -1,7 +1,9 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { ClearCart } from '@/components/cart-client';
+import StatusToast from '@/components/status-toast';
 import { requireUser } from '@/lib/auth';
+import { cartStorageKeyForUser } from '@/lib/cart';
 import { createClient } from '@/lib/supabase/server';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { usd } from '@/lib/utils';
@@ -14,10 +16,22 @@ function formatOrderTimestamp(value: string | null) {
   });
 }
 
-export default async function OrderDetail({ params }: { params: { id: string } }) {
+export default async function OrderDetail({
+  params,
+  searchParams,
+}: {
+  params: { id: string };
+  searchParams?: Record<string, string | string[] | undefined>;
+}) {
   const { user, profile } = await requireUser();
   const supabase = await createClient();
   const centerId = profile?.center_id ?? user.id;
+  const cartStorageKey = cartStorageKeyForUser(user.id);
+  const toast = typeof searchParams?.toast === 'string' ? searchParams.toast : '';
+  const shouldClearCart =
+    toast === 'order_placed' ||
+    toast === 'order_placed_recurring_created' ||
+    toast === 'order_placed_recurring_error';
   const { data: order } = await supabase.from('orders').select('*').eq('id', params.id).eq('center_id', centerId).single();
   if (!order) return notFound();
   const { data: items } = await supabase.from('order_items').select('id,qty,line_total_cents,product_id,product_name_snapshot').eq('order_id', order.id);
@@ -30,7 +44,10 @@ export default async function OrderDetail({ params }: { params: { id: string } }
 
   return (
     <div className="space-y-6">
-      <ClearCart />
+      {shouldClearCart ? <ClearCart storageKey={cartStorageKey} /> : null}
+      {toast === 'order_placed' ? <StatusToast message="Order placed successfully." tone="success" /> : null}
+      {toast === 'order_placed_recurring_created' ? <StatusToast message="Order placed and recurring shipment created." tone="success" /> : null}
+      {toast === 'order_placed_recurring_error' ? <StatusToast message="Order placed, but we couldn't create the recurring shipment." tone="error" /> : null}
       <section className="panel">
         <span className="eyebrow">Order Details</span>
         <h1 className="page-title mt-4">Your order is {order.status.toLowerCase()}.</h1>

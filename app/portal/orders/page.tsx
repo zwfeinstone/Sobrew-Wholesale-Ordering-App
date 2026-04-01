@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import { ReorderButton } from '@/components/cart-client';
 import { requireUser } from '@/lib/auth';
+import { cartStorageKeyForUser } from '@/lib/cart';
 import { createClient } from '@/lib/supabase/server';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { usd } from '@/lib/utils';
@@ -23,6 +24,7 @@ export default async function OrdersPage({
   const { user, profile } = await requireUser();
   const supabase = await createClient();
   const centerId = profile?.center_id ?? user.id;
+  const cartStorageKey = cartStorageKeyForUser(user.id);
   const pageParam = typeof searchParams?.page === 'string' ? Number(searchParams.page) : 1;
   const page = Number.isInteger(pageParam) && pageParam > 0 ? pageParam : 1;
   const from = (page - 1) * PAGE_SIZE;
@@ -47,7 +49,11 @@ export default async function OrdersPage({
   const { data: products } = productIds.length
     ? await supabaseAdmin.from('products').select('id,name').in('id', productIds)
     : { data: [] as any[] };
+  const { data: currentPrices } = productIds.length
+    ? await supabase.from('user_product_prices').select('product_id,price_cents').eq('center_id', centerId).in('product_id', productIds)
+    : { data: [] as any[] };
   const productNameById = new Map((products ?? []).map((p: any) => [p.id, p.name]));
+  const currentPriceById = new Map((currentPrices ?? []).map((row) => [row.product_id, row.price_cents]));
 
   const lineItemsByOrderId = new Map<string, string[]>();
   const reorderItemsByOrderId = new Map<string, Array<{ product_id: string; name: string; price_cents: number; qty: number }>>();
@@ -63,7 +69,7 @@ export default async function OrdersPage({
     reorderItems.push({
       product_id: item.product_id,
       name,
-      price_cents: item.unit_price_cents ?? 0,
+      price_cents: currentPriceById.get(item.product_id) ?? item.unit_price_cents ?? 0,
       qty: item.qty,
     });
     reorderItemsByOrderId.set(item.order_id, reorderItems);
@@ -93,7 +99,7 @@ export default async function OrdersPage({
             <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row sm:flex-wrap sm:items-center sm:justify-end">
               <span className="rounded-full bg-slate-100 px-3 py-1 text-sm font-medium text-slate-700">{order.status}</span>
               <span className="text-lg font-semibold text-slate-950">{usd(order.subtotal_cents)}</span>
-              <ReorderButton items={reorderItemsByOrderId.get(order.id) ?? []} />
+              <ReorderButton items={reorderItemsByOrderId.get(order.id) ?? []} storageKey={cartStorageKey} />
             </div>
           </div>
         </div>

@@ -6,9 +6,11 @@ import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 type StatusToastProps = {
   message: string;
   tone: 'success' | 'error';
+  cookieName?: string;
+  cookiePath?: string;
 };
 
-export default function StatusToast({ message, tone }: StatusToastProps) {
+export default function StatusToast({ message, tone, cookieName, cookiePath = '/' }: StatusToastProps) {
   const [visible, setVisible] = useState(true);
   const pathname = usePathname();
   const router = useRouter();
@@ -26,6 +28,11 @@ export default function StatusToast({ message, tone }: StatusToastProps) {
     const nextQuery = nextParams.toString();
     router.replace(nextQuery ? `${pathname}?${nextQuery}` : pathname, { scroll: false });
   }, [pathname, router, searchParams]);
+
+  useEffect(() => {
+    if (!cookieName) return;
+    document.cookie = `${cookieName}=; Max-Age=0; path=${cookiePath}; SameSite=Lax`;
+  }, [cookieName, cookiePath]);
 
   if (!visible) return null;
 

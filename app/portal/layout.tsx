@@ -2,9 +2,11 @@ import Link from 'next/link';
 import { LogoutButton } from '@/components/logout-button';
 import { PortalCartLink } from '@/components/portal-cart-link';
 import { requireUser } from '@/lib/auth';
+import { cartStorageKeyForUser } from '@/lib/cart';
 
 export default async function PortalLayout({ children }: { children: React.ReactNode }) {
-  const { profile } = await requireUser();
+  const { user, profile } = await requireUser();
+  const cartStorageKey = cartStorageKeyForUser(user.id);
   const centerName = !profile?.is_admin ? profile?.center?.name?.trim() : '';
   return (
     <div className="min-h-screen">
@@ -20,7 +22,7 @@ export default async function PortalLayout({ children }: { children: React.React
           <div className="flex flex-col gap-3 text-sm sm:flex-row sm:items-center sm:justify-between">
             <nav className="flex gap-2 overflow-x-auto pb-1 text-sm [scrollbar-width:none] [-ms-overflow-style:none] sm:flex-wrap sm:overflow-visible sm:pb-0">
             <Link className="nav-pill shrink-0 whitespace-nowrap" href="/portal">Catalog</Link>
-            <PortalCartLink />
+            <PortalCartLink storageKey={cartStorageKey} />
             <Link className="nav-pill shrink-0 whitespace-nowrap" href="/portal/orders">Orders</Link>
             <Link className="nav-pill shrink-0 whitespace-nowrap" href="/portal/recurring-orders">Recurring</Link>
             <Link className="nav-pill shrink-0 whitespace-nowrap" href="/portal/settings">Settings</Link>

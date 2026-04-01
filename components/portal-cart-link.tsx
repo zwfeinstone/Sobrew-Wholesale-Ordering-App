@@ -4,11 +4,11 @@ import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { CART_UPDATED_EVENT, readCartItemCount } from '@/components/cart-client';
 
-export function PortalCartLink() {
+export function PortalCartLink({ storageKey }: { storageKey: string }) {
   const [count, setCount] = useState(0);
 
   useEffect(() => {
-    const syncCount = () => setCount(readCartItemCount());
+    const syncCount = () => setCount(readCartItemCount(storageKey));
     syncCount();
     window.addEventListener(CART_UPDATED_EVENT, syncCount as EventListener);
     window.addEventListener('storage', syncCount);
@@ -16,7 +16,7 @@ export function PortalCartLink() {
       window.removeEventListener(CART_UPDATED_EVENT, syncCount as EventListener);
       window.removeEventListener('storage', syncCount);
     };
-  }, []);
+  }, [storageKey]);
 
   return (
     <Link className="nav-pill inline-flex shrink-0 items-center gap-2 whitespace-nowrap" href="/portal/cart">

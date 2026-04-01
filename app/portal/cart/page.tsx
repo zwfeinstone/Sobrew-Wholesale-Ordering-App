@@ -1,6 +1,11 @@
 import { CartTable } from '@/components/cart-client';
+import { requireUser } from '@/lib/auth';
+import { cartStorageKeyForUser } from '@/lib/cart';
 
-export default function CartPage() {
+export default async function CartPage() {
+  const { user, profile } = await requireUser();
+  const cartStorageKey = cartStorageKeyForUser(user.id);
+
   return (
     <div className="space-y-6">
       <section className="panel">
@@ -8,7 +13,7 @@ export default function CartPage() {
         <h1 className="page-title mt-4">Your cart</h1>
         <p className="page-subtitle mt-3">Adjust quantities, remove products, and confirm your subtotal before heading to checkout.</p>
       </section>
-      <CartTable />
+      <CartTable storageKey={cartStorageKey} />
     </div>
   );
 }
