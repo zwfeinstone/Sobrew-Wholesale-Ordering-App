@@ -2,16 +2,21 @@
 
 import { useFormStatus } from 'react-dom';
 
-export default function CheckoutSubmitButton() {
+type CheckoutSubmitButtonProps = {
+  pending?: boolean;
+};
+
+export default function CheckoutSubmitButton({ pending: pendingOverride }: CheckoutSubmitButtonProps) {
   const { pending } = useFormStatus();
+  const isPending = pendingOverride ?? pending;
 
   return (
     <button
       className="btn-primary w-full sm:w-auto disabled:cursor-not-allowed disabled:opacity-70"
-      disabled={pending}
+      disabled={isPending}
       type="submit"
     >
-      {pending ? 'Placing order...' : 'Place order'}
+      {isPending ? 'Placing order...' : 'Place order'}
     </button>
   );
 }

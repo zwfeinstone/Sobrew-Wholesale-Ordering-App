@@ -1,4 +1,5 @@
 import { requireUser } from '@/lib/auth';
+import { cartStorageKeyForUser } from '@/lib/cart';
 import { createClient } from '@/lib/supabase/server';
 import { usd } from '@/lib/utils';
 import { AddToCartButton } from '@/components/cart-client';
@@ -7,6 +8,7 @@ export default async function PortalPage() {
   const { user, profile } = await requireUser();
   const supabase = await createClient();
   const centerId = profile?.center_id ?? user.id;
+  const cartStorageKey = cartStorageKeyForUser(user.id);
 
   const [{ data: assigned }, { data: prices }] = await Promise.all([
     supabase.from('user_products').select('product_id').eq('center_id', centerId),
@@ -62,7 +64,7 @@ export default async function PortalPage() {
                   <p className="mt-2 text-sm text-slate-600">Add this product to your cart when you&apos;re ready to place your next order.</p>
                 </div>
               </div>
-              <AddToCartButton product={{ product_id: product.id, name: product.name, price_cents: price }} />
+              <AddToCartButton product={{ product_id: product.id, name: product.name, price_cents: price }} storageKey={cartStorageKey} />
             </div>
           );
         })}

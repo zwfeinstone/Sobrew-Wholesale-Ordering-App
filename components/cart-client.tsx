@@ -2,9 +2,9 @@
 
 import { useEffect, useState } from 'react';
 import StatusToast from '@/components/status-toast';
+import { LEGACY_CART_STORAGE_KEY } from '@/lib/cart';
 
 type Item = { product_id: string; name: string; price_cents: number; qty: number };
-const CART_STORAGE_KEY = 'cart';
 export const CART_UPDATED_EVENT = 'sobrew-cart-updated';
 
 function mergeCartItems(existing: Item[], incoming: Item[]) {
@@ -17,24 +17,26 @@ function mergeCartItems(existing: Item[], incoming: Item[]) {
   return next;
 }
 
-function readCartItems() {
+function readCartItems(storageKey: string) {
   try {
-    return JSON.parse(localStorage.getItem(CART_STORAGE_KEY) ?? '[]') as Item[];
+    localStorage.removeItem(LEGACY_CART_STORAGE_KEY);
+    return JSON.parse(localStorage.getItem(storageKey) ?? '[]') as Item[];
   } catch {
     return [];
   }
 }
 
-function saveCartItems(next: Item[]) {
-  localStorage.setItem(CART_STORAGE_KEY, JSON.stringify(next));
+function saveCartItems(storageKey: string, next: Item[]) {
+  localStorage.removeItem(LEGACY_CART_STORAGE_KEY);
+  localStorage.setItem(storageKey, JSON.stringify(next));
   window.dispatchEvent(new CustomEvent(CART_UPDATED_EVENT));
 }
 
-export function readCartItemCount() {
-  return readCartItems().reduce((sum, item) => sum + Math.max(0, Number(item.qty) || 0), 0);
+export function readCartItemCount(storageKey: string) {
+  return readCartItems(storageKey).reduce((sum, item) => sum + Math.max(0, Number(item.qty) || 0), 0);
 }
 
-export function AddToCartButton({ product }: { product: Omit<Item, 'qty'> }) {
+export function AddToCartButton({ product, storageKey }: { product: Omit<Item, 'qty'>; storageKey: string }) {
   const [showToast, setShowToast] = useState(false);
 
   return (
@@ -44,8 +46,8 @@ export function AddToCartButton({ product }: { product: Omit<Item, 'qty'> }) {
         className="btn-primary w-full sm:w-auto"
         type="button"
         onClick={() => {
-          const cart = readCartItems();
-          saveCartItems(mergeCartItems(cart, [{ ...product, qty: 1 }]));
+          const cart = readCartItems(storageKey);
+          saveCartItems(storageKey, mergeCartItems(cart, [{ ...product, qty: 1 }]));
           setShowToast(false);
           window.setTimeout(() => setShowToast(true), 0);
         }}
@@ -56,7 +58,7 @@ export function AddToCartButton({ product }: { product: Omit<Item, 'qty'> }) {
   );
 }
 
-export function ReorderButton({ items }: { items: Item[] }) {
+export function ReorderButton({ items, storageKey }: { items: Item[]; storageKey: string }) {
   const [showToast, setShowToast] = useState(false);
 
   return (
@@ -66,8 +68,8 @@ export function ReorderButton({ items }: { items: Item[] }) {
         className="btn-secondary w-full sm:w-auto"
         type="button"
         onClick={() => {
-          const cart = readCartItems();
-          saveCartItems(mergeCartItems(cart, items));
+          const cart = readCartItems(storageKey);
+          saveCartItems(storageKey, mergeCartItems(cart, items));
           setShowToast(false);
           window.setTimeout(() => setShowToast(true), 0);
         }}
@@ -78,10 +80,10 @@ export function ReorderButton({ items }: { items: Item[] }) {
   );
 }
 
-export function CartTable() {
+export function CartTable({ storageKey }: { storageKey: string }) {
   const [items, setItems] = useState<Item[]>([]);
   useEffect(() => {
-    const syncItems = () => setItems(readCartItems());
+    const syncItems = () => setItems(readCartItems(storageKey));
     syncItems();
     window.addEventListener(CART_UPDATED_EVENT, syncItems as EventListener);
     window.addEventListener('storage', syncItems);
@@ -89,11 +91,11 @@ export function CartTable() {
       window.removeEventListener(CART_UPDATED_EVENT, syncItems as EventListener);
       window.removeEventListener('storage', syncItems);
     };
-  }, []);
+  }, [storageKey]);
 
   const save = (next: Item[]) => {
     setItems(next);
-    saveCartItems(next);
+    saveCartItems(storageKey, next);
   };
 
   const updateQty = (productId: string, nextQty: number) => {
@@ -165,18 +167,80 @@ export function CartTable() {
   );
 }
 
-export function CheckoutCartField() {
-  const [value, setValue] = useState('[]');
+export function CheckoutCartSummary({ storageKey }: { storageKey: string }) {
+  const [items, setItems] = useState<Item[]>([]);
+
   useEffect(() => {
-    setValue(JSON.stringify(readCartItems()));
-  }, []);
+    const syncItems = () => setItems(readCartItems(storageKey));
+    syncItems();
+    window.addEventListener(CART_UPDATED_EVENT, syncItems as EventListener);
+    window.addEventListener('storage', syncItems);
+    return () => {
+      window.removeEventListener(CART_UPDATED_EVENT, syncItems as EventListener);
+      window.removeEventListener('storage', syncItems);
+    };
+  }, [storageKey]);
+
+  const subtotal = items.reduce((sum, item) => sum + item.qty * item.price_cents, 0);
+
+  return (
+    <div className="rounded-[1.5rem] border border-slate-200 bg-white/60 p-4">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Order review</p>
+          <p className="mt-2 text-sm text-slate-600">Confirm the products and subtotal before placing your order.</p>
+        </div>
+        <a href="/portal/cart" className="btn-secondary inline-flex w-full sm:w-auto">Edit cart</a>
+      </div>
+      {!items.length ? (
+        <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          Your cart is empty. Return to the cart to add products before placing an order.
+        </div>
+      ) : (
+        <>
+          <div className="mt-4 space-y-3">
+            {items.map((item) => (
+              <div key={item.product_id} className="flex items-start justify-between gap-3 border-b border-slate-100 pb-3 last:border-b-0 last:pb-0">
+                <div className="min-w-0">
+                  <p className="font-medium text-slate-950">{item.name}</p>
+                  <p className="mt-1 text-sm text-slate-500">{item.qty} x ${(item.price_cents / 100).toFixed(2)}</p>
+                </div>
+                <p className="text-sm font-semibold text-slate-950">${((item.qty * item.price_cents) / 100).toFixed(2)}</p>
+              </div>
+            ))}
+          </div>
+          <div className="mt-4 flex items-center justify-between border-t border-slate-200 pt-4">
+            <p className="text-sm uppercase tracking-[0.18em] text-slate-500">Subtotal</p>
+            <p className="text-xl font-semibold text-slate-950">${(subtotal / 100).toFixed(2)}</p>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+export function CheckoutCartField({ storageKey }: { storageKey: string }) {
+  const [value, setValue] = useState('[]');
+
+  useEffect(() => {
+    const syncValue = () => setValue(JSON.stringify(readCartItems(storageKey)));
+    syncValue();
+    window.addEventListener(CART_UPDATED_EVENT, syncValue as EventListener);
+    window.addEventListener('storage', syncValue);
+    return () => {
+      window.removeEventListener(CART_UPDATED_EVENT, syncValue as EventListener);
+      window.removeEventListener('storage', syncValue);
+    };
+  }, [storageKey]);
+
   return <input type="hidden" name="cart_json" value={value} />;
 }
 
-export function ClearCart() {
+export function ClearCart({ storageKey }: { storageKey: string }) {
   useEffect(() => {
-    localStorage.removeItem(CART_STORAGE_KEY);
+    localStorage.removeItem(storageKey);
+    localStorage.removeItem(LEGACY_CART_STORAGE_KEY);
     window.dispatchEvent(new CustomEvent(CART_UPDATED_EVENT));
-  }, []);
+  }, [storageKey]);
   return null;
 }
