@@ -10,16 +10,30 @@ function intervalForFrequency(frequency: string) {
   return days ? 1000 * 60 * 60 * 24 * days : null;
 }
 
-export async function POST(req: Request) {
-  const providedSecret = req.headers.get('x-cron-secret') ?? '';
-  if (!env.cronSecret || providedSecret !== env.cronSecret) {
+function normalizeStatus(recurringOrder: { status?: string | null; active?: boolean | null }) {
+  if (recurringOrder.status) return recurringOrder.status;
+  if (typeof recurringOrder.active === 'boolean') return recurringOrder.active ? 'active' : 'paused';
+  return 'active';
+}
+
+function isAuthorizedCronRequest(req: Request) {
+  if (!env.cronSecret) return false;
+
+  const authorization = req.headers.get('authorization');
+  if (authorization === `Bearer ${env.cronSecret}`) return true;
+
+  const providedSecret = req.headers.get('x-cron-secret');
+  return providedSecret === env.cronSecret;
+}
+
+async function runRecurringOrders(req: Request) {
+  if (!isAuthorizedCronRequest(req)) {
     return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
   }
 
   const { data: recurringOrders, error: recurringOrdersError } = await supabaseAdmin
     .from('recurring_orders')
-    .select('id,user_id,center_id,source_order_id,frequency,amount_cents,status,created_at,last_generated_at,profiles(email,full_name),centers(name)')
-    .eq('status', 'active');
+    .select('id,user_id,center_id,source_order_id,frequency,amount_cents,status,active,created_at,last_generated_at,profiles(email,full_name),centers(name)');
 
   if (recurringOrdersError) {
     return NextResponse.json({ error: recurringOrdersError.message }, { status: 500 });
@@ -29,7 +43,8 @@ export async function POST(req: Request) {
   let created = 0;
   const errors: Array<{ recurringOrderId: string; message: string }> = [];
 
-  const dueRecurringOrders = (recurringOrders ?? []).filter((recurringOrder) => {
+  const activeRecurringOrders = (recurringOrders ?? []).filter((recurringOrder) => normalizeStatus(recurringOrder) === 'active');
+  const dueRecurringOrders = activeRecurringOrders.filter((recurringOrder) => {
     const intervalMs = intervalForFrequency(recurringOrder.frequency);
     if (!intervalMs) return false;
 
@@ -67,11 +82,53 @@ export async function POST(req: Request) {
   }
 
   const sourceOrderById = new Map((sourceOrders ?? []).map((sourceOrder) => [sourceOrder.id, sourceOrder]));
-  const recurringItemsByOrderId = new Map<string, typeof allRecurringItems>();
+  const recurringItemsByOrderId = new Map<string, NonNullable<typeof allRecurringItems>>();
   for (const item of allRecurringItems ?? []) {
     const existing = recurringItemsByOrderId.get(item.recurring_order_id) ?? [];
     existing.push(item);
     recurringItemsByOrderId.set(item.recurring_order_id, existing);
+  }
+
+  const missingRecurringItemSourceOrderIds = dueRecurringOrders
+    .filter((recurringOrder) => !recurringItemsByOrderId.get(recurringOrder.id)?.length && recurringOrder.source_order_id)
+    .map((recurringOrder) => recurringOrder.source_order_id);
+
+  const { data: sourceOrderItems, error: sourceOrderItemsError } = missingRecurringItemSourceOrderIds.length
+    ? await supabaseAdmin
+        .from('order_items')
+        .select('order_id,product_id,product_name_snapshot,qty,unit_price_cents,line_total_cents')
+        .in('order_id', [...new Set(missingRecurringItemSourceOrderIds)])
+    : { data: [] as Array<{
+        order_id: string;
+        product_id: string | null;
+        product_name_snapshot: string | null;
+        qty: number;
+        unit_price_cents: number;
+        line_total_cents: number;
+      }>, error: null as null | { message: string } };
+
+  if (sourceOrderItemsError) {
+    return NextResponse.json({ error: sourceOrderItemsError.message }, { status: 500 });
+  }
+
+  const recurringOrderIdBySourceOrderId = new Map(
+    dueRecurringOrders
+      .filter((recurringOrder) => recurringOrder.source_order_id)
+      .map((recurringOrder) => [recurringOrder.source_order_id, recurringOrder.id])
+  );
+  for (const item of sourceOrderItems ?? []) {
+    const recurringOrderId = recurringOrderIdBySourceOrderId.get(item.order_id);
+    if (!recurringOrderId || recurringItemsByOrderId.get(recurringOrderId)?.length) continue;
+    const existing = recurringItemsByOrderId.get(recurringOrderId) ?? [];
+    existing.push({
+      recurring_order_id: recurringOrderId,
+      product_id: item.product_id,
+      product_name_snapshot: item.product_name_snapshot,
+      qty: item.qty,
+      unit_price_cents: item.unit_price_cents,
+      line_total_cents: item.line_total_cents
+    });
+    recurringItemsByOrderId.set(recurringOrderId, existing);
   }
 
   for (const recurringOrder of dueRecurringOrders) {
@@ -162,4 +219,12 @@ export async function POST(req: Request) {
   }
 
   return NextResponse.json({ created, errors });
+}
+
+export async function GET(req: Request) {
+  return runRecurringOrders(req);
+}
+
+export async function POST(req: Request) {
+  return runRecurringOrders(req);
 }
