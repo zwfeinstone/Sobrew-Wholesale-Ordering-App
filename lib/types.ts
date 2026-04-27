@@ -14,6 +14,7 @@ export type Product = {
   name: string;
   description: string | null;
   sku: string;
+  category: string | null;
   image_url: string | null;
   active: boolean;
 };

@@ -7,7 +7,7 @@ export default async function NewUserWizardPage({
   searchParams?: Record<string, string | string[] | undefined>;
 }) {
   const supabase = await createClient();
-  const { data: products } = await supabase.from('products').select('id,name').eq('active', true);
+  const { data: products } = await supabase.from('products').select('id,name,category').eq('active', true).order('name', { ascending: true });
   const error = typeof searchParams?.error === 'string' ? searchParams.error : '';
 
   return (
