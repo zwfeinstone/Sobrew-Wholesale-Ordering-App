@@ -1,8 +1,9 @@
 'use client';
 
 import { useMemo, useState } from 'react';
+import { productCategoryGroupKey, productCategoryLabel, productCategorySortRank, type ProductCategoryGroup } from '@/lib/product-categories';
 
-type Product = { id: string; name: string };
+type Product = { id: string; name: string | null; category?: string | null };
 
 type WizardState = {
   center_name: string;
@@ -11,6 +12,32 @@ type WizardState = {
   login_name: string;
   password: string;
 };
+
+const productNameCollator = new Intl.Collator('en-US', { numeric: true, sensitivity: 'base' });
+
+function productDisplayName(product: Product) {
+  return product.name?.trim() || 'Unnamed product';
+}
+
+function groupProductsByCategory(products: Product[]) {
+  const sortedProducts = [...products].sort((a, b) => {
+    const categoryComparison = productCategorySortRank(a.category) - productCategorySortRank(b.category);
+    if (categoryComparison !== 0) return categoryComparison;
+    return productNameCollator.compare(productDisplayName(a), productDisplayName(b));
+  });
+
+  const groups: Array<{ category: ProductCategoryGroup; products: Product[] }> = [];
+  for (const product of sortedProducts) {
+    const category = productCategoryGroupKey(product.category);
+    const currentGroup = groups[groups.length - 1];
+    if (currentGroup?.category === category) {
+      currentGroup.products.push(product);
+    } else {
+      groups.push({ category, products: [product] });
+    }
+  }
+  return groups;
+}
 
 export function UserWizard({ products }: { products: Product[] }) {
   const [step, setStep] = useState(1);
@@ -24,6 +51,7 @@ export function UserWizard({ products }: { products: Product[] }) {
     password: '',
   });
   const selectedProducts = useMemo(() => products.filter((product) => selected[product.id]), [products, selected]);
+  const groupedProducts = useMemo(() => groupProductsByCategory(products), [products]);
   const stepLabels = ['Center details', 'Assign products', 'Set prices', 'Review'];
 
   return (
@@ -105,11 +133,17 @@ export function UserWizard({ products }: { products: Product[] }) {
             <h2 className="text-xl font-semibold">Step 2: Assign products</h2>
             <p className="mt-1 text-sm text-slate-500">Choose which products everyone at this center should see in their shared catalog.</p>
           </div>
-          {products.map((product) => (
-            <label key={product.id} className="flex items-start justify-between gap-3 rounded-2xl border border-slate-200 bg-white/70 px-4 py-3 sm:items-center">
-              <span className="font-medium text-slate-900">{product.name}</span>
-              <input type="checkbox" checked={!!selected[product.id]} onChange={(event) => setSelected({ ...selected, [product.id]: event.target.checked })} />
-            </label>
+          {!groupedProducts.length ? <div className="rounded-2xl border border-slate-200 bg-white/70 px-4 py-3 text-sm text-slate-600">No active products found.</div> : null}
+          {groupedProducts.map((group) => (
+            <div key={group.category} className="space-y-3">
+              <h3 className="border-b border-slate-200 pb-2 text-sm font-semibold uppercase tracking-[0.18em] text-slate-500">{productCategoryLabel(group.category)}</h3>
+              {group.products.map((product) => (
+                <label key={product.id} className="flex items-start justify-between gap-3 rounded-2xl border border-slate-200 bg-white/70 px-4 py-3 sm:items-center">
+                  <span className="font-medium text-slate-900">{productDisplayName(product)}</span>
+                  <input type="checkbox" checked={!!selected[product.id]} onChange={(event) => setSelected({ ...selected, [product.id]: event.target.checked })} />
+                </label>
+              ))}
+            </div>
           ))}
           <div className="flex flex-col gap-3 sm:flex-row">
             <button type="button" className="btn-secondary w-full sm:w-auto" onClick={() => setStep(1)}>Back</button>
@@ -125,7 +159,7 @@ export function UserWizard({ products }: { products: Product[] }) {
           </div>
           {selectedProducts.map((product) => (
             <div key={product.id} className="rounded-2xl border border-slate-200 bg-white/70 p-4">
-              <label className="mb-2 block font-medium text-slate-900">{product.name}</label>
+              <label className="mb-2 block font-medium text-slate-900">{productDisplayName(product)}</label>
               <input
                 className="input"
                 name={`price_${product.id}`}
@@ -164,7 +198,7 @@ export function UserWizard({ products }: { products: Product[] }) {
             <div className="rounded-2xl border border-slate-200 bg-white/70 p-4 md:col-span-2">
               <p className="text-xs uppercase tracking-[0.18em] text-slate-500">Assigned products</p>
               <p className="mt-2 font-semibold text-slate-950">{selectedProducts.length} selected</p>
-              <p className="mt-1 text-sm text-slate-500">{selectedProducts.map((product) => product.name).join(', ') || 'No products selected yet.'}</p>
+              <p className="mt-1 text-sm text-slate-500">{selectedProducts.map(productDisplayName).join(', ') || 'No products selected yet.'}</p>
             </div>
           </div>
           <div className="flex flex-col gap-3 sm:flex-row">

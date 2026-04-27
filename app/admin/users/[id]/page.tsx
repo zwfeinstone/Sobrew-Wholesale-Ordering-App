@@ -1,7 +1,16 @@
 import { notFound, redirect } from 'next/navigation';
+import { productCategoryGroupKey, productCategoryLabel, productCategorySortRank, type ProductCategoryGroup } from '@/lib/product-categories';
 import { createClient } from '@/lib/supabase/server';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { toCents } from '@/lib/utils';
+
+type CenterProductRow = {
+  id: string;
+  name: string | null;
+  category: string | null;
+};
+
+const productNameCollator = new Intl.Collator('en-US', { numeric: true, sensitivity: 'base' });
 
 function isNextRedirectError(error: unknown) {
   return Boolean(
@@ -11,6 +20,30 @@ function isNextRedirectError(error: unknown) {
       typeof (error as { digest?: unknown }).digest === 'string' &&
       (error as { digest: string }).digest.startsWith('NEXT_REDIRECT')
   );
+}
+
+function productDisplayName(product: CenterProductRow) {
+  return product.name?.trim() || 'Unnamed product';
+}
+
+function groupProductsByCategory(products: CenterProductRow[]) {
+  const sortedProducts = [...products].sort((a, b) => {
+    const categoryComparison = productCategorySortRank(a.category) - productCategorySortRank(b.category);
+    if (categoryComparison !== 0) return categoryComparison;
+    return productNameCollator.compare(productDisplayName(a), productDisplayName(b));
+  });
+
+  const groups: Array<{ category: ProductCategoryGroup; products: CenterProductRow[] }> = [];
+  for (const product of sortedProducts) {
+    const category = productCategoryGroupKey(product.category);
+    const currentGroup = groups[groups.length - 1];
+    if (currentGroup?.category === category) {
+      currentGroup.products.push(product);
+    } else {
+      groups.push({ category, products: [product] });
+    }
+  }
+  return groups;
 }
 
 async function syncCenterCatalog(centerId: string, formData: FormData) {
@@ -184,7 +217,7 @@ export default async function UserDetailPage({
 
   if (center) {
     const [{ data: products }, { data: assigned }, { data: prices }, { data: members }] = await Promise.all([
-      supabase.from('products').select('id,name').eq('active', true),
+      supabase.from('products').select('id,name,category').eq('active', true).order('name', { ascending: true }),
       supabase.from('user_products').select('product_id').eq('center_id', center.id),
       supabase.from('user_product_prices').select('product_id,price_cents').eq('center_id', center.id),
       supabase
@@ -197,6 +230,7 @@ export default async function UserDetailPage({
 
     const assignedSet = new Set((assigned ?? []).map((row) => row.product_id));
     const priceMap = new Map((prices ?? []).map((row) => [row.product_id, row.price_cents]));
+    const groupedProducts = groupProductsByCategory((products ?? []) as CenterProductRow[]);
 
     return (
       <div className="space-y-6">
@@ -233,13 +267,19 @@ export default async function UserDetailPage({
 
           <section className="card space-y-4">
             <h2 className="text-xl font-semibold text-slate-950">Shared product visibility + pricing</h2>
-            {products?.map((product: any) => (
-              <div key={product.id} className="grid gap-3 rounded-2xl border border-slate-200 bg-white/60 p-4 md:grid-cols-2">
-                <label className="flex items-center gap-3 font-medium text-slate-900">
-                  <input type="checkbox" name="product_id" value={product.id} defaultChecked={assignedSet.has(product.id)} />
-                  {product.name}
-                </label>
-                <input className="input" name={`price_${product.id}`} type="number" step="0.01" min="0" defaultValue={((priceMap.get(product.id) ?? 0) / 100).toFixed(2)} />
+            {!groupedProducts.length ? <div className="rounded-2xl border border-slate-200 bg-white/60 p-4 text-sm text-slate-600">No active products found.</div> : null}
+            {groupedProducts.map((group) => (
+              <div key={group.category} className="space-y-3">
+                <h3 className="border-b border-slate-200 pb-2 text-sm font-semibold uppercase tracking-[0.18em] text-slate-500">{productCategoryLabel(group.category)}</h3>
+                {group.products.map((product) => (
+                  <div key={product.id} className="grid gap-3 rounded-2xl border border-slate-200 bg-white/60 p-4 md:grid-cols-2">
+                    <label className="flex items-center gap-3 font-medium text-slate-900">
+                      <input type="checkbox" name="product_id" value={product.id} defaultChecked={assignedSet.has(product.id)} />
+                      {productDisplayName(product)}
+                    </label>
+                    <input className="input" name={`price_${product.id}`} type="number" step="0.01" min="0" defaultValue={((priceMap.get(product.id) ?? 0) / 100).toFixed(2)} />
+                  </div>
+                ))}
               </div>
             ))}
           </section>
