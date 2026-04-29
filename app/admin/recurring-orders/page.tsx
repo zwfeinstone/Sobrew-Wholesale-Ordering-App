@@ -139,7 +139,7 @@ export default async function AdminRecurringOrdersPage({ searchParams }: { searc
               </div>
             </div>
 
-            <div className="rounded-[1.5rem] border border-slate-200 bg-white/60 p-4 text-sm">
+            <div className="subtle-panel text-sm">
               <div className="mb-2 font-medium text-slate-950">Products</div>
               {!items.length ? <div className="text-slate-600">No items found</div> : null}
               {items.map((item) => (

@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { ClearCart } from '@/components/cart-client';
+import { OrderStatusBadge, OrderStatusTimeline } from '@/components/order-status';
 import StatusToast from '@/components/status-toast';
 import { requireUser } from '@/lib/auth';
 import { cartStorageKeyForUser } from '@/lib/cart';
@@ -49,12 +50,19 @@ export default async function OrderDetail({
       {toast === 'order_placed_recurring_created' ? <StatusToast message="Order placed and recurring shipment created." tone="success" /> : null}
       {toast === 'order_placed_recurring_error' ? <StatusToast message="Order placed, but we couldn't create the recurring shipment." tone="error" /> : null}
       <section className="panel">
-        <span className="eyebrow">Order Details</span>
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <span className="eyebrow">Order Details</span>
+          <OrderStatusBadge status={order.status} />
+        </div>
         <h1 className="page-title mt-4">Your order is {order.status.toLowerCase()}.</h1>
         <p className="page-subtitle mt-3">Review the items in this order and head back to the catalog whenever you are ready to reorder.</p>
         <p className="mt-4 text-sm font-medium text-slate-600">Placed {formatOrderTimestamp(order.created_at)}</p>
+        <div className="mt-6">
+          <OrderStatusTimeline status={order.status} />
+        </div>
       </section>
       <div className="card space-y-3">
+        {!items?.length ? <p className="text-sm text-slate-500">No line items are attached to this order.</p> : null}
         {items?.map((i: any) => (
           <div key={i.id} className="flex flex-col gap-2 border-b border-slate-100 pb-3 last:border-b-0 last:pb-0 sm:flex-row sm:items-center sm:justify-between">
             <span>{productNameById.get(i.product_id) || i.product_name_snapshot || 'Unknown product'} x {i.qty}</span>
@@ -62,7 +70,7 @@ export default async function OrderDetail({
           </div>
         ))}
       </div>
-      <div className="card flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+      <div className="sticky-action-bar flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <p className="text-sm uppercase tracking-[0.18em] text-slate-500">Subtotal</p>
           <p className="mt-2 text-3xl font-semibold text-slate-950">{usd(order.subtotal_cents)}</p>

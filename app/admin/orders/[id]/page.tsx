@@ -1,5 +1,6 @@
 import { notFound, redirect } from 'next/navigation';
 import ConfirmSubmitButton from '@/components/confirm-submit-button';
+import { OrderStatusBadge, OrderStatusTimeline } from '@/components/order-status';
 import StatusToast from '@/components/status-toast';
 import { getCenterLoginEmails } from '@/lib/center-logins';
 import { createClient } from '@/lib/supabase/server';
@@ -98,18 +99,24 @@ export default async function AdminOrderDetail({
       {toast === 'archive_error' ? <StatusToast message="Unable to archive this order." tone="error" /> : null}
       {toast === 'delete_error' ? <StatusToast message="Unable to delete this order." tone="error" /> : null}
       <section className="panel">
-        <span className="eyebrow">Order Detail</span>
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <span className="eyebrow">Order Detail</span>
+          <OrderStatusBadge status={order.status} />
+        </div>
         <h1 className="page-title mt-4">Order overview</h1>
         <p className="page-subtitle mt-3">Update fulfillment status, verify shipping details, and review the ordered products below.</p>
         <p className="mt-4 text-sm font-medium text-slate-600">Center {order.centers?.name || 'Unknown center'}</p>
         <p className="mt-1 text-sm font-medium text-slate-600">Submitted by {order.profiles?.email || 'Unknown login'}</p>
         <p className="mt-4 text-sm font-medium text-slate-600">Placed {formatOrderTimestamp(order.created_at)}</p>
         {order.archived_at ? <p className="mt-2 text-sm font-medium text-slate-600">Archived {formatOrderTimestamp(order.archived_at)}</p> : null}
+        <div className="mt-6">
+          <OrderStatusTimeline status={order.status} />
+        </div>
       </section>
       {order.archived_at ? (
         <div className="card text-sm text-slate-600">This order is archived and no longer appears in the active orders list.</div>
       ) : null}
-      <div className="card flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+      <div className="sticky-action-bar flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
         <form action={updateStatus} className="flex flex-1 flex-col gap-3 md:flex-row md:items-center">
           <input type="hidden" name="id" value={order.id} />
           <select className="input" name="status" defaultValue={order.status}>

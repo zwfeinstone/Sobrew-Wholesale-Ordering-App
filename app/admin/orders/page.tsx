@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { AdminOrderBulkControls } from '@/components/admin-order-bulk-controls';
 import ConfirmSubmitButton from '@/components/confirm-submit-button';
+import { OrderStatusBadge } from '@/components/order-status';
 import StatusToast from '@/components/status-toast';
 import { getCenterLoginEmails } from '@/lib/center-logins';
 import { sendShippedEmail } from '@/lib/email';
@@ -204,6 +205,7 @@ export default async function AdminOrdersPage({ searchParams }: { searchParams: 
             </Link>
           </div>
           <div className="flex w-full flex-col gap-2 md:w-auto md:flex-row md:flex-wrap md:items-center md:justify-end">
+            <OrderStatusBadge status={order.status} />
             <form action={updateStatus} className="flex w-full flex-col gap-2 sm:flex-row sm:items-center md:w-auto">
               <input type="hidden" name="id" value={order.id} />
               <input type="hidden" name="statusFilter" value={status} />

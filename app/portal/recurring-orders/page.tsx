@@ -1,7 +1,9 @@
+import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { requireUser } from '@/lib/auth';
-import { daysForRecurringFrequency, isRecurringFrequency, RECURRING_FREQUENCY_OPTIONS } from '@/lib/recurring';
+import { daysForRecurringFrequency, isRecurringFrequency, labelForRecurringFrequency, RECURRING_FREQUENCY_OPTIONS } from '@/lib/recurring';
 import { createClient } from '@/lib/supabase/server';
+import { usd } from '@/lib/utils';
 
 type SupabaseErrorShape = {
   message?: string;
@@ -18,6 +20,7 @@ type RecurringOrderRow = {
   created_at: string | null;
   last_generated_at: string | null;
   source_order_id?: string | null;
+  amount_cents?: number | null;
 };
 
 function logQueryError(query: string, error: SupabaseErrorShape | null, extra?: Record<string, unknown>) {
@@ -49,19 +52,20 @@ function normalizeStatus(order: RecurringOrderRow) {
 }
 
 
-function isNextRedirectError(error: unknown) {
+function isNextFrameworkError(error: unknown) {
   return Boolean(
     error &&
       typeof error === 'object' &&
       'digest' in error &&
       typeof (error as { digest?: unknown }).digest === 'string' &&
-      (error as { digest: string }).digest.startsWith('NEXT_REDIRECT')
+      ((error as { digest: string }).digest.startsWith('NEXT_REDIRECT') ||
+        (error as { digest: string }).digest === 'DYNAMIC_SERVER_USAGE')
   );
 }
 function statusClasses(status: string) {
-  if (status === 'active') return 'bg-emerald-100 text-emerald-700';
-  if (status === 'paused') return 'bg-amber-100 text-amber-700';
-  return 'bg-slate-200 text-slate-700';
+  if (status === 'active') return 'border-emerald-200 bg-emerald-50 text-emerald-800';
+  if (status === 'paused') return 'border-amber-200 bg-amber-50 text-amber-800';
+  return 'border-slate-200 bg-slate-100 text-slate-700';
 }
 
 async function updateRecurringFrequency(formData: FormData) {
@@ -91,7 +95,7 @@ async function updateRecurringFrequency(formData: FormData) {
 
     redirect('/portal/recurring-orders?success=saved');
   } catch (error) {
-    if (isNextRedirectError(error)) throw error;
+    if (isNextFrameworkError(error)) throw error;
     console.error('[recurring-orders] updateRecurringFrequency fatal', { userId, centerId, error });
     redirect('/portal/recurring-orders?error=save_failed');
   }
@@ -152,7 +156,7 @@ async function updateRecurringItem(formData: FormData) {
 
     redirect('/portal/recurring-orders?success=saved');
   } catch (error) {
-    if (isNextRedirectError(error)) throw error;
+    if (isNextFrameworkError(error)) throw error;
     console.error('[recurring-orders] updateRecurringItem fatal', { userId, centerId, error });
     redirect('/portal/recurring-orders?error=save_failed');
   }
@@ -204,7 +208,7 @@ async function setRecurringStatus(formData: FormData) {
 
     redirect('/portal/recurring-orders?success=status_updated');
   } catch (error) {
-    if (isNextRedirectError(error)) throw error;
+    if (isNextFrameworkError(error)) throw error;
     console.error('[recurring-orders] setRecurringStatus fatal', { userId, centerId, error });
     redirect('/portal/recurring-orders?error=status_failed');
   }
@@ -221,7 +225,7 @@ export default async function RecurringOrdersPage({ searchParams }: { searchPara
 
     const recurringOrdersResult = await supabase
       .from('recurring_orders')
-      .select('id,frequency,status,active,created_at,last_generated_at,source_order_id')
+      .select('id,frequency,status,active,created_at,last_generated_at,source_order_id,amount_cents')
       .eq('center_id', centerId)
       .neq('status', 'canceled')
       .order('created_at', { ascending: false });
@@ -285,71 +289,108 @@ export default async function RecurringOrdersPage({ searchParams }: { searchPara
     }
 
     return (
-      <div className="space-y-4">
-        <section className="panel">
+      <div className="recurring-page space-y-6">
+        <section className="panel recurring-hero">
           <span className="eyebrow">Recurring Orders</span>
-          <h1 className="page-title mt-4">Manage your recurring shipments</h1>
-          <p className="page-subtitle mt-3">Update quantities and frequency, pause shipments, or cancel schedules whenever your center&apos;s needs change.</p>
+          <h1 className="page-title recurring-title mt-4">Manage your recurring shipments</h1>
+          <p className="page-subtitle recurring-subtitle mt-3">Update quantities and frequency, pause shipments, or cancel schedules whenever your center&apos;s needs change.</p>
         </section>
 
         {searchParams?.success ? <div className="rounded-[1.5rem] border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-700">Saved successfully.</div> : null}
         {searchParams?.error ? <div className="rounded-[1.5rem] border border-red-200 bg-red-50 p-4 text-sm text-red-700">Could not save your changes.</div> : null}
 
-        {!recurringOrders.length ? <div className="card text-sm text-slate-600">No recurring orders yet.</div> : null}
+        {!recurringOrders.length ? (
+          <div className="empty-state">
+            <p className="text-lg font-semibold text-slate-950">No recurring shipments yet.</p>
+            <p className="mt-2 text-sm text-slate-500">Create one during checkout by selecting &quot;Make this order recurring&quot; before placing the order.</p>
+            <Link href="/portal" className="btn-secondary mt-4 inline-flex">Browse catalog</Link>
+          </div>
+        ) : null}
 
         {recurringOrders.map((order) => {
           const currentStatus = normalizeStatus(order);
+          const orderItems = itemsByOrderId.get(order.id) ?? [];
+          const projectedSubtotal = orderItems.reduce((sum, item) => sum + item.qty * item.unit_price_cents, 0) || order.amount_cents || 0;
           return (
-            <div key={order.id} className="card space-y-4">
-              <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-                <div>
-                  <p className="text-sm uppercase tracking-[0.18em] text-slate-500">Next order date</p>
-                  <p className="mt-2 text-lg font-semibold text-slate-950">{nextOrderDate(order.frequency, order.last_generated_at ?? order.created_at)}</p>
+            <div key={order.id} className="recurring-card recurring-order-card space-y-5">
+              <div className="recurring-card-header grid gap-4 xl:grid-cols-[minmax(0,1fr)_auto] xl:items-start">
+                <div className="recurring-metrics grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                  <div className="recurring-metric">
+                    <p className="recurring-metric-label text-sm uppercase tracking-[0.18em] text-slate-500">Next order date</p>
+                    <p className="recurring-metric-value mt-2 text-lg font-semibold text-slate-950">{nextOrderDate(order.frequency, order.last_generated_at ?? order.created_at)}</p>
+                  </div>
+                  <div className="recurring-metric">
+                    <p className="recurring-metric-label text-sm uppercase tracking-[0.18em] text-slate-500">Frequency</p>
+                    <p className="recurring-metric-value mt-2 text-lg font-semibold text-slate-950">{labelForRecurringFrequency(order.frequency)}</p>
+                  </div>
+                  <div className="recurring-metric">
+                    <p className="recurring-metric-label text-sm uppercase tracking-[0.18em] text-slate-500">Items</p>
+                    <p className="recurring-metric-value mt-2 text-lg font-semibold text-slate-950">{orderItems.length}</p>
+                  </div>
+                  <div className="recurring-metric">
+                    <p className="recurring-metric-label text-sm uppercase tracking-[0.18em] text-slate-500">Projected subtotal</p>
+                    <p className="recurring-metric-value mt-2 text-lg font-semibold text-slate-950">{usd(projectedSubtotal)}</p>
+                  </div>
                 </div>
-                <span className={`rounded-full px-3 py-1 text-xs font-medium uppercase tracking-[0.14em] ${statusClasses(currentStatus)}`}>{currentStatus}</span>
+                <span className={`recurring-status inline-flex w-fit rounded-full border px-3 py-1 text-xs font-semibold uppercase tracking-[0.14em] ${statusClasses(currentStatus)}`}>{currentStatus}</span>
               </div>
 
-              <form action={updateRecurringFrequency} className="grid gap-3 rounded-[1.5rem] border border-slate-200 bg-white/60 p-4 md:grid-cols-[minmax(0,1fr)_auto] md:items-end">
-                <input type="hidden" name="recurring_order_id" value={order.id} />
-                <label className="text-sm">
-                  <span className="mb-1 block text-xs text-slate-500">Shipment frequency</span>
-                  <select className="input" name="frequency" defaultValue={order.frequency}>
-                    {RECURRING_FREQUENCY_OPTIONS.map((option) => (
-                      <option key={option.value} value={option.value}>{option.label}</option>
-                    ))}
-                  </select>
-                </label>
-                <button className="btn-secondary w-full md:w-auto" type="submit">Save Schedule</button>
-              </form>
-
-              <div className="space-y-2">
-                {(itemsByOrderId.get(order.id) ?? []).map((item) => (
-                  <form key={item.id} action={updateRecurringItem} className="grid gap-3 rounded-[1.5rem] border border-slate-200 bg-white/60 p-4 md:grid-cols-[minmax(0,1fr)_10rem_auto] md:items-end">
-                    <input type="hidden" name="recurring_order_id" value={order.id} />
-                    <input type="hidden" name="recurring_item_id" value={item.id} />
-                    <div>
-                      <div className="text-xs uppercase tracking-[0.18em] text-slate-500">Product</div>
-                      <div className="mt-2 text-sm font-medium text-slate-950">{item.product_name_snapshot ?? 'Unknown product'}</div>
-                    </div>
-                    <label className="text-sm">
-                      <span className="mb-1 block text-xs text-slate-500">Quantity</span>
-                      <input className="input" type="number" name="qty" min={1} defaultValue={item.qty} />
-                    </label>
-                    <button className="btn-primary w-full md:w-auto" type="submit">Save Quantity</button>
-                  </form>
+              <div className="subtle-panel recurring-items-panel space-y-2">
+                {(orderItems.length ? orderItems : []).map((item) => (
+                  <div key={item.id} className="recurring-item-row flex flex-col gap-1 border-b border-slate-100 pb-2 last:border-b-0 last:pb-0 sm:flex-row sm:items-center sm:justify-between">
+                    <p className="recurring-item-name font-medium text-slate-950">{item.product_name_snapshot ?? 'Unknown product'}</p>
+                    <p className="recurring-item-meta text-sm text-slate-500">{item.qty} x {usd(item.unit_price_cents)}</p>
+                  </div>
                 ))}
+                {!orderItems.length ? <p className="text-sm text-slate-500">No items are attached to this recurring shipment.</p> : null}
               </div>
 
-              <div className="flex flex-col gap-3 sm:flex-row">
+              <details className="recurring-edit-panel">
+                <summary className="recurring-edit-summary cursor-pointer text-sm font-semibold text-slate-950">Edit schedule and quantities</summary>
+                <div className="recurring-edit-content mt-4 space-y-4">
+                  <form action={updateRecurringFrequency} className="recurring-frequency-form grid gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-end">
+                    <input type="hidden" name="recurring_order_id" value={order.id} />
+                    <label className="text-sm">
+                      <span className="mb-1 block text-xs text-slate-500">Shipment frequency</span>
+                      <select className="input" name="frequency" defaultValue={order.frequency}>
+                        {RECURRING_FREQUENCY_OPTIONS.map((option) => (
+                          <option key={option.value} value={option.value}>{option.label}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <button className="btn-secondary recurring-action-button w-full md:w-auto" type="submit">Save Schedule</button>
+                  </form>
+
+                  <div className="recurring-item-forms space-y-3">
+                    {orderItems.map((item) => (
+                      <form key={item.id} action={updateRecurringItem} className="recurring-item-form grid gap-3 rounded-2xl border border-white/70 bg-white/55 p-3 md:grid-cols-[minmax(0,1fr)_10rem_auto] md:items-end">
+                        <input type="hidden" name="recurring_order_id" value={order.id} />
+                        <input type="hidden" name="recurring_item_id" value={item.id} />
+                        <div>
+                          <div className="text-xs uppercase tracking-[0.18em] text-slate-500">Product</div>
+                          <div className="mt-2 text-sm font-medium text-slate-950">{item.product_name_snapshot ?? 'Unknown product'}</div>
+                        </div>
+                        <label className="text-sm">
+                          <span className="mb-1 block text-xs text-slate-500">Quantity</span>
+                          <input className="input" type="number" name="qty" min={1} defaultValue={item.qty} />
+                        </label>
+                        <button className="btn-primary recurring-action-button w-full md:w-auto" type="submit">Save Quantity</button>
+                      </form>
+                    ))}
+                  </div>
+                </div>
+              </details>
+
+              <div className="recurring-actions flex flex-col gap-3 sm:flex-row">
                 <form action={setRecurringStatus} className="w-full sm:w-auto">
                   <input type="hidden" name="recurring_order_id" value={order.id} />
                   <input type="hidden" name="status" value={currentStatus === 'paused' ? 'active' : 'paused'} />
-                  <button className="btn-secondary w-full" type="submit">{currentStatus === 'paused' ? 'Resume' : 'Pause'}</button>
+                  <button className="btn-secondary recurring-action-button w-full" type="submit">{currentStatus === 'paused' ? 'Resume shipment' : 'Pause shipment'}</button>
                 </form>
                 <form action={setRecurringStatus} className="w-full sm:w-auto">
                   <input type="hidden" name="recurring_order_id" value={order.id} />
                   <input type="hidden" name="status" value="canceled" />
-                  <button className="w-full rounded-full border border-rose-200 px-4 py-2.5 text-sm font-semibold text-rose-700 transition-all duration-200 hover:bg-rose-50" type="submit">Cancel</button>
+                  <button className="recurring-cancel-button w-full rounded-full border border-rose-200 px-4 py-2.5 text-sm font-semibold text-rose-700 transition-all duration-200 hover:bg-rose-50" type="submit">Cancel schedule</button>
                 </form>
               </div>
             </div>
@@ -358,7 +399,7 @@ export default async function RecurringOrdersPage({ searchParams }: { searchPara
       </div>
     );
   } catch (error) {
-    if (isNextRedirectError(error)) throw error;
+    if (isNextFrameworkError(error)) throw error;
     console.error('[recurring-orders] page render fatal', { userId, centerId, error });
     return <div className="card text-sm text-red-700">Unable to load recurring orders right now.</div>;
   }

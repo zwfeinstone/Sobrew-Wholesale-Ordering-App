@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { createServerClient, type CookieOptions } from '@supabase/ssr';
+import { logAuthProfileIssue } from './lib/auth-diagnostics';
 
 export async function middleware(request: NextRequest) {
   let response = NextResponse.next({ request: { headers: request.headers } });
@@ -26,28 +27,39 @@ export async function middleware(request: NextRequest) {
   );
 
   const {
-    data: { user }
+    data: { user },
+    error: userError
   } = await supabase.auth.getUser();
 
   const isProtected = request.nextUrl.pathname.startsWith('/portal') || request.nextUrl.pathname.startsWith('/admin');
+  if (isProtected && userError) {
+    logAuthProfileIssue('Middleware auth user lookup failed', userError);
+    return NextResponse.redirect(new URL('/login', request.url));
+  }
+
   if (isProtected && !user) {
     return NextResponse.redirect(new URL('/login', request.url));
   }
 
   if (user && isProtected) {
-    const { data: profile } = await supabase
+    const { data: profile, error: profileError } = await supabase
       .from('profiles')
       .select('is_admin,is_active,center_id,centers(is_active)')
       .eq('id', user.id)
-      .single();
-    const center = Array.isArray(profile?.centers) ? profile.centers[0] : profile?.centers;
+      .maybeSingle();
+    if (profileError || !profile) {
+      logAuthProfileIssue('Middleware profile lookup failed', profileError, user.id);
+      await supabase.auth.signOut();
+      return NextResponse.redirect(new URL('/login?error=profile', request.url));
+    }
+    const center = Array.isArray(profile.centers) ? profile.centers[0] : profile.centers;
 
-    if (!profile?.is_active || (!profile?.is_admin && (!profile?.center_id || center?.is_active === false))) {
+    if (profile.is_active !== true || (!profile.is_admin && (!profile.center_id || center?.is_active === false))) {
       await supabase.auth.signOut();
       return NextResponse.redirect(new URL('/login?inactive=1', request.url));
     }
 
-    if (request.nextUrl.pathname.startsWith('/admin') && !profile?.is_admin) {
+    if (request.nextUrl.pathname.startsWith('/admin') && !profile.is_admin) {
       return NextResponse.redirect(new URL('/portal', request.url));
     }
   }
