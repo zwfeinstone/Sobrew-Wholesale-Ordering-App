@@ -16,3 +16,7 @@ export function isRecurringFrequency(value: string): value is RecurringFrequency
 export function daysForRecurringFrequency(frequency: string) {
   return RECURRING_FREQUENCY_OPTIONS.find((option) => option.value === frequency)?.days ?? null;
 }
+
+export function labelForRecurringFrequency(frequency: string) {
+  return RECURRING_FREQUENCY_OPTIONS.find((option) => option.value === frequency)?.label ?? 'Custom schedule';
+}

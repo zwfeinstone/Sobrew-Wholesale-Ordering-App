@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { ReorderButton } from '@/components/cart-client';
+import { OrderStatusBadge } from '@/components/order-status';
 import { requireUser } from '@/lib/auth';
 import { cartStorageKeyForUser } from '@/lib/cart';
 import { createClient } from '@/lib/supabase/server';
@@ -89,6 +90,13 @@ export default async function OrdersPage({
           {hasNextPage ? <Link href={`/portal/orders?page=${page + 1}`} className="btn-secondary w-full sm:w-auto">Next</Link> : null}
         </div>
       </div>
+      {!orders.length ? (
+        <div className="empty-state">
+          <p className="text-lg font-semibold text-slate-950">No orders yet.</p>
+          <p className="mt-2 text-sm text-slate-500">Once you place an order, it will appear here with its status and reorder options.</p>
+          <Link href="/portal" className="btn-secondary mt-4 inline-flex">Browse catalog</Link>
+        </div>
+      ) : null}
       {orders?.map((order) => (
         <div key={order.id} className="card transition-all duration-200 hover:-translate-y-0.5 hover:bg-white/95">
           <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
@@ -97,9 +105,14 @@ export default async function OrdersPage({
               <p className="mt-2 text-sm text-slate-500">Placed {formatOrderTimestamp(order.created_at)}</p>
             </Link>
             <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row sm:flex-wrap sm:items-center sm:justify-end">
-              <span className="rounded-full bg-slate-100 px-3 py-1 text-sm font-medium text-slate-700">{order.status}</span>
+              <OrderStatusBadge status={order.status} />
               <span className="text-lg font-semibold text-slate-950">{usd(order.subtotal_cents)}</span>
-              <ReorderButton items={reorderItemsByOrderId.get(order.id) ?? []} storageKey={cartStorageKey} />
+              <ReorderButton
+                items={reorderItemsByOrderId.get(order.id) ?? []}
+                storageKey={cartStorageKey}
+                label="Add to cart"
+                className="btn-primary w-full px-4 py-2.5 sm:w-auto"
+              />
             </div>
           </div>
         </div>
