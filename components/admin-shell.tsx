@@ -6,15 +6,18 @@ import { LogoutButton } from '@/components/logout-button';
 
 export function AdminShell({ children, newOrders }: { children: ReactNode; newOrders: number }) {
   const links = [
-    ['Dashboard', '/admin'],
-    ['Orders', '/admin/orders'],
-    ['Archived Orders', '/admin/archived-orders'],
-    ['Recurring Orders', '/admin/recurring-orders'],
-    ['Canceled Recurring Orders', '/admin/canceled-recurring-orders'],
-    ['Order Form', '/admin/order-form'],
-    ['Centers', '/admin/users'],
-    ['Products', '/admin/products'],
-    ['Settings', '/admin/settings']
+    { name: 'Dashboard', href: '/admin', exact: true },
+    { name: 'Sales', href: '/admin/sales', exact: true },
+    { name: 'Prospecting', href: '/admin/sales/prospecting', child: true },
+    { name: 'Orders', href: '/admin/orders' },
+    { name: 'Archived Orders', href: '/admin/archived-orders' },
+    { name: 'Recurring Orders', href: '/admin/recurring-orders' },
+    { name: 'Canceled Recurring Orders', href: '/admin/canceled-recurring-orders' },
+    { name: 'Order Form', href: '/admin/order-form' },
+    { name: 'Centers', href: '/admin/users' },
+    { name: 'Products', href: '/admin/products' },
+    { name: 'Inventory', href: '/admin/inventory' },
+    { name: 'Settings', href: '/admin/settings' }
   ];
   return (
     <div className="admin-shell min-h-screen md:flex">
@@ -39,11 +42,11 @@ export function AdminShell({ children, newOrders }: { children: ReactNode; newOr
           <LogoutButton className="admin-logout btn-secondary w-full" />
         </div>
         <nav className="admin-nav mt-4 grid gap-2 sm:grid-cols-2 md:block md:space-y-2">
-          {links.map(([name, href]) => (
+          {links.map(({ name, href, exact, child }) => (
             <ActiveNavLink
               key={href}
-              className="sidebar-link"
-              exact={href === '/admin'}
+              className={`sidebar-link ${child ? 'md:ml-4 md:min-h-[2.65rem] md:text-sm' : ''}`}
+              exact={exact}
               href={href}
             >
               <span>{name}</span>
@@ -52,7 +55,7 @@ export function AdminShell({ children, newOrders }: { children: ReactNode; newOr
           ))}
         </nav>
       </aside>
-      <main className="admin-main flex-1 px-3 py-5 sm:px-4 md:px-8 md:py-8">
+      <main className="admin-main min-w-0 flex-1 px-3 py-5 sm:px-4 md:px-8 md:py-8">
         <div className="mx-auto max-w-6xl">{children}</div>
       </main>
     </div>
