@@ -4,6 +4,7 @@ import { isRecurringFrequency } from '@/lib/recurring';
 export type PortalCheckoutSubmitResult =
   | { type: 'redirect'; location: string }
   | { type: 'invalid_cart' }
+  | { type: 'location_required' }
   | { type: 'checkout_error' };
 
 type PortalCheckoutProfile = {
@@ -35,6 +36,16 @@ type PriceRow = {
 type ProductRow = {
   id: string;
   name: string;
+};
+
+type CenterLocationRow = {
+  id: string;
+  name: string | null;
+  address1: string | null;
+  address2: string | null;
+  city: string | null;
+  state: string | null;
+  zip: string | null;
 };
 
 function isDuplicateSubmissionError(error: { code?: string; message?: string } | null) {
@@ -115,32 +126,58 @@ export async function submitPortalOrderWithContext({
   const recurringFrequency = String(formData.get('recurring_frequency') ?? '');
   const normalizedRecurringFrequency = isRecurringFrequency(recurringFrequency) ? recurringFrequency : null;
   const submissionId = String(formData.get('submission_id') ?? '').trim() || null;
+  const requestedLocationId = String(formData.get('center_location_id') ?? '').trim();
   const subtotal = cartWithNames.reduce((sum, item) => sum + item.qty * item.price_cents, 0);
 
-  const { data: lastOrder } = await supabase
-    .from('orders')
-    .select('shipping_name,shipping_address1,shipping_address2,shipping_city,shipping_state,shipping_zip')
-    .eq('center_id', centerId)
-    .order('created_at', { ascending: false })
-    .limit(1)
-    .maybeSingle();
+  const [{ data: lastOrder }, { data: activeLocations, error: locationsError }] = await Promise.all([
+    supabase
+      .from('orders')
+      .select('shipping_name,shipping_address1,shipping_address2,shipping_city,shipping_state,shipping_zip')
+      .eq('center_id', centerId)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+    supabase
+      .from('center_locations')
+      .select('id,name,address1,address2,city,state,zip')
+      .eq('center_id', centerId)
+      .eq('is_active', true)
+      .order('name', { ascending: true }),
+  ]);
+
+  if (locationsError) {
+    return { type: 'checkout_error' };
+  }
+
+  const locations = (activeLocations ?? []) as CenterLocationRow[];
+  let selectedLocation: CenterLocationRow | null = null;
+
+  if (locations.length === 1) {
+    selectedLocation = locations[0];
+  } else if (locations.length > 1) {
+    selectedLocation = locations.find((location) => location.id === requestedLocationId) ?? null;
+    if (!selectedLocation) {
+      return { type: 'location_required' };
+    }
+  }
 
   const { data: order, error } = await supabase
     .from('orders')
     .insert({
       center_id: centerId,
+      center_location_id: selectedLocation?.id ?? null,
       submission_id: submissionId,
       user_id: user.id,
-      shipping_name: lastOrder?.shipping_name ?? profile?.full_name ?? profile?.email ?? user.email ?? '',
-      shipping_address1: lastOrder?.shipping_address1 ?? '',
-      shipping_address2: lastOrder?.shipping_address2 ?? '',
-      shipping_city: lastOrder?.shipping_city ?? '',
-      shipping_state: lastOrder?.shipping_state ?? '',
-      shipping_zip: lastOrder?.shipping_zip ?? '',
+      shipping_name: selectedLocation?.name ?? lastOrder?.shipping_name ?? profile?.center?.name ?? profile?.full_name ?? profile?.email ?? user.email ?? '',
+      shipping_address1: selectedLocation?.address1 ?? lastOrder?.shipping_address1 ?? '',
+      shipping_address2: selectedLocation?.address2 ?? lastOrder?.shipping_address2 ?? '',
+      shipping_city: selectedLocation?.city ?? lastOrder?.shipping_city ?? '',
+      shipping_state: selectedLocation?.state ?? lastOrder?.shipping_state ?? '',
+      shipping_zip: selectedLocation?.zip ?? lastOrder?.shipping_zip ?? '',
       notes: String(formData.get('notes') ?? ''),
       subtotal_cents: subtotal,
     })
-    .select('id,shipping_name,shipping_address1,shipping_address2,shipping_city,shipping_state,shipping_zip')
+    .select('id,center_location_id,shipping_name,shipping_address1,shipping_address2,shipping_city,shipping_state,shipping_zip')
     .single();
 
   if (isDuplicateSubmissionError(error) && submissionId) {

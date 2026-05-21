@@ -1,7 +1,7 @@
 import Link from 'next/link';
 import { requireUser } from '@/lib/auth';
 import { cartStorageKeyForUser } from '@/lib/cart';
-import { daysForRecurringFrequency } from '@/lib/recurring';
+import { nextRecurringOrderDate } from '@/lib/recurring';
 import {
   PRODUCT_CATEGORY_OPTIONS,
   isProductCategory,
@@ -96,12 +96,7 @@ function recurringStatus(order: RecurringOrderSummary) {
 
 function nextRecurringDate(order: RecurringOrderSummary) {
   const anchor = order.last_generated_at ?? order.created_at;
-  if (!anchor) return null;
-  const date = new Date(anchor);
-  const daysToAdd = daysForRecurringFrequency(order.frequency);
-  if (Number.isNaN(date.getTime()) || !daysToAdd) return null;
-  date.setDate(date.getDate() + daysToAdd);
-  return date;
+  return nextRecurringOrderDate(order.frequency, anchor);
 }
 
 export default async function PortalPage({

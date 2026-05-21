@@ -2,13 +2,8 @@ import { NextResponse } from 'next/server';
 import { getCenterLoginEmails } from '@/lib/center-logins';
 import { sendOrderEmails } from '@/lib/email';
 import { env } from '@/lib/env';
-import { daysForRecurringFrequency } from '@/lib/recurring';
+import { isRecurringOrderDue } from '@/lib/recurring';
 import { supabaseAdmin } from '@/lib/supabase/admin';
-
-function intervalForFrequency(frequency: string) {
-  const days = daysForRecurringFrequency(frequency);
-  return days ? 1000 * 60 * 60 * 24 * days : null;
-}
 
 function normalizeStatus(recurringOrder: { status?: string | null; active?: boolean | null }) {
   if (recurringOrder.status) return recurringOrder.status;
@@ -39,20 +34,14 @@ async function runRecurringOrders(req: Request) {
     return NextResponse.json({ error: recurringOrdersError.message }, { status: 500 });
   }
 
-  const now = Date.now();
+  const now = new Date();
   let created = 0;
   const errors: Array<{ recurringOrderId: string; message: string }> = [];
 
   const activeRecurringOrders = (recurringOrders ?? []).filter((recurringOrder) => normalizeStatus(recurringOrder) === 'active');
   const dueRecurringOrders = activeRecurringOrders.filter((recurringOrder) => {
-    const intervalMs = intervalForFrequency(recurringOrder.frequency);
-    if (!intervalMs) return false;
-
     const anchorDate = recurringOrder.last_generated_at ?? recurringOrder.created_at;
-    if (!anchorDate) return false;
-
-    const nextRunAt = new Date(anchorDate).getTime() + intervalMs;
-    return nextRunAt <= now;
+    return isRecurringOrderDue(recurringOrder.frequency, anchorDate, now);
   });
 
   if (!dueRecurringOrders.length) {
@@ -65,7 +54,7 @@ async function runRecurringOrders(req: Request) {
   const [{ data: sourceOrders, error: sourceOrdersError }, { data: allRecurringItems, error: recurringItemsError }] = await Promise.all([
     supabaseAdmin
       .from('orders')
-      .select('id,shipping_name,shipping_address1,shipping_address2,shipping_city,shipping_state,shipping_zip')
+      .select('id,center_location_id,shipping_name,shipping_address1,shipping_address2,shipping_city,shipping_state,shipping_zip')
       .in('id', sourceOrderIds),
     supabaseAdmin
       .from('recurring_order_items')
@@ -150,6 +139,7 @@ async function runRecurringOrders(req: Request) {
       .from('orders')
       .insert({
         center_id: recurringOrder.center_id,
+        center_location_id: sourceOrder.center_location_id ?? null,
         user_id: recurringOrder.user_id,
         shipping_name: sourceOrder.shipping_name ?? '',
         shipping_address1: sourceOrder.shipping_address1 ?? '',
@@ -160,7 +150,7 @@ async function runRecurringOrders(req: Request) {
         notes: `Auto-generated recurring order (${recurringOrder.frequency})`,
         subtotal_cents: subtotal
       })
-      .select('id,shipping_name,shipping_address1,shipping_address2,shipping_city,shipping_state,shipping_zip')
+      .select('id,center_location_id,shipping_name,shipping_address1,shipping_address2,shipping_city,shipping_state,shipping_zip')
       .single();
 
     if (newOrderError || !newOrder) {
@@ -187,7 +177,7 @@ async function runRecurringOrders(req: Request) {
 
     const { error: updateRecurringOrderError } = await supabaseAdmin
       .from('recurring_orders')
-      .update({ last_generated_at: new Date().toISOString() })
+      .update({ last_generated_at: now.toISOString() })
       .eq('id', recurringOrder.id);
 
     if (updateRecurringOrderError) {

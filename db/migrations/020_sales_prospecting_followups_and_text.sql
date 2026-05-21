@@ -14,6 +14,9 @@ create table if not exists sales_prospecting_followup_blocks (
   deals_closed_email integer not null default 0 check (deals_closed_email >= 0),
   deals_closed_phone integer not null default 0 check (deals_closed_phone >= 0),
   deals_closed_text integer not null default 0 check (deals_closed_text >= 0),
+  deals_lost_email integer not null default 0 check (deals_lost_email >= 0),
+  deals_lost_phone integer not null default 0 check (deals_lost_phone >= 0),
+  deals_lost_text integer not null default 0 check (deals_lost_text >= 0),
   notes text,
   created_by uuid references profiles(id) on delete set null,
   created_at timestamptz not null default now(),
@@ -22,6 +25,15 @@ create table if not exists sales_prospecting_followup_blocks (
 
 alter table if exists sales_prospecting_blocks enable row level security;
 alter table sales_prospecting_followup_blocks enable row level security;
+
+alter table if exists sales_prospecting_followup_blocks
+  add column if not exists deals_lost_email integer not null default 0 check (deals_lost_email >= 0);
+
+alter table if exists sales_prospecting_followup_blocks
+  add column if not exists deals_lost_phone integer not null default 0 check (deals_lost_phone >= 0);
+
+alter table if exists sales_prospecting_followup_blocks
+  add column if not exists deals_lost_text integer not null default 0 check (deals_lost_text >= 0);
 
 do $$
 begin

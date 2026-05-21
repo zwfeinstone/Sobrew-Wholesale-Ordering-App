@@ -46,5 +46,9 @@ export async function POST(request: NextRequest) {
     return NextResponse.redirect(new URL('/portal/checkout?toast=checkout_error', request.url), 303);
   }
 
+  if (result.type === 'location_required') {
+    return NextResponse.redirect(new URL('/portal/checkout?toast=location_required', request.url), 303);
+  }
+
   return NextResponse.redirect(new URL(result.location, request.url), 303);
 }
