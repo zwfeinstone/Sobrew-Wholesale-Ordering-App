@@ -1,7 +1,7 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { requireUser } from '@/lib/auth';
-import { daysForRecurringFrequency, isRecurringFrequency, labelForRecurringFrequency, RECURRING_FREQUENCY_OPTIONS } from '@/lib/recurring';
+import { formatNextRecurringOrderDate, isRecurringFrequency, labelForRecurringFrequency, RECURRING_FREQUENCY_OPTIONS } from '@/lib/recurring';
 import { createClient } from '@/lib/supabase/server';
 import { usd } from '@/lib/utils';
 
@@ -33,16 +33,6 @@ function logQueryError(query: string, error: SupabaseErrorShape | null, extra?: 
     code: error.code,
     ...extra
   });
-}
-
-function nextOrderDate(frequency: string, anchorDate: string | null) {
-  if (!anchorDate) return 'N/A';
-  const date = new Date(anchorDate);
-  if (Number.isNaN(date.getTime())) return 'N/A';
-  const daysToAdd = daysForRecurringFrequency(frequency);
-  if (!daysToAdd) return 'N/A';
-  date.setDate(date.getDate() + daysToAdd);
-  return date.toLocaleDateString();
 }
 
 function normalizeStatus(order: RecurringOrderRow) {
@@ -317,7 +307,7 @@ export default async function RecurringOrdersPage({ searchParams }: { searchPara
                 <div className="recurring-metrics grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
                   <div className="recurring-metric">
                     <p className="recurring-metric-label text-sm uppercase tracking-[0.18em] text-slate-500">Next order date</p>
-                    <p className="recurring-metric-value mt-2 text-lg font-semibold text-slate-950">{nextOrderDate(order.frequency, order.last_generated_at ?? order.created_at)}</p>
+                    <p className="recurring-metric-value mt-2 text-lg font-semibold text-slate-950">{formatNextRecurringOrderDate(order.frequency, order.last_generated_at ?? order.created_at)}</p>
                   </div>
                   <div className="recurring-metric">
                     <p className="recurring-metric-label text-sm uppercase tracking-[0.18em] text-slate-500">Frequency</p>

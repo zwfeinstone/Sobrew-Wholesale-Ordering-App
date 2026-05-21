@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
+import ConfirmSubmitButton from '@/components/confirm-submit-button';
 import { createClient } from '@/lib/supabase/server';
 
 const DAY_IN_MS = 24 * 60 * 60 * 1000;
@@ -40,6 +41,9 @@ type FollowUpBlock = {
   deals_closed_email: number | null;
   deals_closed_phone: number | null;
   deals_closed_text: number | null;
+  deals_lost_email: number | null;
+  deals_lost_phone: number | null;
+  deals_lost_text: number | null;
   notes: string | null;
   created_at: string | null;
 };
@@ -64,6 +68,9 @@ type FollowUpTotals = {
   dealsClosedEmail: number;
   dealsClosedPhone: number;
   dealsClosedText: number;
+  dealsLostEmail: number;
+  dealsLostPhone: number;
+  dealsLostText: number;
 };
 
 type ProspectingTotals = CallTotals & FollowUpTotals;
@@ -155,6 +162,9 @@ function emptyFollowUpTotals(): FollowUpTotals {
     dealsClosedEmail: 0,
     dealsClosedPhone: 0,
     dealsClosedText: 0,
+    dealsLostEmail: 0,
+    dealsLostPhone: 0,
+    dealsLostText: 0,
   };
 }
 
@@ -185,6 +195,9 @@ function addFollowUpBlockToTotals(totals: FollowUpTotals, block: FollowUpBlock) 
   totals.dealsClosedEmail += block.deals_closed_email ?? 0;
   totals.dealsClosedPhone += block.deals_closed_phone ?? 0;
   totals.dealsClosedText += block.deals_closed_text ?? 0;
+  totals.dealsLostEmail += block.deals_lost_email ?? 0;
+  totals.dealsLostPhone += block.deals_lost_phone ?? 0;
+  totals.dealsLostText += block.deals_lost_text ?? 0;
 }
 
 function totalInitialOutreach(totals: CallTotals) {
@@ -201,6 +214,10 @@ function totalFollowUps(totals: FollowUpTotals) {
 
 function totalDeals(totals: FollowUpTotals) {
   return totals.dealsClosedEmail + totals.dealsClosedPhone + totals.dealsClosedText;
+}
+
+function totalDealsLost(totals: FollowUpTotals) {
+  return totals.dealsLostEmail + totals.dealsLostPhone + totals.dealsLostText;
 }
 
 function ratio(numerator: number, denominator: number) {
@@ -322,11 +339,15 @@ function FormMessages({ toast }: { toast: string }) {
   const messages: Record<string, { tone: string; text: string }> = {
     call_saved: { tone: 'border-emerald-200 bg-emerald-50 text-emerald-800', text: 'Call block saved.' },
     call_updated: { tone: 'border-emerald-200 bg-emerald-50 text-emerald-800', text: 'Call block updated.' },
+    call_deleted: { tone: 'border-emerald-200 bg-emerald-50 text-emerald-800', text: 'Call block deleted.' },
     followup_saved: { tone: 'border-emerald-200 bg-emerald-50 text-emerald-800', text: 'Follow-up block saved.' },
+    followup_updated: { tone: 'border-emerald-200 bg-emerald-50 text-emerald-800', text: 'Follow-up block updated.' },
+    followup_deleted: { tone: 'border-emerald-200 bg-emerald-50 text-emerald-800', text: 'Follow-up block deleted.' },
     invalid_date: { tone: 'border-rose-200 bg-rose-50 text-rose-700', text: 'Choose a valid activity date.' },
-    missing_block: { tone: 'border-rose-200 bg-rose-50 text-rose-700', text: 'Choose a valid call block to update.' },
-    save_error: { tone: 'border-rose-200 bg-rose-50 text-rose-700', text: 'Unable to save prospecting data. Make sure migrations 019 and 020 have been run.' },
-    update_error: { tone: 'border-rose-200 bg-rose-50 text-rose-700', text: 'Unable to update that call block. Make sure migrations 019 and 020 have been run.' },
+    missing_block: { tone: 'border-rose-200 bg-rose-50 text-rose-700', text: 'Choose a valid block to update or delete.' },
+    save_error: { tone: 'border-rose-200 bg-rose-50 text-rose-700', text: 'Unable to save prospecting data. Make sure migrations 019, 020, and 021 have been run.' },
+    update_error: { tone: 'border-rose-200 bg-rose-50 text-rose-700', text: 'Unable to update that prospecting block. Make sure migrations 019, 020, and 021 have been run.' },
+    delete_error: { tone: 'border-rose-200 bg-rose-50 text-rose-700', text: 'Unable to delete that prospecting block.' },
   };
   const message = messages[toast];
   return message ? <div className={`rounded-2xl border px-4 py-3 text-sm font-semibold ${message.tone}`}>{message.text}</div> : null;
@@ -402,20 +423,24 @@ async function updateCallBlock(formData: FormData) {
   redirectWithToast(range, error ? 'update_error' : 'call_updated');
 }
 
-async function saveFollowUpBlock(formData: FormData) {
+async function deleteCallBlock(formData: FormData) {
   'use server';
 
   const supabase = await createClient();
   const range = normalizeRange(String(formData.get('range') ?? 'daily'));
-  const activityDate = String(formData.get('activity_date') ?? '').trim();
+  const blockId = String(formData.get('block_id') ?? '').trim();
 
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(activityDate)) {
-    redirectWithToast(range, 'invalid_date');
+  if (!blockId) {
+    redirectWithToast(range, 'missing_block');
   }
 
-  const { data } = await supabase.auth.getUser();
-  const { error } = await supabase.from('sales_prospecting_followup_blocks').insert({
-    activity_date: activityDate,
+  const { error, data } = await supabase.from('sales_prospecting_blocks').delete().eq('id', blockId).select('id');
+  redirectWithToast(range, error || !data?.length ? 'delete_error' : 'call_deleted');
+}
+
+function followUpBlockPayload(formData: FormData) {
+  return {
+    activity_date: String(formData.get('activity_date') ?? '').trim(),
     block_label: String(formData.get('block_label') ?? '').trim() || null,
     followups_email: toWholeNumber(formData.get('followups_email')),
     followups_phone: toWholeNumber(formData.get('followups_phone')),
@@ -423,11 +448,73 @@ async function saveFollowUpBlock(formData: FormData) {
     deals_closed_email: toWholeNumber(formData.get('deals_closed_email')),
     deals_closed_phone: toWholeNumber(formData.get('deals_closed_phone')),
     deals_closed_text: toWholeNumber(formData.get('deals_closed_text')),
+    deals_lost_email: toWholeNumber(formData.get('deals_lost_email')),
+    deals_lost_phone: toWholeNumber(formData.get('deals_lost_phone')),
+    deals_lost_text: toWholeNumber(formData.get('deals_lost_text')),
     notes: String(formData.get('notes') ?? '').trim() || null,
+  };
+}
+
+async function saveFollowUpBlock(formData: FormData) {
+  'use server';
+
+  const supabase = await createClient();
+  const range = normalizeRange(String(formData.get('range') ?? 'daily'));
+  const payload = followUpBlockPayload(formData);
+
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(payload.activity_date)) {
+    redirectWithToast(range, 'invalid_date');
+  }
+
+  const { data } = await supabase.auth.getUser();
+  const { error } = await supabase.from('sales_prospecting_followup_blocks').insert({
+    ...payload,
     created_by: data.user?.id ?? null,
   });
 
   redirectWithToast(range, error ? 'save_error' : 'followup_saved');
+}
+
+async function updateFollowUpBlock(formData: FormData) {
+  'use server';
+
+  const supabase = await createClient();
+  const range = normalizeRange(String(formData.get('range') ?? 'daily'));
+  const blockId = String(formData.get('block_id') ?? '').trim();
+  const payload = followUpBlockPayload(formData);
+
+  if (!blockId) {
+    redirectWithToast(range, 'missing_block');
+  }
+
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(payload.activity_date)) {
+    redirectWithToast(range, 'invalid_date');
+  }
+
+  const { error } = await supabase
+    .from('sales_prospecting_followup_blocks')
+    .update({
+      ...payload,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', blockId);
+
+  redirectWithToast(range, error ? 'update_error' : 'followup_updated');
+}
+
+async function deleteFollowUpBlock(formData: FormData) {
+  'use server';
+
+  const supabase = await createClient();
+  const range = normalizeRange(String(formData.get('range') ?? 'daily'));
+  const blockId = String(formData.get('block_id') ?? '').trim();
+
+  if (!blockId) {
+    redirectWithToast(range, 'missing_block');
+  }
+
+  const { error, data } = await supabase.from('sales_prospecting_followup_blocks').delete().eq('id', blockId).select('id');
+  redirectWithToast(range, error || !data?.length ? 'delete_error' : 'followup_deleted');
 }
 
 export default async function ProspectingPage({
@@ -465,6 +552,7 @@ export default async function ProspectingPage({
   const samples = totalSamples(totals);
   const followUpCount = totalFollowUps(totals);
   const deals = totalDeals(totals);
+  const dealsLost = totalDealsLost(totals);
   const reports = buildPeriodReports(blocks, followUps, activeRange);
   const recentCallBlocks = blocks.slice(0, 8);
   const recentFollowUpBlocks = followUps.slice(0, 6);
@@ -475,7 +563,7 @@ export default async function ProspectingPage({
       <FormMessages toast={toast} />
       {storageError ? (
         <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-800">
-          Prospecting storage is not ready yet. Run migrations 019 and 020 to start saving activity.
+          Prospecting storage is not ready yet. Run migrations 019, 020, and 021 to start saving activity.
         </div>
       ) : null}
 
@@ -505,11 +593,12 @@ export default async function ProspectingPage({
         </div>
       </section>
 
-      <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+      <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
         <MetricCard label="Initial Outreach" value={outreach.toLocaleString()} detail="No contact, voicemail, email, made contact, and text message outcomes." />
         <MetricCard label="Samples Sent" value={samples.toLocaleString()} detail="Samples tied to contact, voicemail callback, email reply, text reply, or other source." />
         <MetricCard label="Follow-Ups" value={followUpCount.toLocaleString()} detail="Follow-up activity by email, phone, and text." />
         <MetricCard label="Deals Closed" value={deals.toLocaleString()} detail="Closed deals recorded from follow-up activity." />
+        <MetricCard label="Deals Lost" value={dealsLost.toLocaleString()} detail="Lost deals recorded from follow-up activity." />
       </section>
 
       <section className="grid gap-5 xl:grid-cols-2">
@@ -560,7 +649,7 @@ export default async function ProspectingPage({
             <input className="input mt-2" name="notes" placeholder="Callback details, sample recipient, next step" />
           </label>
 
-          <button className="btn-primary w-full" type="submit">Save call block</button>
+          <button className="btn-primary w-full" data-press-lock-key="prospecting-save-call-block" type="submit">Save call block</button>
         </form>
 
         <form action={saveFollowUpBlock} className="card space-y-5">
@@ -600,12 +689,22 @@ export default async function ProspectingPage({
             </div>
           </div>
 
+          <div className="rounded-2xl border border-slate-200/70 bg-white/55 p-4">
+            <p className="text-sm font-semibold text-slate-950">Deals lost by source</p>
+            <p className="mt-1 text-sm text-slate-500">Use this when a prospect clearly says no, chooses another vendor, or stops the deal after follow-up.</p>
+            <div className="mt-3 grid gap-3 sm:grid-cols-3">
+              <NumberField label="Lost by email" name="deals_lost_email" />
+              <NumberField label="Lost by phone" name="deals_lost_phone" />
+              <NumberField label="Lost by text" name="deals_lost_text" />
+            </div>
+          </div>
+
           <label className="text-sm font-semibold text-slate-700">
             Notes
             <input className="input mt-2" name="notes" placeholder="Follow-up context, decision maker, close notes" />
           </label>
 
-          <button className="btn-primary w-full" type="submit">Save follow-up block</button>
+          <button className="btn-primary w-full" data-press-lock-key="prospecting-save-follow-up-block" type="submit">Save follow-up block</button>
         </form>
       </section>
 
@@ -681,7 +780,7 @@ export default async function ProspectingPage({
         </div>
 
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[112rem] border-separate border-spacing-y-2 text-left text-sm">
+          <table className="w-full min-w-[128rem] border-separate border-spacing-y-2 text-left text-sm">
             <thead>
               <tr className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
                 <th className="px-4 py-2">Period</th>
@@ -693,10 +792,12 @@ export default async function ProspectingPage({
                 <th className="px-4 py-2 text-right">Text</th>
                 <th className="px-4 py-2 text-right">Samples</th>
                 <th className="px-4 py-2 text-right">Follow-ups</th>
-                <th className="px-4 py-2 text-right">Deals</th>
+                <th className="px-4 py-2 text-right">Deals won</th>
+                <th className="px-4 py-2 text-right">Deals lost</th>
                 <th className="px-4 py-2 text-right">Outreach to samples</th>
                 <th className="px-4 py-2 text-right">Samples to deals</th>
                 <th className="px-4 py-2 text-right">Follow-ups to deals</th>
+                <th className="px-4 py-2 text-right">Loss rate</th>
                 <th className="px-4 py-2 text-right">Contacts to samples</th>
                 <th className="px-4 py-2 text-right">Emails to samples</th>
                 <th className="px-4 py-2 text-right">Texts to samples</th>
@@ -709,6 +810,8 @@ export default async function ProspectingPage({
                 const reportSamples = totalSamples(report);
                 const reportFollowUps = totalFollowUps(report);
                 const reportDeals = totalDeals(report);
+                const reportDealsLost = totalDealsLost(report);
+                const reportDecisions = reportDeals + reportDealsLost;
                 return (
                   <tr key={report.key} className="bg-white/65">
                     <td className="rounded-l-2xl px-4 py-3">
@@ -726,9 +829,11 @@ export default async function ProspectingPage({
                     <td className="px-4 py-3 text-right font-semibold text-slate-950">{reportSamples}</td>
                     <td className="px-4 py-3 text-right font-semibold text-slate-950">{reportFollowUps}</td>
                     <td className="px-4 py-3 text-right font-semibold text-slate-950">{reportDeals}</td>
+                    <td className="px-4 py-3 text-right font-semibold text-slate-950">{reportDealsLost}</td>
                     <td className="px-4 py-3 text-right text-teal-800">{ratio(reportSamples, reportOutreach)}</td>
                     <td className="px-4 py-3 text-right text-teal-800">{ratio(reportDeals, reportSamples)}</td>
                     <td className="px-4 py-3 text-right text-teal-800">{ratio(reportDeals, reportFollowUps)}</td>
+                    <td className="px-4 py-3 text-right text-rose-700">{ratio(reportDealsLost, reportDecisions)}</td>
                     <td className="px-4 py-3 text-right text-teal-800">{ratio(report.samplesFromContact, report.callsContact)}</td>
                     <td className="px-4 py-3 text-right text-teal-800">{ratio(report.samplesFromEmailReply, report.callsEmail)}</td>
                     <td className="px-4 py-3 text-right text-teal-800">{ratio(report.samplesFromTextReply, report.callsText)}</td>
@@ -810,9 +915,19 @@ export default async function ProspectingPage({
                       Notes
                       <input className="input mt-2" name="notes" defaultValue={block.notes ?? ''} />
                     </label>
-                    <button className="btn-primary w-full" type="submit">Update call block</button>
+                    <button className="btn-primary w-full" data-press-lock-key={`prospecting-update-call-block-${block.id}`} type="submit">Update call block</button>
                   </form>
                 </details>
+                <form action={deleteCallBlock} className="mt-3">
+                  <input type="hidden" name="range" value={activeRange} />
+                  <input type="hidden" name="block_id" value={block.id} />
+                  <ConfirmSubmitButton
+                    className="w-full rounded-full border border-rose-200 px-4 py-2.5 text-sm font-semibold text-rose-700 transition-all duration-200 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-70"
+                    confirmMessage="Delete this call block? This should only be used to remove duplicate or mistaken entries."
+                    label="Delete call block"
+                    pendingLabel="Deleting..."
+                  />
+                </form>
               </div>
             );
           })}
@@ -848,7 +963,59 @@ export default async function ProspectingPage({
                   <SummaryTile label="Phone deals" value={blockTotals.dealsClosedPhone} />
                   <SummaryTile label="Text deals" value={blockTotals.dealsClosedText} />
                 </div>
+                <div className="mt-2 grid grid-cols-3 gap-2 text-sm">
+                  <SummaryTile label="Email lost" value={blockTotals.dealsLostEmail} />
+                  <SummaryTile label="Phone lost" value={blockTotals.dealsLostPhone} />
+                  <SummaryTile label="Text lost" value={blockTotals.dealsLostText} />
+                </div>
                 {block.notes ? <p className="mt-3 text-sm leading-6 text-slate-500">{block.notes}</p> : null}
+                <details className="mt-4 rounded-2xl border border-slate-200/70 bg-white/70 p-3">
+                  <summary className="cursor-pointer text-sm font-semibold text-teal-800">Edit follow-up block</summary>
+                  <form action={updateFollowUpBlock} className="mt-4 space-y-4">
+                    <input type="hidden" name="range" value={activeRange} />
+                    <input type="hidden" name="block_id" value={block.id} />
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <label className="text-sm font-semibold text-slate-700">
+                        Activity date
+                        <input className="input mt-2" name="activity_date" type="date" defaultValue={block.activity_date} required />
+                      </label>
+                      <label className="text-sm font-semibold text-slate-700">
+                        Block label
+                        <input className="input mt-2" name="block_label" defaultValue={block.block_label ?? ''} />
+                      </label>
+                    </div>
+                    <div className="grid gap-3 sm:grid-cols-3">
+                      <NumberField defaultValue={block.followups_email} label="Email follow-ups" name="followups_email" />
+                      <NumberField defaultValue={block.followups_phone} label="Phone follow-ups" name="followups_phone" />
+                      <NumberField defaultValue={block.followups_text} label="Text follow-ups" name="followups_text" />
+                    </div>
+                    <div className="grid gap-3 sm:grid-cols-3">
+                      <NumberField defaultValue={block.deals_closed_email} label="Closed by email" name="deals_closed_email" />
+                      <NumberField defaultValue={block.deals_closed_phone} label="Closed by phone" name="deals_closed_phone" />
+                      <NumberField defaultValue={block.deals_closed_text} label="Closed by text" name="deals_closed_text" />
+                    </div>
+                    <div className="grid gap-3 sm:grid-cols-3">
+                      <NumberField defaultValue={block.deals_lost_email} label="Lost by email" name="deals_lost_email" />
+                      <NumberField defaultValue={block.deals_lost_phone} label="Lost by phone" name="deals_lost_phone" />
+                      <NumberField defaultValue={block.deals_lost_text} label="Lost by text" name="deals_lost_text" />
+                    </div>
+                    <label className="text-sm font-semibold text-slate-700">
+                      Notes
+                      <input className="input mt-2" name="notes" defaultValue={block.notes ?? ''} />
+                    </label>
+                    <button className="btn-primary w-full" data-press-lock-key={`prospecting-update-follow-up-block-${block.id}`} type="submit">Update follow-up block</button>
+                  </form>
+                </details>
+                <form action={deleteFollowUpBlock} className="mt-3">
+                  <input type="hidden" name="range" value={activeRange} />
+                  <input type="hidden" name="block_id" value={block.id} />
+                  <ConfirmSubmitButton
+                    className="w-full rounded-full border border-rose-200 px-4 py-2.5 text-sm font-semibold text-rose-700 transition-all duration-200 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-70"
+                    confirmMessage="Delete this follow-up block? This should only be used to remove duplicate or mistaken entries."
+                    label="Delete follow-up block"
+                    pendingLabel="Deleting..."
+                  />
+                </form>
               </div>
             );
           })}

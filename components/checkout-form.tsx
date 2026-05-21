@@ -9,13 +9,33 @@ import { RECURRING_FREQUENCY_OPTIONS } from '@/lib/recurring';
 type CheckoutFormProps = {
   actionUrl: string;
   cartStorageKey: string;
-  initialToast: '' | 'invalid_cart' | 'checkout_error';
+  initialToast: '' | 'invalid_cart' | 'checkout_error' | 'location_required';
+  locations: CheckoutLocationOption[];
 };
 
-export default function CheckoutForm({ actionUrl, cartStorageKey, initialToast }: CheckoutFormProps) {
+type CheckoutLocationOption = {
+  id: string;
+  name: string | null;
+  address1: string | null;
+  address2: string | null;
+  city: string | null;
+  state: string | null;
+  zip: string | null;
+};
+
+function locationLabel(location: CheckoutLocationOption) {
+  const address = [location.address1, location.city, location.state, location.zip]
+    .map((value) => value?.trim())
+    .filter(Boolean)
+    .join(', ');
+  return address ? `${location.name || 'Delivery location'} - ${address}` : location.name || 'Delivery location';
+}
+
+export default function CheckoutForm({ actionUrl, cartStorageKey, initialToast, locations }: CheckoutFormProps) {
   const [submissionId] = useState(() => crypto.randomUUID());
   const [isSubmitting, setIsSubmitting] = useState(false);
   const submittingRef = useRef(false);
+  const shouldSelectLocation = locations.length > 1;
 
   const handleSubmit = () => {
     if (submittingRef.current) return;
@@ -37,6 +57,12 @@ export default function CheckoutForm({ actionUrl, cartStorageKey, initialToast }
           tone="error"
         />
       ) : null}
+      {initialToast === 'location_required' ? (
+        <StatusToast
+          message="Please choose a delivery location before placing this order."
+          tone="error"
+        />
+      ) : null}
       <section className="panel checkout-hero">
         <span className="eyebrow">Checkout</span>
         <h1 className="page-title checkout-title mt-4">Place your order</h1>
@@ -45,7 +71,19 @@ export default function CheckoutForm({ actionUrl, cartStorageKey, initialToast }
       <section className="card checkout-card space-y-5">
         <CheckoutCartField storageKey={cartStorageKey} />
         <input type="hidden" name="submission_id" value={submissionId} />
+        {locations.length === 1 ? <input type="hidden" name="center_location_id" value={locations[0].id} /> : null}
         <CheckoutCartSummary storageKey={cartStorageKey} />
+        {shouldSelectLocation ? (
+          <div className="subtle-panel checkout-location-panel space-y-2">
+            <label className="text-sm font-medium text-slate-700">Delivery location</label>
+            <select className="input checkout-location-select" name="center_location_id" required defaultValue="">
+              <option value="" disabled>Choose a location</option>
+              {locations.map((location) => (
+                <option key={location.id} value={location.id}>{locationLabel(location)}</option>
+              ))}
+            </select>
+          </div>
+        ) : null}
         <div className="subtle-panel checkout-recurring-panel">
           <label className="checkout-recurring-choice flex items-start gap-3 text-sm font-medium text-slate-800 sm:items-center">
             <input className="checkout-recurring-checkbox" type="checkbox" name="is_recurring" />

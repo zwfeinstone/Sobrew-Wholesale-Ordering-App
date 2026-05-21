@@ -10,6 +10,18 @@ type CenterProductRow = {
   category: string | null;
 };
 
+type CenterLocationRow = {
+  id: string;
+  name: string | null;
+  address1: string | null;
+  address2: string | null;
+  city: string | null;
+  state: string | null;
+  zip: string | null;
+  notes: string | null;
+  is_active: boolean | null;
+};
+
 const productNameCollator = new Intl.Collator('en-US', { numeric: true, sensitivity: 'base' });
 
 function isNextRedirectError(error: unknown) {
@@ -24,6 +36,17 @@ function isNextRedirectError(error: unknown) {
 
 function productDisplayName(product: CenterProductRow) {
   return product.name?.trim() || 'Unnamed product';
+}
+
+function locationDisplayName(location: CenterLocationRow) {
+  return location.name?.trim() || 'Unnamed location';
+}
+
+function locationAddressLine(location: CenterLocationRow) {
+  return [location.address1, location.address2, location.city, location.state, location.zip]
+    .map((value) => value?.trim())
+    .filter(Boolean)
+    .join(', ');
 }
 
 function groupProductsByCategory(products: CenterProductRow[]) {
@@ -106,6 +129,79 @@ async function updateCenter(formData: FormData) {
     console.error('[admin-centers] updateCenter failed', { centerId, error });
     redirect(`/admin/users/${centerId}?error=center_save_failed`);
   }
+}
+
+function locationFieldsFromForm(formData: FormData) {
+  return {
+    name: String(formData.get('location_name') ?? '').trim(),
+    address1: String(formData.get('address1') ?? '').trim(),
+    address2: String(formData.get('address2') ?? '').trim() || null,
+    city: String(formData.get('city') ?? '').trim(),
+    state: String(formData.get('state') ?? '').trim(),
+    zip: String(formData.get('zip') ?? '').trim(),
+    notes: String(formData.get('location_notes') ?? '').trim() || null,
+    is_active: formData.get('is_active') === 'on',
+  };
+}
+
+function hasRequiredLocationFields(location: ReturnType<typeof locationFieldsFromForm>) {
+  return Boolean(location.name && location.address1 && location.city && location.state && location.zip);
+}
+
+async function addCenterLocation(formData: FormData) {
+  'use server';
+  const centerId = String(formData.get('center_id') ?? '');
+  if (!centerId) redirect('/admin/users');
+
+  const location = locationFieldsFromForm(formData);
+  if (!hasRequiredLocationFields(location)) {
+    redirect(`/admin/users/${centerId}?error=location_missing`);
+  }
+
+  const result = await supabaseAdmin.from('center_locations').insert({
+    center_id: centerId,
+    ...location,
+  });
+
+  redirect(`/admin/users/${centerId}?${result.error ? 'error=location_add_failed' : 'success=location_added'}`);
+}
+
+async function updateCenterLocation(formData: FormData) {
+  'use server';
+  const centerId = String(formData.get('center_id') ?? '');
+  const locationId = String(formData.get('location_id') ?? '');
+  if (!centerId || !locationId) redirect('/admin/users');
+
+  const location = locationFieldsFromForm(formData);
+  if (!hasRequiredLocationFields(location)) {
+    redirect(`/admin/users/${centerId}?error=location_missing`);
+  }
+
+  const result = await supabaseAdmin
+    .from('center_locations')
+    .update({
+      ...location,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', locationId)
+    .eq('center_id', centerId);
+
+  redirect(`/admin/users/${centerId}?${result.error ? 'error=location_save_failed' : 'success=location_saved'}`);
+}
+
+async function removeCenterLocation(formData: FormData) {
+  'use server';
+  const centerId = String(formData.get('center_id') ?? '');
+  const locationId = String(formData.get('location_id') ?? '');
+  if (!centerId || !locationId) redirect('/admin/users');
+
+  const result = await supabaseAdmin
+    .from('center_locations')
+    .delete()
+    .eq('id', locationId)
+    .eq('center_id', centerId);
+
+  redirect(`/admin/users/${centerId}?${result.error ? 'error=location_remove_failed' : 'success=location_removed'}`);
 }
 
 async function addCenterLogin(formData: FormData) {
@@ -216,7 +312,7 @@ export default async function UserDetailPage({
   const { data: center } = await supabase.from('centers').select('*').eq('id', params.id).maybeSingle();
 
   if (center) {
-    const [{ data: products }, { data: assigned }, { data: prices }, { data: members }] = await Promise.all([
+    const [{ data: products }, { data: assigned }, { data: prices }, { data: members }, { data: locations }] = await Promise.all([
       supabase.from('products').select('id,name,category').eq('active', true).order('name', { ascending: true }),
       supabase.from('user_products').select('product_id').eq('center_id', center.id),
       supabase.from('user_product_prices').select('product_id,price_cents').eq('center_id', center.id),
@@ -226,11 +322,18 @@ export default async function UserDetailPage({
         .eq('center_id', center.id)
         .eq('is_admin', false)
         .order('created_at', { ascending: true }),
+      supabase
+        .from('center_locations')
+        .select('id,name,address1,address2,city,state,zip,notes,is_active')
+        .eq('center_id', center.id)
+        .order('is_active', { ascending: false })
+        .order('name', { ascending: true }),
     ]);
 
     const assignedSet = new Set((assigned ?? []).map((row) => row.product_id));
     const priceMap = new Map((prices ?? []).map((row) => [row.product_id, row.price_cents]));
     const groupedProducts = groupProductsByCategory((products ?? []) as CenterProductRow[]);
+    const centerLocations = (locations ?? []) as CenterLocationRow[];
 
     return (
       <div className="space-y-6">
@@ -238,6 +341,9 @@ export default async function UserDetailPage({
         {success === 'login_added' ? <div className="card text-sm text-green-700">Login added to center.</div> : null}
         {success === 'login_saved' ? <div className="card text-sm text-green-700">Login updated.</div> : null}
         {success === 'login_removed' ? <div className="card text-sm text-green-700">Login removed from center.</div> : null}
+        {success === 'location_added' ? <div className="card text-sm text-green-700">Delivery location added.</div> : null}
+        {success === 'location_saved' ? <div className="card text-sm text-green-700">Delivery location updated.</div> : null}
+        {success === 'location_removed' ? <div className="card text-sm text-green-700">Delivery location removed.</div> : null}
         {error ? <div className="card text-sm text-red-700">Could not complete that action ({error}).</div> : null}
 
         <section className="panel">
@@ -286,6 +392,69 @@ export default async function UserDetailPage({
 
           <button className="btn-primary w-full sm:w-auto">Save Center</button>
         </form>
+
+        <section className="card space-y-5">
+          <div>
+            <h2 className="text-xl font-semibold text-slate-950">Delivery locations</h2>
+            <p className="mt-1 text-sm text-slate-500">Add each delivery address this center can choose during checkout.</p>
+          </div>
+
+          <form action={addCenterLocation} className="grid gap-3 lg:grid-cols-2">
+            <input type="hidden" name="center_id" value={center.id} />
+            <input className="input" name="location_name" required placeholder="Location name" />
+            <input className="input" name="address1" required placeholder="Address line 1" />
+            <input className="input" name="address2" placeholder="Address line 2" />
+            <input className="input" name="city" required placeholder="City" />
+            <input className="input" name="state" required placeholder="State" />
+            <input className="input" name="zip" required placeholder="ZIP" />
+            <textarea className="input min-h-24 lg:col-span-2" name="location_notes" placeholder="Location notes" />
+            <label className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-white/60 px-4 py-3 text-sm font-medium text-slate-700">
+              <input type="checkbox" name="is_active" defaultChecked />
+              Active location
+            </label>
+            <button className="btn-primary w-full lg:w-auto" type="submit">Add Location</button>
+          </form>
+
+          <div className="space-y-4">
+            {!centerLocations.length ? <div className="rounded-2xl border border-slate-200 bg-white/60 p-4 text-sm text-slate-600">No delivery locations have been added yet.</div> : null}
+            {centerLocations.map((location) => (
+              <div key={location.id} className="rounded-2xl border border-slate-200 bg-white/60 p-4">
+                <div className="mb-4 flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between">
+                  <div>
+                    <p className="font-semibold text-slate-950">{locationDisplayName(location)}</p>
+                    <p className="mt-1 text-sm text-slate-500">{locationAddressLine(location) || 'No address on file'}</p>
+                  </div>
+                  <span className={`inline-flex w-fit rounded-full border px-3 py-1 text-xs font-semibold uppercase tracking-[0.14em] ${location.is_active ? 'border-emerald-200 bg-emerald-50 text-emerald-800' : 'border-slate-200 bg-slate-100 text-slate-600'}`}>
+                    {location.is_active ? 'Active' : 'Inactive'}
+                  </span>
+                </div>
+                <form action={updateCenterLocation} className="grid gap-3 lg:grid-cols-2">
+                  <input type="hidden" name="center_id" value={center.id} />
+                  <input type="hidden" name="location_id" value={location.id} />
+                  <input className="input" name="location_name" required defaultValue={location.name ?? ''} placeholder="Location name" />
+                  <input className="input" name="address1" required defaultValue={location.address1 ?? ''} placeholder="Address line 1" />
+                  <input className="input" name="address2" defaultValue={location.address2 ?? ''} placeholder="Address line 2" />
+                  <input className="input" name="city" required defaultValue={location.city ?? ''} placeholder="City" />
+                  <input className="input" name="state" required defaultValue={location.state ?? ''} placeholder="State" />
+                  <input className="input" name="zip" required defaultValue={location.zip ?? ''} placeholder="ZIP" />
+                  <textarea className="input min-h-24 lg:col-span-2" name="location_notes" defaultValue={location.notes ?? ''} placeholder="Location notes" />
+                  <label className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-white/60 px-4 py-3 text-sm font-medium text-slate-700">
+                    <input type="checkbox" name="is_active" defaultChecked={location.is_active !== false} />
+                    Active location
+                  </label>
+                  <div className="flex flex-col gap-2 sm:flex-row">
+                    <button className="btn-primary w-full sm:w-auto" type="submit">Save Location</button>
+                  </div>
+                </form>
+                <form action={removeCenterLocation} className="mt-3">
+                  <input type="hidden" name="center_id" value={center.id} />
+                  <input type="hidden" name="location_id" value={location.id} />
+                  <button className="btn-secondary w-full sm:w-auto" type="submit">Remove Location</button>
+                </form>
+              </div>
+            ))}
+          </div>
+        </section>
 
         <section className="card space-y-4">
           <div>

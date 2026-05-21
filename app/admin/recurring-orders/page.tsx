@@ -1,17 +1,7 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
-import { daysForRecurringFrequency, isRecurringFrequency, RECURRING_FREQUENCY_OPTIONS } from '@/lib/recurring';
+import { formatNextRecurringOrderDate, isRecurringFrequency, RECURRING_FREQUENCY_OPTIONS } from '@/lib/recurring';
 import { createClient } from '@/lib/supabase/server';
-
-function nextOrderDate(frequency: string, anchorDate: string | null) {
-  if (!anchorDate) return 'N/A';
-  const date = new Date(anchorDate);
-  if (Number.isNaN(date.getTime())) return 'N/A';
-  const daysToAdd = daysForRecurringFrequency(frequency);
-  if (!daysToAdd) return 'N/A';
-  date.setDate(date.getDate() + daysToAdd);
-  return date.toLocaleDateString();
-}
 
 async function updateRecurringOrder(formData: FormData) {
   'use server';
@@ -127,7 +117,7 @@ export default async function AdminRecurringOrdersPage({ searchParams }: { searc
               </div>
               <div>
                 <div className="text-slate-500">Next order date</div>
-                <div>{nextOrderDate(order.frequency, order.last_generated_at ?? order.created_at)}</div>
+                <div>{formatNextRecurringOrderDate(order.frequency, order.last_generated_at ?? order.created_at)}</div>
               </div>
               <div>
                 <div className="text-slate-500">Last generated</div>
