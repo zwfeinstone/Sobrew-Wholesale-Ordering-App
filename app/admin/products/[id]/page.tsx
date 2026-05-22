@@ -1,4 +1,5 @@
 import { notFound, redirect } from 'next/navigation';
+import { requireAdminWriteAccess } from '@/lib/admin-write-access';
 import { PRODUCT_CATEGORY_OPTIONS, isProductCategory } from '@/lib/product-categories';
 import { createClient } from '@/lib/supabase/server';
 import { supabaseAdmin } from '@/lib/supabase/admin';
@@ -6,6 +7,8 @@ import { supabaseAdmin } from '@/lib/supabase/admin';
 async function updateProduct(formData: FormData) {
   'use server';
   const id = String(formData.get('id'));
+  await requireAdminWriteAccess(`/admin/products/${id}?error=admin_write_denied`);
+
   const category = String(formData.get('category') ?? '');
   if (!isProductCategory(category)) redirect(`/admin/products/${id}?error=invalid_category`);
 
@@ -30,6 +33,8 @@ async function updateProduct(formData: FormData) {
 async function removeProduct(formData: FormData) {
   'use server';
   const id = String(formData.get('id'));
+  await requireAdminWriteAccess(`/admin/products/${id}?error=admin_write_denied`);
+
   const supabase = await createClient();
   await supabase.from('products').delete().eq('id', id);
   redirect('/admin/products');
@@ -54,7 +59,11 @@ export default async function ProductPage({
         <h1 className="page-title mt-4">Edit product</h1>
         <p className="page-subtitle mt-3">Update availability, refresh product copy, or upload a cleaner product image.</p>
       </section>
-      {error ? <div className="card text-sm text-red-700">Choose a product category before saving.</div> : null}
+      {error ? (
+        <div className="card text-sm text-red-700">
+          {error === 'admin_write_denied' ? 'Only zach@sobrew.com can change admin data.' : 'Choose a product category before saving.'}
+        </div>
+      ) : null}
       <form action={updateProduct} className="card space-y-4">
         <input type="hidden" name="id" value={product.id} />
         <input className="input" name="name" defaultValue={product.name} required />

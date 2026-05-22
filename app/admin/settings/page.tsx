@@ -1,9 +1,12 @@
 import { redirect } from 'next/navigation';
+import { requireAdminWriteAccess } from '@/lib/admin-write-access';
 import { createClient } from '@/lib/supabase/server';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 
 async function saveSettings(formData: FormData) {
   'use server';
+  await requireAdminWriteAccess('/admin/settings?error=admin_write_denied');
+
   const supabase = await createClient();
   const id = String(formData.get('id'));
 
@@ -34,6 +37,7 @@ async function saveSettings(formData: FormData) {
 
 async function updatePassword(formData: FormData) {
   'use server';
+  await requireAdminWriteAccess('/admin/settings?password_error=admin_write_denied');
 
   const supabase = await createClient();
   const password = String(formData.get('password') ?? '');
@@ -58,7 +62,7 @@ async function updatePassword(formData: FormData) {
 export default async function SettingsPage({
   searchParams,
 }: {
-  searchParams?: { password_success?: string; password_error?: string };
+  searchParams?: { error?: string; password_success?: string; password_error?: string };
 }) {
   const supabase = await createClient();
   const { data: settings } = await supabase.from('app_settings').select('*').single();
@@ -66,6 +70,7 @@ export default async function SettingsPage({
 
   const { data } = await supabase.auth.getUser();
   const email = data.user?.email ?? '';
+  const error = searchParams?.error;
   const passwordSuccess = searchParams?.password_success;
   const passwordError = searchParams?.password_error;
 
@@ -76,6 +81,9 @@ export default async function SettingsPage({
         <h1 className="page-title mt-4">Brand settings</h1>
         <p className="page-subtitle mt-3">Adjust the name, accent color, logo, and hero image used throughout the ordering experience.</p>
       </section>
+      {error === 'admin_write_denied' ? (
+        <div className="card text-sm text-red-700">Only zach@sobrew.com can change admin data.</div>
+      ) : null}
       <form action={saveSettings} className="card space-y-4">
         <input type="hidden" name="id" value={settings.id} />
         <input className="input" name="brand_name" defaultValue={settings.brand_name ?? 'Sobrew'} />
@@ -122,6 +130,12 @@ export default async function SettingsPage({
         {passwordError === 'update_failed' ? (
           <div className="rounded-[1.5rem] border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">
             We couldn&apos;t update your password right now. Please try again.
+          </div>
+        ) : null}
+
+        {passwordError === 'admin_write_denied' ? (
+          <div className="rounded-[1.5rem] border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">
+            Only zach@sobrew.com can change admin data.
           </div>
         ) : null}
 

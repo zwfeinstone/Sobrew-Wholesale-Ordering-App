@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
+import { requireAdminWriteAccess } from '@/lib/admin-write-access';
 import { formatNextRecurringOrderDate, isRecurringFrequency, RECURRING_FREQUENCY_OPTIONS } from '@/lib/recurring';
 import { createClient } from '@/lib/supabase/server';
 
@@ -10,6 +11,8 @@ async function updateRecurringOrder(formData: FormData) {
   const frequency = String(formData.get('frequency'));
   const status = String(formData.get('status'));
   const statusFilter = String(formData.get('statusFilter') ?? '');
+  const deniedQuery = statusFilter ? `?status=${encodeURIComponent(statusFilter)}&error=admin_write_denied` : '?error=admin_write_denied';
+  await requireAdminWriteAccess(`/admin/recurring-orders${deniedQuery}`);
 
   if (!recurringOrderId) redirect('/admin/recurring-orders?error=missing_id');
   if (!isRecurringFrequency(frequency)) redirect('/admin/recurring-orders?error=invalid_frequency');
@@ -78,7 +81,11 @@ export default async function AdminRecurringOrdersPage({ searchParams }: { searc
       </section>
 
       {success === 'updated' ? <div className="card text-sm text-green-700">Recurring order updated.</div> : null}
-      {error ? <div className="card text-sm text-red-700">Unable to save recurring order ({error}).</div> : null}
+      {error ? (
+        <div className="card text-sm text-red-700">
+          {error === 'admin_write_denied' ? 'Only zach@sobrew.com can change admin data.' : `Unable to save recurring order (${error}).`}
+        </div>
+      ) : null}
 
       <form className="card flex flex-col gap-3 md:flex-row">
         <select className="input" name="status" defaultValue={statusFilter}>

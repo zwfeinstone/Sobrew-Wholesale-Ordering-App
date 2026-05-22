@@ -1,4 +1,5 @@
 import { notFound, redirect } from 'next/navigation';
+import { requireAdminWriteAccess } from '@/lib/admin-write-access';
 import { productCategoryGroupKey, productCategoryLabel, productCategorySortRank, type ProductCategoryGroup } from '@/lib/product-categories';
 import { createClient } from '@/lib/supabase/server';
 import { supabaseAdmin } from '@/lib/supabase/admin';
@@ -69,6 +70,16 @@ function groupProductsByCategory(products: CenterProductRow[]) {
   return groups;
 }
 
+function adminUserDeniedHref(id: string) {
+  return id ? `/admin/users/${id}?error=admin_write_denied` : '/admin/users';
+}
+
+function adminActionErrorMessage(error: string) {
+  return error === 'admin_write_denied'
+    ? 'Only zach@sobrew.com can change admin data.'
+    : `Could not complete that action (${error}).`;
+}
+
 async function syncCenterCatalog(centerId: string, formData: FormData) {
   const selected = formData.getAll('product_id').map(String);
 
@@ -107,6 +118,8 @@ async function syncCenterCatalog(centerId: string, formData: FormData) {
 async function updateCenter(formData: FormData) {
   'use server';
   const centerId = String(formData.get('center_id') ?? '');
+  await requireAdminWriteAccess(adminUserDeniedHref(centerId));
+
   if (!centerId) redirect('/admin/users');
 
   try {
@@ -151,6 +164,8 @@ function hasRequiredLocationFields(location: ReturnType<typeof locationFieldsFro
 async function addCenterLocation(formData: FormData) {
   'use server';
   const centerId = String(formData.get('center_id') ?? '');
+  await requireAdminWriteAccess(adminUserDeniedHref(centerId));
+
   if (!centerId) redirect('/admin/users');
 
   const location = locationFieldsFromForm(formData);
@@ -170,6 +185,8 @@ async function updateCenterLocation(formData: FormData) {
   'use server';
   const centerId = String(formData.get('center_id') ?? '');
   const locationId = String(formData.get('location_id') ?? '');
+  await requireAdminWriteAccess(adminUserDeniedHref(centerId));
+
   if (!centerId || !locationId) redirect('/admin/users');
 
   const location = locationFieldsFromForm(formData);
@@ -193,6 +210,8 @@ async function removeCenterLocation(formData: FormData) {
   'use server';
   const centerId = String(formData.get('center_id') ?? '');
   const locationId = String(formData.get('location_id') ?? '');
+  await requireAdminWriteAccess(adminUserDeniedHref(centerId));
+
   if (!centerId || !locationId) redirect('/admin/users');
 
   const result = await supabaseAdmin
@@ -207,6 +226,8 @@ async function removeCenterLocation(formData: FormData) {
 async function addCenterLogin(formData: FormData) {
   'use server';
   const centerId = String(formData.get('center_id') ?? '');
+  await requireAdminWriteAccess(adminUserDeniedHref(centerId));
+
   const email = String(formData.get('email') ?? '').trim().toLowerCase();
   const full_name = String(formData.get('full_name') ?? '').trim();
   const password = String(formData.get('password') ?? '').trim();
@@ -239,6 +260,8 @@ async function updateCenterLogin(formData: FormData) {
   'use server';
   const centerId = String(formData.get('center_id') ?? '');
   const memberId = String(formData.get('member_id') ?? '');
+  await requireAdminWriteAccess(adminUserDeniedHref(centerId));
+
   if (!centerId || !memberId) redirect('/admin/users');
 
   await supabaseAdmin
@@ -263,6 +286,8 @@ async function removeCenterLogin(formData: FormData) {
   'use server';
   const centerId = String(formData.get('center_id') ?? '');
   const memberId = String(formData.get('member_id') ?? '');
+  await requireAdminWriteAccess(adminUserDeniedHref(centerId));
+
   if (!centerId || !memberId) redirect('/admin/users');
 
   await supabaseAdmin
@@ -278,6 +303,8 @@ async function removeCenterLogin(formData: FormData) {
 async function updateAdminAccount(formData: FormData) {
   'use server';
   const id = String(formData.get('id') ?? '');
+  await requireAdminWriteAccess(adminUserDeniedHref(id));
+
   if (!id) redirect('/admin/users');
 
   await supabaseAdmin
@@ -344,7 +371,7 @@ export default async function UserDetailPage({
         {success === 'location_added' ? <div className="card text-sm text-green-700">Delivery location added.</div> : null}
         {success === 'location_saved' ? <div className="card text-sm text-green-700">Delivery location updated.</div> : null}
         {success === 'location_removed' ? <div className="card text-sm text-green-700">Delivery location removed.</div> : null}
-        {error ? <div className="card text-sm text-red-700">Could not complete that action ({error}).</div> : null}
+        {error ? <div className="card text-sm text-red-700">{adminActionErrorMessage(error)}</div> : null}
 
         <section className="panel">
           <span className="eyebrow">Center Admin</span>
@@ -511,6 +538,7 @@ export default async function UserDetailPage({
   return (
     <form action={updateAdminAccount} className="space-y-6">
       {success === 'admin_saved' ? <div className="card text-sm text-green-700">Admin account updated.</div> : null}
+      {error ? <div className="card text-sm text-red-700">{adminActionErrorMessage(error)}</div> : null}
       <input type="hidden" name="id" value={adminUser.id} />
       <section className="panel">
         <span className="eyebrow">Admin Account</span>

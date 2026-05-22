@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import ConfirmSubmitButton from '@/components/confirm-submit-button';
+import { requireAdminWriteAccess } from '@/lib/admin-write-access';
 import { createClient } from '@/lib/supabase/server';
 
 const DAY_IN_MS = 24 * 60 * 60 * 1000;
@@ -348,14 +349,19 @@ function FormMessages({ toast }: { toast: string }) {
     save_error: { tone: 'border-rose-200 bg-rose-50 text-rose-700', text: 'Unable to save prospecting data. Make sure migrations 019, 020, and 021 have been run.' },
     update_error: { tone: 'border-rose-200 bg-rose-50 text-rose-700', text: 'Unable to update that prospecting block. Make sure migrations 019, 020, and 021 have been run.' },
     delete_error: { tone: 'border-rose-200 bg-rose-50 text-rose-700', text: 'Unable to delete that prospecting block.' },
+    admin_write_denied: { tone: 'border-rose-200 bg-rose-50 text-rose-700', text: 'Only zach@sobrew.com can change admin data.' },
   };
   const message = messages[toast];
   return message ? <div className={`rounded-2xl border px-4 py-3 text-sm font-semibold ${message.tone}`}>{message.text}</div> : null;
 }
 
-function redirectWithToast(range: ProspectingRange, toast: string) {
+function prospectingToastHref(range: ProspectingRange, toast: string) {
   const query = new URLSearchParams({ range, toast });
-  redirect(`/admin/sales/prospecting?${query.toString()}`);
+  return `/admin/sales/prospecting?${query.toString()}`;
+}
+
+function redirectWithToast(range: ProspectingRange, toast: string) {
+  redirect(prospectingToastHref(range, toast));
 }
 
 function callBlockPayload(formData: FormData) {
@@ -379,8 +385,10 @@ function callBlockPayload(formData: FormData) {
 async function saveCallBlock(formData: FormData) {
   'use server';
 
-  const supabase = await createClient();
   const range = normalizeRange(String(formData.get('range') ?? 'daily'));
+  await requireAdminWriteAccess(prospectingToastHref(range, 'admin_write_denied'));
+
+  const supabase = await createClient();
   const payload = callBlockPayload(formData);
 
   if (!/^\d{4}-\d{2}-\d{2}$/.test(payload.activity_date)) {
@@ -399,8 +407,10 @@ async function saveCallBlock(formData: FormData) {
 async function updateCallBlock(formData: FormData) {
   'use server';
 
-  const supabase = await createClient();
   const range = normalizeRange(String(formData.get('range') ?? 'daily'));
+  await requireAdminWriteAccess(prospectingToastHref(range, 'admin_write_denied'));
+
+  const supabase = await createClient();
   const blockId = String(formData.get('block_id') ?? '').trim();
   const payload = callBlockPayload(formData);
 
@@ -426,8 +436,10 @@ async function updateCallBlock(formData: FormData) {
 async function deleteCallBlock(formData: FormData) {
   'use server';
 
-  const supabase = await createClient();
   const range = normalizeRange(String(formData.get('range') ?? 'daily'));
+  await requireAdminWriteAccess(prospectingToastHref(range, 'admin_write_denied'));
+
+  const supabase = await createClient();
   const blockId = String(formData.get('block_id') ?? '').trim();
 
   if (!blockId) {
@@ -458,8 +470,10 @@ function followUpBlockPayload(formData: FormData) {
 async function saveFollowUpBlock(formData: FormData) {
   'use server';
 
-  const supabase = await createClient();
   const range = normalizeRange(String(formData.get('range') ?? 'daily'));
+  await requireAdminWriteAccess(prospectingToastHref(range, 'admin_write_denied'));
+
+  const supabase = await createClient();
   const payload = followUpBlockPayload(formData);
 
   if (!/^\d{4}-\d{2}-\d{2}$/.test(payload.activity_date)) {
@@ -478,8 +492,10 @@ async function saveFollowUpBlock(formData: FormData) {
 async function updateFollowUpBlock(formData: FormData) {
   'use server';
 
-  const supabase = await createClient();
   const range = normalizeRange(String(formData.get('range') ?? 'daily'));
+  await requireAdminWriteAccess(prospectingToastHref(range, 'admin_write_denied'));
+
+  const supabase = await createClient();
   const blockId = String(formData.get('block_id') ?? '').trim();
   const payload = followUpBlockPayload(formData);
 
@@ -505,8 +521,10 @@ async function updateFollowUpBlock(formData: FormData) {
 async function deleteFollowUpBlock(formData: FormData) {
   'use server';
 
-  const supabase = await createClient();
   const range = normalizeRange(String(formData.get('range') ?? 'daily'));
+  await requireAdminWriteAccess(prospectingToastHref(range, 'admin_write_denied'));
+
+  const supabase = await createClient();
   const blockId = String(formData.get('block_id') ?? '').trim();
 
   if (!blockId) {

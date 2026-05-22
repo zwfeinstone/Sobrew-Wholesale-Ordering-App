@@ -1,9 +1,12 @@
 import { redirect } from 'next/navigation';
+import { requireAdminWriteAccess } from '@/lib/admin-write-access';
 import { PRODUCT_CATEGORY_OPTIONS, isProductCategory } from '@/lib/product-categories';
 import { createClient } from '@/lib/supabase/server';
 
 async function createProduct(formData: FormData) {
   'use server';
+  await requireAdminWriteAccess('/admin/products/new?error=admin_write_denied');
+
   const supabase = await createClient();
   const category = String(formData.get('category') ?? '');
   if (!isProductCategory(category)) redirect('/admin/products/new?error=invalid_category');
@@ -31,7 +34,11 @@ export default function NewProductPage({
         <h1 className="page-title mt-4">Create a new product</h1>
         <p className="page-subtitle mt-3">Add a new item to the wholesale catalog with a clear name, SKU, and description.</p>
       </section>
-      {error ? <div className="card text-sm text-red-700">Choose a product category before saving.</div> : null}
+      {error ? (
+        <div className="card text-sm text-red-700">
+          {error === 'admin_write_denied' ? 'Only zach@sobrew.com can change admin data.' : 'Choose a product category before saving.'}
+        </div>
+      ) : null}
       <section className="card space-y-4">
         <input className="input" name="name" required placeholder="Name" />
         <input className="input" name="sku" required placeholder="SKU" />

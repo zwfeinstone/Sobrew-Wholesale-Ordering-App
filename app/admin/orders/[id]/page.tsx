@@ -2,6 +2,7 @@ import { notFound, redirect } from 'next/navigation';
 import ConfirmSubmitButton from '@/components/confirm-submit-button';
 import { OrderStatusBadge, OrderStatusTimeline } from '@/components/order-status';
 import StatusToast from '@/components/status-toast';
+import { requireAdminWriteAccess } from '@/lib/admin-write-access';
 import { getCenterLoginEmails } from '@/lib/center-logins';
 import { createClient } from '@/lib/supabase/server';
 import { sendShippedEmail } from '@/lib/email';
@@ -17,9 +18,11 @@ function formatOrderTimestamp(value: string | null) {
 
 async function updateStatus(formData: FormData) {
   'use server';
-  const supabase = await createClient();
   const id = String(formData.get('id'));
   const status = String(formData.get('status'));
+  await requireAdminWriteAccess(id ? `/admin/orders/${id}?toast=admin_write_denied` : '/admin/orders?toast=admin_write_denied');
+
+  const supabase = await createClient();
   const { data: order } = await supabase.from('orders').select('id,user_id,center_id,status,profiles(email)').eq('id', id).single();
   const orderUpdateResult = await supabase.from('orders').update({ status }).eq('id', id).select('id');
   if (!orderUpdateResult.error && orderUpdateResult.data?.length && order?.status !== 'Shipped' && status === 'Shipped') {
@@ -35,8 +38,10 @@ async function updateStatus(formData: FormData) {
 
 async function archiveOrder(formData: FormData) {
   'use server';
-  const supabase = await createClient();
   const id = String(formData.get('id') ?? '');
+  await requireAdminWriteAccess(id ? `/admin/orders/${id}?toast=admin_write_denied` : '/admin/orders?toast=admin_write_denied');
+
+  const supabase = await createClient();
   if (!id) redirect('/admin/orders?toast=archive_error');
 
   const { data: order } = await supabase.from('orders').select('id,status,archived_at').eq('id', id).single();
@@ -50,8 +55,10 @@ async function archiveOrder(formData: FormData) {
 
 async function deleteOrder(formData: FormData) {
   'use server';
-  const supabase = await createClient();
   const id = String(formData.get('id') ?? '');
+  await requireAdminWriteAccess(id ? `/admin/orders/${id}?toast=admin_write_denied` : '/admin/orders?toast=admin_write_denied');
+
+  const supabase = await createClient();
   if (!id) redirect('/admin/orders?toast=delete_error');
 
   const { count: recurringCount } = await supabase
@@ -98,6 +105,7 @@ export default async function AdminOrderDetail({
       {toast === 'archive_success' ? <StatusToast message="Order archived." tone="success" /> : null}
       {toast === 'archive_error' ? <StatusToast message="Unable to archive this order." tone="error" /> : null}
       {toast === 'delete_error' ? <StatusToast message="Unable to delete this order." tone="error" /> : null}
+      {toast === 'admin_write_denied' ? <StatusToast message="Only zach@sobrew.com can change admin data." tone="error" /> : null}
       <section className="panel">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <span className="eyebrow">Order Detail</span>
