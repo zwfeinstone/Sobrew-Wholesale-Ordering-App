@@ -17,7 +17,13 @@ export default async function NewUserWizardPage({
         <h1 className="page-title mt-4">Create center wizard</h1>
         <p className="page-subtitle mt-3">Set up a new center, create its first login, and assign shared products and pricing in one guided flow.</p>
       </section>
-      {error ? <div className="card text-sm text-red-700">Could not create the center right now. Check the login email and try again.</div> : null}
+      {error ? (
+        <div className="card text-sm text-red-700">
+          {error === 'admin_write_denied'
+            ? 'Only zach@sobrew.com can change admin data.'
+            : 'Could not create the center right now. Check the login email and try again.'}
+        </div>
+      ) : null}
       <UserWizard products={products ?? []} />
     </div>
   );

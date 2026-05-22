@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import StatusToast from '@/components/status-toast';
+import { requireAdminWriteAccess } from '@/lib/admin-write-access';
 import {
   COMMON_SUPPLY_SKUS,
   INVENTORY_ITEM_TYPES,
@@ -168,6 +169,8 @@ function inventoryHref(params: Record<string, string | undefined>) {
 
 async function createInventoryItem(formData: FormData) {
   'use server';
+  await requireAdminWriteAccess(inventoryHref({ tab: 'setup', toast: 'admin_write_denied' }));
+
   const supabase = await createClient();
   const itemType = String(formData.get('item_type') ?? '');
   const baseUnit = String(formData.get('base_unit') ?? '');
@@ -192,6 +195,8 @@ async function createInventoryItem(formData: FormData) {
 
 async function receiveInventory(formData: FormData) {
   'use server';
+  await requireAdminWriteAccess(inventoryHref({ tab: 'setup', toast: 'admin_write_denied' }));
+
   const supabase = await createClient();
   const itemId = String(formData.get('inventory_item_id') ?? '');
   const quantity = parsePositiveNumber(formData.get('quantity'));
@@ -265,6 +270,8 @@ async function receiveInventory(formData: FormData) {
 
 async function saveRecipe(formData: FormData) {
   'use server';
+  await requireAdminWriteAccess(inventoryHref({ tab: 'setup', toast: 'admin_write_denied' }));
+
   const supabase = await createClient();
   const productId = String(formData.get('product_id') ?? '');
   const outputQty = Math.max(1, parsePositiveNumber(formData.get('output_qty'), 1));
@@ -347,6 +354,8 @@ async function saveRecipe(formData: FormData) {
 
 async function recordProductionRun(formData: FormData) {
   'use server';
+  await requireAdminWriteAccess(inventoryHref({ tab: 'production', toast: 'admin_write_denied' }));
+
   const supabase = await createClient();
   const productId = String(formData.get('product_id') ?? '');
   const quantityProduced = parsePositiveNumber(formData.get('quantity_produced'));
@@ -427,6 +436,8 @@ async function recordProductionRun(formData: FormData) {
 
 async function updateReorderSetting(formData: FormData) {
   'use server';
+  await requireAdminWriteAccess(inventoryHref({ tab: 'planning', toast: 'admin_write_denied' }));
+
   const supabase = await createClient();
   const inventoryItemId = String(formData.get('inventory_item_id') ?? '');
   const reorderPoint = Math.max(0, parsePositiveNumber(formData.get('reorder_point'), 0));
@@ -453,6 +464,8 @@ async function updateReorderSetting(formData: FormData) {
 
 async function updateCenterParLevel(formData: FormData) {
   'use server';
+  await requireAdminWriteAccess(inventoryHref({ tab: 'planning', toast: 'admin_write_denied' }));
+
   const supabase = await createClient();
   const centerId = String(formData.get('center_id') ?? '');
   const productId = String(formData.get('product_id') ?? '');
@@ -902,6 +915,7 @@ export default async function InventoryPage({
       {toast === 'reorder_error' ? <StatusToast message="Unable to save reorder settings. Apply the Phase 2 migration if you have not yet." tone="error" /> : null}
       {toast === 'par_saved' ? <StatusToast message="Center par target saved." tone="success" /> : null}
       {toast === 'par_error' ? <StatusToast message="Unable to save center par target. Apply the Phase 3 migration if you have not yet." tone="error" /> : null}
+      {toast === 'admin_write_denied' ? <StatusToast message="Only zach@sobrew.com can change admin data." tone="error" /> : null}
 
       <section className="panel order-1">
         <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(18rem,0.8fr)] lg:items-end">

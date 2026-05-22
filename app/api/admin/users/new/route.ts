@@ -1,4 +1,5 @@
 import { supabaseAdmin } from '@/lib/supabase/admin';
+import { isAdminWriteAllowed } from '@/lib/admin-write-access';
 import { createClient } from '@/lib/supabase/server';
 import { toCents } from '@/lib/utils';
 import { NextResponse } from 'next/server';
@@ -20,6 +21,10 @@ export async function POST(request: Request) {
 
   if (!adminProfile?.is_admin || !adminProfile.is_active) {
     return new Response('Forbidden', { status: 403 });
+  }
+
+  if (!isAdminWriteAllowed(user.email)) {
+    return NextResponse.redirect(new URL('/admin/users/new?error=admin_write_denied', request.url));
   }
 
   const formData = await request.formData();

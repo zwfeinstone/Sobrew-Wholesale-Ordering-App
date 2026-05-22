@@ -4,6 +4,7 @@ import { AdminOrderBulkControls } from '@/components/admin-order-bulk-controls';
 import ConfirmSubmitButton from '@/components/confirm-submit-button';
 import { OrderStatusBadge } from '@/components/order-status';
 import StatusToast from '@/components/status-toast';
+import { requireAdminWriteAccess } from '@/lib/admin-write-access';
 import { getCenterLoginEmails } from '@/lib/center-logins';
 import { sendShippedEmail } from '@/lib/email';
 import { getOrderItemSummaries } from '@/lib/order-items';
@@ -17,13 +18,22 @@ function formatOrderTimestamp(value: string | null) {
   });
 }
 
+function ordersToastHref(statusFilter: string, toast: string) {
+  const query = new URLSearchParams();
+  if (statusFilter) query.set('status', statusFilter);
+  query.set('toast', toast);
+  return `/admin/orders?${query.toString()}`;
+}
+
 async function updateStatus(formData: FormData) {
   'use server';
-  const supabase = await createClient();
   const id = String(formData.get('id'));
   const status = String(formData.get('status'));
   const statusFilter = String(formData.get('statusFilter') ?? '');
 
+  await requireAdminWriteAccess(ordersToastHref(statusFilter, 'admin_write_denied'));
+
+  const supabase = await createClient();
   const { data: order } = await supabase.from('orders').select('id,status,center_id,profiles(email)').eq('id', id).single();
   const orderUpdateResult = await supabase.from('orders').update({ status }).eq('id', id).select('id');
 
@@ -46,9 +56,11 @@ async function updateStatus(formData: FormData) {
 
 async function archiveOrder(formData: FormData) {
   'use server';
-  const supabase = await createClient();
   const id = String(formData.get('id') ?? '');
   const statusFilter = String(formData.get('statusFilter') ?? '');
+  await requireAdminWriteAccess(ordersToastHref(statusFilter, 'admin_write_denied'));
+
+  const supabase = await createClient();
   if (!id) redirect('/admin/orders?toast=archive_error');
 
   const { data: order } = await supabase.from('orders').select('id,status').eq('id', id).single();
@@ -67,11 +79,13 @@ async function archiveOrder(formData: FormData) {
 
 async function archiveSelectedOrders(formData: FormData) {
   'use server';
-  const supabase = await createClient();
   const statusFilter = String(formData.get('statusFilter') ?? '');
   const ids = formData.getAll('order_id').map(String).filter(Boolean);
   const query = new URLSearchParams();
   if (statusFilter) query.set('status', statusFilter);
+  await requireAdminWriteAccess(ordersToastHref(statusFilter, 'admin_write_denied'));
+
+  const supabase = await createClient();
 
   if (!ids.length) {
     query.set('toast', 'archive_error');
@@ -92,11 +106,13 @@ async function archiveSelectedOrders(formData: FormData) {
 
 async function deleteOrder(formData: FormData) {
   'use server';
-  const supabase = await createClient();
   const id = String(formData.get('id') ?? '');
   const statusFilter = String(formData.get('statusFilter') ?? '');
   const query = new URLSearchParams();
   if (statusFilter) query.set('status', statusFilter);
+  await requireAdminWriteAccess(ordersToastHref(statusFilter, 'admin_write_denied'));
+
+  const supabase = await createClient();
 
   if (!id) {
     query.set('toast', 'delete_error');
@@ -161,6 +177,7 @@ export default async function AdminOrdersPage({ searchParams }: { searchParams: 
       {toast === 'delete_success' ? <StatusToast message="Order deleted." tone="success" /> : null}
       {toast === 'delete_success_with_recurring' ? <StatusToast message="Order and linked recurring schedule deleted." tone="success" /> : null}
       {toast === 'delete_error' ? <StatusToast message="Unable to delete this order." tone="error" /> : null}
+      {toast === 'admin_write_denied' ? <StatusToast message="Only zach@sobrew.com can change admin data." tone="error" /> : null}
       <section className="panel">
         <span className="eyebrow">Order Queue</span>
         <h1 className="page-title mt-4">Manage wholesale orders</h1>
