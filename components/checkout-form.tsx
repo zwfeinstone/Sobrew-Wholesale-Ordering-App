@@ -107,6 +107,9 @@ export default function CheckoutForm({ actionUrl, cartStorageKey, initialToast, 
         <div className="checkout-action-copy">
           <p className="text-sm font-semibold text-slate-950">Ready to place this order?</p>
           <p className="mt-1 text-sm text-slate-500">Your cart and recurring preferences will be submitted together.</p>
+          <p className="mt-2 text-sm font-medium text-slate-700">
+            An invoice will be sent when this order is processed. No payment is collected in the ordering app.
+          </p>
         </div>
         <CheckoutSubmitButton pending={isSubmitting} />
       </section>
