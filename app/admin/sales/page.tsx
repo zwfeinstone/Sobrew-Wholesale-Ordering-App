@@ -11,8 +11,13 @@ const SALES_TABS = [
   { id: 'accounts', label: 'Accounts', description: 'Best monthly accounts' },
   { id: 'report', label: 'Report', description: 'Full center revenue table' },
 ] as const;
+const DAILY_METRIC_OPTIONS = [
+  { id: 'orders', label: 'Orders' },
+  { id: 'revenue', label: 'Revenue' },
+] as const;
 
 type SalesTab = (typeof SALES_TABS)[number]['id'];
+type DailyMetric = (typeof DAILY_METRIC_OPTIONS)[number]['id'];
 
 type CenterRow = {
   id: string;
@@ -42,6 +47,13 @@ type CenterSalesReport = {
   revenueLast30DaysCents: number;
 };
 
+type QuietCenterGroup = {
+  id: string;
+  label: string;
+  description: string;
+  centers: CenterSalesReport[];
+};
+
 function isSalesTab(value: string | string[] | undefined): value is SalesTab {
   return typeof value === 'string' && SALES_TABS.some((tab) => tab.id === value);
 }
@@ -51,11 +63,49 @@ function normalizeLookback(value: string | string[] | undefined) {
   return LOOKBACK_OPTIONS.includes(parsed as (typeof LOOKBACK_OPTIONS)[number]) ? parsed : DEFAULT_LOOKBACK_MONTHS;
 }
 
-function salesTabHref(tab: SalesTab, months: number) {
+function normalizeDailyMetric(value: string | string[] | undefined): DailyMetric {
+  return typeof value === 'string' && DAILY_METRIC_OPTIONS.some((option) => option.id === value) ? value as DailyMetric : 'orders';
+}
+
+function formatDateInput(value: Date) {
+  const month = String(value.getMonth() + 1).padStart(2, '0');
+  const day = String(value.getDate()).padStart(2, '0');
+  return `${value.getFullYear()}-${month}-${day}`;
+}
+
+function parseDateInput(value: string | string[] | undefined) {
+  if (typeof value !== 'string') return null;
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!match) return null;
+
+  const year = Number.parseInt(match[1], 10);
+  const month = Number.parseInt(match[2], 10);
+  const day = Number.parseInt(match[3], 10);
+  const date = new Date(year, month - 1, day);
+
+  if (date.getFullYear() !== year || date.getMonth() !== month - 1 || date.getDate() !== day) {
+    return null;
+  }
+
+  return date;
+}
+
+function normalizeWeekStart(value: string | string[] | undefined, fallback: Date) {
+  const parsed = parseDateInput(value);
+  return parsed ? startOfWeek(parsed) : fallback;
+}
+
+function salesTabHref(tab: SalesTab, months: number, weekStart?: Date, dailyMetric: DailyMetric = 'orders') {
   const query = new URLSearchParams();
   query.set('tab', tab);
   query.set('months', String(months));
+  if (weekStart) query.set('week', formatDateInput(weekStart));
+  query.set('daily_metric', dailyMetric);
   return `/admin/sales?${query.toString()}`;
+}
+
+function salesWeekHref(tab: SalesTab, months: number, weekStart: Date, dailyMetric: DailyMetric) {
+  return salesTabHref(tab, months, weekStart, dailyMetric);
 }
 
 function startOfDay(date: Date) {
@@ -138,7 +188,7 @@ function MiniBarList({ rows }: { rows: { label: string; value: number; display: 
   return (
     <div className="space-y-3">
       {rows.map((row) => (
-        <div key={row.label} className="grid grid-cols-[3.25rem_minmax(0,1fr)_4rem] items-center gap-3 text-sm">
+        <div key={row.label} className="grid grid-cols-[3.25rem_minmax(0,1fr)_6rem] items-center gap-3 text-sm">
           <span className="font-semibold text-slate-700">{row.label}</span>
           <div className="h-2.5 overflow-hidden rounded-full bg-slate-100">
             <div className="h-full rounded-full bg-teal-700" style={{ width: `${Math.max((row.value / max) * 100, row.value > 0 ? 8 : 0)}%` }} />
@@ -176,47 +226,65 @@ export default async function AdminSalesPage({
   const supabase = await createClient();
   const now = new Date();
   const today = startOfDay(now);
-  const weekStart = startOfWeek(now);
-  const previousWeekStart = addDays(weekStart, -7);
+  const currentWeekStart = startOfWeek(now);
+  const selectedWeekStart = normalizeWeekStart(searchParams?.week, currentWeekStart);
+  const selectedWeekEnd = addDays(selectedWeekStart, 7);
+  const previousCurrentWeekStart = addDays(currentWeekStart, -7);
   const monthStart = startOfMonth(now);
   const previousMonthStart = addMonths(monthStart, -1);
   const quietCutoff = addDays(today, -30);
   const lookbackMonths = normalizeLookback(searchParams?.months);
   const activeTab: SalesTab = isSalesTab(searchParams?.tab) ? searchParams.tab : 'overview';
+  const activeDailyMetric = normalizeDailyMetric(searchParams?.daily_metric);
   const rangeStart = addMonths(monthStart, -(lookbackMonths - 1));
 
-  const [{ data: centers }, { data: orders }, { count: ordersThisWeekCount }, { count: previousWeekOrdersCount }] = await Promise.all([
+  const [
+    { data: centers },
+    { data: orders },
+    { data: selectedWeekOrders },
+    { count: ordersThisWeekCount },
+    { count: previousWeekOrdersCount },
+  ] = await Promise.all([
     supabase.from('centers').select('id,name,is_active,created_at').order('name', { ascending: true }),
     supabase
       .from('orders')
       .select('id,center_id,status,subtotal_cents,created_at')
       .order('created_at', { ascending: false })
       .limit(10000),
-    supabase.from('orders').select('id', { count: 'exact', head: true }).gte('created_at', weekStart.toISOString()),
+    supabase
+      .from('orders')
+      .select('id,center_id,status,subtotal_cents,created_at')
+      .gte('created_at', selectedWeekStart.toISOString())
+      .lt('created_at', selectedWeekEnd.toISOString())
+      .order('created_at', { ascending: false }),
+    supabase.from('orders').select('id', { count: 'exact', head: true }).gte('created_at', currentWeekStart.toISOString()),
     supabase
       .from('orders')
       .select('id', { count: 'exact', head: true })
-      .gte('created_at', previousWeekStart.toISOString())
-      .lt('created_at', weekStart.toISOString()),
+      .gte('created_at', previousCurrentWeekStart.toISOString())
+      .lt('created_at', currentWeekStart.toISOString()),
   ]);
 
   const activeCenters = ((centers ?? []) as CenterRow[]).filter((center) => center.is_active !== false);
   const orderRows = ((orders ?? []) as SalesOrderRow[]).filter((order) => order.center_id);
+  const selectedWeekOrderRows = ((selectedWeekOrders ?? []) as SalesOrderRow[]).filter((order) => order.center_id);
 
   const lastOrderByCenter = new Map<string, Date>();
   const centerOrders = new Map<string, SalesOrderRow[]>();
   const weeklyBuckets = Array.from({ length: 7 }, (_, index) => {
-    const date = addDays(weekStart, index);
-    return { key: date.toDateString(), label: formatDayLabel(date), value: 0, display: '0' };
+    const date = addDays(selectedWeekStart, index);
+    return { key: date.toDateString(), label: formatDayLabel(date), orders: 0, revenueCents: 0 };
   });
   const weeklyBucketByKey = new Map(weeklyBuckets.map((bucket) => [bucket.key, bucket]));
-  const statusCountsThisWeek = new Map<string, number>();
+  const statusCountsSelectedWeek = new Map<string, number>();
 
   let revenueThisMonthCents = 0;
   let revenuePreviousMonthCents = 0;
   let revenueLast30DaysCents = 0;
   let revenueInRangeCents = 0;
   let ordersInRangeCount = 0;
+  let selectedWeekOrderCount = 0;
+  let selectedWeekRevenueCents = 0;
 
   for (const order of orderRows) {
     const centerId = order.center_id;
@@ -239,16 +307,22 @@ export default async function AdminSalesPage({
     if (orderDate >= monthStart) revenueThisMonthCents += subtotal;
     if (orderDate >= previousMonthStart && orderDate < monthStart) revenuePreviousMonthCents += subtotal;
     if (orderDate >= quietCutoff) revenueLast30DaysCents += subtotal;
+  }
 
-    if (orderDate >= weekStart) {
-      const bucket = weeklyBucketByKey.get(startOfDay(orderDate).toDateString());
-      if (bucket) {
-        bucket.value += 1;
-        bucket.display = String(bucket.value);
-      }
-      const status = order.status || 'Unknown';
-      statusCountsThisWeek.set(status, (statusCountsThisWeek.get(status) ?? 0) + 1);
+  for (const order of selectedWeekOrderRows) {
+    const orderDate = getOrderDate(order);
+    if (!orderDate || orderDate < selectedWeekStart || orderDate >= selectedWeekEnd) continue;
+
+    const bucket = weeklyBucketByKey.get(startOfDay(orderDate).toDateString());
+    const subtotal = order.subtotal_cents ?? 0;
+    if (bucket) {
+      bucket.orders += 1;
+      bucket.revenueCents += subtotal;
     }
+    selectedWeekOrderCount += 1;
+    selectedWeekRevenueCents += subtotal;
+    const status = order.status || 'Unknown';
+    statusCountsSelectedWeek.set(status, (statusCountsSelectedWeek.get(status) ?? 0) + 1);
   }
 
   const centerReports: CenterSalesReport[] = activeCenters.map((center) => {
@@ -268,7 +342,7 @@ export default async function AdminSalesPage({
         ordersInRange += 1;
       }
       if (orderDate >= quietCutoff) revenue30Cents += subtotal;
-      if (orderDate >= weekStart) ordersThisWeek += 1;
+      if (orderDate >= currentWeekStart) ordersThisWeek += 1;
     }
 
     return {
@@ -293,14 +367,46 @@ export default async function AdminSalesPage({
       if (!b.lastOrderAt) return 1;
       return a.lastOrderAt.getTime() - b.lastOrderAt.getTime();
     });
+  const quietCenterGroups: QuietCenterGroup[] = [
+    {
+      id: 'never-ordered',
+      label: 'No orders yet',
+      description: 'Active centers that have not placed their first order.',
+      centers: quietCenters.filter((center) => !center.lastOrderAt),
+    },
+    {
+      id: 'very-quiet',
+      label: '45+ days quiet',
+      description: 'Highest-priority follow-up list.',
+      centers: quietCenters.filter((center) => (center.daysSinceLastOrder ?? 0) >= 45),
+    },
+    {
+      id: 'quiet',
+      label: '30-44 days quiet',
+      description: 'Centers just crossing the follow-up threshold.',
+      centers: quietCenters.filter((center) => {
+        const days = center.daysSinceLastOrder ?? 0;
+        return days >= 30 && days < 45;
+      }),
+    },
+  ].filter((group) => group.centers.length);
 
   const sortedCenterReports = [...centerReports].sort((a, b) => b.averageMonthlyRevenueCents - a.averageMonthlyRevenueCents || a.name.localeCompare(b.name));
   const topCenters = sortedCenterReports.slice(0, 5);
   const averageMonthlyRevenuePerCenterCents = activeCenters.length ? Math.round(revenueInRangeCents / lookbackMonths / activeCenters.length) : 0;
   const monthRevenueChange = metricChange(revenueThisMonthCents, revenuePreviousMonthCents);
   const statusRows = ['New', 'Processing', 'Shipped']
-    .map((status) => ({ label: status, value: statusCountsThisWeek.get(status) ?? 0, display: String(statusCountsThisWeek.get(status) ?? 0) }))
+    .map((status) => ({ label: status, value: statusCountsSelectedWeek.get(status) ?? 0, display: String(statusCountsSelectedWeek.get(status) ?? 0) }))
     .filter((row) => row.value > 0);
+  const weeklyRows = weeklyBuckets.map((bucket) => (
+    activeDailyMetric === 'revenue'
+      ? { label: bucket.label, value: bucket.revenueCents, display: usd(bucket.revenueCents) }
+      : { label: bucket.label, value: bucket.orders, display: String(bucket.orders) }
+  ));
+  const selectedWeekLabel = selectedWeekStart.getTime() === currentWeekStart.getTime() ? 'This Week' : 'Selected Week';
+  const selectedWeekDailyTitle = activeDailyMetric === 'revenue' ? 'Revenue by day' : 'Orders by day';
+  const nextSelectedWeekStart = addDays(selectedWeekStart, 7);
+  const canMoveToNextWeek = selectedWeekStart.getTime() < currentWeekStart.getTime();
   const salesTabCounts: Record<SalesTab, string> = {
     overview: `${(ordersThisWeekCount ?? 0).toLocaleString()} this week`,
     followup: `${quietCenters.length.toLocaleString()} quiet`,
@@ -321,6 +427,8 @@ export default async function AdminSalesPage({
           </div>
           <form className="rounded-2xl border border-slate-200/70 bg-white/60 p-4">
             <input type="hidden" name="tab" value={activeTab} />
+            <input type="hidden" name="week" value={formatDateInput(selectedWeekStart)} />
+            <input type="hidden" name="daily_metric" value={activeDailyMetric} />
             <label className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500" htmlFor="months">Report window</label>
             <div className="mt-3 flex flex-col gap-3 sm:flex-row">
               <select id="months" className="input" name="months" defaultValue={lookbackMonths}>
@@ -367,7 +475,7 @@ export default async function AdminSalesPage({
             <Link
               key={tab.id}
               aria-current={isActive ? 'page' : undefined}
-              href={salesTabHref(tab.id, lookbackMonths)}
+              href={salesTabHref(tab.id, lookbackMonths, selectedWeekStart, activeDailyMetric)}
               className={`rounded-2xl border px-4 py-3 transition-all duration-200 ${
                 isActive
                   ? 'border-teal-200 bg-teal-50/80 text-teal-900 shadow-sm'
@@ -388,27 +496,77 @@ export default async function AdminSalesPage({
 
       <section className="grid gap-5 xl:grid-cols-[1fr_0.9fr]" style={activeTab !== 'overview' ? { display: 'none' } : undefined}>
         <div className="card space-y-5">
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
             <div>
-              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">This Week</p>
-              <h2 className="mt-2 text-xl font-semibold tracking-tight text-slate-950">Orders by day</h2>
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">{selectedWeekLabel}</p>
+              <h2 className="mt-2 text-xl font-semibold tracking-tight text-slate-950">{selectedWeekDailyTitle}</h2>
+              <div className="mt-4 flex flex-wrap gap-2">
+                <span className="rounded-full bg-slate-100 px-3 py-1.5 text-sm font-semibold text-slate-700">
+                  Week orders: {selectedWeekOrderCount.toLocaleString()}
+                </span>
+                <span className="rounded-full bg-teal-50 px-3 py-1.5 text-sm font-semibold text-teal-800">
+                  Week revenue: {usd(selectedWeekRevenueCents)}
+                </span>
+              </div>
             </div>
-            <p className="text-sm text-slate-500">{formatShortDate(weekStart)} - {formatShortDate(addDays(weekStart, 6))}</p>
+            <div className="flex flex-col gap-3 lg:items-end">
+              <p className="text-sm text-slate-500">{formatShortDate(selectedWeekStart)} - {formatShortDate(addDays(selectedWeekStart, 6))}</p>
+              <div className="inline-flex w-fit rounded-full bg-slate-100 p-1" aria-label="Daily chart view">
+                {DAILY_METRIC_OPTIONS.map((option) => {
+                  const isActiveMetric = activeDailyMetric === option.id;
+                  return (
+                    <Link
+                      key={option.id}
+                      aria-current={isActiveMetric ? 'true' : undefined}
+                      href={salesTabHref(activeTab, lookbackMonths, selectedWeekStart, option.id)}
+                      className={`rounded-full px-3 py-1.5 text-sm font-semibold transition-all ${
+                        isActiveMetric ? 'bg-white text-teal-800 shadow-sm' : 'text-slate-600 hover:text-slate-950'
+                      }`}
+                    >
+                      {option.label}
+                    </Link>
+                  );
+                })}
+              </div>
+              <form className="flex flex-col gap-2 sm:flex-row sm:items-end">
+                <input type="hidden" name="tab" value="overview" />
+                <input type="hidden" name="months" value={lookbackMonths} />
+                <input type="hidden" name="daily_metric" value={activeDailyMetric} />
+                <label className="text-sm font-medium text-slate-700" htmlFor="orders-week">Week of</label>
+                <input id="orders-week" className="input sm:w-44" name="week" type="date" defaultValue={formatDateInput(selectedWeekStart)} />
+                <button className="btn-secondary w-full sm:w-auto" type="submit">View</button>
+              </form>
+              <div className="flex flex-wrap gap-2">
+                <Link className="btn-secondary inline-flex" href={salesWeekHref(activeTab, lookbackMonths, addDays(selectedWeekStart, -7), activeDailyMetric)}>
+                  Previous week
+                </Link>
+                {selectedWeekStart.getTime() !== currentWeekStart.getTime() ? (
+                  <Link className="btn-secondary inline-flex" href={salesWeekHref(activeTab, lookbackMonths, currentWeekStart, activeDailyMetric)}>
+                    Current week
+                  </Link>
+                ) : null}
+                {canMoveToNextWeek ? (
+                  <Link className="btn-secondary inline-flex" href={salesWeekHref(activeTab, lookbackMonths, nextSelectedWeekStart, activeDailyMetric)}>
+                    Next week
+                  </Link>
+                ) : null}
+              </div>
+            </div>
           </div>
-          <MiniBarList rows={weeklyBuckets} />
+          <MiniBarList rows={weeklyRows} />
         </div>
 
         <div className="card space-y-5">
           <div>
             <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Pipeline</p>
-            <h2 className="mt-2 text-xl font-semibold tracking-tight text-slate-950">This week by status</h2>
+            <h2 className="mt-2 text-xl font-semibold tracking-tight text-slate-950">{selectedWeekLabel} by status</h2>
             <p className="mt-1 text-sm leading-6 text-slate-500">Use this to see whether new sales are turning into shipped orders.</p>
           </div>
           {statusRows.length ? (
             <MiniBarList rows={statusRows} />
           ) : (
             <div className="rounded-2xl border border-dashed border-slate-200 bg-white/50 px-4 py-8 text-center text-sm text-slate-500">
-              No orders placed this week yet.
+              No orders placed for the selected week.
             </div>
           )}
         </div>
@@ -423,21 +581,38 @@ export default async function AdminSalesPage({
             </div>
             <span className="rounded-full bg-rose-50 px-3 py-1 text-sm font-semibold text-rose-700">{quietCenters.length} centers</span>
           </div>
-          <div className="space-y-3">
-            {quietCenters.length ? quietCenters.slice(0, 10).map((center) => (
-              <Link
-                key={center.id}
-                href={`/admin/users/${center.id}`}
-                className="grid gap-3 rounded-2xl border border-slate-200/70 bg-white/60 px-4 py-3 transition-all duration-200 hover:-translate-y-0.5 hover:border-teal-200 hover:bg-white sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center"
-              >
-                <div className="min-w-0">
-                  <p className="truncate font-semibold text-slate-950">{center.name}</p>
-                  <p className="mt-1 text-sm text-slate-500">Last order: {formatDate(center.lastOrderAt)}</p>
+          <div className="space-y-4">
+            {quietCenterGroups.length ? quietCenterGroups.map((group, index) => (
+              <details key={group.id} className="rounded-2xl border border-slate-200/70 bg-white/50" open={index === 0}>
+                <summary className="cursor-pointer px-4 py-3">
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                      <p className="font-semibold text-slate-950">{group.label}</p>
+                      <p className="mt-1 text-sm text-slate-500">{group.description}</p>
+                    </div>
+                    <span className="w-fit rounded-full bg-white px-3 py-1 text-sm font-semibold text-slate-700 ring-1 ring-slate-200">
+                      {group.centers.length} center{group.centers.length === 1 ? '' : 's'}
+                    </span>
+                  </div>
+                </summary>
+                <div className="space-y-3 border-t border-slate-200/70 px-4 pb-4 pt-3">
+                  {group.centers.map((center) => (
+                    <Link
+                      key={center.id}
+                      href={`/admin/users/${center.id}`}
+                      className="grid gap-3 rounded-2xl border border-slate-200/70 bg-white/70 px-4 py-3 transition-all duration-200 hover:-translate-y-0.5 hover:border-teal-200 hover:bg-white sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center"
+                    >
+                      <div className="min-w-0">
+                        <p className="truncate font-semibold text-slate-950">{center.name}</p>
+                        <p className="mt-1 text-sm text-slate-500">Last order: {formatDate(center.lastOrderAt)}</p>
+                      </div>
+                      <span className={`inline-flex w-fit rounded-full px-3 py-1 text-sm font-semibold ring-1 ${getStatusTone(center.daysSinceLastOrder)}`}>
+                        {getStatusLabel(center.daysSinceLastOrder)}
+                      </span>
+                    </Link>
+                  ))}
                 </div>
-                <span className={`inline-flex w-fit rounded-full px-3 py-1 text-sm font-semibold ring-1 ${getStatusTone(center.daysSinceLastOrder)}`}>
-                  {getStatusLabel(center.daysSinceLastOrder)}
-                </span>
-              </Link>
+              </details>
             )) : (
               <div className="rounded-2xl border border-dashed border-emerald-200 bg-emerald-50/40 px-4 py-8 text-center text-sm text-emerald-800">
                 Every active center has ordered within the last 30 days.
@@ -468,6 +643,37 @@ export default async function AdminSalesPage({
               </Link>
             ))}
           </div>
+          {sortedCenterReports.length > topCenters.length ? (
+            <details className="rounded-2xl border border-slate-200/70 bg-white/50">
+              <summary className="cursor-pointer px-4 py-3">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <p className="font-semibold text-slate-950">Show all accounts</p>
+                    <p className="mt-1 text-sm text-slate-500">Ranked by average monthly revenue for the selected window.</p>
+                  </div>
+                  <span className="w-fit rounded-full bg-white px-3 py-1 text-sm font-semibold text-slate-700 ring-1 ring-slate-200">
+                    {sortedCenterReports.length} accounts
+                  </span>
+                </div>
+              </summary>
+              <div className="space-y-3 border-t border-slate-200/70 px-4 pb-4 pt-3">
+                {sortedCenterReports.map((center, index) => (
+                  <Link
+                    key={center.id}
+                    href={`/admin/users/${center.id}`}
+                    className="grid grid-cols-[2rem_minmax(0,1fr)_auto] items-center gap-3 rounded-2xl border border-slate-200/70 bg-white/70 px-4 py-3 transition-all duration-200 hover:-translate-y-0.5 hover:border-teal-200 hover:bg-white"
+                  >
+                    <span className="flex h-8 w-8 items-center justify-center rounded-full bg-slate-100 text-sm font-semibold text-slate-700">{index + 1}</span>
+                    <div className="min-w-0">
+                      <p className="truncate font-semibold text-slate-950">{center.name}</p>
+                      <p className="mt-1 text-sm text-slate-500">{center.ordersInRange} orders - {usd(center.revenueCents)} total</p>
+                    </div>
+                    <p className="text-right font-semibold text-slate-950">{usd(center.averageMonthlyRevenueCents)}</p>
+                  </Link>
+                ))}
+              </div>
+            </details>
+          ) : null}
         </div>
       </section>
 
