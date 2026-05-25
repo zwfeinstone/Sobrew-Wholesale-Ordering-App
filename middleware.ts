@@ -41,10 +41,10 @@ export async function middleware(request: NextRequest) {
     return NextResponse.redirect(new URL('/login', request.url));
   }
 
-  if (user && isProtected) {
+  if (user && request.nextUrl.pathname.startsWith('/admin')) {
     const { data: profile, error: profileError } = await supabase
       .from('profiles')
-      .select('is_admin,is_active,center_id,centers(is_active)')
+      .select('is_admin,is_active')
       .eq('id', user.id)
       .maybeSingle();
     if (profileError || !profile) {
@@ -52,14 +52,13 @@ export async function middleware(request: NextRequest) {
       await supabase.auth.signOut();
       return NextResponse.redirect(new URL('/login?error=profile', request.url));
     }
-    const center = Array.isArray(profile.centers) ? profile.centers[0] : profile.centers;
 
-    if (profile.is_active !== true || (!profile.is_admin && (!profile.center_id || center?.is_active === false))) {
+    if (profile.is_active !== true) {
       await supabase.auth.signOut();
       return NextResponse.redirect(new URL('/login?inactive=1', request.url));
     }
 
-    if (request.nextUrl.pathname.startsWith('/admin') && !profile.is_admin) {
+    if (!profile.is_admin) {
       return NextResponse.redirect(new URL('/portal', request.url));
     }
   }

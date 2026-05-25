@@ -1,6 +1,7 @@
 import CheckoutForm from '@/components/checkout-form';
 import { requireUser } from '@/lib/auth';
 import { cartStorageKeyForUser } from '@/lib/cart';
+import { getCenterCartProducts } from '@/lib/center-cart-products';
 import { createClient } from '@/lib/supabase/server';
 
 export default async function CheckoutPage({
@@ -17,12 +18,23 @@ export default async function CheckoutPage({
       ? searchToast
       : '';
   const centerId = profile?.center_id ?? user.id;
-  const { data: locations } = await supabase
-    .from('center_locations')
-    .select('id,name,address1,address2,city,state,zip')
-    .eq('center_id', centerId)
-    .eq('is_active', true)
-    .order('name', { ascending: true });
+  const [{ data: locations }, cartProducts] = await Promise.all([
+    supabase
+      .from('center_locations')
+      .select('id,name,address1,address2,city,state,zip')
+      .eq('center_id', centerId)
+      .eq('is_active', true)
+      .order('name', { ascending: true }),
+    getCenterCartProducts(supabase, centerId),
+  ]);
 
-  return <CheckoutForm actionUrl="/portal/checkout/submit" cartStorageKey={cartStorageKey} initialToast={initialToast} locations={locations ?? []} />;
+  return (
+    <CheckoutForm
+      actionUrl="/portal/checkout/submit"
+      cartStorageKey={cartStorageKey}
+      initialToast={initialToast}
+      locations={locations ?? []}
+      products={cartProducts}
+    />
+  );
 }

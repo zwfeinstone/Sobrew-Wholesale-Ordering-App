@@ -1,7 +1,14 @@
 'use client';
 
-import { useRef, useState } from 'react';
-import { CheckoutCartField, CheckoutCartSummary } from '@/components/cart-client';
+import { type FormEvent, useEffect, useRef, useState } from 'react';
+import {
+  CART_UPDATED_EVENT,
+  CartCatalogSync,
+  CheckoutCartField,
+  CheckoutCartSummary,
+  readCartItemCount,
+  type CartProductSnapshot,
+} from '@/components/cart-client';
 import CheckoutSubmitButton from '@/components/checkout-submit-button';
 import StatusToast from '@/components/status-toast';
 import { RECURRING_FREQUENCY_OPTIONS } from '@/lib/recurring';
@@ -11,6 +18,7 @@ type CheckoutFormProps = {
   cartStorageKey: string;
   initialToast: '' | 'invalid_cart' | 'checkout_error' | 'location_required';
   locations: CheckoutLocationOption[];
+  products: CartProductSnapshot[];
 };
 
 type CheckoutLocationOption = {
@@ -31,20 +39,38 @@ function locationLabel(location: CheckoutLocationOption) {
   return address ? `${location.name || 'Delivery location'} - ${address}` : location.name || 'Delivery location';
 }
 
-export default function CheckoutForm({ actionUrl, cartStorageKey, initialToast, locations }: CheckoutFormProps) {
+export default function CheckoutForm({ actionUrl, cartStorageKey, initialToast, locations, products }: CheckoutFormProps) {
   const [submissionId] = useState(() => crypto.randomUUID());
+  const [cartItemCount, setCartItemCount] = useState(0);
+  const [isRecurring, setIsRecurring] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const submittingRef = useRef(false);
   const shouldSelectLocation = locations.length > 1;
+  const isCartEmpty = cartItemCount <= 0;
 
-  const handleSubmit = () => {
-    if (submittingRef.current) return;
+  useEffect(() => {
+    const syncCount = () => setCartItemCount(readCartItemCount(cartStorageKey));
+    syncCount();
+    window.addEventListener(CART_UPDATED_EVENT, syncCount as EventListener);
+    window.addEventListener('storage', syncCount);
+    return () => {
+      window.removeEventListener(CART_UPDATED_EVENT, syncCount as EventListener);
+      window.removeEventListener('storage', syncCount);
+    };
+  }, [cartStorageKey]);
+
+  const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
+    if (isCartEmpty || submittingRef.current) {
+      event.preventDefault();
+      return;
+    }
     submittingRef.current = true;
     setIsSubmitting(true);
   };
 
   return (
     <form action={actionUrl} method="post" className="checkout-form space-y-6" onSubmit={handleSubmit}>
+      <CartCatalogSync products={products} storageKey={cartStorageKey} />
       {initialToast === 'invalid_cart' ? (
         <StatusToast
           message="Your cart changed. Please review the items before placing this order."
@@ -75,8 +101,8 @@ export default function CheckoutForm({ actionUrl, cartStorageKey, initialToast, 
         <CheckoutCartSummary storageKey={cartStorageKey} />
         {shouldSelectLocation ? (
           <div className="subtle-panel checkout-location-panel space-y-2">
-            <label className="text-sm font-medium text-slate-700">Delivery location</label>
-            <select className="input checkout-location-select" name="center_location_id" required defaultValue="">
+            <label className="text-sm font-medium text-slate-700" htmlFor="checkout-delivery-location">Delivery location</label>
+            <select id="checkout-delivery-location" className="input checkout-location-select" name="center_location_id" required defaultValue="">
               <option value="" disabled>Choose a location</option>
               {locations.map((location) => (
                 <option key={location.id} value={location.id}>{locationLabel(location)}</option>
@@ -85,22 +111,31 @@ export default function CheckoutForm({ actionUrl, cartStorageKey, initialToast, 
           </div>
         ) : null}
         <div className="subtle-panel checkout-recurring-panel">
-          <label className="checkout-recurring-choice flex items-start gap-3 text-sm font-medium text-slate-800 sm:items-center">
-            <input className="checkout-recurring-checkbox" type="checkbox" name="is_recurring" />
+          <label className="checkout-recurring-choice flex items-start gap-3 text-sm font-medium text-slate-800 sm:items-center" htmlFor="checkout-is-recurring">
+            <input
+              id="checkout-is-recurring"
+              checked={isRecurring}
+              className="checkout-recurring-checkbox"
+              type="checkbox"
+              name="is_recurring"
+              onChange={(event) => setIsRecurring(event.target.checked)}
+            />
             <span>Make this order recurring</span>
           </label>
-          <div className="checkout-recurring-frequency mt-4">
-            <label className="mb-2 block text-sm font-medium text-slate-700">Recurring frequency</label>
-            <select className="input checkout-recurring-select" name="recurring_frequency" defaultValue="2_weeks">
-              {RECURRING_FREQUENCY_OPTIONS.map((option) => (
-                <option key={option.value} value={option.value}>{option.label}</option>
-              ))}
-            </select>
-          </div>
+          {isRecurring ? (
+            <div className="checkout-recurring-frequency mt-4">
+              <label className="mb-2 block text-sm font-medium text-slate-700" htmlFor="checkout-recurring-frequency">Recurring frequency</label>
+              <select id="checkout-recurring-frequency" className="input checkout-recurring-select" name="recurring_frequency" defaultValue="2_weeks">
+                {RECURRING_FREQUENCY_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>{option.label}</option>
+                ))}
+              </select>
+            </div>
+          ) : null}
         </div>
         <div className="checkout-field space-y-2">
-          <label className="text-sm font-medium text-slate-700">Notes</label>
-          <textarea className="input checkout-notes min-h-28" name="notes" placeholder="Delivery notes, special handling, or anything your team should know." />
+          <label className="text-sm font-medium text-slate-700" htmlFor="checkout-notes">Notes</label>
+          <textarea id="checkout-notes" className="input checkout-notes min-h-28" name="notes" placeholder="Delivery notes, special handling, or anything your team should know." />
         </div>
       </section>
       <section className="sticky-action-bar checkout-action-bar flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -111,7 +146,7 @@ export default function CheckoutForm({ actionUrl, cartStorageKey, initialToast, 
             An invoice will be sent when this order is processed. No payment is collected in the ordering app.
           </p>
         </div>
-        <CheckoutSubmitButton pending={isSubmitting} />
+        <CheckoutSubmitButton disabled={isCartEmpty} pending={isSubmitting} />
       </section>
     </form>
   );
