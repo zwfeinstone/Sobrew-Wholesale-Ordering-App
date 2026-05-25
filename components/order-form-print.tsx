@@ -17,6 +17,8 @@ type Center = {
   email: string;
 };
 
+const DEFAULT_PRODUCT_IMAGE_SRC = '/sobrew-product-default.png';
+
 export function OrderFormPrint({
   center,
   products
@@ -78,12 +80,8 @@ export function OrderFormPrint({
               {products.map((line) => (
                 <tr key={line.product_id}>
                   <td className="border p-2 align-middle">
-                    {line.image_url ? (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img src={line.image_url} alt={line.name} className="h-14 w-14 rounded object-cover" />
-                    ) : (
-                      <div className="h-14 w-14 rounded border" />
-                    )}
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={line.image_url || DEFAULT_PRODUCT_IMAGE_SRC} alt={line.name} className="h-14 w-14 rounded object-contain p-1" />
                   </td>
                   <td className="border p-2 align-middle">{line.name}</td>
                   <td className="border p-2 align-middle">{line.sku}</td>

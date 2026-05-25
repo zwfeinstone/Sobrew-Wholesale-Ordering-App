@@ -52,6 +52,7 @@ type RecurringOrderSummary = {
 
 const productNameCollator = new Intl.Collator('en-US', { numeric: true, sensitivity: 'base' });
 const shortDateFormatter = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+const DEFAULT_PRODUCT_IMAGE_SRC = '/sobrew-product-default.png';
 
 function normalizeCategoryFilter(value: string | string[] | undefined): ProductCategory | 'all' {
   return typeof value === 'string' && isProductCategory(value) ? value : 'all';
@@ -327,23 +328,18 @@ export default async function PortalPage({
           <div className="product-grid grid gap-5 md:grid-cols-2 xl:grid-cols-3">
             {group.products.map((product) => {
               const price = priceMap.get(product.id) ?? 0;
+              const productImageSrc = product.image_url || DEFAULT_PRODUCT_IMAGE_SRC;
               return (
                 <div key={product.id} className="product-card catalog-product-card flex h-full flex-col justify-between gap-5">
-                  {product.image_url ? (
-                    <div className="catalog-product-media">
-                      <Image
-                        src={product.image_url}
-                        alt={product.name}
-                        fill
-                        sizes="(max-width: 768px) 100vw, (max-width: 1280px) 50vw, 33vw"
-                        className="object-contain p-3"
-                      />
-                    </div>
-                  ) : (
-                    <div className="catalog-product-media catalog-product-media-placeholder" aria-hidden="true">
-                      <span>{product.name.slice(0, 2).toUpperCase()}</span>
-                    </div>
-                  )}
+                  <div className="catalog-product-media">
+                    <Image
+                      src={productImageSrc}
+                      alt={product.name}
+                      fill
+                      sizes="(max-width: 768px) 100vw, (max-width: 1280px) 50vw, 33vw"
+                      className="object-contain p-3"
+                    />
+                  </div>
                   <div className="catalog-product-copy space-y-4">
                     <div className="catalog-product-heading flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                       <div className="min-w-0">

@@ -451,6 +451,10 @@ form[data-admin-readonly='true'] input[type='submit'] {
   pointer-events: none;
 }
 
+.admin-mobile-section-select {
+  display: none;
+}
+
 .recurring-edit-panel {
   @apply rounded-xl border p-4;
   border-color: rgba(15, 118, 110, 0.14);
@@ -1179,8 +1183,12 @@ form[data-admin-readonly='true'] input[type='submit'] {
     @apply min-h-[2.5rem] w-auto px-3 py-2 text-xs;
   }
 
+  .admin-mobile-section-select {
+    @apply mt-2 block;
+  }
+
   .admin-nav {
-    @apply mt-2 grid grid-cols-2 gap-2 overflow-visible pb-0;
+    display: none;
   }
 
   .admin-nav .sidebar-link {
