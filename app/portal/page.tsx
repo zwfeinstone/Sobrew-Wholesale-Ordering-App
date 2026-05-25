@@ -204,7 +204,8 @@ export default async function PortalPage({
           <div className="portal-hero-intro max-w-2xl space-y-4">
             <span className="eyebrow">Sobrew Catalog</span>
             <div>
-              <h1 className="page-title portal-hero-title">Welcome{centerName ? `, ${centerName}` : ''}</h1>
+              <h1 className="page-title portal-hero-title">Welcome</h1>
+              {centerName ? <p className="portal-center-name mt-2 text-lg font-semibold text-slate-800">{centerName}</p> : null}
               <p className="page-subtitle portal-hero-description mt-3">Build your next wholesale order, review recurring shipments, and keep your center stocked with coffee that supports recovery.</p>
             </div>
           </div>
@@ -282,15 +283,11 @@ export default async function PortalPage({
             {searchQuery ? <Link className="btn-secondary shrink-0" href={buildCatalogHref(categoryFilter)}>Clear</Link> : null}
           </form>
         </div>
-        <div className="flex gap-2 overflow-x-auto pb-1 [scrollbar-width:none] [-ms-overflow-style:none] sm:flex-wrap sm:overflow-visible sm:pb-0">
+        <div className="catalog-category-filter-grid">
           {categoryFilters.map((category) => (
             <Link
               key={category.value}
-              className={`shrink-0 rounded-full border px-3 py-2 text-sm font-semibold transition-all duration-200 ${
-                categoryFilter === category.value
-                  ? 'border-teal-200 bg-teal-50 text-teal-800'
-                  : 'border-slate-200 bg-white/70 text-slate-600 hover:border-slate-300 hover:bg-white'
-              }`}
+              className={`catalog-category-filter-pill ${categoryFilter === category.value ? 'is-active' : ''}`}
               href={buildCatalogHref(category.value, searchQuery)}
             >
               {category.label} ({category.count})
@@ -339,7 +336,7 @@ export default async function PortalPage({
                         alt={product.name}
                         fill
                         sizes="(max-width: 768px) 100vw, (max-width: 1280px) 50vw, 33vw"
-                        className="object-cover"
+                        className="object-contain p-3"
                       />
                     </div>
                   ) : (

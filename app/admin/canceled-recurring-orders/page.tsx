@@ -1,6 +1,18 @@
 import Link from 'next/link';
 import { createClient } from '@/lib/supabase/server';
 
+const adminDateFormatter = new Intl.DateTimeFormat('en-US', {
+  month: 'short',
+  day: 'numeric',
+  year: 'numeric',
+});
+
+function formatAdminDate(value: string | null) {
+  if (!value) return 'Never';
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? 'Unknown' : adminDateFormatter.format(date);
+}
+
 export default async function AdminCanceledRecurringOrdersPage() {
   const supabase = await createClient();
 
@@ -46,10 +58,10 @@ export default async function AdminCanceledRecurringOrdersPage() {
         return (
           <div key={order.id} className="card space-y-3">
             <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
-              <div>
+              <div className="min-w-0">
                 <div className="text-sm text-slate-500">Center</div>
-                <div className="font-medium">{order.centers?.name || 'Unknown center'}</div>
-                <div className="text-sm text-slate-600">{order.profiles?.email || 'No login email on file'}</div>
+                <div className="break-words font-medium">{order.centers?.name || 'Unknown center'}</div>
+                <div className="break-all text-sm text-slate-600">{order.profiles?.email || 'No login email on file'}</div>
               </div>
               <Link className="text-sm text-slate-700 underline" href={`/admin/users/${order.center_id}`}>
                 View center profile
@@ -67,11 +79,11 @@ export default async function AdminCanceledRecurringOrdersPage() {
               </div>
               <div>
                 <div className="text-slate-500">Created</div>
-                <div>{new Date(order.created_at).toLocaleDateString()}</div>
+                <div>{formatAdminDate(order.created_at)}</div>
               </div>
               <div>
                 <div className="text-slate-500">Last generated</div>
-                <div>{order.last_generated_at ? new Date(order.last_generated_at).toLocaleDateString() : 'Never'}</div>
+                <div>{formatAdminDate(order.last_generated_at)}</div>
               </div>
             </div>
 
@@ -80,7 +92,7 @@ export default async function AdminCanceledRecurringOrdersPage() {
               {!items.length ? <div className="text-slate-600">No items found</div> : null}
               {items.map((item) => (
                 <div key={item.id} className="text-slate-700">
-                  {item.name} × {item.qty}
+                  {item.name} x {item.qty}
                 </div>
               ))}
             </div>

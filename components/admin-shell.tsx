@@ -1,10 +1,11 @@
 import Image from 'next/image';
 import { ReactNode } from 'react';
 import { ActiveNavLink } from '@/components/active-nav-link';
+import { AdminReadOnlyGuard } from '@/components/admin-read-only-guard';
 import { AdminRealtimeSync } from '@/components/admin-realtime-sync';
 import { LogoutButton } from '@/components/logout-button';
 
-export function AdminShell({ children, newOrders }: { children: ReactNode; newOrders: number }) {
+export function AdminShell({ children, canWrite, newOrders }: { children: ReactNode; canWrite: boolean; newOrders: number }) {
   const links = [
     { name: 'Dashboard', href: '/admin', exact: true },
     { name: 'Sales', href: '/admin/sales', exact: true },
@@ -20,13 +21,14 @@ export function AdminShell({ children, newOrders }: { children: ReactNode; newOr
     { name: 'Settings', href: '/admin/settings' }
   ];
   return (
-    <div className="admin-shell min-h-screen md:flex">
+    <div className="admin-shell min-h-screen md:flex" data-admin-can-write={canWrite ? 'true' : 'false'}>
       <AdminRealtimeSync />
+      <AdminReadOnlyGuard canWrite={canWrite} />
       <aside className="admin-sidebar border-b border-white/40 bg-white/70 p-3 backdrop-blur-xl sm:p-4 md:min-h-screen md:w-72 md:border-b-0 md:border-r md:px-5 md:py-6">
         <div className="admin-summary-card card space-y-6 p-4 sm:p-5">
           <div className="admin-brand flex items-start gap-3">
             <div className="admin-brand-mark brand-mark h-14 w-14">
-              <Image src="/sobrew-logo.png" alt="Sobrew logo" fill sizes="(max-width: 767px) 44px, 56px" className="object-contain" />
+              <Image src="/sobrew-logo.png" alt="Sobrew logo" fill sizes="(max-width: 767px) 44px, 56px" className="object-contain" priority />
             </div>
             <div className="admin-brand-copy min-w-0">
               <span className="eyebrow">Admin Console</span>
@@ -56,7 +58,14 @@ export function AdminShell({ children, newOrders }: { children: ReactNode; newOr
         </nav>
       </aside>
       <main className="admin-main min-w-0 flex-1 px-3 py-5 sm:px-4 md:px-8 md:py-8">
-        <div className="mx-auto max-w-6xl">{children}</div>
+        <div className="mx-auto max-w-6xl">
+          {!canWrite ? (
+            <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-800">
+              Read-only admin access. Only zach@sobrew.com can create, edit, archive, or delete admin data.
+            </div>
+          ) : null}
+          {children}
+        </div>
       </main>
     </div>
   );

@@ -119,6 +119,7 @@ export function UserWizard({ products }: { products: Product[] }) {
             required
             minLength={8}
             placeholder="Temporary password"
+            autoComplete="new-password"
             value={state.password}
             onChange={(event) => setState({ ...state, password: event.target.value })}
           />

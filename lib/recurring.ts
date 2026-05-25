@@ -38,6 +38,9 @@ const recurringDatePartsFormatter = new Intl.DateTimeFormat('en-US', {
 
 const recurringDateDisplayFormatter = new Intl.DateTimeFormat('en-US', {
   timeZone: 'UTC',
+  month: 'short',
+  day: 'numeric',
+  year: 'numeric',
 });
 
 function calendarDateFor(value: string | number | Date | null | undefined) {
