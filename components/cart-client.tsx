@@ -1,10 +1,11 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import StatusToast from '@/components/status-toast';
 import { LEGACY_CART_STORAGE_KEY } from '@/lib/cart';
 
-type Item = { product_id: string; name: string; price_cents: number; qty: number };
+export type Item = { product_id: string; name: string; price_cents: number; qty: number };
+export type CartProductSnapshot = Omit<Item, 'qty'>;
 export const CART_UPDATED_EVENT = 'sobrew-cart-updated';
 
 function cartTotals(items: Item[]) {
@@ -27,10 +28,35 @@ function mergeCartItems(existing: Item[], incoming: Item[]) {
   return next;
 }
 
-function readCartItems(storageKey: string) {
+function normalizeCartItem(rawItem: unknown): Item | null {
+  if (!rawItem || typeof rawItem !== 'object') return null;
+  const item = rawItem as Partial<Item>;
+  const productId = typeof item.product_id === 'string' ? item.product_id.trim() : '';
+  const name = typeof item.name === 'string' ? item.name.trim() : '';
+  const priceCents = Number(item.price_cents);
+  const qty = Number(item.qty);
+
+  if (!productId || !Number.isInteger(qty) || qty <= 0 || !Number.isFinite(priceCents) || priceCents < 0) {
+    return null;
+  }
+
+  return {
+    product_id: productId,
+    name: name || 'Unknown product',
+    price_cents: Math.trunc(priceCents),
+    qty,
+  };
+}
+
+function normalizeCartItems(rawItems: unknown) {
+  if (!Array.isArray(rawItems)) return [];
+  return rawItems.map(normalizeCartItem).filter((item): item is Item => Boolean(item));
+}
+
+export function readCartItems(storageKey: string) {
   try {
     localStorage.removeItem(LEGACY_CART_STORAGE_KEY);
-    return JSON.parse(localStorage.getItem(storageKey) ?? '[]') as Item[];
+    return normalizeCartItems(JSON.parse(localStorage.getItem(storageKey) ?? '[]'));
   } catch {
     return [];
   }
@@ -48,8 +74,59 @@ function clearCartItems(storageKey: string) {
   window.dispatchEvent(new CustomEvent(CART_UPDATED_EVENT));
 }
 
+function reconcileCartItems(items: Item[], products: CartProductSnapshot[]) {
+  const productMap = new Map(products.map((product) => [product.product_id, product]));
+  let changed = false;
+  const next: Item[] = [];
+
+  for (const item of items) {
+    const product = productMap.get(item.product_id);
+    if (!product) {
+      changed = true;
+      continue;
+    }
+
+    const syncedItem = {
+      ...item,
+      name: product.name,
+      price_cents: product.price_cents,
+    };
+    if (syncedItem.name !== item.name || syncedItem.price_cents !== item.price_cents) {
+      changed = true;
+    }
+    next.push(syncedItem);
+  }
+
+  return { items: next, changed, removedCount: items.length - next.length };
+}
+
 export function readCartItemCount(storageKey: string) {
   return readCartItems(storageKey).reduce((sum, item) => sum + Math.max(0, Number(item.qty) || 0), 0);
+}
+
+export function CartCatalogSync({ products, storageKey }: { products: CartProductSnapshot[]; storageKey: string }) {
+  const [syncMessage, setSyncMessage] = useState('');
+  const productSignature = useMemo(
+    () => products.map((product) => `${product.product_id}:${product.price_cents}:${product.name}`).join('|'),
+    [products]
+  );
+
+  useEffect(() => {
+    const current = readCartItems(storageKey);
+    if (!current.length || !products.length) return;
+
+    const reconciled = reconcileCartItems(current, products);
+    if (!reconciled.changed) return;
+
+    saveCartItems(storageKey, reconciled.items);
+    setSyncMessage(
+      reconciled.removedCount > 0
+        ? 'Your cart was updated to remove unavailable products and refresh current pricing.'
+        : 'Your cart pricing was refreshed.'
+    );
+  }, [productSignature, products, storageKey]);
+
+  return syncMessage ? <StatusToast message={syncMessage} tone="success" /> : null;
 }
 
 export function AddToCartButton({ product, storageKey }: { product: Omit<Item, 'qty'>; storageKey: string }) {

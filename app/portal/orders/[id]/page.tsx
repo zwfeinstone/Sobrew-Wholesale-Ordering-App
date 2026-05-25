@@ -1,6 +1,5 @@
-import Link from 'next/link';
 import { notFound } from 'next/navigation';
-import { ClearCart } from '@/components/cart-client';
+import { ClearCart, ReorderButton } from '@/components/cart-client';
 import { OrderStatusBadge, OrderStatusTimeline } from '@/components/order-status';
 import StatusToast from '@/components/status-toast';
 import { requireUser } from '@/lib/auth';
@@ -35,13 +34,25 @@ export default async function OrderDetail({
     toast === 'order_placed_recurring_error';
   const { data: order } = await supabase.from('orders').select('*').eq('id', params.id).eq('center_id', centerId).single();
   if (!order) return notFound();
-  const { data: items } = await supabase.from('order_items').select('id,qty,line_total_cents,product_id,product_name_snapshot').eq('order_id', order.id);
+  const { data: items } = await supabase.from('order_items').select('id,qty,line_total_cents,product_id,product_name_snapshot,unit_price_cents').eq('order_id', order.id);
 
   const productIds = [...new Set((items ?? []).map((item: any) => item.product_id))];
-  const { data: products } = productIds.length
-    ? await supabaseAdmin.from('products').select('id,name').in('id', productIds)
-    : { data: [] as any[] };
+  const [{ data: products }, { data: currentPrices }] = await Promise.all([
+    productIds.length
+      ? supabaseAdmin.from('products').select('id,name').in('id', productIds)
+      : Promise.resolve({ data: [] as any[] }),
+    productIds.length
+      ? supabase.from('user_product_prices').select('product_id,price_cents').eq('center_id', centerId).in('product_id', productIds)
+      : Promise.resolve({ data: [] as any[] }),
+  ]);
   const productNameById = new Map((products ?? []).map((p: any) => [p.id, p.name]));
+  const currentPriceById = new Map((currentPrices ?? []).map((row) => [row.product_id, row.price_cents]));
+  const reorderItems = (items ?? []).map((item: any) => ({
+    product_id: item.product_id,
+    name: productNameById.get(item.product_id) || item.product_name_snapshot || 'Unknown product',
+    price_cents: currentPriceById.get(item.product_id) ?? item.unit_price_cents ?? 0,
+    qty: item.qty,
+  }));
 
   return (
     <div className="space-y-6">
@@ -54,7 +65,7 @@ export default async function OrderDetail({
           <span className="eyebrow">Order Details</span>
           <OrderStatusBadge status={order.status} />
         </div>
-        <h1 className="page-title mt-4">Your order is {order.status.toLowerCase()}.</h1>
+        <h1 className="page-title mt-4">Your order is {(order.status ?? 'New').toLowerCase()}.</h1>
         <p className="page-subtitle mt-3">Review the items in this order and head back to the catalog whenever you are ready to reorder.</p>
         <p className="mt-4 text-sm font-medium text-slate-600">Placed {formatOrderTimestamp(order.created_at)}</p>
         <div className="mt-6">
@@ -75,7 +86,13 @@ export default async function OrderDetail({
           <p className="text-sm uppercase tracking-[0.18em] text-slate-500">Subtotal</p>
           <p className="mt-2 text-3xl font-semibold text-slate-950">{usd(order.subtotal_cents)}</p>
         </div>
-        <Link className="btn-primary inline-flex w-full sm:w-auto" href="/portal">Reorder</Link>
+        <ReorderButton
+          items={reorderItems}
+          storageKey={cartStorageKey}
+          label="Add order to cart"
+          toastMessage="Order added to cart."
+          className="btn-primary inline-flex w-full sm:w-auto"
+        />
       </div>
     </div>
   );

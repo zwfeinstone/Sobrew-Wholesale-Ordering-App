@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import Image from 'next/image';
 import { requireUser } from '@/lib/auth';
 import { cartStorageKeyForUser } from '@/lib/cart';
 import { nextRecurringOrderDate } from '@/lib/recurring';
@@ -13,7 +14,7 @@ import {
 } from '@/lib/product-categories';
 import { createClient } from '@/lib/supabase/server';
 import { usd } from '@/lib/utils';
-import { AddToCartQuantityControls, CartPreviewBar, CartSummaryMetric, ReorderButton } from '@/components/cart-client';
+import { AddToCartQuantityControls, CartCatalogSync, CartPreviewBar, CartSummaryMetric, ReorderButton } from '@/components/cart-client';
 
 type PortalProduct = {
   id: string;
@@ -56,6 +57,18 @@ function normalizeCategoryFilter(value: string | string[] | undefined): ProductC
   return typeof value === 'string' && isProductCategory(value) ? value : 'all';
 }
 
+function normalizeSearch(value: string | string[] | undefined) {
+  return typeof value === 'string' ? value.trim().slice(0, 80) : '';
+}
+
+function productMatchesSearch(product: PortalProduct, search: string) {
+  if (!search) return true;
+  const query = search.toLowerCase();
+  return [product.name, product.description, productCategoryLabel(productCategoryGroupKey(product.category))]
+    .filter(Boolean)
+    .some((value) => value?.toLowerCase().includes(query));
+}
+
 function sortProducts(products: PortalProduct[]) {
   return [...products].sort((a, b) => {
     const categoryComparison = productCategorySortRank(a.category) - productCategorySortRank(b.category);
@@ -78,8 +91,12 @@ function groupProductsByCategory(products: PortalProduct[]) {
   return groups;
 }
 
-function buildCatalogHref(category: ProductCategory | 'all') {
-  return category === 'all' ? '/portal' : `/portal?category=${category}`;
+function buildCatalogHref(category: ProductCategory | 'all', search = '') {
+  const query = new URLSearchParams();
+  if (category !== 'all') query.set('category', category);
+  if (search) query.set('q', search);
+  const queryString = query.toString();
+  return queryString ? `/portal?${queryString}` : '/portal';
 }
 
 function formatShortDate(value: string | null | undefined) {
@@ -109,6 +126,7 @@ export default async function PortalPage({
   const centerId = profile?.center_id ?? user.id;
   const cartStorageKey = cartStorageKeyForUser(user.id);
   const categoryFilter = normalizeCategoryFilter(searchParams?.category);
+  const searchQuery = normalizeSearch(searchParams?.q);
 
   const [{ data: assigned }, { data: prices }, { data: recentOrderRows }, { data: recurringOrderRows }] = await Promise.all([
     supabase.from('user_products').select('product_id').eq('center_id', centerId),
@@ -118,17 +136,19 @@ export default async function PortalPage({
   ]);
 
   const productIds = (assigned ?? []).map((row) => row.product_id);
-  const { data: products } = productIds.length
-    ? await supabase.from('products').select('id,name,description,image_url,category').in('id', productIds).eq('active', true)
-    : { data: [] as any[] };
   const recentOrders = (recentOrderRows ?? []) as RecentOrder[];
   const recentOrderIds = recentOrders.map((order) => order.id);
-  const { data: recentOrderItems } = recentOrderIds.length
-    ? await supabase
-        .from('order_items')
-        .select('id,order_id,product_id,product_name_snapshot,qty,unit_price_cents')
-        .in('order_id', recentOrderIds)
-    : { data: [] as any[] };
+  const [{ data: products }, { data: recentOrderItems }] = await Promise.all([
+    productIds.length
+      ? supabase.from('products').select('id,name,description,image_url,category').in('id', productIds).eq('active', true)
+      : Promise.resolve({ data: [] as any[] }),
+    recentOrderIds.length
+      ? supabase
+          .from('order_items')
+          .select('id,order_id,product_id,product_name_snapshot,qty,unit_price_cents')
+          .in('order_id', recentOrderIds)
+      : Promise.resolve({ data: [] as any[] }),
+  ]);
 
   const priceMap = new Map((prices ?? []).map((row) => [row.product_id, row.price_cents]));
   const availableProducts = (products ?? []) as PortalProduct[];
@@ -157,21 +177,28 @@ export default async function PortalPage({
     .filter((date): date is Date => Boolean(date))
     .sort((a, b) => a.getTime() - b.getTime());
   const centerName = !profile?.is_admin ? profile?.center?.name?.trim() : '';
+  const searchedProducts = availableProducts.filter((product) => productMatchesSearch(product, searchQuery));
   const filteredProducts = categoryFilter === 'all'
-    ? availableProducts
-    : availableProducts.filter((product) => product.category === categoryFilter);
+    ? searchedProducts
+    : searchedProducts.filter((product) => product.category === categoryFilter);
   const groupedProducts = groupProductsByCategory(filteredProducts);
+  const cartProducts = availableProducts.map((product) => ({
+    product_id: product.id,
+    name: product.name,
+    price_cents: priceMap.get(product.id) ?? 0,
+  }));
   const categoryFilters = [
-    { value: 'all' as const, label: 'All', count: availableProducts.length },
+    { value: 'all' as const, label: 'All', count: searchedProducts.length },
     ...PRODUCT_CATEGORY_OPTIONS.map((category) => ({
       value: category.value,
       label: category.label,
-      count: availableProducts.filter((product) => product.category === category.value).length,
+      count: searchedProducts.filter((product) => product.category === category.value).length,
     })),
   ];
 
   return (
     <div className="space-y-6">
+      <CartCatalogSync products={cartProducts} storageKey={cartStorageKey} />
       <section className="panel portal-hero overflow-hidden">
         <div className="portal-hero-grid grid gap-6 xl:grid-cols-[minmax(0,1fr)_minmax(20rem,0.92fr)] xl:items-center">
           <div className="portal-hero-intro max-w-2xl space-y-4">
@@ -194,7 +221,7 @@ export default async function PortalPage({
             </div>
             <div className="stat-card">
               <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Available Products</p>
-              <p className="mt-2 text-3xl font-semibold text-slate-950">{products?.length ?? 0}</p>
+              <p className="mt-2 text-3xl font-semibold text-slate-950">{availableProducts.length}</p>
             </div>
             <CartSummaryMetric storageKey={cartStorageKey} />
           </div>
@@ -240,7 +267,21 @@ export default async function PortalPage({
       ) : null}
 
       <section className="catalog-toolbar space-y-3">
-        <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Browse by product type</p>
+        <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(18rem,24rem)] lg:items-end">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Browse by product type</p>
+            <p className="mt-2 text-sm text-slate-500">
+              {searchQuery ? `${filteredProducts.length} result${filteredProducts.length === 1 ? '' : 's'} for "${searchQuery}"` : 'Search or filter your assigned catalog.'}
+            </p>
+          </div>
+          <form action="/portal" className="catalog-search-form flex flex-col gap-2 sm:flex-row">
+            {categoryFilter !== 'all' ? <input type="hidden" name="category" value={categoryFilter} /> : null}
+            <label className="sr-only" htmlFor="catalog-search">Search products</label>
+            <input id="catalog-search" className="input" name="q" type="search" defaultValue={searchQuery} placeholder="Search products" />
+            <button className="btn-secondary shrink-0" type="submit">Search</button>
+            {searchQuery ? <Link className="btn-secondary shrink-0" href={buildCatalogHref(categoryFilter)}>Clear</Link> : null}
+          </form>
+        </div>
         <div className="flex gap-2 overflow-x-auto pb-1 [scrollbar-width:none] [-ms-overflow-style:none] sm:flex-wrap sm:overflow-visible sm:pb-0">
           {categoryFilters.map((category) => (
             <Link
@@ -250,7 +291,7 @@ export default async function PortalPage({
                   ? 'border-teal-200 bg-teal-50 text-teal-800'
                   : 'border-slate-200 bg-white/70 text-slate-600 hover:border-slate-300 hover:bg-white'
               }`}
-              href={buildCatalogHref(category.value)}
+              href={buildCatalogHref(category.value, searchQuery)}
             >
               {category.label} ({category.count})
             </Link>
@@ -261,14 +302,21 @@ export default async function PortalPage({
       {!filteredProducts.length ? (
         <div className="empty-state">
           <p className="text-lg font-semibold text-slate-950">
-            {availableProducts.length ? 'No products in this category yet.' : 'No products are assigned yet.'}
+            {searchQuery
+              ? 'No products match your search.'
+              : availableProducts.length
+              ? 'No products in this category yet.'
+              : 'No products are assigned yet.'}
           </p>
           <p className="mt-2 text-sm text-slate-500">
-            {availableProducts.length
+            {searchQuery
+              ? 'Try a different search or clear the current search.'
+              : availableProducts.length
               ? 'Try another product type or browse the full catalog.'
               : 'Ask your Sobrew admin to assign products and pricing to this center.'}
           </p>
-          {availableProducts.length && categoryFilter !== 'all' ? <Link href="/portal" className="btn-secondary mt-4 inline-flex">Browse all products</Link> : null}
+          {searchQuery ? <Link href={buildCatalogHref(categoryFilter)} className="btn-secondary mt-4 inline-flex">Clear search</Link> : null}
+          {!searchQuery && availableProducts.length && categoryFilter !== 'all' ? <Link href="/portal" className="btn-secondary mt-4 inline-flex">Browse all products</Link> : null}
         </div>
       ) : null}
       {groupedProducts.map((group) => (
@@ -284,6 +332,21 @@ export default async function PortalPage({
               const price = priceMap.get(product.id) ?? 0;
               return (
                 <div key={product.id} className="product-card catalog-product-card flex h-full flex-col justify-between gap-5">
+                  {product.image_url ? (
+                    <div className="catalog-product-media">
+                      <Image
+                        src={product.image_url}
+                        alt={product.name}
+                        fill
+                        sizes="(max-width: 768px) 100vw, (max-width: 1280px) 50vw, 33vw"
+                        className="object-cover"
+                      />
+                    </div>
+                  ) : (
+                    <div className="catalog-product-media catalog-product-media-placeholder" aria-hidden="true">
+                      <span>{product.name.slice(0, 2).toUpperCase()}</span>
+                    </div>
+                  )}
                   <div className="catalog-product-copy space-y-4">
                     <div className="catalog-product-heading flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                       <div className="min-w-0">

@@ -110,8 +110,10 @@ export default function LoginPage({ searchParams }: { searchParams: Record<strin
             {profileError ? <p className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">We couldn&apos;t load your account profile. Please try again in a moment or contact Sobrew if it keeps happening.</p> : null}
             {inactive ? <p className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">Your account is inactive. Please contact Sobrew for access.</p> : null}
             <div className="space-y-3">
-              <input className="input" name="email" type="email" autoComplete="email" required placeholder="Email address" />
-              <input className="input" name="password" type="password" autoComplete="current-password" required placeholder="Password" />
+              <label className="sr-only" htmlFor="login-email">Email address</label>
+              <input id="login-email" className="input" name="email" type="email" autoComplete="email" required placeholder="Email address" />
+              <label className="sr-only" htmlFor="login-password">Password</label>
+              <input id="login-password" className="input" name="password" type="password" autoComplete="current-password" required placeholder="Password" />
             </div>
             <LoginSubmitButton />
           </form>

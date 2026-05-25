@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
+import ConfirmSubmitButton from '@/components/confirm-submit-button';
 import { requireUser } from '@/lib/auth';
 import { formatNextRecurringOrderDate, isRecurringFrequency, labelForRecurringFrequency, RECURRING_FREQUENCY_OPTIONS } from '@/lib/recurring';
 import { createClient } from '@/lib/supabase/server';
@@ -380,7 +381,12 @@ export default async function RecurringOrdersPage({ searchParams }: { searchPara
                 <form action={setRecurringStatus} className="w-full sm:w-auto">
                   <input type="hidden" name="recurring_order_id" value={order.id} />
                   <input type="hidden" name="status" value="canceled" />
-                  <button className="recurring-cancel-button w-full rounded-full border border-rose-200 px-4 py-2.5 text-sm font-semibold text-rose-700 transition-all duration-200 hover:bg-rose-50" type="submit">Cancel schedule</button>
+                  <ConfirmSubmitButton
+                    className="recurring-cancel-button w-full rounded-full border border-rose-200 px-4 py-2.5 text-sm font-semibold text-rose-700 transition-all duration-200 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-70"
+                    confirmMessage="Cancel this recurring shipment schedule? This stops future automatic orders for this schedule."
+                    label="Cancel schedule"
+                    pendingLabel="Canceling..."
+                  />
                 </form>
               </div>
             </div>
