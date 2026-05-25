@@ -16,7 +16,7 @@ export default async function PortalLayout({ children }: { children: React.React
         <div className="mx-auto flex max-w-6xl items-center justify-between gap-3">
           <div className="flex min-w-0 items-center gap-2.5 sm:gap-3">
             <div className="brand-mark h-10 w-10 sm:h-14 sm:w-14">
-              <Image src="/sobrew-logo.png" alt="Sobrew logo" fill sizes="(max-width: 640px) 40px, 56px" className="object-contain" />
+              <Image src="/sobrew-logo.png" alt="Sobrew logo" fill sizes="(max-width: 640px) 40px, 56px" className="object-contain" priority />
             </div>
             <div className="min-w-0">
               <span className="eyebrow portal-header-eyebrow">Wholesale Portal</span>

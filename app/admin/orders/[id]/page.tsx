@@ -113,8 +113,8 @@ export default async function AdminOrderDetail({
         </div>
         <h1 className="page-title mt-4">Order overview</h1>
         <p className="page-subtitle mt-3">Update fulfillment status, verify shipping details, and review the ordered products below.</p>
-        <p className="mt-4 text-sm font-medium text-slate-600">Center {order.centers?.name || 'Unknown center'}</p>
-        <p className="mt-1 text-sm font-medium text-slate-600">Submitted by {order.profiles?.email || 'Unknown login'}</p>
+        <p className="mt-4 break-words text-sm font-medium text-slate-600">Center {order.centers?.name || 'Unknown center'}</p>
+        <p className="mt-1 break-all text-sm font-medium text-slate-600">Submitted by {order.profiles?.email || 'Unknown login'}</p>
         <p className="mt-4 text-sm font-medium text-slate-600">Placed {formatOrderTimestamp(order.created_at)}</p>
         {order.archived_at ? <p className="mt-2 text-sm font-medium text-slate-600">Archived {formatOrderTimestamp(order.archived_at)}</p> : null}
         <div className="mt-6">
@@ -168,7 +168,7 @@ export default async function AdminOrderDetail({
       <div className="card space-y-3">
         {items?.map((i: any) => (
           <div key={i.id} className="flex flex-col gap-2 border-b border-slate-100 pb-3 last:border-b-0 last:pb-0 sm:flex-row sm:items-center sm:justify-between">
-            <span>{productNameById.get(i.product_id) || i.product_name_snapshot || 'Unknown product'} x {i.qty}</span>
+            <span className="break-words">{productNameById.get(i.product_id) || i.product_name_snapshot || 'Unknown product'} x {i.qty}</span>
           </div>
         ))}
       </div>

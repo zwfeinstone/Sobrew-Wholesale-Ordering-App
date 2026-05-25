@@ -74,11 +74,11 @@ export default async function PortalSettingsPage({
         <form action={updatePassword} className="space-y-4">
           <div className="space-y-2">
             <label className="text-sm font-medium text-slate-700" htmlFor="settings-password">New password</label>
-            <input id="settings-password" className="input" name="password" type="password" minLength={8} required placeholder="Enter a new password" />
+            <input id="settings-password" className="input" name="password" type="password" minLength={8} required placeholder="Enter a new password" autoComplete="new-password" />
           </div>
           <div className="space-y-2">
             <label className="text-sm font-medium text-slate-700" htmlFor="settings-confirm-password">Confirm new password</label>
-            <input id="settings-confirm-password" className="input" name="confirm_password" type="password" minLength={8} required placeholder="Confirm your new password" />
+            <input id="settings-confirm-password" className="input" name="confirm_password" type="password" minLength={8} required placeholder="Confirm your new password" autoComplete="new-password" />
           </div>
           <button className="btn-primary w-full sm:w-auto" type="submit">Save new password</button>
         </form>

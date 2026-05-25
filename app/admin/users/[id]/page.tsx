@@ -375,7 +375,7 @@ export default async function UserDetailPage({
 
         <section className="panel">
           <span className="eyebrow">Center Admin</span>
-          <h1 className="page-title mt-4">{center.name}</h1>
+          <h1 className="page-title mt-4 break-words">{center.name}</h1>
           <p className="page-subtitle mt-3">Manage shared pricing, add or remove center logins, and keep center history intact even when staff changes.</p>
         </section>
 
@@ -492,7 +492,7 @@ export default async function UserDetailPage({
             <input type="hidden" name="center_id" value={center.id} />
             <input className="input" name="full_name" placeholder="Login name" />
             <input className="input" name="email" type="email" required placeholder="Email address" />
-            <input className="input" name="password" type="password" minLength={8} required placeholder="Temporary password" />
+            <input className="input" name="password" type="password" minLength={8} required placeholder="Temporary password" autoComplete="new-password" />
             <button className="btn-primary w-full md:w-auto" type="submit">Add Login</button>
           </form>
         </section>
@@ -513,7 +513,7 @@ export default async function UserDetailPage({
                 <input type="hidden" name="center_id" value={center.id} />
                 <input type="hidden" name="member_id" value={member.id} />
                 <input className="input" name="full_name" defaultValue={member.full_name ?? ''} placeholder="Login name" />
-                <input className="input" name="password" type="password" minLength={8} placeholder="Leave blank to keep password" />
+                <input className="input" name="password" type="password" minLength={8} placeholder="Leave blank to keep password" autoComplete="new-password" />
                 <label className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-white/60 px-4 py-3 text-sm font-medium text-slate-700">
                   <input type="checkbox" name="is_active" defaultChecked={member.is_active} />
                   Active
@@ -542,7 +542,7 @@ export default async function UserDetailPage({
       <input type="hidden" name="id" value={adminUser.id} />
       <section className="panel">
         <span className="eyebrow">Admin Account</span>
-        <h1 className="page-title mt-4">{adminUser.email}</h1>
+        <h1 className="page-title mt-4 break-all">{adminUser.email}</h1>
         <p className="page-subtitle mt-3">Update admin account details and reset passwords without affecting center ownership records.</p>
       </section>
       <section className="card space-y-4">
@@ -550,7 +550,7 @@ export default async function UserDetailPage({
         <textarea className="input min-h-28" name="notes" defaultValue={adminUser.notes ?? ''} />
         <div className="space-y-2">
           <label className="text-sm font-medium text-slate-700">Set new password</label>
-          <input className="input" name="password" type="password" minLength={8} placeholder="Leave blank to keep current password" />
+          <input className="input" name="password" type="password" minLength={8} placeholder="Leave blank to keep current password" autoComplete="new-password" />
         </div>
         <label className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-white/60 px-4 py-3 text-sm font-medium text-slate-700">
           <input type="checkbox" name="is_active" defaultChecked={adminUser.is_active} />

@@ -14,3 +14,7 @@ export function logAuthProfileIssue(context: string, error: SupabaseLikeError | 
     hint: error?.hint,
   });
 }
+
+export function isAuthSessionMissing(error: SupabaseLikeError | null | undefined) {
+  return error?.message === 'Auth session missing!' || error?.code === 'session_not_found';
+}

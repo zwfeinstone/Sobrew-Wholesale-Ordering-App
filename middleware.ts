@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { createServerClient, type CookieOptions } from '@supabase/ssr';
-import { logAuthProfileIssue } from './lib/auth-diagnostics';
+import { isAuthSessionMissing, logAuthProfileIssue } from './lib/auth-diagnostics';
 
 export async function middleware(request: NextRequest) {
   let response = NextResponse.next({ request: { headers: request.headers } });
@@ -33,7 +33,9 @@ export async function middleware(request: NextRequest) {
 
   const isProtected = request.nextUrl.pathname.startsWith('/portal') || request.nextUrl.pathname.startsWith('/admin');
   if (isProtected && userError) {
-    logAuthProfileIssue('Middleware auth user lookup failed', userError);
+    if (!isAuthSessionMissing(userError)) {
+      logAuthProfileIssue('Middleware auth user lookup failed', userError);
+    }
     return NextResponse.redirect(new URL('/login', request.url));
   }
 
