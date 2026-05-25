@@ -1,6 +1,7 @@
 import Image from 'next/image';
 import { ReactNode } from 'react';
 import { ActiveNavLink } from '@/components/active-nav-link';
+import { AdminMobileSectionSelect } from '@/components/admin-mobile-section-select';
 import { AdminReadOnlyGuard } from '@/components/admin-read-only-guard';
 import { AdminRealtimeSync } from '@/components/admin-realtime-sync';
 import { LogoutButton } from '@/components/logout-button';
@@ -28,7 +29,7 @@ export function AdminShell({ children, canWrite, newOrders }: { children: ReactN
         <div className="admin-summary-card card space-y-6 p-4 sm:p-5">
           <div className="admin-brand flex items-start gap-3">
             <div className="admin-brand-mark brand-mark h-14 w-14">
-              <Image src="/sobrew-logo.png" alt="Sobrew logo" fill sizes="(max-width: 767px) 44px, 56px" className="object-contain" priority />
+              <Image src="/sobrew-logo.png" alt="Sobrew logo" fill sizes="(max-width: 767px) 44px, 56px" className="object-contain" />
             </div>
             <div className="admin-brand-copy min-w-0">
               <span className="eyebrow">Admin Console</span>
@@ -43,6 +44,7 @@ export function AdminShell({ children, canWrite, newOrders }: { children: ReactN
           </div>
           <LogoutButton className="admin-logout btn-secondary w-full" />
         </div>
+        <AdminMobileSectionSelect links={links} />
         <nav className="admin-nav mt-4 grid gap-2 sm:grid-cols-2 md:block md:space-y-2">
           {links.map(({ name, href, exact, child }) => (
             <ActiveNavLink
