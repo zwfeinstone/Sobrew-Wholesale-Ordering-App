@@ -1,5 +1,6 @@
 import { redirect } from 'next/navigation';
 import { logAuthProfileIssue } from '@/lib/auth-diagnostics';
+import { recordUserLastSeen } from '@/lib/last-seen';
 import { createClient } from '@/lib/supabase/server';
 
 export async function requireUser() {
@@ -26,6 +27,7 @@ export async function requireUser() {
   if (!profile.is_admin && (!profile.center_id || center?.is_active === false)) {
     redirect('/login?inactive=1');
   }
+  await recordUserLastSeen(data.user);
   return { user: data.user, profile: { ...profile, center } };
 }
 

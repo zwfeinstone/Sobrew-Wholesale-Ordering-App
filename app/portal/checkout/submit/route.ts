@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { logAuthProfileIssue } from '@/lib/auth-diagnostics';
+import { recordUserLastSeen } from '@/lib/last-seen';
 import { createRouteClient } from '@/lib/supabase/route';
 import { submitPortalOrderWithContext } from '../submit-order';
 
@@ -30,6 +31,8 @@ export async function POST(request: NextRequest) {
   if (profile.is_active !== true || (!profile.is_admin && (!profile.center_id || center?.is_active === false))) {
     return NextResponse.redirect(new URL('/login?inactive=1', request.url), 303);
   }
+
+  await recordUserLastSeen(data.user);
 
   const result = await submitPortalOrderWithContext({
     formData,
