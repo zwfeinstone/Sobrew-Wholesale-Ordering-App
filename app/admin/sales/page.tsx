@@ -393,7 +393,8 @@ export default async function AdminSalesPage({
 
   const sortedCenterReports = [...centerReports].sort((a, b) => b.averageMonthlyRevenueCents - a.averageMonthlyRevenueCents || a.name.localeCompare(b.name));
   const topCenters = sortedCenterReports.slice(0, 5);
-  const averageMonthlyRevenuePerCenterCents = activeCenters.length ? Math.round(revenueInRangeCents / lookbackMonths / activeCenters.length) : 0;
+  const activeCentersWithOrders = activeCenters.filter((center) => lastOrderByCenter.has(center.id));
+  const averageMonthlyRevenuePerCenterCents = activeCentersWithOrders.length ? Math.round(revenueInRangeCents / lookbackMonths / activeCentersWithOrders.length) : 0;
   const monthRevenueChange = metricChange(revenueThisMonthCents, revenuePreviousMonthCents);
   const statusRows = ['New', 'Processing', 'Shipped']
     .map((status) => ({ label: status, value: statusCountsSelectedWeek.get(status) ?? 0, display: String(statusCountsSelectedWeek.get(status) ?? 0) }))
@@ -459,7 +460,7 @@ export default async function AdminSalesPage({
         <ReportStat
           label="Avg Monthly / Center"
           value={usd(averageMonthlyRevenuePerCenterCents)}
-          detail={`Average across ${activeCenters.length.toLocaleString()} active centers over ${lookbackMonths} months.`}
+          detail={`Average across ${activeCentersWithOrders.length.toLocaleString()} active centers with at least one order over ${lookbackMonths} months.`}
         />
         <ReportStat
           label="30-Day Follow-Up"

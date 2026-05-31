@@ -2,7 +2,10 @@ import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import ConfirmSubmitButton from '@/components/confirm-submit-button';
 import { requireUser } from '@/lib/auth';
-import { formatNextRecurringOrderDate, isRecurringFrequency, labelForRecurringFrequency, RECURRING_FREQUENCY_OPTIONS } from '@/lib/recurring';
+import { daysForRecurringFrequency, formatNextRecurringOrderDate, isRecurringFrequency, labelForRecurringFrequency, RECURRING_FREQUENCY_OPTIONS } from '@/lib/recurring';
+import { getCenterLoginEmails } from '@/lib/center-logins';
+import { sendOrderEmails } from '@/lib/email';
+import { supabaseAdmin } from '@/lib/supabase/admin';
 import { createClient } from '@/lib/supabase/server';
 import { usd } from '@/lib/utils';
 
@@ -15,6 +18,8 @@ type SupabaseErrorShape = {
 
 type RecurringOrderRow = {
   id: string;
+  user_id?: string | null;
+  center_id?: string | null;
   frequency: string;
   status?: string | null;
   active?: boolean | null;
@@ -22,6 +27,16 @@ type RecurringOrderRow = {
   last_generated_at: string | null;
   source_order_id?: string | null;
   amount_cents?: number | null;
+  profiles?: { email: string | null; full_name: string | null } | { email: string | null; full_name: string | null }[] | null;
+  centers?: { name: string | null } | { name: string | null }[] | null;
+};
+
+type RecurringOrderItemSnapshot = {
+  product_id: string | null;
+  product_name_snapshot: string | null;
+  qty: number;
+  unit_price_cents: number;
+  line_total_cents: number | null;
 };
 
 function logQueryError(query: string, error: SupabaseErrorShape | null, extra?: Record<string, unknown>) {
@@ -40,6 +55,174 @@ function normalizeStatus(order: RecurringOrderRow) {
   if (order.status) return order.status;
   if (typeof order.active === 'boolean') return order.active ? 'active' : 'paused';
   return 'active';
+}
+
+function relatedOne<T>(value: T | T[] | null | undefined) {
+  return Array.isArray(value) ? value[0] ?? null : value ?? null;
+}
+
+function frequencyWeeksLabel(frequency: string) {
+  const days = daysForRecurringFrequency(frequency);
+  if (!days || days % 7 !== 0) return labelForRecurringFrequency(frequency).replace(/^Every\s+/i, '').toLowerCase();
+
+  const weeks = days / 7;
+  return `${weeks} ${weeks === 1 ? 'week' : 'weeks'}`;
+}
+
+async function reactivateRecurringOrderAndCreateOrder({
+  recurringOrder,
+  user,
+  profile,
+  now,
+}: {
+  recurringOrder: RecurringOrderRow & { center_id: string };
+  user: { id: string; email?: string | null };
+  profile: { email?: string | null; full_name?: string | null; center?: { name?: string | null } | null };
+  now: Date;
+}) {
+  const [{ data: sourceOrder, error: sourceOrderError }, { data: storedRecurringItems, error: recurringItemsError }] = await Promise.all([
+    recurringOrder.source_order_id
+      ? supabaseAdmin
+          .from('orders')
+          .select('id,center_location_id,shipping_name,shipping_address1,shipping_address2,shipping_city,shipping_state,shipping_zip')
+          .eq('id', recurringOrder.source_order_id)
+          .maybeSingle()
+      : Promise.resolve({ data: null, error: null }),
+    supabaseAdmin
+      .from('recurring_order_items')
+      .select('product_id,product_name_snapshot,qty,unit_price_cents,line_total_cents')
+      .eq('recurring_order_id', recurringOrder.id),
+  ]);
+
+  if (sourceOrderError) {
+    return { ok: false as const, message: sourceOrderError.message };
+  }
+
+  if (recurringItemsError) {
+    return { ok: false as const, message: recurringItemsError.message };
+  }
+
+  let recurringItems = (storedRecurringItems ?? []) as RecurringOrderItemSnapshot[];
+  if (!recurringItems.length && recurringOrder.source_order_id) {
+    const { data: sourceOrderItems, error: sourceOrderItemsError } = await supabaseAdmin
+      .from('order_items')
+      .select('product_id,product_name_snapshot,qty,unit_price_cents,line_total_cents')
+      .eq('order_id', recurringOrder.source_order_id);
+
+    if (sourceOrderItemsError) {
+      return { ok: false as const, message: sourceOrderItemsError.message };
+    }
+
+    recurringItems = (sourceOrderItems ?? []) as RecurringOrderItemSnapshot[];
+  }
+
+  if (!recurringItems.length) {
+    return { ok: false as const, message: 'Missing recurring order items' };
+  }
+
+  let shippingSource = sourceOrder;
+  if (!shippingSource) {
+    const { data: lastOrder, error: lastOrderError } = await supabaseAdmin
+      .from('orders')
+      .select('id,center_location_id,shipping_name,shipping_address1,shipping_address2,shipping_city,shipping_state,shipping_zip')
+      .eq('center_id', recurringOrder.center_id)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (lastOrderError) {
+      return { ok: false as const, message: lastOrderError.message };
+    }
+
+    shippingSource = lastOrder;
+  }
+
+  const activatedAt = now.toISOString();
+  const previousLastGeneratedAt = recurringOrder.last_generated_at ?? null;
+  const previousActive = recurringOrder.active === true;
+  const claimResult = await supabaseAdmin
+    .from('recurring_orders')
+    .update({ status: 'active', active: true, last_generated_at: activatedAt })
+    .eq('id', recurringOrder.id)
+    .eq('center_id', recurringOrder.center_id)
+    .select('id')
+    .maybeSingle();
+
+  if (claimResult.error) {
+    return { ok: false as const, message: claimResult.error.message };
+  }
+
+  if (!claimResult.data) {
+    return { ok: true as const, orderId: null as string | null };
+  }
+
+  const rollbackSchedule = async () => {
+    await supabaseAdmin
+      .from('recurring_orders')
+      .update({ status: 'paused', active: previousActive, last_generated_at: previousLastGeneratedAt })
+      .eq('id', recurringOrder.id)
+      .eq('center_id', recurringOrder.center_id);
+  };
+
+  const subtotal = recurringItems.reduce((sum, item) => sum + (item.line_total_cents ?? item.qty * item.unit_price_cents), 0);
+  const { data: newOrder, error: newOrderError } = await supabaseAdmin
+    .from('orders')
+    .insert({
+      center_id: recurringOrder.center_id,
+      center_location_id: shippingSource?.center_location_id ?? null,
+      user_id: user.id,
+      shipping_name: shippingSource?.shipping_name ?? profile.center?.name ?? profile.full_name ?? profile.email ?? user.email ?? '',
+      shipping_address1: shippingSource?.shipping_address1 ?? '',
+      shipping_address2: shippingSource?.shipping_address2 ?? '',
+      shipping_city: shippingSource?.shipping_city ?? '',
+      shipping_state: shippingSource?.shipping_state ?? '',
+      shipping_zip: shippingSource?.shipping_zip ?? '',
+      notes: `Auto-generated recurring order (${recurringOrder.frequency})`,
+      subtotal_cents: subtotal,
+    })
+    .select('id,center_location_id,shipping_name,shipping_address1,shipping_address2,shipping_city,shipping_state,shipping_zip')
+    .single();
+
+  if (newOrderError || !newOrder) {
+    await rollbackSchedule();
+    return { ok: false as const, message: newOrderError?.message ?? 'Failed to create order' };
+  }
+
+  const newOrderItems = recurringItems.map((item) => ({
+    order_id: newOrder.id,
+    product_id: item.product_id,
+    product_name_snapshot: item.product_name_snapshot,
+    qty: item.qty,
+    unit_price_cents: item.unit_price_cents,
+    line_total_cents: item.line_total_cents ?? item.qty * item.unit_price_cents,
+  }));
+  const { error: newItemsError } = await supabaseAdmin.from('order_items').insert(newOrderItems);
+
+  if (newItemsError) {
+    await supabaseAdmin.from('orders').delete().eq('id', newOrder.id);
+    await rollbackSchedule();
+    return { ok: false as const, message: newItemsError.message };
+  }
+
+  const recurringProfile = relatedOne(recurringOrder.profiles);
+  const recurringCenter = relatedOne(recurringOrder.centers);
+  const centerEmails = (await getCenterLoginEmails(supabaseAdmin, recurringOrder.center_id)) as string[];
+
+  await sendOrderEmails({
+    customerEmail: centerEmails.length ? centerEmails : profile.email ?? user.email ?? recurringProfile?.email ?? '',
+    customerName: recurringCenter?.name ?? profile.center?.name ?? profile.full_name ?? profile.email ?? user.email ?? '',
+    orderId: newOrder.id,
+    shipping: newOrder,
+    items: recurringItems.map((item) => ({
+      name: item.product_name_snapshot ?? 'Unknown product',
+      qty: item.qty,
+      price: item.unit_price_cents,
+      line: item.line_total_cents ?? item.qty * item.unit_price_cents,
+    })),
+    subtotalCents: subtotal,
+  });
+
+  return { ok: true as const, orderId: newOrder.id as string | null };
 }
 
 
@@ -170,19 +353,42 @@ async function setRecurringStatus(formData: FormData) {
     }
 
     if (status === 'canceled') {
-      const deleteResult = await supabase
+      const cancelResult = await supabase
         .from('recurring_orders')
-        .delete()
+        .update({ status: 'canceled', active: false })
         .eq('id', recurringOrderId)
         .eq('center_id', centerId);
-      logQueryError('recurring_orders.delete canceled order', deleteResult.error, { userId, centerId, recurringOrderId, status });
-      if (deleteResult.error) redirect('/portal/recurring-orders?error=status_failed');
+      logQueryError('recurring_orders.update canceled order', cancelResult.error, { userId, centerId, recurringOrderId, status });
+      if (cancelResult.error) redirect('/portal/recurring-orders?error=status_failed');
       redirect('/portal/recurring-orders?success=status_updated');
+    }
+
+    if (status === 'active') {
+      const recurringOrderResult = await supabaseAdmin
+        .from('recurring_orders')
+        .select('id,user_id,center_id,source_order_id,frequency,amount_cents,status,active,created_at,last_generated_at,profiles(email,full_name),centers(name)')
+        .eq('id', recurringOrderId)
+        .eq('center_id', centerId)
+        .maybeSingle();
+      logQueryError('recurring_orders.select for reactivation', recurringOrderResult.error, { userId, centerId, recurringOrderId, status });
+
+      const recurringOrder = recurringOrderResult.data as (RecurringOrderRow & { center_id: string }) | null;
+      if (recurringOrderResult.error || !recurringOrder) redirect('/portal/recurring-orders?error=status_failed');
+
+      if (normalizeStatus(recurringOrder) === 'paused') {
+        const result = await reactivateRecurringOrderAndCreateOrder({ recurringOrder, user, profile, now: new Date() });
+        if (!result.ok) {
+          console.error('[recurring-orders] reactivation order generation failed', { userId, centerId, recurringOrderId, message: result.message });
+          redirect('/portal/recurring-orders?error=reactivation_failed');
+        }
+
+        redirect(result.orderId ? '/portal/recurring-orders?success=reactivated' : '/portal/recurring-orders?success=status_updated');
+      }
     }
 
     const statusUpdateResult = await supabase
       .from('recurring_orders')
-      .update({ status })
+      .update({ status, active: status === 'active' })
       .eq('id', recurringOrderId)
       .eq('center_id', centerId);
     logQueryError('recurring_orders.update status', statusUpdateResult.error, { userId, centerId, recurringOrderId, status });
@@ -287,8 +493,16 @@ export default async function RecurringOrdersPage({ searchParams }: { searchPara
           <p className="page-subtitle recurring-subtitle mt-3">Update quantities and frequency, pause shipments, or cancel schedules whenever your center&apos;s needs change.</p>
         </section>
 
-        {searchParams?.success ? <div className="rounded-[1.5rem] border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-700">Saved successfully.</div> : null}
-        {searchParams?.error ? <div className="rounded-[1.5rem] border border-red-200 bg-red-50 p-4 text-sm text-red-700">Could not save your changes.</div> : null}
+        {searchParams?.success ? (
+          <div className="rounded-[1.5rem] border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-700">
+            {searchParams.success === 'reactivated' ? "Recurring shipment resumed and today's order was created." : 'Saved successfully.'}
+          </div>
+        ) : null}
+        {searchParams?.error ? (
+          <div className="rounded-[1.5rem] border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+            {searchParams.error === 'reactivation_failed' ? "Could not resume this shipment or create today's order." : 'Could not save your changes.'}
+          </div>
+        ) : null}
 
         {!recurringOrders.length ? (
           <div className="empty-state">
@@ -302,6 +516,8 @@ export default async function RecurringOrdersPage({ searchParams }: { searchPara
           const currentStatus = normalizeStatus(order);
           const orderItems = itemsByOrderId.get(order.id) ?? [];
           const projectedSubtotal = orderItems.reduce((sum, item) => sum + item.qty * item.unit_price_cents, 0) || order.amount_cents || 0;
+          const resumeInterval = frequencyWeeksLabel(order.frequency);
+          const resumeMessage = `This will trigger an order today. The next automatic order will be ${resumeInterval} from today.`;
           return (
             <div key={order.id} className="recurring-card recurring-order-card space-y-5">
               <div className="recurring-card-header grid gap-4 xl:grid-cols-[minmax(0,1fr)_auto] xl:items-start">
@@ -376,7 +592,16 @@ export default async function RecurringOrdersPage({ searchParams }: { searchPara
                 <form action={setRecurringStatus} className="w-full sm:w-auto">
                   <input type="hidden" name="recurring_order_id" value={order.id} />
                   <input type="hidden" name="status" value={currentStatus === 'paused' ? 'active' : 'paused'} />
-                  <button className="btn-secondary recurring-action-button w-full" type="submit">{currentStatus === 'paused' ? 'Resume shipment' : 'Pause shipment'}</button>
+                  {currentStatus === 'paused' ? (
+                    <ConfirmSubmitButton
+                      className="btn-secondary recurring-action-button w-full"
+                      confirmMessage={resumeMessage}
+                      label="Resume shipment"
+                      pendingLabel="Resuming..."
+                    />
+                  ) : (
+                    <button className="btn-secondary recurring-action-button w-full" type="submit">Pause shipment</button>
+                  )}
                 </form>
                 <form action={setRecurringStatus} className="w-full sm:w-auto">
                   <input type="hidden" name="recurring_order_id" value={order.id} />
@@ -389,6 +614,11 @@ export default async function RecurringOrdersPage({ searchParams }: { searchPara
                   />
                 </form>
               </div>
+              {currentStatus === 'paused' ? (
+                <p className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+                  Resuming this shipment will trigger an order today. The next automatic order will be {resumeInterval} from today.
+                </p>
+              ) : null}
             </div>
           );
         })}
