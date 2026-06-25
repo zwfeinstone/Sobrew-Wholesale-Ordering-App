@@ -336,6 +336,89 @@ async function updateRecurringItem(formData: FormData) {
   }
 }
 
+async function removeRecurringItem(formData: FormData) {
+  'use server';
+  let userId = 'unknown';
+  let centerId = 'unknown';
+  try {
+    const { user, profile } = await requireUser();
+    userId = user.id;
+    centerId = profile?.center_id ?? user.id;
+    const supabase = await createClient();
+
+    const recurringOrderId = String(formData.get('recurring_order_id') ?? '');
+    const recurringItemId = String(formData.get('recurring_item_id') ?? '');
+
+    if (!recurringOrderId || !recurringItemId) {
+      redirect('/portal/recurring-orders?error=invalid_input');
+    }
+
+    const recurringOrderResult = await supabase
+      .from('recurring_orders')
+      .select('id')
+      .eq('id', recurringOrderId)
+      .eq('center_id', centerId)
+      .maybeSingle();
+    logQueryError('recurring_orders.select for item removal', recurringOrderResult.error, { userId, centerId, recurringOrderId, recurringItemId });
+
+    if (recurringOrderResult.error || !recurringOrderResult.data) {
+      redirect('/portal/recurring-orders?error=not_found');
+    }
+
+    const itemsResult = await supabaseAdmin
+      .from('recurring_order_items')
+      .select('id,line_total_cents')
+      .eq('recurring_order_id', recurringOrderId);
+    logQueryError('recurring_order_items.select for removal', itemsResult.error, { userId, centerId, recurringOrderId, recurringItemId });
+
+    if (itemsResult.error || !itemsResult.data) {
+      redirect('/portal/recurring-orders?error=save_failed');
+    }
+
+    const recurringItems = itemsResult.data as Array<{ id: string; line_total_cents: number | null }>;
+    const itemToRemove = recurringItems.find((item) => item.id === recurringItemId);
+
+    if (!itemToRemove) {
+      redirect('/portal/recurring-orders?error=not_found');
+    }
+
+    if (recurringItems.length <= 1) {
+      redirect('/portal/recurring-orders?error=last_item');
+    }
+
+    const deleteResult = await supabaseAdmin
+      .from('recurring_order_items')
+      .delete()
+      .eq('id', recurringItemId)
+      .eq('recurring_order_id', recurringOrderId)
+      .select('id')
+      .maybeSingle();
+    logQueryError('recurring_order_items.delete item', deleteResult.error, { userId, centerId, recurringOrderId, recurringItemId });
+
+    if (deleteResult.error || !deleteResult.data) {
+      redirect('/portal/recurring-orders?error=save_failed');
+    }
+
+    const amount = recurringItems
+      .filter((item) => item.id !== recurringItemId)
+      .reduce((sum, item) => sum + (item.line_total_cents ?? 0), 0);
+    const totalUpdateResult = await supabaseAdmin
+      .from('recurring_orders')
+      .update({ amount_cents: amount })
+      .eq('id', recurringOrderId)
+      .eq('center_id', centerId);
+    logQueryError('recurring_orders.update amount_cents after removal', totalUpdateResult.error, { userId, centerId, recurringOrderId, amount });
+
+    if (totalUpdateResult.error) redirect('/portal/recurring-orders?error=save_failed');
+
+    redirect('/portal/recurring-orders?success=item_removed');
+  } catch (error) {
+    if (isNextFrameworkError(error)) throw error;
+    console.error('[recurring-orders] removeRecurringItem fatal', { userId, centerId, error });
+    redirect('/portal/recurring-orders?error=save_failed');
+  }
+}
+
 async function setRecurringStatus(formData: FormData) {
   'use server';
   let userId = 'unknown';
@@ -490,17 +573,25 @@ export default async function RecurringOrdersPage({ searchParams }: { searchPara
         <section className="panel recurring-hero">
           <span className="eyebrow">Recurring Orders</span>
           <h1 className="page-title recurring-title mt-4">Manage your recurring shipments</h1>
-          <p className="page-subtitle recurring-subtitle mt-3">Update quantities and frequency, pause shipments, or cancel schedules whenever your center&apos;s needs change.</p>
+          <p className="page-subtitle recurring-subtitle mt-3">Update quantities and frequency, remove products from multi-item shipments, pause shipments, or cancel schedules whenever your center&apos;s needs change.</p>
         </section>
 
         {searchParams?.success ? (
           <div className="rounded-[1.5rem] border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-700">
-            {searchParams.success === 'reactivated' ? "Recurring shipment resumed and today's order was created." : 'Saved successfully.'}
+            {searchParams.success === 'reactivated'
+              ? "Recurring shipment resumed and today's order was created."
+              : searchParams.success === 'item_removed'
+                ? 'Product removed from recurring shipment.'
+                : 'Saved successfully.'}
           </div>
         ) : null}
         {searchParams?.error ? (
           <div className="rounded-[1.5rem] border border-red-200 bg-red-50 p-4 text-sm text-red-700">
-            {searchParams.error === 'reactivation_failed' ? "Could not resume this shipment or create today's order." : 'Could not save your changes.'}
+            {searchParams.error === 'reactivation_failed'
+              ? "Could not resume this shipment or create today's order."
+              : searchParams.error === 'last_item'
+                ? 'A recurring shipment needs at least one product. Cancel the schedule if you want to stop it.'
+                : 'Could not save your changes.'}
           </div>
         ) : null}
 
@@ -570,19 +661,33 @@ export default async function RecurringOrdersPage({ searchParams }: { searchPara
 
                   <div className="recurring-item-forms space-y-3">
                     {orderItems.map((item) => (
-                      <form key={item.id} action={updateRecurringItem} className="recurring-item-form grid gap-3 rounded-2xl border border-white/70 bg-white/55 p-3 md:grid-cols-[minmax(0,1fr)_10rem_auto] md:items-end">
-                        <input type="hidden" name="recurring_order_id" value={order.id} />
-                        <input type="hidden" name="recurring_item_id" value={item.id} />
-                        <div>
-                          <div className="text-xs uppercase tracking-[0.18em] text-slate-500">Product</div>
-                          <div className="mt-2 text-sm font-medium text-slate-950">{item.product_name_snapshot ?? 'Unknown product'}</div>
-                        </div>
-                        <label className="text-sm">
-                          <span className="mb-1 block text-xs text-slate-500">Quantity</span>
-                          <input className="input" type="number" name="qty" min={1} defaultValue={item.qty} />
-                        </label>
-                        <button className="btn-primary recurring-action-button w-full md:w-auto" type="submit">Save Quantity</button>
-                      </form>
+                      <div key={item.id} className="recurring-item-form grid gap-3 rounded-2xl border border-white/70 bg-white/55 p-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
+                        <form action={updateRecurringItem} className="grid gap-3 md:grid-cols-[minmax(0,1fr)_10rem_auto] md:items-end">
+                          <input type="hidden" name="recurring_order_id" value={order.id} />
+                          <input type="hidden" name="recurring_item_id" value={item.id} />
+                          <div>
+                            <div className="text-xs uppercase tracking-[0.18em] text-slate-500">Product</div>
+                            <div className="mt-2 text-sm font-medium text-slate-950">{item.product_name_snapshot ?? 'Unknown product'}</div>
+                          </div>
+                          <label className="text-sm">
+                            <span className="mb-1 block text-xs text-slate-500">Quantity</span>
+                            <input className="input" type="number" name="qty" min={1} defaultValue={item.qty} />
+                          </label>
+                          <button className="btn-primary recurring-action-button w-full md:w-auto" type="submit">Save Quantity</button>
+                        </form>
+                        {orderItems.length > 1 ? (
+                          <form action={removeRecurringItem}>
+                            <input type="hidden" name="recurring_order_id" value={order.id} />
+                            <input type="hidden" name="recurring_item_id" value={item.id} />
+                            <ConfirmSubmitButton
+                              className="recurring-remove-button w-full rounded-full border border-rose-200 px-4 py-2.5 text-sm font-semibold text-rose-700 transition-all duration-200 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-70 lg:w-auto"
+                              confirmMessage={`Remove ${item.product_name_snapshot ?? 'this product'} from this recurring shipment?`}
+                              label="Remove"
+                              pendingLabel="Removing..."
+                            />
+                          </form>
+                        ) : null}
+                      </div>
                     ))}
                   </div>
                 </div>

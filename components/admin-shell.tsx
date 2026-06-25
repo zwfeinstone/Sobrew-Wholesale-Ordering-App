@@ -10,6 +10,7 @@ export function AdminShell({ children, canWrite, newOrders }: { children: ReactN
   const links = [
     { name: 'Dashboard', href: '/admin', exact: true },
     { name: 'Sales', href: '/admin/sales', exact: true },
+    { name: 'Reports', href: '/admin/reports' },
     { name: 'Prospecting', href: '/admin/sales/prospecting', child: true },
     { name: 'Orders', href: '/admin/orders' },
     { name: 'Archived Orders', href: '/admin/archived-orders' },

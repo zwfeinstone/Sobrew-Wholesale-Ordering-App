@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
+import LikelyOrderChecklistItem from '@/components/likely-order-checklist-item';
 import StatusToast from '@/components/status-toast';
 import { requireAdminWriteAccess } from '@/lib/admin-write-access';
 import {
@@ -16,6 +17,12 @@ import {
   numericInputValue,
   type InventoryUnit,
 } from '@/lib/inventory';
+import {
+  recommendInventoryAction,
+  type InventoryPlanningRules,
+  type PlanningConfidence,
+  type PlanningStatus,
+} from '@/lib/inventory-planning';
 import { daysForRecurringFrequency, labelForRecurringFrequency } from '@/lib/recurring';
 import { createClient } from '@/lib/supabase/server';
 import { usd } from '@/lib/utils';
@@ -118,8 +125,64 @@ type InventoryMovementRow = {
   created_at: string | null;
 };
 
+type ProjectionOrderItemRow = {
+  product_id: string | null;
+  product_name_snapshot: string | null;
+  qty: number | string | null;
+};
+
+type ProjectionOrderRow = {
+  id: string;
+  center_id: string | null;
+  created_at: string | null;
+  centers?: { name: string | null; is_active: boolean | null } | { name: string | null; is_active: boolean | null }[] | null;
+  order_items?: ProjectionOrderItemRow[] | null;
+};
+
+type ProductProjectionCenterRow = {
+  id: string;
+  centerName: string;
+  confidence: PlanningConfidence;
+  projectedQty: number;
+  historyWeeklyQty: number;
+  recurringNextWeekQty: number;
+  avgQtyPerOrder: number;
+  orderCount: number;
+  lastOrderAt: Date | null;
+  nextOrderAt: Date | null;
+  cadenceDays: number | null;
+  sourceLabel: string;
+  schedules: string[];
+};
+
+type ProductProjectionRow = {
+  actionLabel: string;
+  actionVerb: 'Make' | 'Order';
+  product: ProductRow;
+  displayProjectedQty: number;
+  projectedQty: number;
+  historyWeeklyQty: number;
+  recurringNextWeekQty: number;
+  onHand: number;
+  reserved: number;
+  available: number;
+  recommendationReason: string;
+  rawNeededQty: number;
+  suggestedProductionQty: number;
+  dueCenterCount: number;
+  supportOrderCount: number;
+  confidence: PlanningConfidence;
+  hasRecipe: boolean;
+  planningStatus: PlanningStatus;
+  centerRows: ProductProjectionCenterRow[];
+};
+
 const EXTRA_COMPONENT_ROWS = 5;
+const DAY_IN_MS = 24 * 60 * 60 * 1000;
+const PROJECTION_LOOKBACK_DAYS = 84;
+const PROJECTION_WINDOW_DAYS = 7;
 const USAGE_LOOKBACK_DAYS = 56;
+const PRODUCT_PLANNING_RULE_OVERRIDES: Record<string, Partial<InventoryPlanningRules>> = {};
 const INVENTORY_TABS = [
   { id: 'overview', label: 'Overview', description: 'Alerts and workflow' },
   { id: 'setup', label: 'Setup', description: 'Items, receiving, recipes' },
@@ -151,6 +214,143 @@ function relatedOne<T>(value: T | T[] | null | undefined): T | null {
 function formatDate(value: string | null | undefined) {
   if (!value) return 'Unknown';
   return new Date(value).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+function startOfDay(date: Date) {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
+}
+
+function addDays(date: Date, days: number) {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate() + days);
+}
+
+function getValidDate(value: string | number | Date | null | undefined) {
+  if (!value) return null;
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function daysBetween(later: Date, earlier: Date) {
+  return (startOfDay(later).getTime() - startOfDay(earlier).getTime()) / DAY_IN_MS;
+}
+
+function averageGapDays(dates: Date[]) {
+  if (dates.length < 2) return null;
+  const sorted = [...dates].sort((a, b) => a.getTime() - b.getTime());
+  const gaps = sorted
+    .slice(1)
+    .map((date, index) => daysBetween(date, sorted[index]))
+    .filter((gap) => gap > 0);
+  if (!gaps.length) return null;
+  return gaps.reduce((sum, gap) => sum + gap, 0) / gaps.length;
+}
+
+function gapDaysForDates(dates: Date[]) {
+  const sorted = [...dates].sort((a, b) => a.getTime() - b.getTime());
+  return sorted
+    .slice(1)
+    .map((date, index) => daysBetween(date, sorted[index]))
+    .filter((gap) => gap > 0);
+}
+
+function variationRatio(values: number[]) {
+  const cleanValues = values.filter((value) => Number.isFinite(value) && value > 0);
+  if (cleanValues.length < 2) return 0;
+  const average = cleanValues.reduce((sum, value) => sum + value, 0) / cleanValues.length;
+  if (average <= 0) return 0;
+  const variance = cleanValues.reduce((sum, value) => sum + ((value - average) ** 2), 0) / cleanValues.length;
+  return Math.sqrt(variance) / average;
+}
+
+function displayWholeProjectionQty(value: number) {
+  return value >= 0.5 ? Math.ceil(value) : 0;
+}
+
+function confidenceForOrderPattern({
+  dueByHistory,
+  dueByRecurring,
+  gapVariation,
+  orderCount,
+  quantityVariation,
+}: {
+  dueByHistory: boolean;
+  dueByRecurring?: boolean;
+  gapVariation: number;
+  orderCount: number;
+  quantityVariation: number;
+}): PlanningConfidence {
+  if (dueByRecurring) return 'High';
+  if (orderCount >= 3 && dueByHistory && gapVariation <= 0.35 && quantityVariation <= 0.6) return 'High';
+  if (orderCount >= 2 && (dueByHistory || gapVariation <= 0.75)) return 'Medium';
+  return 'Low';
+}
+
+function strongestConfidence(confidences: PlanningConfidence[]): PlanningConfidence {
+  if (confidences.includes('High')) return 'High';
+  if (confidences.includes('Medium')) return 'Medium';
+  return 'Low';
+}
+
+function projectedCadenceDates(anchorDate: Date | null, cadenceDays: number | null, projectionStart: Date, projectionEndExclusive: Date) {
+  if (!anchorDate || !cadenceDays || cadenceDays <= 0) return [];
+  const cadence = Math.max(1, Math.round(cadenceDays));
+  const dates: Date[] = [];
+  let nextDate = addDays(startOfDay(anchorDate), cadence);
+  let guard = 0;
+  while (nextDate < projectionStart && guard < 100) {
+    nextDate = addDays(nextDate, cadence);
+    guard += 1;
+  }
+  while (nextDate < projectionEndExclusive && guard < 200) {
+    dates.push(nextDate);
+    nextDate = addDays(nextDate, cadence);
+    guard += 1;
+  }
+  return dates;
+}
+
+function startOfWeekMonday(date: Date) {
+  const day = date.getDay();
+  return addDays(startOfDay(date), day === 0 ? -6 : 1 - day);
+}
+
+function formatProjectionDate(value: Date | null | undefined) {
+  if (!value) return 'Unknown';
+  return value.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+
+function formatProjectionInputDate(value: Date) {
+  const year = value.getFullYear();
+  const month = String(value.getMonth() + 1).padStart(2, '0');
+  const day = String(value.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function planningRulesForProduct(
+  product: ProductRow,
+  finishedItem: InventoryItemRow | undefined,
+  setting: ReorderSettingRow | undefined,
+  safetyStockQty: number
+): InventoryPlanningRules {
+  const override = PRODUCT_PLANNING_RULE_OVERRIDES[product.id] ?? (product.sku ? PRODUCT_PLANNING_RULE_OVERRIDES[product.sku] : undefined);
+  return {
+    actionVerb: 'Make',
+    actionThresholdQty: 0.75,
+    minimumActionQty: 1,
+    orderMultiple: 1,
+    safetyStockQty: Math.max(safetyStockQty, normalizeInventoryNumber(setting?.reorder_point)),
+    unitLabel: finishedItem?.base_unit ?? 'each',
+    watchThresholdQty: 0.25,
+    ...override,
+  };
+}
+
+function parseProjectionInputDate(value: string | undefined) {
+  if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+  const [year, month, day] = value.split('-').map(Number);
+  const date = new Date(year, month - 1, day);
+  if (date.getFullYear() !== year || date.getMonth() !== month - 1 || date.getDate() !== day) return null;
+  return startOfDay(date);
 }
 
 function parsePositiveNumber(value: FormDataEntryValue | null, fallback = 0) {
@@ -500,6 +700,9 @@ export default async function InventoryPage({
   const produceProductId = typeof searchParams?.produce_product === 'string' ? searchParams.produce_product : '';
   const produceQty = typeof searchParams?.produce_qty === 'string' ? searchParams.produce_qty : '';
   const requestedTab = typeof searchParams?.tab === 'string' ? searchParams.tab : '';
+  const requestedProjectionPreset = typeof searchParams?.projection_preset === 'string' ? searchParams.projection_preset : '';
+  const requestedProjectionStart = typeof searchParams?.projection_start === 'string' ? searchParams.projection_start : undefined;
+  const requestedProjectionEnd = typeof searchParams?.projection_end === 'string' ? searchParams.projection_end : undefined;
   const fallbackTab: InventoryTab = produceProductId
     ? 'production'
     : selectedRecipeProductId
@@ -512,6 +715,26 @@ export default async function InventoryPage({
             ? 'setup'
             : 'overview';
   const activeTab: InventoryTab = isInventoryTab(requestedTab) ? requestedTab : fallbackTab;
+  const today = startOfDay(new Date());
+  const thisWeekStart = startOfWeekMonday(today);
+  const nextWeekStart = addDays(thisWeekStart, 7);
+  const customProjectionStart = parseProjectionInputDate(requestedProjectionStart);
+  const customProjectionEnd = parseProjectionInputDate(requestedProjectionEnd);
+  const projectionPreset = requestedProjectionPreset === 'this_week' || requestedProjectionPreset === 'custom' ? requestedProjectionPreset : 'next_week';
+  const projectionStart = projectionPreset === 'this_week'
+    ? thisWeekStart
+    : projectionPreset === 'custom' && customProjectionStart
+      ? customProjectionStart
+      : nextWeekStart;
+  const projectionEndInclusive = projectionPreset === 'this_week'
+    ? addDays(thisWeekStart, PROJECTION_WINDOW_DAYS - 1)
+    : projectionPreset === 'custom' && customProjectionEnd
+      ? customProjectionEnd
+      : addDays(nextWeekStart, PROJECTION_WINDOW_DAYS - 1);
+  const normalizedProjectionEndInclusive = projectionEndInclusive < projectionStart ? projectionStart : projectionEndInclusive;
+  const projectionEndExclusive = addDays(normalizedProjectionEndInclusive, 1);
+  const projectionRangeDays = Math.max(1, daysBetween(projectionEndExclusive, projectionStart));
+  const projectionSince = addDays(today, -PROJECTION_LOOKBACK_DAYS).toISOString();
   const usageSince = new Date(Date.now() - USAGE_LOOKBACK_DAYS * 24 * 60 * 60 * 1000).toISOString();
 
   const [
@@ -524,6 +747,7 @@ export default async function InventoryPage({
     reorderSettingsResult,
     centerPricesResult,
     openOrdersResult,
+    orderHistoryResult,
     inventoryMovementsResult,
     recurringOrdersResult,
     centersResult,
@@ -538,8 +762,9 @@ export default async function InventoryPage({
     supabase.from('inventory_reorder_settings').select('inventory_item_id,reorder_point,target_stock,lead_time_days,preferred_supplier,notes'),
     supabase.from('user_product_prices').select('center_id,product_id,price_cents,centers(name,is_active)'),
     supabase.from('orders').select('id,status,order_items(product_id,qty)').in('status', ['New', 'Processing']).is('archived_at', null),
+    supabase.from('orders').select('id,center_id,created_at,centers(name,is_active),order_items(product_id,product_name_snapshot,qty)').gte('created_at', projectionSince).order('created_at', { ascending: false }).limit(5000),
     supabase.from('inventory_movements').select('inventory_item_id,quantity_change,movement_type,created_at').eq('movement_type', 'production_consume').gte('created_at', usageSince),
-    supabase.from('recurring_orders').select('id,center_id,frequency,status,active,centers(name,is_active),recurring_order_items(product_id,qty)').neq('status', 'canceled'),
+    supabase.from('recurring_orders').select('id,center_id,frequency,status,active,created_at,last_generated_at,centers(name,is_active),recurring_order_items(product_id,qty)').neq('status', 'canceled'),
     supabase.from('centers').select('id,name,is_active').eq('is_active', true).order('name', { ascending: true }),
     supabase.from('inventory_center_par_levels').select('center_id,product_id,par_qty,minimum_qty,notes,centers(name,is_active),products(name,active)'),
   ]);
@@ -570,12 +795,14 @@ export default async function InventoryPage({
   const reorderSettings = (reorderSettingsResult.data ?? []) as ReorderSettingRow[];
   const centerPrices = (centerPricesResult.data ?? []) as CenterPriceRow[];
   const openOrders = (openOrdersResult.data ?? []) as any[];
+  const orderHistory = (orderHistoryResult.data ?? []) as ProjectionOrderRow[];
   const inventoryMovements = (inventoryMovementsResult.data ?? []) as InventoryMovementRow[];
   const recurringOrders = (recurringOrdersResult.data ?? []) as any[];
   const centers = (centersResult.data ?? []) as CenterRow[];
   const parLevels = (parLevelsResult.data ?? []) as ParLevelRow[];
   const phase2MigrationMissing = Boolean(reorderSettingsResult.error);
   const phase3MigrationMissing = Boolean(parLevelsResult.error);
+  const projectionHistoryUnavailable = Boolean(orderHistoryResult.error);
   const itemsById = new Map(items.map((item) => [item.id, item]));
   const productsById = new Map(products.map((product) => [product.id, product]));
   const centersById = new Map(centers.map((center) => [center.id, center]));
@@ -630,6 +857,7 @@ export default async function InventoryPage({
       .filter((item) => item.item_type === 'finished_good' && item.product_id)
       .map((item) => [item.product_id as string, item])
   );
+  const recipeByProductId = new Map(recipes.map((recipe) => [recipe.product_id, recipe]));
   const latestActualRunCostByProductId = new Map<string, number>();
   for (const run of runs) {
     if (!latestActualRunCostByProductId.has(run.product_id) && normalizeInventoryNumber(run.actual_unit_cost_cents) > 0) {
@@ -710,6 +938,304 @@ export default async function InventoryPage({
   }
   const usageWeeks = USAGE_LOOKBACK_DAYS / 7;
 
+  type CenterProjectionDraft = {
+    id: string;
+    centerId: string;
+    centerName: string;
+    confidence: PlanningConfidence;
+    productId: string;
+    productNameSnapshot: string;
+    projectedQty: number;
+    historyWeeklyQty: number;
+    recurringNextWeekQty: number;
+    avgQtyPerOrder: number;
+    orderCount: number;
+    lastOrderAt: Date | null;
+    nextOrderAt: Date | null;
+    cadenceDays: number | null;
+    dueByHistory: boolean;
+    dueByRecurring: boolean;
+    schedules: string[];
+  };
+
+  const projectionWeeks = PROJECTION_LOOKBACK_DAYS / 7;
+  const historicalDemandByCenterProduct = new Map<string, {
+    centerId: string;
+    centerName: string;
+    productId: string;
+    productNameSnapshot: string;
+    totalQty: number;
+    orderCount: number;
+    orderDates: Date[];
+    orderQuantities: number[];
+  }>();
+
+  for (const order of orderHistory) {
+    const orderDate = getValidDate(order.created_at);
+    if (!orderDate) continue;
+    const center = relatedOne(order.centers) ?? centersById.get(order.center_id ?? '');
+    if (center?.is_active === false) continue;
+    const centerId = order.center_id ?? `unknown:${order.id}`;
+    const centerName = center?.name?.trim() || 'Unknown center';
+    for (const item of order.order_items ?? []) {
+      if (!item.product_id) continue;
+      const qty = normalizeInventoryNumber(item.qty);
+      if (qty <= 0) continue;
+      const product = productsById.get(item.product_id);
+      if (product?.active === false) continue;
+      const key = `${centerId}:${item.product_id}`;
+      const existing = historicalDemandByCenterProduct.get(key) ?? {
+        centerId,
+        centerName,
+        productId: item.product_id,
+        productNameSnapshot: product?.name?.trim() || item.product_name_snapshot?.trim() || 'Unknown product',
+        totalQty: 0,
+        orderCount: 0,
+        orderDates: [],
+        orderQuantities: [],
+      };
+      existing.totalQty += qty;
+      existing.orderCount += 1;
+      existing.orderDates.push(orderDate);
+      existing.orderQuantities.push(qty);
+      historicalDemandByCenterProduct.set(key, existing);
+    }
+  }
+
+  const centerProjectionByKey = new Map<string, CenterProjectionDraft>();
+  for (const history of historicalDemandByCenterProduct.values()) {
+    const sortedDates = [...history.orderDates].sort((a, b) => b.getTime() - a.getTime());
+    const lastOrderAt = sortedDates[0] ?? null;
+    const cadenceDays = averageGapDays(history.orderDates);
+    const projectedOrderDates = projectedCadenceDates(lastOrderAt, cadenceDays, projectionStart, projectionEndExclusive);
+    const nextOrderAt = projectedOrderDates[0] ?? null;
+    const dueByHistory = projectedOrderDates.length > 0;
+    const avgQtyPerOrder = history.orderCount > 0 ? history.totalQty / history.orderCount : 0;
+    const historyWeeklyQty = history.totalQty / projectionWeeks;
+    const historyRangeQty = (historyWeeklyQty / 7) * projectionRangeDays;
+    const projectedQty = dueByHistory ? Math.max(historyRangeQty, avgQtyPerOrder * projectedOrderDates.length) : historyRangeQty;
+    const confidence = confidenceForOrderPattern({
+      dueByHistory,
+      gapVariation: variationRatio(gapDaysForDates(history.orderDates)),
+      orderCount: history.orderCount,
+      quantityVariation: variationRatio(history.orderQuantities),
+    });
+    centerProjectionByKey.set(`${history.centerId}:${history.productId}`, {
+      id: `${history.centerId}:${history.productId}`,
+      centerId: history.centerId,
+      centerName: history.centerName,
+      confidence,
+      productId: history.productId,
+      productNameSnapshot: history.productNameSnapshot,
+      projectedQty,
+      historyWeeklyQty,
+      recurringNextWeekQty: 0,
+      avgQtyPerOrder,
+      orderCount: history.orderCount,
+      lastOrderAt,
+      nextOrderAt,
+      cadenceDays,
+      dueByHistory,
+      dueByRecurring: false,
+      schedules: [],
+    });
+  }
+
+  for (const recurringOrder of recurringOrders) {
+    const status = recurringOrder.status || (recurringOrder.active === false ? 'paused' : 'active');
+    if (status !== 'active') continue;
+    const center = relatedOne(recurringOrder.centers) ?? centersById.get(recurringOrder.center_id ?? '');
+    if (center?.is_active === false) continue;
+    const frequencyDays = daysForRecurringFrequency(recurringOrder.frequency);
+    const recurringAnchor = getValidDate(recurringOrder.last_generated_at ?? recurringOrder.created_at);
+    const recurringProjectionDates = projectedCadenceDates(recurringAnchor, frequencyDays, projectionStart, projectionEndExclusive);
+    const nextOrderAt = recurringProjectionDates[0] ?? null;
+    if (!nextOrderAt) continue;
+    const centerId = (recurringOrder.center_id as string | null) ?? `recurring:${recurringOrder.id}`;
+    const centerName = center?.name?.trim() || 'Unknown center';
+    const scheduleLabel = labelForRecurringFrequency(recurringOrder.frequency);
+    for (const item of recurringOrder.recurring_order_items ?? []) {
+      if (!item.product_id) continue;
+      const qty = normalizeInventoryNumber(item.qty);
+      if (qty <= 0) continue;
+      const product = productsById.get(item.product_id);
+      if (product?.active === false) continue;
+      const key = `${centerId}:${item.product_id}`;
+      const projectedRecurringQty = qty * recurringProjectionDates.length;
+      const existing: CenterProjectionDraft = centerProjectionByKey.get(key) ?? {
+        id: key,
+        centerId,
+        centerName,
+        confidence: 'High',
+        productId: item.product_id,
+        productNameSnapshot: productName(product),
+        projectedQty: 0,
+        historyWeeklyQty: 0,
+        recurringNextWeekQty: 0,
+        avgQtyPerOrder: 0,
+        orderCount: 0,
+        lastOrderAt: null,
+        nextOrderAt,
+        cadenceDays: null,
+        dueByHistory: false,
+        dueByRecurring: false,
+        schedules: [],
+      };
+      existing.recurringNextWeekQty += projectedRecurringQty;
+      existing.projectedQty = Math.max(existing.projectedQty, existing.recurringNextWeekQty);
+      existing.dueByRecurring = true;
+      existing.confidence = strongestConfidence([existing.confidence, 'High']);
+      existing.nextOrderAt = existing.nextOrderAt && existing.nextOrderAt <= nextOrderAt ? existing.nextOrderAt : nextOrderAt;
+      if (!existing.schedules.includes(scheduleLabel)) existing.schedules.push(scheduleLabel);
+      centerProjectionByKey.set(key, existing);
+    }
+  }
+
+  const projectionByProductId = new Map<string, {
+    product: ProductRow;
+    projectedQty: number;
+    historyWeeklyQty: number;
+    recurringNextWeekQty: number;
+    dueCenterCount: number;
+    supportOrderCount: number;
+    centerRows: ProductProjectionCenterRow[];
+  }>();
+
+  for (const centerProjection of centerProjectionByKey.values()) {
+    if (centerProjection.projectedQty <= 0) continue;
+    const product = productsById.get(centerProjection.productId) ?? {
+      id: centerProjection.productId,
+      name: centerProjection.productNameSnapshot,
+      sku: null,
+      active: true,
+    };
+    if (product.active === false) continue;
+    const existing = projectionByProductId.get(centerProjection.productId) ?? {
+      product,
+      projectedQty: 0,
+      historyWeeklyQty: 0,
+      recurringNextWeekQty: 0,
+      dueCenterCount: 0,
+      supportOrderCount: 0,
+      centerRows: [],
+    };
+    const sourceLabel = centerProjection.dueByRecurring
+      ? 'Recurring due'
+      : centerProjection.dueByHistory
+        ? 'Likely due'
+        : 'Average demand';
+    existing.projectedQty += centerProjection.projectedQty;
+    existing.historyWeeklyQty += centerProjection.historyWeeklyQty;
+    existing.recurringNextWeekQty += centerProjection.recurringNextWeekQty;
+    existing.supportOrderCount += centerProjection.orderCount;
+    if (centerProjection.dueByHistory || centerProjection.dueByRecurring) existing.dueCenterCount += 1;
+    existing.centerRows.push({
+      id: centerProjection.id,
+      centerName: centerProjection.centerName,
+      confidence: centerProjection.confidence,
+      projectedQty: centerProjection.projectedQty,
+      historyWeeklyQty: centerProjection.historyWeeklyQty,
+      recurringNextWeekQty: centerProjection.recurringNextWeekQty,
+      avgQtyPerOrder: centerProjection.avgQtyPerOrder,
+      orderCount: centerProjection.orderCount,
+      lastOrderAt: centerProjection.lastOrderAt,
+      nextOrderAt: centerProjection.nextOrderAt,
+      cadenceDays: centerProjection.cadenceDays,
+      sourceLabel,
+      schedules: centerProjection.schedules,
+    });
+    projectionByProductId.set(centerProjection.productId, existing);
+  }
+
+  const parQtyByProductId = new Map<string, number>();
+  const minimumQtyByProductId = new Map<string, number>();
+  for (const parLevel of parLevels) {
+    parQtyByProductId.set(parLevel.product_id, (parQtyByProductId.get(parLevel.product_id) ?? 0) + normalizeInventoryNumber(parLevel.par_qty));
+    minimumQtyByProductId.set(parLevel.product_id, (minimumQtyByProductId.get(parLevel.product_id) ?? 0) + normalizeInventoryNumber(parLevel.minimum_qty));
+  }
+
+  const productProjectionRows: ProductProjectionRow[] = [...projectionByProductId.values()]
+    .map((row) => {
+      const finishedItem = finishedItemByProductId.get(row.product.id);
+      const onHand = finishedItem ? lotSummaryByItem.get(finishedItem.id)?.remaining ?? 0 : 0;
+      const reserved = reservedQtyByProductId.get(row.product.id) ?? 0;
+      const available = onHand - reserved;
+      const confidence = strongestConfidence(row.centerRows.map((center) => center.confidence));
+      const planningRules = planningRulesForProduct(
+        row.product,
+        finishedItem,
+        finishedItem ? reorderSettingByItemId.get(finishedItem.id) : undefined,
+        minimumQtyByProductId.get(row.product.id) ?? 0
+      );
+      const recommendation = recommendInventoryAction({
+        availableQty: available,
+        confidence,
+        expectedDemandQty: row.projectedQty,
+        likelyCustomerCount: row.dueCenterCount,
+        rules: planningRules,
+      });
+      return {
+        actionLabel: recommendation.actionLabel,
+        actionVerb: recommendation.actionVerb,
+        product: row.product,
+        displayProjectedQty: recommendation.displayProjectedQty,
+        projectedQty: row.projectedQty,
+        historyWeeklyQty: row.historyWeeklyQty,
+        recurringNextWeekQty: row.recurringNextWeekQty,
+        onHand,
+        reserved,
+        available,
+        recommendationReason: recommendation.reason,
+        rawNeededQty: recommendation.rawNeededQty,
+        suggestedProductionQty: recommendation.recommendedQty,
+        dueCenterCount: row.dueCenterCount,
+        supportOrderCount: row.supportOrderCount,
+        confidence,
+        hasRecipe: recipeByProductId.has(row.product.id),
+        planningStatus: recommendation.status,
+        centerRows: row.centerRows.sort((a, b) => b.projectedQty - a.projectedQty || a.centerName.localeCompare(b.centerName)),
+      };
+    })
+    .filter((row) => row.projectedQty > 0 || row.suggestedProductionQty > 0)
+    .sort((a, b) => b.suggestedProductionQty - a.suggestedProductionQty || b.displayProjectedQty - a.displayProjectedQty || productName(a.product).localeCompare(productName(b.product)));
+
+  const totalProjectedMakeQty = productProjectionRows.reduce((sum, row) => sum + row.suggestedProductionQty, 0);
+  const projectedComponentDemandByItemId = new Map<string, { item: InventoryItemRow; requiredQty: number; sourceProducts: Set<string> }>();
+  for (const row of productProjectionRows) {
+    if (row.suggestedProductionQty <= 0) continue;
+    const recipe = recipeByProductId.get(row.product.id);
+    if (!recipe) continue;
+    const outputQty = normalizeInventoryNumber(recipe.output_qty) || 1;
+    const wasteMultiplier = 1 + (normalizeInventoryNumber(recipe.waste_percent) / 100);
+    for (const component of recipe.product_recipe_components ?? []) {
+      const item = relatedOne(component.inventory_items) ?? itemsById.get(component.inventory_item_id);
+      if (!item) continue;
+      try {
+        const recipeUnitQty = (normalizeInventoryNumber(component.quantity) / outputQty) * row.suggestedProductionQty * wasteMultiplier;
+        const baseQty = convertInventoryQuantity(recipeUnitQty, component.unit, item.base_unit);
+        const existing = projectedComponentDemandByItemId.get(item.id) ?? { item, requiredQty: 0, sourceProducts: new Set<string>() };
+        existing.requiredQty += baseQty;
+        existing.sourceProducts.add(row.product.id);
+        projectedComponentDemandByItemId.set(item.id, existing);
+      } catch {
+        // Unsupported unit conversions are handled in recipe setup and production-run validation.
+      }
+    }
+  }
+
+  const projectedComponentRows = [...projectedComponentDemandByItemId.values()]
+    .map((row) => {
+      const onHand = lotSummaryByItem.get(row.item.id)?.remaining ?? 0;
+      return {
+        item: row.item,
+        requiredQty: row.requiredQty,
+        onHand,
+        shortageQty: Math.max(0, row.requiredQty - onHand),
+        sourceProductCount: row.sourceProducts.size,
+      };
+    })
+    .sort((a, b) => b.shortageQty - a.shortageQty || b.requiredQty - a.requiredQty || itemDisplayName(a.item).localeCompare(itemDisplayName(b.item)));
+
   const availabilityRows = products
     .map((product) => {
       const finishedItem = finishedItemByProductId.get(product.id);
@@ -726,13 +1252,6 @@ export default async function InventoryPage({
       };
     })
     .filter((row) => row.onHand || row.reserved || row.recurring || row.costCents);
-
-  const parQtyByProductId = new Map<string, number>();
-  const minimumQtyByProductId = new Map<string, number>();
-  for (const parLevel of parLevels) {
-    parQtyByProductId.set(parLevel.product_id, (parQtyByProductId.get(parLevel.product_id) ?? 0) + normalizeInventoryNumber(parLevel.par_qty));
-    minimumQtyByProductId.set(parLevel.product_id, (minimumQtyByProductId.get(parLevel.product_id) ?? 0) + normalizeInventoryNumber(parLevel.minimum_qty));
-  }
 
   const productionPlanRows = products
     .map((product) => {
@@ -884,6 +1403,7 @@ export default async function InventoryPage({
     .reduce((sum, item) => sum + (lotSummaryByItem.get(item.id)?.remaining ?? 0), 0);
   const activeLotCount = lots.filter((lot) => normalizeInventoryNumber(lot.quantity_remaining) > 0).length;
   const missingRecipeCount = activeProducts.filter((product) => !recipes.some((recipe) => recipe.product_id === product.id)).length;
+  const projectionAttentionRows = productProjectionRows.filter((row) => row.suggestedProductionQty > 0);
   const productionAttentionRows = productionPlanRows.filter((row) => row.suggestedProductionQty > 0);
   const reorderAttentionRows = reorderRows.filter((row) => {
     const leadTimeDays = Math.max(0, Math.trunc(normalizeInventoryNumber(row.setting?.lead_time_days) || 14));
@@ -892,13 +1412,22 @@ export default async function InventoryPage({
   });
   const marginAttentionRows = productMarginRows.filter((row) => row.minPriceCents > 0 && row.minMarginPercent < 35);
   const tabMetrics: Record<InventoryTab, string> = {
-    overview: `${productionAttentionRows.length + reorderAttentionRows.length + marginAttentionRows.length} alerts`,
+    overview: `${projectionAttentionRows.length + productionAttentionRows.length + reorderAttentionRows.length + marginAttentionRows.length} alerts`,
     setup: `${missingRecipeCount} missing`,
-    planning: `${productionAttentionRows.length + reorderAttentionRows.length} alerts`,
+    planning: `${projectionAttentionRows.length} projected`,
     production: `${batchVarianceRows.length} batches`,
     stock: `${activeLotCount} lots`,
     margins: `${marginAttentionRows.length} alerts`,
   };
+  const projectionWindowLabel = `${formatProjectionDate(projectionStart)} - ${formatProjectionDate(normalizedProjectionEndInclusive)}`;
+  const projectionChecklistKey = `${formatProjectionInputDate(projectionStart)}:${formatProjectionInputDate(normalizedProjectionEndInclusive)}`;
+  const totalProjectedOrderQty = productProjectionRows.reduce((sum, row) => sum + row.displayProjectedQty, 0);
+  const quickProjectionLinkClass = (preset: 'this_week' | 'next_week') =>
+    `rounded-2xl border p-4 text-left text-sm transition ${
+      projectionPreset === preset
+        ? 'border-teal-200 bg-teal-50 text-teal-950 shadow-sm'
+        : 'border-slate-200 bg-white/70 text-slate-700 hover:border-teal-200 hover:bg-white'
+    }`;
 
   return (
     <div className="flex flex-col gap-6">
@@ -1161,6 +1690,190 @@ export default async function InventoryPage({
             </div>
           ))}
           {!availabilityRows.length ? <p className="rounded-2xl border border-slate-200 bg-white/70 p-4 text-sm text-slate-500">Produce finished inventory or receive orders to see availability.</p> : null}
+        </div>
+      </section>
+
+      <section id="likely-orders" className="card order-[6] scroll-mt-28 space-y-5" style={activeTab !== 'planning' ? { display: 'none' } : undefined}>
+        <div className="space-y-4">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+            <div>
+              <span className="eyebrow">Likely Orders</span>
+              <h2 className="mt-3 text-2xl font-semibold tracking-tight text-slate-950">Products likely to be ordered</h2>
+              <p className="mt-2 text-sm text-slate-500">
+                Showing {projectionWindowLabel}. Uses the last {PROJECTION_LOOKBACK_DAYS} days of center order history, matching order cadence, recurring schedules due in the range, and current finished stock.
+              </p>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-3 lg:min-w-[28rem]">
+              <div className="rounded-2xl border border-slate-200 bg-white/70 p-4">
+                <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">Products</p>
+                <p className="mt-2 text-2xl font-semibold text-slate-950">{productProjectionRows.length}</p>
+              </div>
+              <div className="rounded-2xl border border-slate-200 bg-white/70 p-4">
+                <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">Likely units</p>
+                <p className="mt-2 text-2xl font-semibold text-slate-950">{formatInventoryQuantity(totalProjectedOrderQty, 'each')}</p>
+              </div>
+              <div className="rounded-2xl border border-teal-100 bg-teal-50/70 p-4">
+                <p className="text-xs font-semibold uppercase tracking-[0.16em] text-teal-800">Make</p>
+                <p className="mt-2 text-2xl font-semibold text-slate-950">{formatInventoryQuantity(totalProjectedMakeQty, 'each')}</p>
+              </div>
+            </div>
+          </div>
+          <div className="grid gap-3 lg:grid-cols-[minmax(0,0.7fr)_minmax(0,0.7fr)_minmax(0,1.6fr)]">
+            <Link href={inventoryHref({ tab: 'planning', projection_preset: 'this_week' })} className={quickProjectionLinkClass('this_week')}>
+              <span className="font-semibold">This week</span>
+              <span className="mt-1 block text-xs text-slate-500">{formatProjectionDate(thisWeekStart)} - {formatProjectionDate(addDays(thisWeekStart, 6))}</span>
+            </Link>
+            <Link href={inventoryHref({ tab: 'planning', projection_preset: 'next_week' })} className={quickProjectionLinkClass('next_week')}>
+              <span className="font-semibold">Next week</span>
+              <span className="mt-1 block text-xs text-slate-500">{formatProjectionDate(nextWeekStart)} - {formatProjectionDate(addDays(nextWeekStart, 6))}</span>
+            </Link>
+            <form method="get" action="/admin/inventory" className="rounded-2xl border border-slate-200 bg-white/70 p-4">
+              <input type="hidden" name="tab" value="planning" />
+              <input type="hidden" name="projection_preset" value="custom" />
+              <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] sm:items-end">
+                <label className="space-y-2 text-sm font-medium text-slate-700">
+                  Start
+                  <input className="input" type="date" name="projection_start" defaultValue={formatProjectionInputDate(projectionStart)} min={formatProjectionInputDate(today)} />
+                </label>
+                <label className="space-y-2 text-sm font-medium text-slate-700">
+                  End
+                  <input className="input" type="date" name="projection_end" defaultValue={formatProjectionInputDate(normalizedProjectionEndInclusive)} min={formatProjectionInputDate(today)} />
+                </label>
+                <button className="btn-primary w-full sm:w-auto">Show range</button>
+              </div>
+            </form>
+          </div>
+          {projectionHistoryUnavailable ? (
+            <p className="rounded-2xl border border-amber-200 bg-amber-50/80 p-4 text-sm text-amber-900">Order history could not be loaded for this projection. The rest of inventory planning can still be reviewed.</p>
+          ) : null}
+          <div className="space-y-3">
+            {productProjectionRows.map((row) => (
+              <LikelyOrderChecklistItem
+                key={row.product.id}
+                storageKey={projectionChecklistKey}
+                productId={row.product.id}
+                productName={productName(row.product)}
+                likelyQty={formatInventoryQuantity(row.displayProjectedQty, 'each')}
+                actionLabel={row.actionLabel}
+              >
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                  <div className="min-w-0">
+                    <p className="font-semibold text-slate-950">{productName(row.product)}</p>
+                    <p className="mt-1 text-sm text-slate-500">
+                      {row.product.sku ? `${row.product.sku} - ` : ''}{row.supportOrderCount} history orders - {row.dueCenterCount} centers likely in this range
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap gap-2 sm:justify-end">
+                    <span className={`rounded-full px-3 py-1 text-xs font-semibold ${row.planningStatus === 'Make / Order Now' ? 'bg-rose-50 text-rose-700' : row.planningStatus === 'Watch' ? 'bg-amber-50 text-amber-700' : 'bg-teal-50 text-teal-800'}`}>
+                      {row.actionLabel}
+                    </span>
+                    <span className={`rounded-full px-3 py-1 text-xs font-semibold ${row.confidence === 'High' ? 'bg-teal-50 text-teal-800' : row.confidence === 'Medium' ? 'bg-amber-50 text-amber-700' : 'bg-slate-100 text-slate-600'}`}>
+                      {row.confidence} confidence
+                    </span>
+                  </div>
+                </div>
+                <div className="mt-4 grid grid-cols-2 gap-3 text-sm md:grid-cols-5">
+                  <div>
+                    <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Likely</p>
+                    <p className="mt-1 font-semibold text-slate-950">{formatInventoryQuantity(row.displayProjectedQty, 'each')}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Available</p>
+                    <p className={`mt-1 font-semibold ${row.available < 0 ? 'text-rose-700' : 'text-slate-950'}`}>{formatInventoryQuantity(row.available, 'each')}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Recommended</p>
+                    <p className={`mt-1 font-semibold ${row.planningStatus === 'Make / Order Now' ? 'text-rose-700' : 'text-slate-950'}`}>{row.actionLabel}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Recurring due</p>
+                    <p className="mt-1 font-semibold text-slate-950">{formatInventoryQuantity(row.recurringNextWeekQty, 'each')}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Status</p>
+                    <p className={`mt-1 font-semibold ${row.planningStatus === 'Make / Order Now' ? 'text-rose-700' : row.planningStatus === 'Watch' ? 'text-amber-700' : 'text-teal-800'}`}>{row.planningStatus}</p>
+                  </div>
+                </div>
+                <p className="mt-3 rounded-2xl border border-slate-200 bg-slate-50/70 p-3 text-sm text-slate-600">{row.recommendationReason}</p>
+                {row.centerRows.length ? (
+                  <details className="mt-4 rounded-2xl border border-slate-200 bg-slate-50/70">
+                    <summary className="cursor-pointer px-4 py-3 text-sm font-semibold text-slate-950">Center timing ({row.centerRows.length})</summary>
+                    <div className="space-y-2 border-t border-slate-200 p-3">
+                      {row.centerRows.slice(0, 6).map((center) => (
+                        <div key={center.id} className="rounded-xl border border-white bg-white/80 p-3 text-sm">
+                          <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                            <div className="min-w-0">
+                              <p className="font-semibold text-slate-950">{center.centerName}</p>
+                              <p className="mt-1 text-slate-500">
+                                Likely {formatInventoryQuantity(displayWholeProjectionQty(center.projectedQty), 'each')} - Avg order {formatInventoryQuantity(displayWholeProjectionQty(center.avgQtyPerOrder), 'each')}
+                              </p>
+                            </div>
+                            <span className={`w-fit rounded-full px-3 py-1 text-xs font-semibold ${center.sourceLabel === 'Recurring due' ? 'bg-indigo-50 text-indigo-700' : center.sourceLabel === 'Likely due' ? 'bg-amber-50 text-amber-700' : 'bg-slate-100 text-slate-600'}`}>
+                              {center.sourceLabel} - {center.confidence}
+                            </span>
+                          </div>
+                          <p className="mt-2 text-xs text-slate-500">
+                            Last {formatProjectionDate(center.lastOrderAt)} - Expected {formatProjectionDate(center.nextOrderAt)}
+                            {center.cadenceDays ? ` - ${Math.round(center.cadenceDays)} day average` : ''}
+                            {center.schedules.length ? ` - ${center.schedules.join(', ')}` : ''}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  </details>
+                ) : null}
+                {row.suggestedProductionQty > 0 && row.hasRecipe ? (
+                  <Link className="btn-secondary mt-4 w-full sm:w-auto" href={inventoryHref({ tab: 'production', produce_product: row.product.id, produce_qty: String(row.suggestedProductionQty) })}>
+                    Plan this run
+                  </Link>
+                ) : null}
+              </LikelyOrderChecklistItem>
+            ))}
+            {!productProjectionRows.length ? (
+              <p className="rounded-2xl border border-slate-200 bg-white/70 p-4 text-sm text-slate-500">No likely orders for {projectionWindowLabel}. Try a wider custom range or wait for more center order history.</p>
+            ) : null}
+          </div>
+        </div>
+
+      </section>
+
+      <section id="projection-materials" className="card order-[7] scroll-mt-28 space-y-4" style={activeTab !== 'planning' ? { display: 'none' } : undefined}>
+        <div>
+          <span className="eyebrow">Materials To Prep</span>
+          <h2 className="mt-3 text-2xl font-semibold tracking-tight text-slate-950">Ingredients for projected runs</h2>
+          <p className="mt-2 text-sm text-slate-500">Recipe components needed to make the projected shortfall for {projectionWindowLabel}, compared with current raw material and supply stock.</p>
+        </div>
+        <div className="space-y-3">
+          {projectedComponentRows.slice(0, 12).map((row) => (
+            <div key={row.item.id} className="rounded-2xl border border-slate-200 bg-white/70 p-4">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="font-semibold text-slate-950">{itemDisplayName(row.item)}</p>
+                  <p className="mt-1 text-sm text-slate-500">{row.sourceProductCount} projected product{row.sourceProductCount === 1 ? '' : 's'}</p>
+                </div>
+                <span className={`rounded-full px-3 py-1 text-xs font-semibold ${row.shortageQty > 0 ? 'bg-rose-50 text-rose-700' : 'bg-teal-50 text-teal-800'}`}>
+                  {row.shortageQty > 0 ? 'Short' : 'Covered'}
+                </span>
+              </div>
+              <div className="mt-4 grid grid-cols-3 gap-2 text-sm">
+                <div>
+                  <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Needed</p>
+                  <p className="mt-1 font-semibold text-slate-950">{formatInventoryQuantity(row.requiredQty, row.item.base_unit)}</p>
+                </div>
+                <div>
+                  <p className="text-xs uppercase tracking-[0.14em] text-slate-500">On hand</p>
+                  <p className="mt-1 font-semibold text-slate-950">{formatInventoryQuantity(row.onHand, row.item.base_unit)}</p>
+                </div>
+                <div>
+                  <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Short</p>
+                  <p className={`mt-1 font-semibold ${row.shortageQty > 0 ? 'text-rose-700' : 'text-slate-950'}`}>{formatInventoryQuantity(row.shortageQty, row.item.base_unit)}</p>
+                </div>
+              </div>
+            </div>
+          ))}
+          {!projectedComponentRows.length ? (
+            <p className="rounded-2xl border border-slate-200 bg-white/70 p-4 text-sm text-slate-500">Projected material needs appear after forecasted products have recipes and a make quantity.</p>
+          ) : null}
         </div>
       </section>
 

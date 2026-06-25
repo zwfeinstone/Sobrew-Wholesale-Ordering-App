@@ -136,8 +136,81 @@ function formatLongDate(date: Date) {
   return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
-function rangeHref(range: ProspectingRange) {
-  return `/admin/sales/prospecting?range=${range}`;
+function parseDateParam(value: string | string[] | undefined) {
+  if (typeof value !== 'string') return null;
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!match) return null;
+
+  const year = Number.parseInt(match[1], 10);
+  const month = Number.parseInt(match[2], 10);
+  const day = Number.parseInt(match[3], 10);
+  const date = new Date(year, month - 1, day);
+
+  if (date.getFullYear() !== year || date.getMonth() !== month - 1 || date.getDate() !== day) {
+    return null;
+  }
+
+  return startOfDay(date);
+}
+
+function normalizeDateWindow(from: string | string[] | undefined, to: string | string[] | undefined) {
+  let start = parseDateParam(from);
+  let end = parseDateParam(to);
+
+  if (start && end && start.getTime() > end.getTime()) {
+    [start, end] = [end, start];
+  }
+
+  return {
+    start,
+    end,
+    fromKey: start ? formatDateKey(start) : '',
+    toKey: end ? formatDateKey(end) : '',
+    isActive: Boolean(start || end),
+  };
+}
+
+function formatDateWindowLabel(start: Date | null, end: Date | null) {
+  if (start && end) return `${formatLongDate(start)} - ${formatLongDate(end)}`;
+  if (start) return `Since ${formatLongDate(start)}`;
+  if (end) return `Through ${formatLongDate(end)}`;
+  return 'All time';
+}
+
+function formDateParam(formData: FormData, name: string) {
+  const value = String(formData.get(name) ?? '').trim();
+  return /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : '';
+}
+
+function prospectingHref({
+  range,
+  from,
+  to,
+  toast,
+}: {
+  range: ProspectingRange;
+  from?: string;
+  to?: string;
+  toast?: string;
+}) {
+  const query = new URLSearchParams({ range });
+  if (from) query.set('from', from);
+  if (to) query.set('to', to);
+  if (toast) query.set('toast', toast);
+  return `/admin/sales/prospecting?${query.toString()}`;
+}
+
+function rangeHref(range: ProspectingRange, from?: string, to?: string) {
+  return prospectingHref({ range, from, to });
+}
+
+function DateWindowHiddenInputs({ from, to }: { from: string; to: string }) {
+  return (
+    <>
+      <input type="hidden" name="from" value={from} />
+      <input type="hidden" name="to" value={to} />
+    </>
+  );
 }
 
 function emptyCallTotals(): CallTotals {
@@ -355,13 +428,12 @@ function FormMessages({ toast }: { toast: string }) {
   return message ? <div className={`rounded-2xl border px-4 py-3 text-sm font-semibold ${message.tone}`}>{message.text}</div> : null;
 }
 
-function prospectingToastHref(range: ProspectingRange, toast: string) {
-  const query = new URLSearchParams({ range, toast });
-  return `/admin/sales/prospecting?${query.toString()}`;
+function prospectingToastHref(range: ProspectingRange, toast: string, from?: string, to?: string) {
+  return prospectingHref({ range, from, to, toast });
 }
 
-function redirectWithToast(range: ProspectingRange, toast: string) {
-  redirect(prospectingToastHref(range, toast));
+function redirectWithToast(range: ProspectingRange, toast: string, from?: string, to?: string) {
+  redirect(prospectingToastHref(range, toast, from, to));
 }
 
 function callBlockPayload(formData: FormData) {
@@ -386,13 +458,15 @@ async function saveCallBlock(formData: FormData) {
   'use server';
 
   const range = normalizeRange(String(formData.get('range') ?? 'daily'));
-  await requireAdminWriteAccess(prospectingToastHref(range, 'admin_write_denied'));
+  const from = formDateParam(formData, 'from');
+  const to = formDateParam(formData, 'to');
+  await requireAdminWriteAccess(prospectingToastHref(range, 'admin_write_denied', from, to));
 
   const supabase = await createClient();
   const payload = callBlockPayload(formData);
 
   if (!/^\d{4}-\d{2}-\d{2}$/.test(payload.activity_date)) {
-    redirectWithToast(range, 'invalid_date');
+    redirectWithToast(range, 'invalid_date', from, to);
   }
 
   const { data } = await supabase.auth.getUser();
@@ -401,25 +475,27 @@ async function saveCallBlock(formData: FormData) {
     created_by: data.user?.id ?? null,
   });
 
-  redirectWithToast(range, error ? 'save_error' : 'call_saved');
+  redirectWithToast(range, error ? 'save_error' : 'call_saved', from, to);
 }
 
 async function updateCallBlock(formData: FormData) {
   'use server';
 
   const range = normalizeRange(String(formData.get('range') ?? 'daily'));
-  await requireAdminWriteAccess(prospectingToastHref(range, 'admin_write_denied'));
+  const from = formDateParam(formData, 'from');
+  const to = formDateParam(formData, 'to');
+  await requireAdminWriteAccess(prospectingToastHref(range, 'admin_write_denied', from, to));
 
   const supabase = await createClient();
   const blockId = String(formData.get('block_id') ?? '').trim();
   const payload = callBlockPayload(formData);
 
   if (!blockId) {
-    redirectWithToast(range, 'missing_block');
+    redirectWithToast(range, 'missing_block', from, to);
   }
 
   if (!/^\d{4}-\d{2}-\d{2}$/.test(payload.activity_date)) {
-    redirectWithToast(range, 'invalid_date');
+    redirectWithToast(range, 'invalid_date', from, to);
   }
 
   const { error } = await supabase
@@ -430,24 +506,26 @@ async function updateCallBlock(formData: FormData) {
     })
     .eq('id', blockId);
 
-  redirectWithToast(range, error ? 'update_error' : 'call_updated');
+  redirectWithToast(range, error ? 'update_error' : 'call_updated', from, to);
 }
 
 async function deleteCallBlock(formData: FormData) {
   'use server';
 
   const range = normalizeRange(String(formData.get('range') ?? 'daily'));
-  await requireAdminWriteAccess(prospectingToastHref(range, 'admin_write_denied'));
+  const from = formDateParam(formData, 'from');
+  const to = formDateParam(formData, 'to');
+  await requireAdminWriteAccess(prospectingToastHref(range, 'admin_write_denied', from, to));
 
   const supabase = await createClient();
   const blockId = String(formData.get('block_id') ?? '').trim();
 
   if (!blockId) {
-    redirectWithToast(range, 'missing_block');
+    redirectWithToast(range, 'missing_block', from, to);
   }
 
   const { error, data } = await supabase.from('sales_prospecting_blocks').delete().eq('id', blockId).select('id');
-  redirectWithToast(range, error || !data?.length ? 'delete_error' : 'call_deleted');
+  redirectWithToast(range, error || !data?.length ? 'delete_error' : 'call_deleted', from, to);
 }
 
 function followUpBlockPayload(formData: FormData) {
@@ -471,13 +549,15 @@ async function saveFollowUpBlock(formData: FormData) {
   'use server';
 
   const range = normalizeRange(String(formData.get('range') ?? 'daily'));
-  await requireAdminWriteAccess(prospectingToastHref(range, 'admin_write_denied'));
+  const from = formDateParam(formData, 'from');
+  const to = formDateParam(formData, 'to');
+  await requireAdminWriteAccess(prospectingToastHref(range, 'admin_write_denied', from, to));
 
   const supabase = await createClient();
   const payload = followUpBlockPayload(formData);
 
   if (!/^\d{4}-\d{2}-\d{2}$/.test(payload.activity_date)) {
-    redirectWithToast(range, 'invalid_date');
+    redirectWithToast(range, 'invalid_date', from, to);
   }
 
   const { data } = await supabase.auth.getUser();
@@ -486,25 +566,27 @@ async function saveFollowUpBlock(formData: FormData) {
     created_by: data.user?.id ?? null,
   });
 
-  redirectWithToast(range, error ? 'save_error' : 'followup_saved');
+  redirectWithToast(range, error ? 'save_error' : 'followup_saved', from, to);
 }
 
 async function updateFollowUpBlock(formData: FormData) {
   'use server';
 
   const range = normalizeRange(String(formData.get('range') ?? 'daily'));
-  await requireAdminWriteAccess(prospectingToastHref(range, 'admin_write_denied'));
+  const from = formDateParam(formData, 'from');
+  const to = formDateParam(formData, 'to');
+  await requireAdminWriteAccess(prospectingToastHref(range, 'admin_write_denied', from, to));
 
   const supabase = await createClient();
   const blockId = String(formData.get('block_id') ?? '').trim();
   const payload = followUpBlockPayload(formData);
 
   if (!blockId) {
-    redirectWithToast(range, 'missing_block');
+    redirectWithToast(range, 'missing_block', from, to);
   }
 
   if (!/^\d{4}-\d{2}-\d{2}$/.test(payload.activity_date)) {
-    redirectWithToast(range, 'invalid_date');
+    redirectWithToast(range, 'invalid_date', from, to);
   }
 
   const { error } = await supabase
@@ -515,24 +597,26 @@ async function updateFollowUpBlock(formData: FormData) {
     })
     .eq('id', blockId);
 
-  redirectWithToast(range, error ? 'update_error' : 'followup_updated');
+  redirectWithToast(range, error ? 'update_error' : 'followup_updated', from, to);
 }
 
 async function deleteFollowUpBlock(formData: FormData) {
   'use server';
 
   const range = normalizeRange(String(formData.get('range') ?? 'daily'));
-  await requireAdminWriteAccess(prospectingToastHref(range, 'admin_write_denied'));
+  const from = formDateParam(formData, 'from');
+  const to = formDateParam(formData, 'to');
+  await requireAdminWriteAccess(prospectingToastHref(range, 'admin_write_denied', from, to));
 
   const supabase = await createClient();
   const blockId = String(formData.get('block_id') ?? '').trim();
 
   if (!blockId) {
-    redirectWithToast(range, 'missing_block');
+    redirectWithToast(range, 'missing_block', from, to);
   }
 
   const { error, data } = await supabase.from('sales_prospecting_followup_blocks').delete().eq('id', blockId).select('id');
-  redirectWithToast(range, error || !data?.length ? 'delete_error' : 'followup_deleted');
+  redirectWithToast(range, error || !data?.length ? 'delete_error' : 'followup_deleted', from, to);
 }
 
 export default async function ProspectingPage({
@@ -544,21 +628,35 @@ export default async function ProspectingPage({
   const activeRange = normalizeRange(searchParams?.range);
   const activeRangeLabel = PROSPECTING_RANGES.find((range) => range.id === activeRange)?.label ?? 'Daily';
   const toast = typeof searchParams?.toast === 'string' ? searchParams.toast : '';
-  const todayKey = formatDateKey(new Date());
+  const today = startOfDay(new Date());
+  const todayKey = formatDateKey(today);
+  const thisWeekStart = startOfWeek(today);
+  const thisMonthStart = startOfMonth(today);
+  const lastWeekStart = addDays(thisWeekStart, -7);
+  const lastWeekEnd = addDays(thisWeekStart, -1);
+  const dateWindow = normalizeDateWindow(searchParams?.from, searchParams?.to);
+  const activeWindowLabel = formatDateWindowLabel(dateWindow.start, dateWindow.end);
+  const quickWindows = [
+    { label: 'This week', from: formatDateKey(thisWeekStart), to: todayKey },
+    { label: 'Last week', from: formatDateKey(lastWeekStart), to: formatDateKey(lastWeekEnd) },
+    { label: 'This month', from: formatDateKey(thisMonthStart), to: todayKey },
+    { label: 'All time', from: '', to: '' },
+  ];
 
-  const { data: callBlocks, error: callBlocksError } = await supabase
-    .from('sales_prospecting_blocks')
-    .select('*')
-    .order('activity_date', { ascending: false })
-    .order('created_at', { ascending: false })
-    .limit(1000);
+  let callBlocksQuery = supabase.from('sales_prospecting_blocks').select('*');
 
-  const { data: followUpBlocks, error: followUpBlocksError } = await supabase
-    .from('sales_prospecting_followup_blocks')
-    .select('*')
-    .order('activity_date', { ascending: false })
-    .order('created_at', { ascending: false })
-    .limit(1000);
+  if (dateWindow.fromKey) callBlocksQuery = callBlocksQuery.gte('activity_date', dateWindow.fromKey);
+  if (dateWindow.toKey) callBlocksQuery = callBlocksQuery.lte('activity_date', dateWindow.toKey);
+
+  let followUpBlocksQuery = supabase.from('sales_prospecting_followup_blocks').select('*');
+
+  if (dateWindow.fromKey) followUpBlocksQuery = followUpBlocksQuery.gte('activity_date', dateWindow.fromKey);
+  if (dateWindow.toKey) followUpBlocksQuery = followUpBlocksQuery.lte('activity_date', dateWindow.toKey);
+
+  const [{ data: callBlocks, error: callBlocksError }, { data: followUpBlocks, error: followUpBlocksError }] = await Promise.all([
+    callBlocksQuery.order('activity_date', { ascending: false }).order('created_at', { ascending: false }).limit(1000),
+    followUpBlocksQuery.order('activity_date', { ascending: false }).order('created_at', { ascending: false }).limit(1000),
+  ]);
 
   const blocks = callBlocksError ? [] : ((callBlocks ?? []) as CallBlock[]);
   const followUps = followUpBlocksError ? [] : ((followUpBlocks ?? []) as FollowUpBlock[]);
@@ -611,6 +709,53 @@ export default async function ProspectingPage({
         </div>
       </section>
 
+      <section className="card space-y-4">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Call Stats Window</p>
+            <h2 className="mt-2 text-xl font-semibold tracking-tight text-slate-950">{activeWindowLabel}</h2>
+            <p className="mt-1 text-sm leading-6 text-slate-500">Totals, breakdowns, and the report table use this activity window.</p>
+          </div>
+          <span className="w-fit rounded-full bg-slate-100 px-3 py-1 text-sm font-semibold text-slate-700">
+            {blocks.length} call block{blocks.length === 1 ? '' : 's'} - {followUps.length} follow-up block{followUps.length === 1 ? '' : 's'}
+          </span>
+        </div>
+        <form className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto_auto] lg:items-end">
+          <input type="hidden" name="range" value={activeRange} />
+          <label className="text-sm font-semibold text-slate-700">
+            Start date
+            <input className="input mt-2" name="from" type="date" defaultValue={dateWindow.fromKey} />
+          </label>
+          <label className="text-sm font-semibold text-slate-700">
+            End date
+            <input className="input mt-2" name="to" type="date" defaultValue={dateWindow.toKey} />
+          </label>
+          <button className="btn-primary w-full lg:w-auto" type="submit">Apply Range</button>
+          {dateWindow.isActive ? (
+            <Link className="btn-secondary inline-flex w-full lg:w-auto" href={rangeHref(activeRange)}>
+              Clear
+            </Link>
+          ) : null}
+        </form>
+        <nav aria-label="Quick prospecting date ranges" className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+          {quickWindows.map((window) => {
+            const active = dateWindow.fromKey === window.from && dateWindow.toKey === window.to;
+            return (
+              <Link
+                key={window.label}
+                aria-current={active ? 'page' : undefined}
+                className={`rounded-2xl border px-4 py-3 text-sm font-semibold transition-all duration-200 ${
+                  active ? 'border-teal-200 bg-teal-50 text-teal-900' : 'border-slate-200 bg-white/60 text-slate-700 hover:border-teal-200 hover:bg-white'
+                }`}
+                href={rangeHref(activeRange, window.from, window.to)}
+              >
+                {window.label}
+              </Link>
+            );
+          })}
+        </nav>
+      </section>
+
       <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
         <MetricCard label="Initial Outreach" value={outreach.toLocaleString()} detail="No contact, voicemail, email, made contact, and text message outcomes." />
         <MetricCard label="Samples Sent" value={samples.toLocaleString()} detail="Samples tied to contact, voicemail callback, email reply, text reply, or other source." />
@@ -622,6 +767,7 @@ export default async function ProspectingPage({
       <section className="grid gap-5 xl:grid-cols-2">
         <form action={saveCallBlock} className="card space-y-5">
           <input type="hidden" name="range" value={activeRange} />
+          <DateWindowHiddenInputs from={dateWindow.fromKey} to={dateWindow.toKey} />
           <div>
             <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Call Block</p>
             <h2 className="mt-2 text-xl font-semibold tracking-tight text-slate-950">Record first outreach</h2>
@@ -672,6 +818,7 @@ export default async function ProspectingPage({
 
         <form action={saveFollowUpBlock} className="card space-y-5">
           <input type="hidden" name="range" value={activeRange} />
+          <DateWindowHiddenInputs from={dateWindow.fromKey} to={dateWindow.toKey} />
           <div>
             <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Follow-Up Block</p>
             <h2 className="mt-2 text-xl font-semibold tracking-tight text-slate-950">Record follow-up activity</h2>
@@ -775,7 +922,7 @@ export default async function ProspectingPage({
           <div>
             <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Reporting</p>
             <h2 className="mt-2 text-xl font-semibold tracking-tight text-slate-950">{activeRangeLabel} prospecting activity</h2>
-            <p className="mt-1 text-sm leading-6 text-slate-500">Switch views to see outreach, samples, follow-ups, deals, and conversion rates.</p>
+            <p className="mt-1 text-sm leading-6 text-slate-500">Grouped by {activeRangeLabel.toLowerCase()} inside {activeWindowLabel.toLowerCase()}.</p>
           </div>
           <nav aria-label="Prospecting report range" className="grid gap-2 sm:grid-cols-4">
             {PROSPECTING_RANGES.map((range) => {
@@ -787,7 +934,7 @@ export default async function ProspectingPage({
                   className={`rounded-2xl border px-4 py-3 text-sm transition-all duration-200 ${
                     active ? 'border-teal-200 bg-teal-50 text-teal-900' : 'border-slate-200 bg-white/60 text-slate-700 hover:border-teal-200 hover:bg-white'
                   }`}
-                  href={rangeHref(range.id)}
+                  href={rangeHref(range.id, dateWindow.fromKey, dateWindow.toKey)}
                 >
                   <span className="font-semibold">{range.label}</span>
                   <span className="mt-1 block text-xs opacity-75">{range.description}</span>
@@ -904,6 +1051,7 @@ export default async function ProspectingPage({
                   <summary className="cursor-pointer text-sm font-semibold text-teal-800">Edit call block</summary>
                   <form action={updateCallBlock} className="mt-4 space-y-4">
                     <input type="hidden" name="range" value={activeRange} />
+                    <DateWindowHiddenInputs from={dateWindow.fromKey} to={dateWindow.toKey} />
                     <input type="hidden" name="block_id" value={block.id} />
                     <div className="grid gap-3 sm:grid-cols-2">
                       <label className="text-sm font-semibold text-slate-700">
@@ -938,6 +1086,7 @@ export default async function ProspectingPage({
                 </details>
                 <form action={deleteCallBlock} className="mt-3">
                   <input type="hidden" name="range" value={activeRange} />
+                  <DateWindowHiddenInputs from={dateWindow.fromKey} to={dateWindow.toKey} />
                   <input type="hidden" name="block_id" value={block.id} />
                   <ConfirmSubmitButton
                     className="w-full rounded-full border border-rose-200 px-4 py-2.5 text-sm font-semibold text-rose-700 transition-all duration-200 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-70"
@@ -991,6 +1140,7 @@ export default async function ProspectingPage({
                   <summary className="cursor-pointer text-sm font-semibold text-teal-800">Edit follow-up block</summary>
                   <form action={updateFollowUpBlock} className="mt-4 space-y-4">
                     <input type="hidden" name="range" value={activeRange} />
+                    <DateWindowHiddenInputs from={dateWindow.fromKey} to={dateWindow.toKey} />
                     <input type="hidden" name="block_id" value={block.id} />
                     <div className="grid gap-3 sm:grid-cols-2">
                       <label className="text-sm font-semibold text-slate-700">
@@ -1026,6 +1176,7 @@ export default async function ProspectingPage({
                 </details>
                 <form action={deleteFollowUpBlock} className="mt-3">
                   <input type="hidden" name="range" value={activeRange} />
+                  <DateWindowHiddenInputs from={dateWindow.fromKey} to={dateWindow.toKey} />
                   <input type="hidden" name="block_id" value={block.id} />
                   <ConfirmSubmitButton
                     className="w-full rounded-full border border-rose-200 px-4 py-2.5 text-sm font-semibold text-rose-700 transition-all duration-200 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-70"

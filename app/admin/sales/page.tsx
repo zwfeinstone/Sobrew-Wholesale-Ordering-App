@@ -7,7 +7,7 @@ const DEFAULT_LOOKBACK_MONTHS = 6;
 const LOOKBACK_OPTIONS = [3, 6, 12] as const;
 const SALES_TABS = [
   { id: 'overview', label: 'Overview', description: 'Weekly volume and revenue' },
-  { id: 'followup', label: 'Follow-up', description: 'Centers quiet 30+ days' },
+  { id: 'followup', label: 'Follow-up', description: 'Centers off cadence' },
   { id: 'accounts', label: 'Accounts', description: 'Best monthly accounts' },
   { id: 'report', label: 'Report', description: 'Full center revenue table' },
 ] as const;
@@ -40,6 +40,8 @@ type CenterSalesReport = {
   isActive: boolean;
   lastOrderAt: Date | null;
   daysSinceLastOrder: number | null;
+  averageDaysBetweenOrders: number | null;
+  daysPastAverageOrderGap: number | null;
   ordersThisWeek: number;
   ordersInRange: number;
   revenueCents: number;
@@ -137,6 +139,20 @@ function formatDate(value: Date | null) {
   return value.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
+function formatDayValue(value: number | null) {
+  if (value === null) return 'Not enough history';
+  if (value < 1) return 'Less than 1 day';
+
+  const rounded = Math.round(value * 10) / 10;
+  const display = Number.isInteger(rounded) ? rounded.toFixed(0) : rounded.toFixed(1);
+  return `${display} day${rounded === 1 ? '' : 's'}`;
+}
+
+function formatDaysSinceLastOrder(value: number | null) {
+  if (value === null) return 'Never ordered';
+  return `${value} day${value === 1 ? '' : 's'}`;
+}
+
 function formatShortDate(value: Date) {
   return value.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
@@ -149,6 +165,32 @@ function getOrderDate(order: SalesOrderRow) {
   if (!order.created_at) return null;
   const date = new Date(order.created_at);
   return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function getOrderDatesDescending(orders: SalesOrderRow[]) {
+  return orders
+    .map(getOrderDate)
+    .filter((date): date is Date => Boolean(date))
+    .sort((a, b) => b.getTime() - a.getTime());
+}
+
+function getAverageDaysBetweenOrders(orderDatesDescending: Date[]) {
+  if (orderDatesDescending.length < 2) return null;
+
+  let totalGapDays = 0;
+  let gapCount = 0;
+
+  for (let index = 0; index < orderDatesDescending.length - 1; index += 1) {
+    const newerOrderDate = startOfDay(orderDatesDescending[index]);
+    const olderOrderDate = startOfDay(orderDatesDescending[index + 1]);
+    const gapDays = (newerOrderDate.getTime() - olderOrderDate.getTime()) / DAY_IN_MS;
+    if (gapDays >= 0) {
+      totalGapDays += gapDays;
+      gapCount += 1;
+    }
+  }
+
+  return gapCount ? totalGapDays / gapCount : null;
 }
 
 function getCenterName(center: CenterRow) {
@@ -327,7 +369,14 @@ export default async function AdminSalesPage({
 
   const centerReports: CenterSalesReport[] = activeCenters.map((center) => {
     const reportOrders = centerOrders.get(center.id) ?? [];
-    const lastOrderAt = lastOrderByCenter.get(center.id) ?? null;
+    const orderDatesDescending = getOrderDatesDescending(reportOrders);
+    const lastOrderAt = orderDatesDescending[0] ?? lastOrderByCenter.get(center.id) ?? null;
+    const daysSinceLastOrder = lastOrderAt ? Math.floor((today.getTime() - startOfDay(lastOrderAt).getTime()) / DAY_IN_MS) : null;
+    const averageDaysBetweenOrders = getAverageDaysBetweenOrders(orderDatesDescending);
+    const daysPastAverageOrderGap =
+      daysSinceLastOrder !== null && averageDaysBetweenOrders !== null && daysSinceLastOrder > averageDaysBetweenOrders
+        ? daysSinceLastOrder - averageDaysBetweenOrders
+        : null;
     let revenueCents = 0;
     let revenue30Cents = 0;
     let ordersThisWeek = 0;
@@ -350,7 +399,9 @@ export default async function AdminSalesPage({
       name: getCenterName(center),
       isActive: center.is_active !== false,
       lastOrderAt,
-      daysSinceLastOrder: lastOrderAt ? Math.floor((today.getTime() - startOfDay(lastOrderAt).getTime()) / DAY_IN_MS) : null,
+      daysSinceLastOrder,
+      averageDaysBetweenOrders,
+      daysPastAverageOrderGap,
       ordersThisWeek,
       ordersInRange,
       revenueCents,
@@ -390,6 +441,13 @@ export default async function AdminSalesPage({
       }),
     },
   ].filter((group) => group.centers.length);
+  const cadenceOverdueCenters = centerReports
+    .filter((center) => center.daysPastAverageOrderGap !== null)
+    .sort((a, b) => {
+      const daysPastAverageDiff = (b.daysPastAverageOrderGap ?? 0) - (a.daysPastAverageOrderGap ?? 0);
+      if (daysPastAverageDiff !== 0) return daysPastAverageDiff;
+      return a.name.localeCompare(b.name);
+    });
 
   const sortedCenterReports = [...centerReports].sort((a, b) => b.averageMonthlyRevenueCents - a.averageMonthlyRevenueCents || a.name.localeCompare(b.name));
   const topCenters = sortedCenterReports.slice(0, 5);
@@ -410,7 +468,7 @@ export default async function AdminSalesPage({
   const canMoveToNextWeek = selectedWeekStart.getTime() < currentWeekStart.getTime();
   const salesTabCounts: Record<SalesTab, string> = {
     overview: `${(ordersThisWeekCount ?? 0).toLocaleString()} this week`,
-    followup: `${quietCenters.length.toLocaleString()} quiet`,
+    followup: `${cadenceOverdueCenters.length.toLocaleString()} off cadence`,
     accounts: `${topCenters.length.toLocaleString()} top`,
     report: `${activeCenters.length.toLocaleString()} centers`,
   };
@@ -446,7 +504,7 @@ export default async function AdminSalesPage({
         </div>
       </section>
 
-      <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+      <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
         <ReportStat
           label="Orders This Week"
           value={(ordersThisWeekCount ?? 0).toLocaleString()}
@@ -461,6 +519,11 @@ export default async function AdminSalesPage({
           label="Avg Monthly / Center"
           value={usd(averageMonthlyRevenuePerCenterCents)}
           detail={`Average across ${activeCentersWithOrders.length.toLocaleString()} active centers with at least one order over ${lookbackMonths} months.`}
+        />
+        <ReportStat
+          label="Off Cadence"
+          value={cadenceOverdueCenters.length.toLocaleString()}
+          detail="Centers whose current time since last order is longer than their own average gap."
         />
         <ReportStat
           label="30-Day Follow-Up"
@@ -578,9 +641,42 @@ export default async function AdminSalesPage({
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <p className="text-xs font-semibold uppercase tracking-[0.18em] text-rose-600">Needs Follow-Up</p>
+              <h2 className="mt-2 text-xl font-semibold tracking-tight text-slate-950">Centers outside their average order cadence</h2>
+            </div>
+            <span className="rounded-full bg-rose-50 px-3 py-1 text-sm font-semibold text-rose-700">{cadenceOverdueCenters.length} centers</span>
+          </div>
+          <div className="space-y-3">
+            {cadenceOverdueCenters.length ? cadenceOverdueCenters.map((center) => (
+              <Link
+                key={center.id}
+                href={`/admin/users/${center.id}`}
+                className="grid gap-3 rounded-2xl border border-rose-100 bg-rose-50/35 px-4 py-3 transition-all duration-200 hover:-translate-y-0.5 hover:border-rose-200 hover:bg-white sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center"
+              >
+                <div className="min-w-0">
+                  <p className="truncate font-semibold text-slate-950">{center.name}</p>
+                  <p className="mt-1 text-sm text-slate-500">
+                    Last order: {formatDate(center.lastOrderAt)} - Current gap: {formatDaysSinceLastOrder(center.daysSinceLastOrder)} - Avg gap: {formatDayValue(center.averageDaysBetweenOrders)}
+                  </p>
+                </div>
+                <span className="inline-flex w-fit rounded-full bg-white px-3 py-1 text-sm font-semibold text-rose-700 ring-1 ring-rose-100">
+                  {formatDayValue(center.daysPastAverageOrderGap)} over average
+                </span>
+              </Link>
+            )) : (
+              <div className="rounded-2xl border border-dashed border-emerald-200 bg-emerald-50/40 px-4 py-8 text-center text-sm text-emerald-800">
+                No active center with enough order history is outside its average order cadence.
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="card space-y-4" style={activeTab !== 'followup' ? { display: 'none' } : undefined}>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">30-Day Quiet List</p>
               <h2 className="mt-2 text-xl font-semibold tracking-tight text-slate-950">Centers quiet for 30+ days</h2>
             </div>
-            <span className="rounded-full bg-rose-50 px-3 py-1 text-sm font-semibold text-rose-700">{quietCenters.length} centers</span>
+            <span className="rounded-full bg-slate-100 px-3 py-1 text-sm font-semibold text-slate-700">{quietCenters.length} centers</span>
           </div>
           <div className="space-y-4">
             {quietCenterGroups.length ? quietCenterGroups.map((group, index) => (
@@ -605,7 +701,9 @@ export default async function AdminSalesPage({
                     >
                       <div className="min-w-0">
                         <p className="truncate font-semibold text-slate-950">{center.name}</p>
-                        <p className="mt-1 text-sm text-slate-500">Last order: {formatDate(center.lastOrderAt)}</p>
+                        <p className="mt-1 text-sm text-slate-500">
+                          Last order: {formatDate(center.lastOrderAt)} - Current gap: {formatDaysSinceLastOrder(center.daysSinceLastOrder)} - Avg gap: {formatDayValue(center.averageDaysBetweenOrders)}
+                        </p>
                       </div>
                       <span className={`inline-flex w-fit rounded-full px-3 py-1 text-sm font-semibold ring-1 ${getStatusTone(center.daysSinceLastOrder)}`}>
                         {getStatusLabel(center.daysSinceLastOrder)}
@@ -702,11 +800,13 @@ export default async function AdminSalesPage({
         </div>
 
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[58rem] border-separate border-spacing-y-2 text-left text-sm">
+          <table className="w-full min-w-[70rem] border-separate border-spacing-y-2 text-left text-sm">
             <thead>
               <tr className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
                 <th className="px-4 py-2">Center</th>
                 <th className="px-4 py-2">Last order</th>
+                <th className="px-4 py-2 text-right">Since last</th>
+                <th className="px-4 py-2 text-right">Avg gap</th>
                 <th className="px-4 py-2 text-right">This week</th>
                 <th className="px-4 py-2 text-right">Orders</th>
                 <th className="px-4 py-2 text-right">Revenue</th>
@@ -725,6 +825,10 @@ export default async function AdminSalesPage({
                       {formatDate(center.lastOrderAt)}
                     </span>
                   </td>
+                  <td className={`px-4 py-3 text-right font-semibold ${center.daysPastAverageOrderGap !== null ? 'text-rose-700' : 'text-slate-700'}`}>
+                    {formatDaysSinceLastOrder(center.daysSinceLastOrder)}
+                  </td>
+                  <td className="px-4 py-3 text-right text-slate-700">{formatDayValue(center.averageDaysBetweenOrders)}</td>
                   <td className="px-4 py-3 text-right font-semibold text-slate-950">{center.ordersThisWeek}</td>
                   <td className="px-4 py-3 text-right text-slate-700">{center.ordersInRange}</td>
                   <td className="px-4 py-3 text-right font-semibold text-slate-950">{usd(center.revenueCents)}</td>
