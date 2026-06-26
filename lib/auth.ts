@@ -1,4 +1,5 @@
 import { redirect } from 'next/navigation';
+import { isOwnerEmail } from '@/lib/admin-permission-definitions';
 import { logAuthProfileIssue } from '@/lib/auth-diagnostics';
 import { recordUserLastSeen } from '@/lib/last-seen';
 import { createClient } from '@/lib/supabase/server';
@@ -12,7 +13,7 @@ export async function requireUser() {
   if (!data.user) redirect('/login');
   const { data: profile, error: profileError } = await supabase
     .from('profiles')
-    .select('id,is_admin,is_active,email,full_name,avatar_url,center_id,centers(id,name,is_active)')
+    .select('id,is_admin,is_active,email,full_name,avatar_url,center_id,centers!profiles_center_id_fkey(id,name,is_active)')
     .eq('id', data.user.id)
     .maybeSingle();
   if (profileError || !profile) {
@@ -21,7 +22,8 @@ export async function requireUser() {
     redirect('/login?error=profile');
   }
   const center = Array.isArray(profile?.centers) ? profile.centers[0] : profile?.centers;
-  if (profile.is_active !== true) {
+  const isOwnerAdmin = profile.is_admin && isOwnerEmail(data.user.email || profile.email);
+  if (profile.is_active !== true && !isOwnerAdmin) {
     redirect('/login?inactive=1');
   }
   if (!profile.is_admin && (!profile.center_id || center?.is_active === false)) {

@@ -1,5 +1,14 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { createServerClient, type CookieOptions } from '@supabase/ssr';
+import {
+  adminSectionForPath,
+  canViewAdminSection,
+  enforceOwnerOnlyPermissions,
+  isOwnerEmail,
+  legacyReadOnlyAccessMap,
+  normalizeAccessMap,
+  type AdminPermissionKey,
+} from './lib/admin-permission-definitions';
 import { isAuthSessionMissing, logAuthProfileIssue } from './lib/auth-diagnostics';
 
 export async function middleware(request: NextRequest) {
@@ -46,7 +55,7 @@ export async function middleware(request: NextRequest) {
   if (user && request.nextUrl.pathname.startsWith('/admin')) {
     const { data: profile, error: profileError } = await supabase
       .from('profiles')
-      .select('is_admin,is_active')
+      .select('id,email,is_admin,is_active')
       .eq('id', user.id)
       .maybeSingle();
     if (profileError || !profile) {
@@ -55,13 +64,41 @@ export async function middleware(request: NextRequest) {
       return NextResponse.redirect(new URL('/login?error=profile', request.url));
     }
 
-    if (profile.is_active !== true) {
+    const ownerAdmin = isOwnerEmail(user.email || profile.email);
+    if (profile.is_active !== true && !ownerAdmin) {
       await supabase.auth.signOut();
       return NextResponse.redirect(new URL('/login?inactive=1', request.url));
     }
 
     if (!profile.is_admin) {
       return NextResponse.redirect(new URL('/portal', request.url));
+    }
+
+    const sectionKey = adminSectionForPath(request.nextUrl.pathname);
+    if (sectionKey && !ownerAdmin) {
+      const { data: permissionRows, error: permissionsError } = await supabase
+        .from('admin_permissions')
+        .select('section_key,can_view,can_edit')
+        .eq('profile_id', profile.id);
+
+      const rawAccess = permissionsError || !(permissionRows ?? []).length
+        ? legacyReadOnlyAccessMap()
+        : normalizeAccessMap(
+            Object.fromEntries(
+              (permissionRows ?? []).map((row) => [
+                row.section_key as AdminPermissionKey,
+                { canEdit: Boolean(row.can_edit), canView: Boolean(row.can_view || row.can_edit) },
+              ])
+            ) as Partial<Record<AdminPermissionKey, { canEdit: boolean; canView: boolean }>>
+          );
+      const raw = enforceOwnerOnlyPermissions(user.email || profile.email, rawAccess);
+
+      if (!canViewAdminSection(raw, sectionKey)) {
+        const deniedUrl = new URL('/admin/access-denied', request.url);
+        deniedUrl.searchParams.set('section', sectionKey);
+        deniedUrl.searchParams.set('from', request.nextUrl.pathname);
+        return NextResponse.redirect(deniedUrl);
+      }
     }
   }
 

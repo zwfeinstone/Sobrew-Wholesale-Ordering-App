@@ -1,4 +1,6 @@
 import Link from 'next/link';
+import { getAssignedCenterIdsForAdmin, scopeCenterRelatedQueryForAdmin } from '@/lib/admin-center-scope';
+import { getCurrentAdminAccess } from '@/lib/admin-permissions';
 import { createClient } from '@/lib/supabase/server';
 import { usd } from '@/lib/utils';
 
@@ -283,19 +285,43 @@ export default async function AdminDashboard({
   searchParams?: Record<string, string | string[] | undefined>;
 }) {
   const supabase = await createClient();
+  const currentAccess = await getCurrentAdminAccess();
+  const centerScope = await getAssignedCenterIdsForAdmin({ current: currentAccess, supabase });
   const now = new Date();
 
   const ordersRange = normalizeTimeRange(searchParams?.ordersRange);
   const revenueRange = normalizeTimeRange(searchParams?.revenueRange);
   const usersRange = normalizeTimeRange(searchParams?.usersRange);
 
-  const ordersMetricQuery = applyRangeToQuery(supabase.from('orders').select('created_at'), 'created_at', ordersRange, now);
-  const revenueMetricQuery = applyRangeToQuery(supabase.from('orders').select('created_at,subtotal_cents'), 'created_at', revenueRange, now);
-  const usersMetricQuery = applyRangeToQuery(supabase.from('profiles').select('created_at'), 'created_at', usersRange, now);
+  const ordersMetricQuery = scopeCenterRelatedQueryForAdmin(
+    applyRangeToQuery(supabase.from('orders').select('created_at,center_id'), 'created_at', ordersRange, now),
+    'center_id',
+    centerScope
+  );
+  const revenueMetricQuery = scopeCenterRelatedQueryForAdmin(
+    applyRangeToQuery(supabase.from('orders').select('created_at,center_id,subtotal_cents'), 'created_at', revenueRange, now),
+    'center_id',
+    centerScope
+  );
+  const usersMetricQuery = scopeCenterRelatedQueryForAdmin(
+    applyRangeToQuery(supabase.from('profiles').select('created_at,center_id'), 'created_at', usersRange, now),
+    'center_id',
+    centerScope
+  );
+  const newOrdersQuery = scopeCenterRelatedQueryForAdmin(
+    supabase.from('orders').select('id', { head: true, count: 'exact' }).eq('status', 'New').is('archived_at', null),
+    'center_id',
+    centerScope
+  );
+  const recentOrdersQuery = scopeCenterRelatedQueryForAdmin(
+    supabase.from('orders').select('id,status,created_at,center_id,profiles(email),centers(name)').is('archived_at', null).order('created_at', { ascending: false }).limit(PAGE_SIZE),
+    'center_id',
+    centerScope
+  );
 
   const [{ count: newOrders }, { data: recent }, { data: orderMetricRows }, { data: revenueMetricRows }, { data: userMetricRows }] = await Promise.all([
-    supabase.from('orders').select('id', { head: true, count: 'exact' }).eq('status', 'New').is('archived_at', null),
-    supabase.from('orders').select('id,status,created_at,profiles(email),centers(name)').is('archived_at', null).order('created_at', { ascending: false }).limit(PAGE_SIZE),
+    newOrdersQuery,
+    recentOrdersQuery,
     ordersMetricQuery,
     revenueMetricQuery,
     usersMetricQuery,

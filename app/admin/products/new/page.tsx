@@ -5,7 +5,7 @@ import { createClient } from '@/lib/supabase/server';
 
 async function createProduct(formData: FormData) {
   'use server';
-  await requireAdminWriteAccess('/admin/products/new?error=admin_write_denied');
+  await requireAdminWriteAccess('/admin/products/new?error=admin_write_denied', 'products');
 
   const supabase = await createClient();
   const category = String(formData.get('category') ?? '');

@@ -5,9 +5,6 @@ import ConfirmSubmitButton from '@/components/confirm-submit-button';
 import { OrderStatusBadge } from '@/components/order-status';
 import StatusToast from '@/components/status-toast';
 import { requireAdminWriteAccess } from '@/lib/admin-write-access';
-import { getCenterLoginEmails } from '@/lib/center-logins';
-import { sendShippedEmail } from '@/lib/email';
-import { getOrderItemSummaries } from '@/lib/order-items';
 import { createClient } from '@/lib/supabase/server';
 
 function formatOrderTimestamp(value: string | null) {
@@ -31,17 +28,13 @@ async function updateStatus(formData: FormData) {
   const status = String(formData.get('status'));
   const statusFilter = String(formData.get('statusFilter') ?? '');
 
-  await requireAdminWriteAccess(ordersToastHref(statusFilter, 'admin_write_denied'));
+  await requireAdminWriteAccess(ordersToastHref(statusFilter, 'admin_write_denied'), 'orders');
 
   const supabase = await createClient();
-  const { data: order } = await supabase.from('orders').select('id,status,center_id,profiles(email)').eq('id', id).single();
-  const orderUpdateResult = await supabase.from('orders').update({ status }).eq('id', id).select('id');
-
-  if (!orderUpdateResult.error && orderUpdateResult.data?.length && order?.status !== 'Shipped' && status === 'Shipped') {
-    const items = await getOrderItemSummaries(supabase, id);
-    const centerEmails = await getCenterLoginEmails(supabase, (order as any).center_id);
-    await sendShippedEmail(centerEmails.length ? centerEmails : (order as any).profiles.email, items);
+  if (status === 'Shipped') {
+    redirect(ordersToastHref(statusFilter, 'ship_on_detail_required'));
   }
+  const orderUpdateResult = await supabase.from('orders').update({ status }).eq('id', id).select('id');
 
   const query = new URLSearchParams();
   if (statusFilter) query.set('status', statusFilter);
@@ -58,7 +51,7 @@ async function archiveOrder(formData: FormData) {
   'use server';
   const id = String(formData.get('id') ?? '');
   const statusFilter = String(formData.get('statusFilter') ?? '');
-  await requireAdminWriteAccess(ordersToastHref(statusFilter, 'admin_write_denied'));
+  await requireAdminWriteAccess(ordersToastHref(statusFilter, 'admin_write_denied'), 'orders');
 
   const supabase = await createClient();
   if (!id) redirect('/admin/orders?toast=archive_error');
@@ -83,7 +76,7 @@ async function archiveSelectedOrders(formData: FormData) {
   const ids = formData.getAll('order_id').map(String).filter(Boolean);
   const query = new URLSearchParams();
   if (statusFilter) query.set('status', statusFilter);
-  await requireAdminWriteAccess(ordersToastHref(statusFilter, 'admin_write_denied'));
+  await requireAdminWriteAccess(ordersToastHref(statusFilter, 'admin_write_denied'), 'orders');
 
   const supabase = await createClient();
 
@@ -110,7 +103,7 @@ async function deleteOrder(formData: FormData) {
   const statusFilter = String(formData.get('statusFilter') ?? '');
   const query = new URLSearchParams();
   if (statusFilter) query.set('status', statusFilter);
-  await requireAdminWriteAccess(ordersToastHref(statusFilter, 'admin_write_denied'));
+  await requireAdminWriteAccess(ordersToastHref(statusFilter, 'admin_write_denied'), 'orders');
 
   const supabase = await createClient();
 
@@ -172,6 +165,7 @@ export default async function AdminOrdersPage({ searchParams }: { searchParams: 
     <div className="space-y-6">
       {toast === 'status_updated' ? <StatusToast message="Order status updated." tone="success" /> : null}
       {toast === 'status_error' ? <StatusToast message="Order status update failed." tone="error" /> : null}
+      {toast === 'ship_on_detail_required' ? <StatusToast message="Open the order detail page to enter shipping cost before marking it shipped." tone="error" /> : null}
       {toast === 'archive_success' ? <StatusToast message="Order archive updated." tone="success" /> : null}
       {toast === 'archive_error' ? <StatusToast message="Unable to archive the selected order(s)." tone="error" /> : null}
       {toast === 'delete_success' ? <StatusToast message="Order deleted." tone="success" /> : null}
@@ -223,16 +217,18 @@ export default async function AdminOrdersPage({ searchParams }: { searchParams: 
           </div>
           <div className="flex w-full flex-col gap-2 md:w-auto md:flex-row md:flex-wrap md:items-center md:justify-end">
             <OrderStatusBadge status={order.status} />
-            <form action={updateStatus} className="flex w-full flex-col gap-2 sm:flex-row sm:items-center md:w-auto">
-              <input type="hidden" name="id" value={order.id} />
-              <input type="hidden" name="statusFilter" value={status} />
-              <select className="input w-full sm:min-w-[11rem]" name="status" defaultValue={order.status}>
-                <option>New</option>
-                <option>Processing</option>
-                <option>Shipped</option>
-              </select>
-              <button className="btn-primary w-full sm:w-auto" type="submit">Save</button>
-            </form>
+            {order.status !== 'Shipped' ? (
+              <form action={updateStatus} className="flex w-full flex-col gap-2 sm:flex-row sm:items-center md:w-auto">
+                <input type="hidden" name="id" value={order.id} />
+                <input type="hidden" name="statusFilter" value={status} />
+                <select className="input w-full sm:min-w-[11rem]" name="status" defaultValue={order.status}>
+                  <option>New</option>
+                  <option>Processing</option>
+                </select>
+                <button className="btn-primary w-full sm:w-auto" type="submit">Save</button>
+              </form>
+            ) : null}
+            {order.status !== 'Shipped' ? <Link className="btn-secondary w-full md:w-auto" href={`/admin/orders/${order.id}`}>Ship</Link> : null}
             {['Processing', 'Shipped'].includes(order.status) ? (
               <form action={archiveOrder} className="w-full md:w-auto">
                 <input type="hidden" name="id" value={order.id} />

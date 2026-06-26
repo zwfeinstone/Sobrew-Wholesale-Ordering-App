@@ -5,7 +5,7 @@ import { supabaseAdmin } from '@/lib/supabase/admin';
 
 async function saveSettings(formData: FormData) {
   'use server';
-  await requireAdminWriteAccess('/admin/settings?error=admin_write_denied');
+  await requireAdminWriteAccess('/admin/settings?error=admin_write_denied', 'settings');
 
   const supabase = await createClient();
   const id = String(formData.get('id'));
@@ -37,7 +37,7 @@ async function saveSettings(formData: FormData) {
 
 async function updatePassword(formData: FormData) {
   'use server';
-  await requireAdminWriteAccess('/admin/settings?password_error=admin_write_denied');
+  await requireAdminWriteAccess('/admin/settings?password_error=admin_write_denied', 'settings');
 
   const supabase = await createClient();
   const password = String(formData.get('password') ?? '');

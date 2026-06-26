@@ -1,4 +1,6 @@
 import Link from 'next/link';
+import { getSalesScopedCenterIdsForAdmin, scopeCenterRelatedQueryForAdmin, scopeCentersForAdmin } from '@/lib/admin-center-scope';
+import { getCurrentAdminAccess } from '@/lib/admin-permissions';
 import { createClient } from '@/lib/supabase/server';
 import { usd } from '@/lib/utils';
 
@@ -24,6 +26,13 @@ type CenterRow = {
   name: string | null;
   is_active: boolean | null;
   created_at: string | null;
+};
+
+type AdminRow = {
+  email: string | null;
+  full_name: string | null;
+  id: string;
+  is_active: boolean | null;
 };
 
 type SalesOrderRow = {
@@ -97,17 +106,18 @@ function normalizeWeekStart(value: string | string[] | undefined, fallback: Date
   return parsed ? startOfWeek(parsed) : fallback;
 }
 
-function salesTabHref(tab: SalesTab, months: number, weekStart?: Date, dailyMetric: DailyMetric = 'orders') {
+function salesTabHref(tab: SalesTab, months: number, weekStart?: Date, dailyMetric: DailyMetric = 'orders', salesRepId = '') {
   const query = new URLSearchParams();
   query.set('tab', tab);
   query.set('months', String(months));
   if (weekStart) query.set('week', formatDateInput(weekStart));
   query.set('daily_metric', dailyMetric);
+  if (salesRepId) query.set('sales_rep', salesRepId);
   return `/admin/sales?${query.toString()}`;
 }
 
-function salesWeekHref(tab: SalesTab, months: number, weekStart: Date, dailyMetric: DailyMetric) {
-  return salesTabHref(tab, months, weekStart, dailyMetric);
+function salesWeekHref(tab: SalesTab, months: number, weekStart: Date, dailyMetric: DailyMetric, salesRepId = '') {
+  return salesTabHref(tab, months, weekStart, dailyMetric, salesRepId);
 }
 
 function startOfDay(date: Date) {
@@ -197,6 +207,10 @@ function getCenterName(center: CenterRow) {
   return center.name?.trim() || 'Unnamed center';
 }
 
+function getAdminLabel(admin: AdminRow | undefined) {
+  return admin?.full_name || admin?.email || 'Unknown admin';
+}
+
 function getStatusTone(daysSinceLastOrder: number | null) {
   if (daysSinceLastOrder === null || daysSinceLastOrder >= 45) return 'bg-rose-50 text-rose-700 ring-rose-100';
   if (daysSinceLastOrder >= 30) return 'bg-amber-50 text-amber-700 ring-amber-100';
@@ -266,6 +280,23 @@ export default async function AdminSalesPage({
   searchParams?: Record<string, string | string[] | undefined>;
 }) {
   const supabase = await createClient();
+  const currentAccess = await getCurrentAdminAccess();
+  const salesRepSettingsResult = currentAccess.isOwner
+    ? await supabase.from('admin_commission_settings').select('profile_id').eq('is_sales_rep', true)
+    : { data: [], error: null };
+  const salesRepProfileIds = [...new Set((salesRepSettingsResult.data ?? []).map((row: { profile_id: string | null }) => row.profile_id).filter(Boolean))] as string[];
+  const salesRepsResult = currentAccess.isOwner && salesRepProfileIds.length
+    ? await supabase
+      .from('profiles')
+      .select('id,email,full_name,is_active')
+      .in('id', salesRepProfileIds)
+      .eq('is_admin', true)
+      .order('full_name', { ascending: true })
+    : { data: [], error: null };
+  const salesReps = ((salesRepsResult.data ?? []) as AdminRow[]).sort((a, b) => getAdminLabel(a).localeCompare(getAdminLabel(b)));
+  const requestedSalesRepId = typeof searchParams?.sales_rep === 'string' ? searchParams.sales_rep : '';
+  const selectedSalesRepId = currentAccess.isOwner && salesReps.some((admin) => admin.id === requestedSalesRepId) ? requestedSalesRepId : '';
+  const centerScope = await getSalesScopedCenterIdsForAdmin({ current: currentAccess, selectedSalesProfileId: selectedSalesRepId, supabase });
   const now = new Date();
   const today = startOfDay(now);
   const currentWeekStart = startOfWeek(now);
@@ -280,6 +311,44 @@ export default async function AdminSalesPage({
   const activeDailyMetric = normalizeDailyMetric(searchParams?.daily_metric);
   const rangeStart = addMonths(monthStart, -(lookbackMonths - 1));
 
+  const centersQuery = scopeCentersForAdmin(
+    supabase.from('centers').select('id,name,is_active,created_at').order('name', { ascending: true }),
+    centerScope
+  );
+  const ordersQuery = scopeCenterRelatedQueryForAdmin(
+    supabase
+      .from('orders')
+      .select('id,center_id,status,subtotal_cents,created_at')
+      .order('created_at', { ascending: false })
+      .limit(10000),
+    'center_id',
+    centerScope
+  );
+  const selectedWeekOrdersQuery = scopeCenterRelatedQueryForAdmin(
+    supabase
+      .from('orders')
+      .select('id,center_id,status,subtotal_cents,created_at')
+      .gte('created_at', selectedWeekStart.toISOString())
+      .lt('created_at', selectedWeekEnd.toISOString())
+      .order('created_at', { ascending: false }),
+    'center_id',
+    centerScope
+  );
+  const ordersThisWeekQuery = scopeCenterRelatedQueryForAdmin(
+    supabase.from('orders').select('id', { count: 'exact', head: true }).gte('created_at', currentWeekStart.toISOString()),
+    'center_id',
+    centerScope
+  );
+  const previousWeekOrdersQuery = scopeCenterRelatedQueryForAdmin(
+    supabase
+      .from('orders')
+      .select('id', { count: 'exact', head: true })
+      .gte('created_at', previousCurrentWeekStart.toISOString())
+      .lt('created_at', currentWeekStart.toISOString()),
+    'center_id',
+    centerScope
+  );
+
   const [
     { data: centers },
     { data: orders },
@@ -287,24 +356,11 @@ export default async function AdminSalesPage({
     { count: ordersThisWeekCount },
     { count: previousWeekOrdersCount },
   ] = await Promise.all([
-    supabase.from('centers').select('id,name,is_active,created_at').order('name', { ascending: true }),
-    supabase
-      .from('orders')
-      .select('id,center_id,status,subtotal_cents,created_at')
-      .order('created_at', { ascending: false })
-      .limit(10000),
-    supabase
-      .from('orders')
-      .select('id,center_id,status,subtotal_cents,created_at')
-      .gte('created_at', selectedWeekStart.toISOString())
-      .lt('created_at', selectedWeekEnd.toISOString())
-      .order('created_at', { ascending: false }),
-    supabase.from('orders').select('id', { count: 'exact', head: true }).gte('created_at', currentWeekStart.toISOString()),
-    supabase
-      .from('orders')
-      .select('id', { count: 'exact', head: true })
-      .gte('created_at', previousCurrentWeekStart.toISOString())
-      .lt('created_at', currentWeekStart.toISOString()),
+    centersQuery,
+    ordersQuery,
+    selectedWeekOrdersQuery,
+    ordersThisWeekQuery,
+    previousWeekOrdersQuery,
   ]);
 
   const activeCenters = ((centers ?? []) as CenterRow[]).filter((center) => center.is_active !== false);
@@ -488,13 +544,28 @@ export default async function AdminSalesPage({
             <input type="hidden" name="tab" value={activeTab} />
             <input type="hidden" name="week" value={formatDateInput(selectedWeekStart)} />
             <input type="hidden" name="daily_metric" value={activeDailyMetric} />
-            <label className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500" htmlFor="months">Report window</label>
-            <div className="mt-3 flex flex-col gap-3 sm:flex-row">
-              <select id="months" className="input" name="months" defaultValue={lookbackMonths}>
-                {LOOKBACK_OPTIONS.map((option) => (
-                  <option key={option} value={option}>{option} months</option>
-                ))}
-              </select>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <label className="space-y-2 text-sm font-medium text-slate-700" htmlFor="months">
+                Report window
+                <select id="months" className="input" name="months" defaultValue={lookbackMonths}>
+                  {LOOKBACK_OPTIONS.map((option) => (
+                    <option key={option} value={option}>{option} months</option>
+                  ))}
+                </select>
+              </label>
+              {currentAccess.isOwner ? (
+                <label className="space-y-2 text-sm font-medium text-slate-700">
+                  Sales rep
+                  <select className="input" name="sales_rep" defaultValue={selectedSalesRepId}>
+                    <option value="">All sales reps</option>
+                    {salesReps.map((admin) => (
+                      <option key={admin.id} value={admin.id}>{getAdminLabel(admin)}</option>
+                    ))}
+                  </select>
+                </label>
+              ) : null}
+            </div>
+            <div className="mt-3">
               <button className="btn-primary shrink-0" type="submit">Update</button>
             </div>
             <p className="mt-3 text-sm leading-6 text-slate-500">
@@ -539,7 +610,7 @@ export default async function AdminSalesPage({
             <Link
               key={tab.id}
               aria-current={isActive ? 'page' : undefined}
-              href={salesTabHref(tab.id, lookbackMonths, selectedWeekStart, activeDailyMetric)}
+              href={salesTabHref(tab.id, lookbackMonths, selectedWeekStart, activeDailyMetric, selectedSalesRepId)}
               className={`rounded-2xl border px-4 py-3 transition-all duration-200 ${
                 isActive
                   ? 'border-teal-200 bg-teal-50/80 text-teal-900 shadow-sm'
@@ -582,7 +653,7 @@ export default async function AdminSalesPage({
                     <Link
                       key={option.id}
                       aria-current={isActiveMetric ? 'true' : undefined}
-                      href={salesTabHref(activeTab, lookbackMonths, selectedWeekStart, option.id)}
+                      href={salesTabHref(activeTab, lookbackMonths, selectedWeekStart, option.id, selectedSalesRepId)}
                       className={`rounded-full px-3 py-1.5 text-sm font-semibold transition-all ${
                         isActiveMetric ? 'bg-white text-teal-800 shadow-sm' : 'text-slate-600 hover:text-slate-950'
                       }`}
@@ -596,21 +667,22 @@ export default async function AdminSalesPage({
                 <input type="hidden" name="tab" value="overview" />
                 <input type="hidden" name="months" value={lookbackMonths} />
                 <input type="hidden" name="daily_metric" value={activeDailyMetric} />
+                <input type="hidden" name="sales_rep" value={selectedSalesRepId} />
                 <label className="text-sm font-medium text-slate-700" htmlFor="orders-week">Week of</label>
                 <input id="orders-week" className="input sm:w-44" name="week" type="date" defaultValue={formatDateInput(selectedWeekStart)} />
                 <button className="btn-secondary w-full sm:w-auto" type="submit">View</button>
               </form>
               <div className="flex flex-wrap gap-2">
-                <Link className="btn-secondary inline-flex" href={salesWeekHref(activeTab, lookbackMonths, addDays(selectedWeekStart, -7), activeDailyMetric)}>
+                <Link className="btn-secondary inline-flex" href={salesWeekHref(activeTab, lookbackMonths, addDays(selectedWeekStart, -7), activeDailyMetric, selectedSalesRepId)}>
                   Previous week
                 </Link>
                 {selectedWeekStart.getTime() !== currentWeekStart.getTime() ? (
-                  <Link className="btn-secondary inline-flex" href={salesWeekHref(activeTab, lookbackMonths, currentWeekStart, activeDailyMetric)}>
+                  <Link className="btn-secondary inline-flex" href={salesWeekHref(activeTab, lookbackMonths, currentWeekStart, activeDailyMetric, selectedSalesRepId)}>
                     Current week
                   </Link>
                 ) : null}
                 {canMoveToNextWeek ? (
-                  <Link className="btn-secondary inline-flex" href={salesWeekHref(activeTab, lookbackMonths, nextSelectedWeekStart, activeDailyMetric)}>
+                  <Link className="btn-secondary inline-flex" href={salesWeekHref(activeTab, lookbackMonths, nextSelectedWeekStart, activeDailyMetric, selectedSalesRepId)}>
                     Next week
                   </Link>
                 ) : null}

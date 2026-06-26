@@ -1,6 +1,8 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import ConfirmSubmitButton from '@/components/confirm-submit-button';
+import { isOwnerEmail } from '@/lib/admin-permission-definitions';
+import { getCurrentAdminAccess } from '@/lib/admin-permissions';
 import { requireAdminWriteAccess } from '@/lib/admin-write-access';
 import { createClient } from '@/lib/supabase/server';
 
@@ -460,7 +462,7 @@ async function saveCallBlock(formData: FormData) {
   const range = normalizeRange(String(formData.get('range') ?? 'daily'));
   const from = formDateParam(formData, 'from');
   const to = formDateParam(formData, 'to');
-  await requireAdminWriteAccess(prospectingToastHref(range, 'admin_write_denied', from, to));
+  const current = await requireAdminWriteAccess(prospectingToastHref(range, 'admin_write_denied', from, to), 'prospecting');
 
   const supabase = await createClient();
   const payload = callBlockPayload(formData);
@@ -469,10 +471,9 @@ async function saveCallBlock(formData: FormData) {
     redirectWithToast(range, 'invalid_date', from, to);
   }
 
-  const { data } = await supabase.auth.getUser();
   const { error } = await supabase.from('sales_prospecting_blocks').insert({
     ...payload,
-    created_by: data.user?.id ?? null,
+    created_by: current.profile.id,
   });
 
   redirectWithToast(range, error ? 'save_error' : 'call_saved', from, to);
@@ -484,7 +485,7 @@ async function updateCallBlock(formData: FormData) {
   const range = normalizeRange(String(formData.get('range') ?? 'daily'));
   const from = formDateParam(formData, 'from');
   const to = formDateParam(formData, 'to');
-  await requireAdminWriteAccess(prospectingToastHref(range, 'admin_write_denied', from, to));
+  const current = await requireAdminWriteAccess(prospectingToastHref(range, 'admin_write_denied', from, to), 'prospecting');
 
   const supabase = await createClient();
   const blockId = String(formData.get('block_id') ?? '').trim();
@@ -498,13 +499,17 @@ async function updateCallBlock(formData: FormData) {
     redirectWithToast(range, 'invalid_date', from, to);
   }
 
-  const { error } = await supabase
+  let updateQuery = supabase
     .from('sales_prospecting_blocks')
     .update({
       ...payload,
       updated_at: new Date().toISOString(),
     })
     .eq('id', blockId);
+  if (!isOwnerEmail(current.user.email || current.profile.email)) {
+    updateQuery = updateQuery.eq('created_by', current.profile.id);
+  }
+  const { error } = await updateQuery;
 
   redirectWithToast(range, error ? 'update_error' : 'call_updated', from, to);
 }
@@ -515,7 +520,7 @@ async function deleteCallBlock(formData: FormData) {
   const range = normalizeRange(String(formData.get('range') ?? 'daily'));
   const from = formDateParam(formData, 'from');
   const to = formDateParam(formData, 'to');
-  await requireAdminWriteAccess(prospectingToastHref(range, 'admin_write_denied', from, to));
+  const current = await requireAdminWriteAccess(prospectingToastHref(range, 'admin_write_denied', from, to), 'prospecting');
 
   const supabase = await createClient();
   const blockId = String(formData.get('block_id') ?? '').trim();
@@ -524,7 +529,11 @@ async function deleteCallBlock(formData: FormData) {
     redirectWithToast(range, 'missing_block', from, to);
   }
 
-  const { error, data } = await supabase.from('sales_prospecting_blocks').delete().eq('id', blockId).select('id');
+  let deleteQuery = supabase.from('sales_prospecting_blocks').delete().eq('id', blockId).select('id');
+  if (!isOwnerEmail(current.user.email || current.profile.email)) {
+    deleteQuery = deleteQuery.eq('created_by', current.profile.id);
+  }
+  const { error, data } = await deleteQuery;
   redirectWithToast(range, error || !data?.length ? 'delete_error' : 'call_deleted', from, to);
 }
 
@@ -551,7 +560,7 @@ async function saveFollowUpBlock(formData: FormData) {
   const range = normalizeRange(String(formData.get('range') ?? 'daily'));
   const from = formDateParam(formData, 'from');
   const to = formDateParam(formData, 'to');
-  await requireAdminWriteAccess(prospectingToastHref(range, 'admin_write_denied', from, to));
+  const current = await requireAdminWriteAccess(prospectingToastHref(range, 'admin_write_denied', from, to), 'prospecting');
 
   const supabase = await createClient();
   const payload = followUpBlockPayload(formData);
@@ -560,10 +569,9 @@ async function saveFollowUpBlock(formData: FormData) {
     redirectWithToast(range, 'invalid_date', from, to);
   }
 
-  const { data } = await supabase.auth.getUser();
   const { error } = await supabase.from('sales_prospecting_followup_blocks').insert({
     ...payload,
-    created_by: data.user?.id ?? null,
+    created_by: current.profile.id,
   });
 
   redirectWithToast(range, error ? 'save_error' : 'followup_saved', from, to);
@@ -575,7 +583,7 @@ async function updateFollowUpBlock(formData: FormData) {
   const range = normalizeRange(String(formData.get('range') ?? 'daily'));
   const from = formDateParam(formData, 'from');
   const to = formDateParam(formData, 'to');
-  await requireAdminWriteAccess(prospectingToastHref(range, 'admin_write_denied', from, to));
+  const current = await requireAdminWriteAccess(prospectingToastHref(range, 'admin_write_denied', from, to), 'prospecting');
 
   const supabase = await createClient();
   const blockId = String(formData.get('block_id') ?? '').trim();
@@ -589,13 +597,17 @@ async function updateFollowUpBlock(formData: FormData) {
     redirectWithToast(range, 'invalid_date', from, to);
   }
 
-  const { error } = await supabase
+  let updateQuery = supabase
     .from('sales_prospecting_followup_blocks')
     .update({
       ...payload,
       updated_at: new Date().toISOString(),
     })
     .eq('id', blockId);
+  if (!isOwnerEmail(current.user.email || current.profile.email)) {
+    updateQuery = updateQuery.eq('created_by', current.profile.id);
+  }
+  const { error } = await updateQuery;
 
   redirectWithToast(range, error ? 'update_error' : 'followup_updated', from, to);
 }
@@ -606,7 +618,7 @@ async function deleteFollowUpBlock(formData: FormData) {
   const range = normalizeRange(String(formData.get('range') ?? 'daily'));
   const from = formDateParam(formData, 'from');
   const to = formDateParam(formData, 'to');
-  await requireAdminWriteAccess(prospectingToastHref(range, 'admin_write_denied', from, to));
+  const current = await requireAdminWriteAccess(prospectingToastHref(range, 'admin_write_denied', from, to), 'prospecting');
 
   const supabase = await createClient();
   const blockId = String(formData.get('block_id') ?? '').trim();
@@ -615,7 +627,11 @@ async function deleteFollowUpBlock(formData: FormData) {
     redirectWithToast(range, 'missing_block', from, to);
   }
 
-  const { error, data } = await supabase.from('sales_prospecting_followup_blocks').delete().eq('id', blockId).select('id');
+  let deleteQuery = supabase.from('sales_prospecting_followup_blocks').delete().eq('id', blockId).select('id');
+  if (!isOwnerEmail(current.user.email || current.profile.email)) {
+    deleteQuery = deleteQuery.eq('created_by', current.profile.id);
+  }
+  const { error, data } = await deleteQuery;
   redirectWithToast(range, error || !data?.length ? 'delete_error' : 'followup_deleted', from, to);
 }
 
@@ -625,6 +641,7 @@ export default async function ProspectingPage({
   searchParams?: Record<string, string | string[] | undefined>;
 }) {
   const supabase = await createClient();
+  const currentAccess = await getCurrentAdminAccess();
   const activeRange = normalizeRange(searchParams?.range);
   const activeRangeLabel = PROSPECTING_RANGES.find((range) => range.id === activeRange)?.label ?? 'Daily';
   const toast = typeof searchParams?.toast === 'string' ? searchParams.toast : '';
@@ -647,11 +664,13 @@ export default async function ProspectingPage({
 
   if (dateWindow.fromKey) callBlocksQuery = callBlocksQuery.gte('activity_date', dateWindow.fromKey);
   if (dateWindow.toKey) callBlocksQuery = callBlocksQuery.lte('activity_date', dateWindow.toKey);
+  if (!currentAccess.isOwner) callBlocksQuery = callBlocksQuery.eq('created_by', currentAccess.profile.id);
 
   let followUpBlocksQuery = supabase.from('sales_prospecting_followup_blocks').select('*');
 
   if (dateWindow.fromKey) followUpBlocksQuery = followUpBlocksQuery.gte('activity_date', dateWindow.fromKey);
   if (dateWindow.toKey) followUpBlocksQuery = followUpBlocksQuery.lte('activity_date', dateWindow.toKey);
+  if (!currentAccess.isOwner) followUpBlocksQuery = followUpBlocksQuery.eq('created_by', currentAccess.profile.id);
 
   const [{ data: callBlocks, error: callBlocksError }, { data: followUpBlocks, error: followUpBlocksError }] = await Promise.all([
     callBlocksQuery.order('activity_date', { ascending: false }).order('created_at', { ascending: false }).limit(1000),
