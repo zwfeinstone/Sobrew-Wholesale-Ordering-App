@@ -457,8 +457,8 @@ function CogsSplitGrid({ current }: { current: ReturnType<typeof buildProfitabil
       <StatTile label="Labor COGS" value={money(current.laborCents)} detail="Production labor snapshotted into finished goods." />
       <StatTile label="Fixed Packaging" value={money(current.fixedCents)} detail="Tape, labels, and legacy fixed recipe costs." />
       <StatTile label="Shipping COGS" value={money(current.shippingCogsCents)} detail="Required shipping cost allocated from shipped orders." />
-      <StatTile label="Processing Fees" value={money(current.processingFeeCogsCents)} detail="3.99% plus 30 cents per shipped order." />
-      <StatTile label="Donation COGS" value={money(current.donationCogsCents)} detail="Donation amounts entered at shipment." />
+      <StatTile label="Processing Fees" value={money(current.processingFeeCogsCents)} detail="2.99% plus 30 cents per shipped order." />
+      <StatTile label="Donation COGS" value={money(current.donationCogsCents)} detail="Fixed 1% of shipped order revenue." />
     </div>
   );
 }
@@ -920,7 +920,7 @@ export default async function AdminReportsPage({
             <StatTile label="Product COGS" value={money(profitabilityDashboard.current.productCogsCents)} detail="Material, labor, and fixed production COGS." />
             <StatTile label="Shipping COGS" value={money(profitabilityDashboard.current.shippingCogsCents)} detail="Order shipping cost allocated to lines." />
             <StatTile label="Processing Fees" value={money(profitabilityDashboard.current.processingFeeCogsCents)} detail="Payment processing COGS on shipped orders." />
-            <StatTile label="Donation COGS" value={money(profitabilityDashboard.current.donationCogsCents)} detail="Donation amounts recorded at shipment." />
+            <StatTile label="Donation COGS" value={money(profitabilityDashboard.current.donationCogsCents)} detail="Fixed 1% of shipped order revenue." />
             <StatTile label="Gross Profit" value={money(profitabilityDashboard.current.grossProfitCents)} detail={`${profitabilityDashboard.current.estimatedLineCount} estimated line${profitabilityDashboard.current.estimatedLineCount === 1 ? '' : 's'} in this range.`} />
             <StatTile label="Margin" value={`${percent(profitabilityDashboard.current.marginPercent).replace('+', '')}`} detail={`${signedMoney(profitabilityDashboard.current.grossProfitCents - profitabilityDashboard.previous.grossProfitCents)} vs previous range.`} />
           </section>

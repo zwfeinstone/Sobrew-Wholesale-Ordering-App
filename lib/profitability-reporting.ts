@@ -590,12 +590,12 @@ function buildMarginBridge(current: ProfitabilityTotals, previous: Profitability
     {
       label: 'Processing Fees',
       effectCents: -(current.processingFeeCogsCents - previous.processingFeeCogsCents),
-      detail: 'Payment processing fee at 3.99% plus 30 cents per shipped order.',
+      detail: 'Payment processing fee at 2.99% plus 30 cents per shipped order.',
     },
     {
       label: 'Donation COGS',
       effectCents: -(current.donationCogsCents - previous.donationCogsCents),
-      detail: 'Donation amounts entered at shipment and allocated by line revenue.',
+      detail: 'Fixed 1% donation COGS allocated by line revenue.',
     },
   ];
 }
