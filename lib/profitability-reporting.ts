@@ -5,6 +5,8 @@ export type ProfitabilityOrderRow = {
   center_id: string | null;
   status: string | null;
   subtotal_cents: number | string | null;
+  donation_cogs_cents?: number | string | null;
+  processing_fee_cents?: number | string | null;
   shipping_cost_cents?: number | string | null;
   created_at: string | null;
   shipped_at?: string | null;
@@ -28,6 +30,8 @@ export type ProfitabilityOrderItemRow = {
   cogs_fixed_other_cents?: number | string | null;
   cogs_product_cents?: number | string | null;
   cogs_shipping_cents?: number | string | null;
+  cogs_processing_fee_cents?: number | string | null;
+  cogs_donation_cents?: number | string | null;
   cogs_total_cents?: number | string | null;
   cogs_unit_cents?: number | string | null;
   cogs_source?: string | null;
@@ -44,6 +48,8 @@ export type ProfitabilityCenterRow = {
   fixedCents: number;
   productCogsCents: number;
   shippingCogsCents: number;
+  processingFeeCogsCents: number;
+  donationCogsCents: number;
   totalCogsCents: number;
   grossProfitCents: number;
   marginPercent: number;
@@ -61,6 +67,8 @@ export type ProfitabilityItemRow = {
   productCogsCents: number;
   productCogsPerUnitCents: number;
   shippingCogsCents: number;
+  processingFeeCogsCents: number;
+  donationCogsCents: number;
   grossProfitBeforeShippingCents: number;
   grossProfitAfterShippingCents: number;
   marginBeforeShippingPercent: number;
@@ -80,6 +88,8 @@ export type ProfitabilityTotals = {
   fixedOtherCents: number;
   productCogsCents: number;
   shippingCogsCents: number;
+  processingFeeCogsCents: number;
+  donationCogsCents: number;
   totalCogsCents: number;
   grossProfitCents: number;
   marginPercent: number;
@@ -229,6 +239,7 @@ type NormalizedLine = {
   fixedCents: number;
   fixedOtherCents: number;
   brandingLabelCents: number;
+  donationCogsCents: number;
   id: string;
   laborCents: number;
   materialCents: number;
@@ -239,6 +250,7 @@ type NormalizedLine = {
   qty: number;
   revenueCents: number;
   shippingCogsCents: number;
+  processingFeeCogsCents: number;
   shippingLabelCents: number;
   snapshot: boolean;
   tapeCents: number;
@@ -263,6 +275,7 @@ function percent(numerator: number, denominator: number) {
 function emptyTotals(): ProfitabilityTotals {
   return {
     brandingLabelCents: 0,
+    donationCogsCents: 0,
     estimatedLineCount: 0,
     fixedCents: 0,
     fixedOtherCents: 0,
@@ -271,6 +284,7 @@ function emptyTotals(): ProfitabilityTotals {
     marginPercent: 0,
     materialCents: 0,
     orderCount: 0,
+    processingFeeCogsCents: 0,
     productCogsCents: 0,
     revenueCents: 0,
     shippingCogsCents: 0,
@@ -285,7 +299,7 @@ function emptyTotals(): ProfitabilityTotals {
 function finalizeTotals(totals: ProfitabilityTotals, orderIds: Set<string>) {
   totals.orderCount = orderIds.size;
   totals.productCogsCents = totals.materialCents + totals.laborCents + totals.fixedCents;
-  totals.totalCogsCents = totals.productCogsCents + totals.shippingCogsCents;
+  totals.totalCogsCents = totals.productCogsCents + totals.shippingCogsCents + totals.processingFeeCogsCents + totals.donationCogsCents;
   totals.grossProfitCents = totals.revenueCents - totals.totalCogsCents;
   totals.marginPercent = percent(totals.grossProfitCents, totals.revenueCents);
   return totals;
@@ -414,11 +428,15 @@ function normalizeLines({
       const fixedOtherCents = hasSnapshot ? numericValue(item.cogs_fixed_other_cents) : latestBreakdown.fixedOtherUnitCents * qty;
       const productCogsCents = hasSnapshot ? numericValue(item.cogs_product_cents) || materialCents + laborCents + fixedCents : materialCents + laborCents + fixedCents;
       const shippingCogsCents = hasSnapshot ? numericValue(item.cogs_shipping_cents) : shippingAllocations.get(item.id) ?? 0;
+      const processingFeeCogsCents = hasSnapshot ? numericValue(item.cogs_processing_fee_cents) : 0;
+      const donationCogsCents = hasSnapshot ? numericValue(item.cogs_donation_cents) : 0;
+      const snapshottedTotalCogsCents = numericValue(item.cogs_total_cents);
 
       lines.push({
         brandingLabelCents,
         centerId: order.center_id,
         date: orderDate,
+        donationCogsCents,
         estimated: hasSnapshot ? Boolean(item.cogs_estimated) : true,
         fixedCents,
         fixedOtherCents,
@@ -432,10 +450,11 @@ function normalizeLines({
         qty,
         revenueCents,
         shippingCogsCents,
+        processingFeeCogsCents,
         shippingLabelCents,
         snapshot: hasSnapshot,
         tapeCents,
-        totalCogsCents: productCogsCents + shippingCogsCents,
+        totalCogsCents: snapshottedTotalCogsCents || productCogsCents + shippingCogsCents + processingFeeCogsCents + donationCogsCents,
       });
     }
   }
@@ -450,11 +469,13 @@ function totalsForLines(lines: NormalizedLine[]) {
   for (const line of lines) {
     orderIds.add(line.orderId);
     totals.brandingLabelCents += line.brandingLabelCents;
+    totals.donationCogsCents += line.donationCogsCents;
     totals.estimatedLineCount += line.estimated ? 1 : 0;
     totals.fixedCents += line.fixedCents;
     totals.fixedOtherCents += line.fixedOtherCents;
     totals.laborCents += line.laborCents;
     totals.materialCents += line.materialCents;
+    totals.processingFeeCogsCents += line.processingFeeCogsCents;
     totals.revenueCents += line.revenueCents;
     totals.shippingCogsCents += line.shippingCogsCents;
     totals.shippingLabelCents += line.shippingLabelCents;
@@ -492,7 +513,9 @@ function buildCenterRows(lines: NormalizedLine[], centers: CenterRow[]) {
       materialCents: totals.materialCents,
       laborCents: totals.laborCents,
       fixedCents: totals.fixedCents,
+      donationCogsCents: totals.donationCogsCents,
       productCogsCents: totals.productCogsCents,
+      processingFeeCogsCents: totals.processingFeeCogsCents,
       shippingCogsCents: totals.shippingCogsCents,
       totalCogsCents: totals.totalCogsCents,
       grossProfitCents: totals.grossProfitCents,
@@ -524,6 +547,8 @@ function buildItemRows(lines: NormalizedLine[]) {
       revenuePerUnitCents: totals.unitsSold ? totals.revenueCents / totals.unitsSold : 0,
       productCogsCents: totals.productCogsCents,
       productCogsPerUnitCents: totals.unitsSold ? totals.productCogsCents / totals.unitsSold : 0,
+      donationCogsCents: totals.donationCogsCents,
+      processingFeeCogsCents: totals.processingFeeCogsCents,
       shippingCogsCents: totals.shippingCogsCents,
       grossProfitBeforeShippingCents,
       grossProfitAfterShippingCents: totals.grossProfitCents,
@@ -561,6 +586,16 @@ function buildMarginBridge(current: ProfitabilityTotals, previous: Profitability
       label: 'Shipping COGS',
       effectCents: -(current.shippingCogsCents - previous.shippingCogsCents),
       detail: 'Order-level shipping cost allocated to shipped lines.',
+    },
+    {
+      label: 'Processing Fees',
+      effectCents: -(current.processingFeeCogsCents - previous.processingFeeCogsCents),
+      detail: 'Payment processing fee at 3.99% plus 30 cents per shipped order.',
+    },
+    {
+      label: 'Donation COGS',
+      effectCents: -(current.donationCogsCents - previous.donationCogsCents),
+      detail: 'Donation amounts entered at shipment and allocated by line revenue.',
     },
   ];
 }

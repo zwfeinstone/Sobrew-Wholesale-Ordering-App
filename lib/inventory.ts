@@ -20,6 +20,7 @@ export const COMMON_SUPPLY_SKUS = [
   'BOX-12X7X4',
   'BOX-12X12X10',
   'BOX-14X14X14',
+  'BOX-16X16X6',
   'BOX-16X16X16',
 ] as const;
 

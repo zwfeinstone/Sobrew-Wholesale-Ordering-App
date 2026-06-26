@@ -5,6 +5,7 @@ import {
   normalizeInventoryNumber,
   type InventoryUnit,
 } from '@/lib/inventory';
+import { processingFeeCentsForRevenue } from '@/lib/order-fees';
 
 type SupabaseLike = {
   from: (table: string) => any;
@@ -258,6 +259,23 @@ function allocateShipping(items: OrderItemRow[], shippingCostCents: number) {
   return allocations;
 }
 
+function allocateByRevenue(items: OrderItemRow[], amountCents: number) {
+  const allocations = new Map<string, number>();
+  const safeAmount = Math.max(0, amountCents);
+  const totalRevenue = items.reduce((sum, item) => sum + Math.max(0, lineRevenueCents(item)), 0);
+  const totalWeight = totalRevenue || items.length || 1;
+  let allocated = 0;
+
+  items.forEach((item, index) => {
+    const weight = totalRevenue > 0 ? Math.max(0, lineRevenueCents(item)) : 1;
+    const amount = index === items.length - 1 ? Math.max(0, safeAmount - allocated) : (safeAmount * weight) / totalWeight;
+    allocated += amount;
+    allocations.set(item.id, amount);
+  });
+
+  return allocations;
+}
+
 async function insertShipmentMovement({
   inventoryItemId,
   lotId,
@@ -437,11 +455,15 @@ async function consumeShippingBoxUsages({
 }
 
 export async function snapshotOrderCogsForShipment({
+  donationCogsCents = 0,
   orderId,
+  processingFeeCents,
   shippingCostCents,
   supabase,
 }: {
+  donationCogsCents?: number;
   orderId: string;
+  processingFeeCents?: number;
   shippingCostCents: number;
   supabase: SupabaseLike;
 }) {
@@ -534,7 +556,12 @@ export async function snapshotOrderCogsForShipment({
     lotQueuesByItemId.set(lot.inventory_item_id, existing);
   }
 
+  const orderRevenueCents = orderItems.reduce((sum, item) => sum + Math.max(0, lineRevenueCents(item)), 0);
+  const safeProcessingFeeCents = Math.max(0, processingFeeCents ?? processingFeeCentsForRevenue(orderRevenueCents));
+  const safeDonationCogsCents = Math.max(0, donationCogsCents);
   const shippingAllocationByItemId = allocateShipping(orderItems, Math.max(0, shippingCostCents));
+  const processingFeeAllocationByItemId = allocateByRevenue(orderItems, safeProcessingFeeCents);
+  const donationAllocationByItemId = allocateByRevenue(orderItems, safeDonationCogsCents);
   const snapshotAt = new Date().toISOString();
   const shippingBoxUsageResult = await consumeShippingBoxUsages({ orderId, snapshotAt, supabase });
   if (shippingBoxUsageResult.error) return { error: shippingBoxUsageResult.error };
@@ -654,6 +681,8 @@ export async function snapshotOrderCogsForShipment({
           ? 'actual_fifo'
           : 'missing_cost';
     const shippingCents = shippingAllocationByItemId.get(item.id) ?? 0;
+    const processingFeeCentsForLine = processingFeeAllocationByItemId.get(item.id) ?? 0;
+    const donationCents = donationAllocationByItemId.get(item.id) ?? 0;
     const shippingBoxCost = shippingBoxCostByOrderItemId.get(item.id);
     if (shippingBoxCost?.costCents) {
       lineBreakdown.fixedCents += shippingBoxCost.costCents;
@@ -662,16 +691,18 @@ export async function snapshotOrderCogsForShipment({
     }
     const finalCogsSource: CogsSource = shippingBoxCost?.estimated && cogsSource === 'actual_fifo' ? 'partial_estimate' : cogsSource;
     const productCogsCents = lineBreakdown.materialCents + lineBreakdown.laborCents + lineBreakdown.fixedCents;
-    const totalCogsCents = productCogsCents + shippingCents;
+    const totalCogsCents = productCogsCents + shippingCents + processingFeeCentsForLine + donationCents;
     const updateResult = await supabase
       .from('order_items')
       .update({
         cogs_branding_label_cents: lineBreakdown.brandingLabelCents,
+        cogs_donation_cents: donationCents,
         cogs_estimated: finalCogsSource !== 'actual_fifo' || Boolean(shippingBoxCost?.estimated),
         cogs_fixed_cents: lineBreakdown.fixedCents,
         cogs_fixed_other_cents: lineBreakdown.fixedOtherCents,
         cogs_labor_cents: lineBreakdown.laborCents,
         cogs_material_cents: lineBreakdown.materialCents,
+        cogs_processing_fee_cents: processingFeeCentsForLine,
         cogs_product_cents: productCogsCents,
         cogs_shipping_cents: shippingCents,
         cogs_shipping_label_cents: lineBreakdown.shippingLabelCents,

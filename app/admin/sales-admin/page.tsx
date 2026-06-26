@@ -55,15 +55,18 @@ type CommissionSettingRow = {
 type PayoutRow = {
   commission_cents: number | string | null;
   commission_month: string;
+  donation_cogs_cents?: number | string | null;
   gross_profit_cents: number | string | null;
   id: string;
   order_count: number | null;
   paid_at: string | null;
+  processing_fee_cogs_cents?: number | string | null;
   product_cogs_cents: number | string | null;
   revenue_cents: number | string | null;
   sales_profile_id: string;
   shipping_cogs_cents: number | string | null;
   status: string;
+  total_cogs_cents?: number | string | null;
 };
 
 function salesAdminHref(toast: string, month?: string, extras: Record<string, string | undefined> = {}) {
@@ -117,12 +120,18 @@ function percentChange(current: number, previous: number) {
 function payoutSummary(payout: PayoutRow): CommissionSummary {
   return {
     commissionCents: numericCents(payout.commission_cents),
+    donationCogsCents: numericCents(payout.donation_cogs_cents),
     grossProfitCents: numericCents(payout.gross_profit_cents),
     orderCount: payout.order_count ?? 0,
+    processingFeeCogsCents: numericCents(payout.processing_fee_cogs_cents),
     productCogsCents: numericCents(payout.product_cogs_cents),
     revenueCents: numericCents(payout.revenue_cents),
     shippingCogsCents: numericCents(payout.shipping_cogs_cents),
-    totalCogsCents: numericCents(payout.product_cogs_cents) + numericCents(payout.shipping_cogs_cents),
+    totalCogsCents: numericCents(payout.total_cogs_cents)
+      || numericCents(payout.product_cogs_cents)
+        + numericCents(payout.shipping_cogs_cents)
+        + numericCents(payout.processing_fee_cogs_cents)
+        + numericCents(payout.donation_cogs_cents),
   };
 }
 
@@ -313,7 +322,7 @@ async function updateMonthlyPayout(formData: FormData) {
 
   const { data: snapshots, error: snapshotsError } = await supabaseAdmin
     .from('order_commission_snapshots')
-    .select('id,order_id,center_id,sales_profile_id,shipped_at,commission_month,revenue_cents,product_cogs_cents,shipping_cogs_cents,total_cogs_cents,gross_profit_cents,commission_percent,commission_cents,cogs_estimated')
+    .select('id,order_id,center_id,sales_profile_id,shipped_at,commission_month,revenue_cents,product_cogs_cents,shipping_cogs_cents,processing_fee_cogs_cents,donation_cogs_cents,total_cogs_cents,gross_profit_cents,commission_percent,commission_cents,cogs_estimated')
     .eq('sales_profile_id', salesProfileId)
     .eq('commission_month', commissionMonth);
 
@@ -337,11 +346,14 @@ async function updateMonthlyPayout(formData: FormData) {
     order_count: summary.orderCount,
     paid_at: action === 'paid' ? now : before?.paid_at ?? null,
     paid_by: action === 'paid' ? current.profile.id : before?.paid_by ?? null,
+    donation_cogs_cents: summary.donationCogsCents,
+    processing_fee_cogs_cents: summary.processingFeeCogsCents,
     product_cogs_cents: summary.productCogsCents,
     revenue_cents: summary.revenueCents,
     sales_profile_id: salesProfileId,
     shipping_cogs_cents: summary.shippingCogsCents,
     status: action,
+    total_cogs_cents: summary.totalCogsCents,
     updated_at: now,
   };
 
@@ -411,11 +423,11 @@ export default async function SalesAdminPage({
       .select('profile_id,commission_percent,is_sales_rep'),
     supabaseAdmin
       .from('order_commission_snapshots')
-      .select('id,order_id,center_id,sales_profile_id,shipped_at,commission_month,revenue_cents,product_cogs_cents,shipping_cogs_cents,total_cogs_cents,gross_profit_cents,commission_percent,commission_cents,cogs_estimated')
+      .select('id,order_id,center_id,sales_profile_id,shipped_at,commission_month,revenue_cents,product_cogs_cents,shipping_cogs_cents,processing_fee_cogs_cents,donation_cogs_cents,total_cogs_cents,gross_profit_cents,commission_percent,commission_cents,cogs_estimated')
       .in('commission_month', [commissionMonth, previousMonth, priorYearMonth]),
     supabaseAdmin
       .from('monthly_commission_payouts')
-      .select('id,sales_profile_id,commission_month,status,order_count,revenue_cents,product_cogs_cents,shipping_cogs_cents,gross_profit_cents,commission_cents,paid_at')
+      .select('id,sales_profile_id,commission_month,status,order_count,revenue_cents,product_cogs_cents,shipping_cogs_cents,processing_fee_cogs_cents,donation_cogs_cents,total_cogs_cents,gross_profit_cents,commission_cents,paid_at')
       .eq('commission_month', commissionMonth),
   ]);
 
@@ -472,6 +484,8 @@ export default async function SalesAdminPage({
     summary.revenueCents += row.current.revenueCents;
     summary.productCogsCents += row.current.productCogsCents;
     summary.shippingCogsCents += row.current.shippingCogsCents;
+    summary.processingFeeCogsCents += row.current.processingFeeCogsCents;
+    summary.donationCogsCents += row.current.donationCogsCents;
     summary.totalCogsCents += row.current.totalCogsCents;
     summary.grossProfitCents += row.current.grossProfitCents;
     summary.commissionCents += row.current.commissionCents;
@@ -541,7 +555,7 @@ export default async function SalesAdminPage({
 
       <section className="grid gap-4 lg:grid-cols-4">
         <StatTile label="Team revenue" value={money(teamCurrent.revenueCents)} detail={commissionMonthLabel(commissionMonth)} />
-        <StatTile label="Team gross profit" value={money(teamCurrent.grossProfitCents)} detail="After product and shipping COGS." />
+        <StatTile label="Team gross profit" value={money(teamCurrent.grossProfitCents)} detail="After product, shipping, processing, and donation COGS." />
         <StatTile label="Team commission" value={money(teamCurrent.commissionCents)} detail={`${teamCurrent.orderCount.toLocaleString()} shipped order(s).`} />
         <StatTile label="Assigned centers" value={assignedCentersInReport.toLocaleString()} detail={selectedSalesRepId ? 'Assigned to the selected sales rep.' : 'Assigned to shown sales reps.'} />
       </section>
