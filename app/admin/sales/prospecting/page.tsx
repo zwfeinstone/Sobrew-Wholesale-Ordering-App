@@ -710,6 +710,11 @@ export default async function ProspectingPage({
             <p className="page-subtitle mt-3">
               Use call blocks for the first outreach attempt, then use follow-up blocks when replies and deal activity happen later.
             </p>
+            <div className="mt-5">
+              <Link className="btn-secondary inline-flex" href="/admin/sales/prospecting/sample-boxes">
+                Sample Boxes
+              </Link>
+            </div>
           </div>
           <div className="grid gap-3 sm:grid-cols-3">
             <div className="stat-card">
