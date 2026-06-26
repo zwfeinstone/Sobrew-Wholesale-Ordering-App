@@ -301,7 +301,7 @@ export default async function InventoryPage({
       </section>
 
       <section className="card space-y-4">
-        <SectionHeading eyebrow="Materials & Supplies" title="Packaging and production inputs" subtitle="These are received in units and consumed by recipes. Tape, shipping labels, and branding labels are non-stock expenses." />
+        <SectionHeading eyebrow="Materials & Supplies" title="Packaging and production inputs" subtitle="These are received in units and consumed by recipes or shipping. Product box stock can go negative when shipped short." />
         <div className="grid gap-3 lg:grid-cols-2">
           {materialSupplyItems.map((item) => {
             const summary = lotSummaryByItem.get(item.id);
@@ -312,6 +312,7 @@ export default async function InventoryPage({
                 detail={`${inventoryItemTypeLabel(item.item_type)} - stocked in ${item.base_unit}`}
                 quantity={formatInventoryQuantity(summary?.remaining ?? 0, item.base_unit)}
                 costLabel={`Avg ${usd(Math.round(summary?.avgCostCents ?? 0))} / ${item.base_unit}`}
+                tone={(summary?.remaining ?? 0) < 0 ? 'short' : 'default'}
               />
             );
           })}

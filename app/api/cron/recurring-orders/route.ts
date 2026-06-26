@@ -5,6 +5,11 @@ import { env } from '@/lib/env';
 import { isRecurringOrderDue } from '@/lib/recurring';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 
+const TARGET_CRON_HOUR = 8;
+const TARGET_CRON_MINUTE = 0;
+const TARGET_CRON_WINDOW_MINUTES = 10;
+const RECURRING_CRON_TIME_ZONE = 'America/Chicago';
+
 function normalizeStatus(recurringOrder: { status?: string | null; active?: boolean | null }) {
   if (recurringOrder.status) return recurringOrder.status;
   if (typeof recurringOrder.active === 'boolean') return recurringOrder.active ? 'active' : 'paused';
@@ -21,9 +26,47 @@ function isAuthorizedCronRequest(req: Request) {
   return providedSecret === env.cronSecret;
 }
 
+function centralCronTimeParts(now: Date) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    hour: '2-digit',
+    hourCycle: 'h23',
+    minute: '2-digit',
+    timeZone: RECURRING_CRON_TIME_ZONE,
+  }).formatToParts(now);
+  const hour = Number(parts.find((part) => part.type === 'hour')?.value);
+  const minute = Number(parts.find((part) => part.type === 'minute')?.value);
+  return { hour, minute };
+}
+
+function isForcedCronRequest(req: Request) {
+  const url = new URL(req.url);
+  return url.searchParams.get('force') === '1' || req.headers.get('x-cron-force') === 'true';
+}
+
+function isInTargetCronWindow(time: { hour: number; minute: number }) {
+  return (
+    time.hour === TARGET_CRON_HOUR &&
+    time.minute >= TARGET_CRON_MINUTE &&
+    time.minute <= TARGET_CRON_MINUTE + TARGET_CRON_WINDOW_MINUTES
+  );
+}
+
 async function runRecurringOrders(req: Request) {
   if (!isAuthorizedCronRequest(req)) {
     return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
+  }
+
+  const now = new Date();
+  const centralTime = centralCronTimeParts(now);
+  const forceRun = isForcedCronRequest(req);
+  if (!forceRun && !isInTargetCronWindow(centralTime)) {
+    return NextResponse.json({
+      created: 0,
+      errors: [],
+      skipped: 'outside_recurring_order_window',
+      targetTime: '8:00 AM America/Chicago',
+      currentCentralTime: `${String(centralTime.hour).padStart(2, '0')}:${String(centralTime.minute).padStart(2, '0')}`,
+    });
   }
 
   const { data: recurringOrders, error: recurringOrdersError } = await supabaseAdmin
@@ -34,7 +77,6 @@ async function runRecurringOrders(req: Request) {
     return NextResponse.json({ error: recurringOrdersError.message }, { status: 500 });
   }
 
-  const now = new Date();
   let created = 0;
   const errors: Array<{ recurringOrderId: string; message: string }> = [];
 
