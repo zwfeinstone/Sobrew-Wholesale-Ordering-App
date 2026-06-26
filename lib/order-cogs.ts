@@ -38,6 +38,22 @@ type InventoryLotRow = {
   production_run_id: string | null;
 };
 
+type InventoryCostLotRow = InventoryLotRow & {
+  created_at?: string | null;
+  received_at?: string | null;
+};
+
+type ShippingBoxUsageRow = {
+  id: string;
+  order_item_id: string;
+  inventory_item_id: string;
+  quantity: number | string;
+  unit_cost_cents: number | string | null;
+  total_cost_cents: number | string | null;
+  cogs_estimated: boolean | null;
+  consumed_at: string | null;
+};
+
 type ProductionRunRow = {
   id: string;
   product_id: string;
@@ -224,7 +240,7 @@ function allocateShipping(items: OrderItemRow[], shippingCostCents: number) {
   const allocations = new Map<string, number>();
   const totalBoxes = items.reduce((sum, item) => sum + Math.max(0, normalizeInventoryNumber(item.shipping_boxes_used)), 0);
   const totalRevenue = items.reduce((sum, item) => sum + Math.max(0, lineRevenueCents(item)), 0);
-  const useBoxes = totalBoxes > 0;
+  const useBoxes = totalBoxes > 0 && items.every((item) => normalizeInventoryNumber(item.shipping_boxes_used) > 0);
   const totalWeight = useBoxes ? totalBoxes : totalRevenue || items.length || 1;
   let allocated = 0;
 
@@ -248,11 +264,13 @@ async function insertShipmentMovement({
   orderId,
   orderItemId,
   quantity,
+  notes,
   supabase,
   unitCostCents,
 }: {
   inventoryItemId: string;
   lotId: string | null;
+  notes?: string;
   orderId: string;
   orderItemId: string;
   quantity: number;
@@ -268,8 +286,154 @@ async function insertShipmentMovement({
     quantity_change: -Math.max(0, quantity),
     unit: 'each',
     unit_cost_cents: Math.max(0, unitCostCents),
-    notes: lotId ? 'Finished goods shipped' : 'Finished goods shipped below available stock',
+    notes: notes ?? (lotId ? 'Finished goods shipped' : 'Finished goods shipped below available stock'),
   });
+}
+
+async function consumeShippingBoxUsages({
+  orderId,
+  snapshotAt,
+  supabase,
+}: {
+  orderId: string;
+  snapshotAt: string;
+  supabase: SupabaseLike;
+}) {
+  const { data: usages, error: usagesError } = await supabase
+    .from('order_item_shipping_boxes')
+    .select('id,order_item_id,inventory_item_id,quantity,unit_cost_cents,total_cost_cents,cogs_estimated,consumed_at')
+    .eq('order_id', orderId);
+
+  if (usagesError) return { error: 'shipping_box_usage_error' as const };
+
+  const usageRows = (usages ?? []) as ShippingBoxUsageRow[];
+  const costByOrderItemId = new Map<string, { costCents: number; estimated: boolean }>();
+  if (!usageRows.length) return { costByOrderItemId, error: null };
+
+  function addUsageCost(orderItemId: string, costCents: number, estimated: boolean) {
+    const current = costByOrderItemId.get(orderItemId) ?? { costCents: 0, estimated: false };
+    current.costCents += costCents;
+    current.estimated = current.estimated || estimated;
+    costByOrderItemId.set(orderItemId, current);
+  }
+
+  const boxItemIds = [...new Set(usageRows.map((usage) => usage.inventory_item_id).filter(Boolean))];
+  const [{ data: availableLots, error: availableLotsError }, { data: costLots, error: costLotsError }] = await Promise.all([
+    boxItemIds.length
+      ? supabase
+          .from('inventory_lots')
+          .select('id,inventory_item_id,quantity_remaining,unit_cost_cents,production_run_id,received_at,created_at')
+          .in('inventory_item_id', boxItemIds)
+          .gt('quantity_remaining', 0)
+          .order('received_at', { ascending: true })
+          .order('created_at', { ascending: true })
+      : { data: [] as InventoryCostLotRow[] },
+    boxItemIds.length
+      ? supabase
+          .from('inventory_lots')
+          .select('id,inventory_item_id,quantity_remaining,unit_cost_cents,production_run_id,received_at,created_at')
+          .in('inventory_item_id', boxItemIds)
+          .order('received_at', { ascending: false })
+          .order('created_at', { ascending: false })
+      : { data: [] as InventoryCostLotRow[] },
+  ]);
+
+  if (availableLotsError || costLotsError) return { error: 'shipping_box_lot_error' as const };
+
+  const lotsByItemId = new Map<string, InventoryCostLotRow[]>();
+  for (const lot of (availableLots ?? []) as InventoryCostLotRow[]) {
+    const lots = lotsByItemId.get(lot.inventory_item_id) ?? [];
+    lots.push(lot);
+    lotsByItemId.set(lot.inventory_item_id, lots);
+  }
+
+  const latestCostByItemId = new Map<string, number>();
+  for (const lot of (costLots ?? []) as InventoryCostLotRow[]) {
+    const unitCost = normalizeInventoryNumber(lot.unit_cost_cents);
+    if (unitCost > 0 && !latestCostByItemId.has(lot.inventory_item_id)) {
+      latestCostByItemId.set(lot.inventory_item_id, unitCost);
+    }
+  }
+
+  for (const usage of usageRows) {
+    const quantity = Math.max(0, normalizeInventoryNumber(usage.quantity));
+    if (quantity <= 0) continue;
+
+    if (usage.consumed_at) {
+      addUsageCost(usage.order_item_id, normalizeInventoryNumber(usage.total_cost_cents), Boolean(usage.cogs_estimated));
+      continue;
+    }
+
+    const lotQueue = lotsByItemId.get(usage.inventory_item_id) ?? [];
+    let remaining = quantity;
+    let totalCostCents = 0;
+    let estimated = false;
+
+    for (const lot of lotQueue) {
+      if (remaining <= 0) break;
+      const lotRemaining = normalizeInventoryNumber(lot.quantity_remaining);
+      if (lotRemaining <= 0) continue;
+      const take = Math.min(lotRemaining, remaining);
+      const nextRemaining = lotRemaining - take;
+      const { error: lotUpdateError } = await supabase
+        .from('inventory_lots')
+        .update({ quantity_remaining: nextRemaining })
+        .eq('id', lot.id);
+
+      if (lotUpdateError) return { error: 'shipping_box_lot_update_error' as const };
+
+      lot.quantity_remaining = nextRemaining;
+      const unitCost = normalizeInventoryNumber(lot.unit_cost_cents);
+      totalCostCents += take * unitCost;
+
+      const movementResult = await insertShipmentMovement({
+        inventoryItemId: usage.inventory_item_id,
+        lotId: lot.id,
+        notes: 'Shipping product box used',
+        orderId,
+        orderItemId: usage.order_item_id,
+        quantity: take,
+        supabase,
+        unitCostCents: unitCost,
+      });
+      if (movementResult.error) return { error: 'shipping_box_movement_error' as const };
+
+      remaining -= take;
+    }
+
+    if (remaining > 0) {
+      const fallbackUnitCost = latestCostByItemId.get(usage.inventory_item_id) ?? 0;
+      estimated = true;
+      totalCostCents += remaining * fallbackUnitCost;
+      const movementResult = await insertShipmentMovement({
+        inventoryItemId: usage.inventory_item_id,
+        lotId: null,
+        notes: 'Shipping product box used below available stock',
+        orderId,
+        orderItemId: usage.order_item_id,
+        quantity: remaining,
+        supabase,
+        unitCostCents: fallbackUnitCost,
+      });
+      if (movementResult.error) return { error: 'shipping_box_movement_error' as const };
+    }
+
+    const updateResult = await supabase
+      .from('order_item_shipping_boxes')
+      .update({
+        cogs_estimated: estimated,
+        consumed_at: snapshotAt,
+        total_cost_cents: totalCostCents,
+        unit_cost_cents: quantity > 0 ? totalCostCents / quantity : 0,
+        updated_at: snapshotAt,
+      })
+      .eq('id', usage.id);
+
+    if (updateResult.error) return { error: 'shipping_box_usage_update_error' as const };
+    addUsageCost(usage.order_item_id, totalCostCents, estimated);
+  }
+
+  return { costByOrderItemId, error: null };
 }
 
 export async function snapshotOrderCogsForShipment({
@@ -372,6 +536,9 @@ export async function snapshotOrderCogsForShipment({
 
   const shippingAllocationByItemId = allocateShipping(orderItems, Math.max(0, shippingCostCents));
   const snapshotAt = new Date().toISOString();
+  const shippingBoxUsageResult = await consumeShippingBoxUsages({ orderId, snapshotAt, supabase });
+  if (shippingBoxUsageResult.error) return { error: shippingBoxUsageResult.error };
+  const shippingBoxCostByOrderItemId = shippingBoxUsageResult.costByOrderItemId;
 
   for (const item of orderItems) {
     if (item.cogs_snapshot_at) continue;
@@ -487,13 +654,20 @@ export async function snapshotOrderCogsForShipment({
           ? 'actual_fifo'
           : 'missing_cost';
     const shippingCents = shippingAllocationByItemId.get(item.id) ?? 0;
+    const shippingBoxCost = shippingBoxCostByOrderItemId.get(item.id);
+    if (shippingBoxCost?.costCents) {
+      lineBreakdown.fixedCents += shippingBoxCost.costCents;
+      lineBreakdown.fixedOtherCents += shippingBoxCost.costCents;
+      lineBreakdown.totalCents += shippingBoxCost.costCents;
+    }
+    const finalCogsSource: CogsSource = shippingBoxCost?.estimated && cogsSource === 'actual_fifo' ? 'partial_estimate' : cogsSource;
     const productCogsCents = lineBreakdown.materialCents + lineBreakdown.laborCents + lineBreakdown.fixedCents;
     const totalCogsCents = productCogsCents + shippingCents;
     const updateResult = await supabase
       .from('order_items')
       .update({
         cogs_branding_label_cents: lineBreakdown.brandingLabelCents,
-        cogs_estimated: cogsSource !== 'actual_fifo',
+        cogs_estimated: finalCogsSource !== 'actual_fifo' || Boolean(shippingBoxCost?.estimated),
         cogs_fixed_cents: lineBreakdown.fixedCents,
         cogs_fixed_other_cents: lineBreakdown.fixedOtherCents,
         cogs_labor_cents: lineBreakdown.laborCents,
@@ -502,7 +676,7 @@ export async function snapshotOrderCogsForShipment({
         cogs_shipping_cents: shippingCents,
         cogs_shipping_label_cents: lineBreakdown.shippingLabelCents,
         cogs_snapshot_at: snapshotAt,
-        cogs_source: cogsSource,
+        cogs_source: finalCogsSource,
         cogs_tape_cents: lineBreakdown.tapeCents,
         cogs_total_cents: totalCogsCents,
         cogs_unit_cents: qty > 0 ? productCogsCents / qty : 0,

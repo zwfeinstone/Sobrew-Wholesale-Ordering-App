@@ -1,6 +1,7 @@
 import { notFound, redirect } from 'next/navigation';
 import ConfirmSubmitButton from '@/components/confirm-submit-button';
 import { OrderStatusBadge, OrderStatusTimeline } from '@/components/order-status';
+import { ProductBoxUsageFields, type ProductBoxInventoryOption, type ProductBoxRequiredLine } from '@/components/product-box-usage-fields';
 import StatusToast from '@/components/status-toast';
 import { requireAdminWriteAccess } from '@/lib/admin-write-access';
 import { getCenterLoginEmails } from '@/lib/center-logins';
@@ -23,6 +24,10 @@ function formatOrderTimestamp(value: string | null) {
 function relatedOne<T>(value: T | T[] | null | undefined): T | null {
   if (Array.isArray(value)) return value[0] ?? null;
   return value ?? null;
+}
+
+function productBoxLabel(item: { name: string | null; sku: string | null }) {
+  return item.sku ? `${item.name || 'Box'} (${item.sku})` : item.name || 'Box';
 }
 
 async function updateStatus(formData: FormData) {
@@ -60,21 +65,75 @@ async function shipOrder(formData: FormData) {
 
   const { data: orderItems } = await supabase
     .from('order_items')
-    .select('id,product_id,products(shipping_box_count_required)')
+    .select('id,product_id,product_name_snapshot,products(name,shipping_box_count_required)')
     .eq('order_id', id);
 
-  for (const item of orderItems ?? []) {
-    const product = relatedOne((item as any).products);
-    const rawBoxes = String(formData.get(`boxes_${(item as any).id}`) ?? '').trim();
-    const boxesUsed = rawBoxes ? Math.max(0, Number.parseFloat(rawBoxes) || 0) : null;
-    if (product?.shipping_box_count_required && (!boxesUsed || boxesUsed <= 0)) {
-      redirect(`/admin/orders/${id}?toast=box_count_required`);
+  const requiredOrderItems = (orderItems ?? []).filter((item: any) => relatedOne(item.products)?.shipping_box_count_required);
+  const requiredOrderItemIds = new Set(requiredOrderItems.map((item: any) => String(item.id)));
+  if (requiredOrderItemIds.size) {
+    const { data: boxItems, error: boxItemsError } = await supabase
+      .from('inventory_items')
+      .select('id')
+      .eq('item_type', 'material_supply')
+      .eq('active', true)
+      .like('sku', 'BOX-%');
+
+    if (boxItemsError) redirect(`/admin/orders/${id}?toast=ship_error`);
+    const validBoxItemIds = new Set((boxItems ?? []).map((item: any) => String(item.id)));
+    if (!validBoxItemIds.size) redirect(`/admin/orders/${id}?toast=box_inventory_required`);
+
+    const orderItemIds = formData.getAll('box_order_item_id').map(String);
+    const boxItemIds = formData.getAll('box_inventory_item_id').map(String);
+    const quantities = formData.getAll('box_quantity').map((value) => Math.max(0, Number.parseFloat(String(value)) || 0));
+    const usageByOrderItem = new Map<string, Map<string, number>>();
+
+    for (let index = 0; index < orderItemIds.length; index += 1) {
+      const orderItemId = orderItemIds[index];
+      const boxItemId = boxItemIds[index];
+      const quantity = quantities[index] ?? 0;
+      const anyFieldPresent = Boolean(orderItemId || boxItemId || quantity);
+      if (!anyFieldPresent) continue;
+      if (!requiredOrderItemIds.has(orderItemId) || !validBoxItemIds.has(boxItemId) || quantity <= 0) {
+        redirect(`/admin/orders/${id}?toast=box_count_required`);
+      }
+
+      const existing = usageByOrderItem.get(orderItemId) ?? new Map<string, number>();
+      existing.set(boxItemId, (existing.get(boxItemId) ?? 0) + quantity);
+      usageByOrderItem.set(orderItemId, existing);
     }
-    if (boxesUsed !== null) {
+
+    for (const requiredItem of requiredOrderItems as any[]) {
+      const totalQuantity = [...(usageByOrderItem.get(String(requiredItem.id))?.values() ?? [])].reduce((sum, quantity) => sum + quantity, 0);
+      if (totalQuantity <= 0) redirect(`/admin/orders/${id}?toast=box_count_required`);
+    }
+
+    const deleteResult = await supabase
+      .from('order_item_shipping_boxes')
+      .delete()
+      .eq('order_id', id)
+      .is('consumed_at', null);
+    if (deleteResult.error) redirect(`/admin/orders/${id}?toast=ship_error`);
+
+    const usageRows = [...usageByOrderItem.entries()].flatMap(([orderItemId, boxMap]) =>
+      [...boxMap.entries()].map(([boxItemId, quantity]) => ({
+        inventory_item_id: boxItemId,
+        order_id: id,
+        order_item_id: orderItemId,
+        quantity,
+      }))
+    );
+
+    if (usageRows.length) {
+      const insertResult = await supabase.from('order_item_shipping_boxes').insert(usageRows);
+      if (insertResult.error) redirect(`/admin/orders/${id}?toast=ship_error`);
+    }
+
+    for (const [orderItemId, boxMap] of usageByOrderItem.entries()) {
+      const boxesUsed = [...boxMap.values()].reduce((sum, quantity) => sum + quantity, 0);
       const { error: itemError } = await supabase
         .from('order_items')
         .update({ shipping_boxes_used: boxesUsed })
-        .eq('id', (item as any).id);
+        .eq('id', orderItemId);
       if (itemError) redirect(`/admin/orders/${id}?toast=ship_error`);
     }
   }
@@ -173,12 +232,41 @@ export default async function AdminOrderDetail({
   const toast = typeof searchParams.toast === 'string' ? searchParams.toast : '';
   const { data: order } = await supabase.from('orders').select('*,profiles(email,full_name),centers(name)').eq('id', params.id).single();
   if (!order) return notFound();
-  const { data: items } = await supabase.from('order_items').select('id,qty,product_id,product_name_snapshot,shipping_boxes_used,cogs_product_cents,cogs_shipping_cents,cogs_total_cents,cogs_source,cogs_estimated,cogs_snapshot_at,products(name,shipping_box_count_required)').eq('order_id', order.id);
+  const [
+    itemsResult,
+    shippingBoxUsagesResult,
+    boxItemsResult,
+  ] = await Promise.all([
+    supabase.from('order_items').select('id,qty,product_id,product_name_snapshot,shipping_boxes_used,cogs_product_cents,cogs_shipping_cents,cogs_total_cents,cogs_source,cogs_estimated,cogs_snapshot_at,products(name,shipping_box_count_required)').eq('order_id', order.id),
+    supabase.from('order_item_shipping_boxes').select('order_item_id,quantity,total_cost_cents,cogs_estimated,inventory_items(name,sku)').eq('order_id', order.id),
+    supabase.from('inventory_items').select('id,name,sku').eq('item_type', 'material_supply').eq('active', true).like('sku', 'BOX-%').order('name', { ascending: true }),
+  ]);
+  const items = itemsResult.data ?? [];
+  const shippingBoxUsages = shippingBoxUsagesResult.error ? [] : (shippingBoxUsagesResult.data ?? []);
+  const boxItems = boxItemsResult.error ? [] : (boxItemsResult.data ?? []);
   const { count: recurringCount } = await supabase
     .from('recurring_orders')
     .select('id', { count: 'exact', head: true })
     .eq('source_order_id', order.id);
   const orderNotes = typeof order.notes === 'string' ? order.notes.trim() : '';
+  const requiredBoxItems = (items ?? []).filter((item: any) => relatedOne(item.products)?.shipping_box_count_required);
+  const productBoxRequiredLines: ProductBoxRequiredLine[] = requiredBoxItems.map((item: any) => {
+    const product = relatedOne(item.products);
+    return {
+      id: item.id,
+      label: `${product?.name || item.product_name_snapshot || 'Unknown product'} x ${item.qty}`,
+    };
+  });
+  const productBoxOptions: ProductBoxInventoryOption[] = (boxItems as any[]).map((item) => ({
+    id: item.id,
+    label: productBoxLabel(item),
+  }));
+  const shippingBoxesByOrderItemId = new Map<string, any[]>();
+  for (const usage of shippingBoxUsages as any[]) {
+    const rows = shippingBoxesByOrderItemId.get(usage.order_item_id) ?? [];
+    rows.push(usage);
+    shippingBoxesByOrderItemId.set(usage.order_item_id, rows);
+  }
 
   return (
     <div className="space-y-6">
@@ -186,7 +274,8 @@ export default async function AdminOrderDetail({
       {toast === 'status_error' ? <StatusToast message="Order status update failed." tone="error" /> : null}
       {toast === 'ship_on_detail_required' ? <StatusToast message="Use the shipping form to enter shipping cost before marking this order shipped." tone="error" /> : null}
       {toast === 'shipping_required' ? <StatusToast message="Shipping cost is required before this order can ship." tone="error" /> : null}
-      {toast === 'box_count_required' ? <StatusToast message="Boxes used are required for one or more products on this order." tone="error" /> : null}
+      {toast === 'box_count_required' ? <StatusToast message="Product box size and quantity are required for one or more products on this order." tone="error" /> : null}
+      {toast === 'box_inventory_required' ? <StatusToast message="Create or receive an active BOX- material before shipping this order." tone="error" /> : null}
       {toast === 'order_shipped' ? <StatusToast message="Order shipped, COGS recorded, and customer email sent." tone="success" /> : null}
       {toast === 'ship_error' ? <StatusToast message="Unable to ship this order." tone="error" /> : null}
       {toast === 'archive_success' ? <StatusToast message="Order archived." tone="success" /> : null}
@@ -265,21 +354,13 @@ export default async function AdminOrderDetail({
             Shipping cost
             <input className="input" name="shipping_cost" min="0.01" step="0.01" type="number" required placeholder="0.00" />
           </label>
-          {(items ?? []).some((item: any) => relatedOne(item.products)?.shipping_box_count_required) ? (
+          {productBoxRequiredLines.length ? (
             <div className="space-y-3">
-              <p className="text-sm font-semibold text-slate-950">Boxes used</p>
-              {(items ?? []).filter((item: any) => relatedOne(item.products)?.shipping_box_count_required).map((item: any) => {
-                const product = relatedOne(item.products);
-                return (
-                  <label key={item.id} className="grid gap-3 rounded-2xl border border-slate-200 bg-white/70 p-3 text-sm sm:grid-cols-[minmax(0,1fr)_9rem] sm:items-center">
-                    <span className="font-medium text-slate-800">{product?.name || item.product_name_snapshot || 'Unknown product'} x {item.qty}</span>
-                    <input className="input" name={`boxes_${item.id}`} min="0.0001" step="0.0001" type="number" required placeholder="Boxes" />
-                  </label>
-                );
-              })}
+              <p className="text-sm font-semibold text-slate-950">Product Boxes</p>
+              <ProductBoxUsageFields boxItems={productBoxOptions} requiredLines={productBoxRequiredLines} />
             </div>
           ) : null}
-          <button className="btn-primary w-full sm:w-auto">Mark shipped</button>
+          <button className="btn-primary w-full sm:w-auto" disabled={productBoxRequiredLines.length > 0 && !productBoxOptions.length}>Mark shipped</button>
         </form>
       ) : null}
       {orderNotes ? (
@@ -301,7 +382,15 @@ export default async function AdminOrderDetail({
             </div>
             <div className="text-sm font-medium text-slate-600 sm:text-right">
               {i.shipping_boxes_used !== null && i.shipping_boxes_used !== undefined ? (
-                <p>Boxes used: {normalizeInventoryNumber(i.shipping_boxes_used)}</p>
+                <p>Product Boxes used: {normalizeInventoryNumber(i.shipping_boxes_used)}</p>
+              ) : null}
+              {(shippingBoxesByOrderItemId.get(i.id) ?? []).length ? (
+                <p>
+                  Product Boxes: {(shippingBoxesByOrderItemId.get(i.id) ?? []).map((usage: any) => {
+                    const boxItem = relatedOne(usage.inventory_items);
+                    return `${normalizeInventoryNumber(usage.quantity)} x ${productBoxLabel(boxItem ?? { name: null, sku: null })}`;
+                  }).join(', ')}
+                </p>
               ) : null}
               {i.cogs_shipping_cents !== null && i.cogs_shipping_cents !== undefined ? (
                 <p>Shipping COGS: {usd(Math.round(normalizeInventoryNumber(i.cogs_shipping_cents)))}</p>

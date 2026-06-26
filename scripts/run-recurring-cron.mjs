@@ -25,7 +25,7 @@ if (!cronSecret) {
   process.exit(1);
 }
 
-const response = await fetch(`${baseUrl.replace(/\/$/, '')}/api/cron/recurring-orders`, {
+const response = await fetch(`${baseUrl.replace(/\/$/, '')}/api/cron/recurring-orders?force=1`, {
   method: 'POST',
   headers: {
     'x-cron-secret': cronSecret,

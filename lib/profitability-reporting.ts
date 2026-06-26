@@ -301,7 +301,7 @@ function allocateShipping(items: ProfitabilityOrderItemRow[], orderShippingCents
   const allocations = new Map<string, number>();
   const totalBoxes = items.reduce((sum, item) => sum + Math.max(0, numericValue(item.shipping_boxes_used)), 0);
   const totalRevenue = items.reduce((sum, item) => sum + Math.max(0, lineRevenue(item)), 0);
-  const useBoxes = totalBoxes > 0;
+  const useBoxes = totalBoxes > 0 && items.every((item) => numericValue(item.shipping_boxes_used) > 0);
   const totalWeight = useBoxes ? totalBoxes : totalRevenue || items.length || 1;
   let allocated = 0;
 
@@ -796,7 +796,7 @@ export function buildProfitabilityDashboard({
       { label: 'Tape', imputedCogsCents: current.tapeCents, expenseSpendCents: expenseByType.get('tape') ?? 0, varianceCents: (expenseByType.get('tape') ?? 0) - current.tapeCents },
       { label: 'Shipping labels', imputedCogsCents: current.shippingLabelCents, expenseSpendCents: expenseByType.get('shipping_label') ?? 0, varianceCents: (expenseByType.get('shipping_label') ?? 0) - current.shippingLabelCents },
       { label: 'Branding labels', imputedCogsCents: current.brandingLabelCents, expenseSpendCents: expenseByType.get('branding_label') ?? 0, varianceCents: (expenseByType.get('branding_label') ?? 0) - current.brandingLabelCents },
-      { label: 'Legacy fixed packaging', imputedCogsCents: current.fixedOtherCents, expenseSpendCents: expenseByType.get('other') ?? 0, varianceCents: (expenseByType.get('other') ?? 0) - current.fixedOtherCents },
+      { label: 'Other packaging and Product Boxes', imputedCogsCents: current.fixedOtherCents, expenseSpendCents: expenseByType.get('other') ?? 0, varianceCents: (expenseByType.get('other') ?? 0) - current.fixedOtherCents },
     ],
   };
 }
