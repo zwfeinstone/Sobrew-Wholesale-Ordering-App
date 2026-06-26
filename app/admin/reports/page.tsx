@@ -1,4 +1,12 @@
 import Link from 'next/link';
+import { redirect } from 'next/navigation';
+import { getSalesScopedCenterIdsForAdmin, scopeCenterRelatedQueryForAdmin, scopeCentersForAdmin } from '@/lib/admin-center-scope';
+import { adminCanView, getCurrentAdminAccess } from '@/lib/admin-permissions';
+import {
+  buildProfitabilityDashboard,
+  type ProfitabilityOrderItemRow,
+  type ProfitabilityOrderRow,
+} from '@/lib/profitability-reporting';
 import {
   addDays,
   buildReportingDashboard,
@@ -26,9 +34,51 @@ import { createClient } from '@/lib/supabase/server';
 import { usd } from '@/lib/utils';
 
 const ROW_LIMIT = 12;
+const REPORTS = [
+  { id: 'overview', label: 'Profitability Overview' },
+  { id: 'centers', label: 'Center Profitability' },
+  { id: 'items', label: 'Item Profitability' },
+  { id: 'margin', label: 'Where Did Margin Go' },
+  { id: 'production', label: 'Production & COGS' },
+  { id: 'inventory', label: 'Inventory Value & Expenses' },
+  { id: 'sales', label: 'Sales & Customers' },
+] as const;
+
+type ReportId = (typeof REPORTS)[number]['id'];
+
+type AdminRow = {
+  email: string | null;
+  full_name: string | null;
+  id: string;
+  is_active: boolean | null;
+};
+
+function reportIsProfitability(reportId: ReportId) {
+  return reportId !== 'sales';
+}
+
+function paramsFromRecord(searchParams: Record<string, string | string[] | undefined> | undefined) {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(searchParams ?? {})) {
+    if (Array.isArray(value)) {
+      value.forEach((entry) => params.append(key, entry));
+    } else if (typeof value === 'string') {
+      params.set(key, value);
+    }
+  }
+  return params;
+}
 
 function stringParam(value: string | string[] | undefined) {
   return typeof value === 'string' ? value : '';
+}
+
+function adminLabel(admin: AdminRow | undefined) {
+  return admin?.full_name || admin?.email || 'Unknown admin';
+}
+
+function reportParam(value: string | string[] | undefined): ReportId {
+  return REPORTS.some((report) => report.id === value) ? value as ReportId : 'overview';
 }
 
 function money(value: number) {
@@ -362,6 +412,256 @@ function ProductRankList({ emptyLabel, rows }: { emptyLabel: string; rows: Produ
   );
 }
 
+function ReportNav({
+  activeReport,
+  reports,
+  searchParams,
+}: {
+  activeReport: ReportId;
+  reports: (typeof REPORTS)[number][];
+  searchParams: URLSearchParams;
+}) {
+  return (
+    <section className="card">
+      <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-4">
+        {reports.map((report) => {
+          const params = new URLSearchParams(searchParams);
+          params.set('report', report.id);
+          return (
+            <Link
+              key={report.id}
+              href={`/admin/reports?${params.toString()}`}
+              className={`rounded-xl border px-4 py-3 text-sm font-semibold transition-all duration-200 ${
+                activeReport === report.id
+                  ? 'border-teal-200 bg-teal-50 text-teal-900'
+                  : 'border-slate-200 bg-white/70 text-slate-700 hover:border-teal-200 hover:text-teal-800'
+              }`}
+            >
+              {report.label}
+            </Link>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+function MarginValue({ value }: { value: number }) {
+  return <span className={value >= 0 ? 'text-teal-800' : 'text-rose-700'}>{percent(value).replace('+', '')}</span>;
+}
+
+function CogsSplitGrid({ current }: { current: ReturnType<typeof buildProfitabilityDashboard>['current'] }) {
+  return (
+    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+      <StatTile label="Material COGS" value={money(current.materialCents)} detail="Coffee, bags, boxes, and tracked recipe inputs." />
+      <StatTile label="Labor COGS" value={money(current.laborCents)} detail="Production labor snapshotted into finished goods." />
+      <StatTile label="Fixed Packaging" value={money(current.fixedCents)} detail="Tape, labels, and legacy fixed recipe costs." />
+      <StatTile label="Shipping COGS" value={money(current.shippingCogsCents)} detail="Required shipping cost allocated from shipped orders." />
+    </div>
+  );
+}
+
+function CenterProfitabilityTable({ rows }: { rows: ReturnType<typeof buildProfitabilityDashboard>['centerRows'] }) {
+  if (!rows.length) return <EmptyState message="No shipped center profitability found for the selected range." />;
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full min-w-[82rem] border-separate border-spacing-y-2 text-left text-sm">
+        <thead>
+          <tr className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+            <th className="px-4 py-2">Center</th>
+            <th className="px-4 py-2 text-right">Revenue</th>
+            <th className="px-4 py-2 text-right">Material</th>
+            <th className="px-4 py-2 text-right">Labor</th>
+            <th className="px-4 py-2 text-right">Fixed</th>
+            <th className="px-4 py-2 text-right">Shipping</th>
+            <th className="px-4 py-2 text-right">Gross profit</th>
+            <th className="px-4 py-2 text-right">Margin</th>
+            <th className="px-4 py-2 text-right">Orders</th>
+            <th className="px-4 py-2 text-right">AOV</th>
+            <th className="px-4 py-2 text-right">Estimated lines</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.slice(0, ROW_LIMIT).map((row) => (
+            <tr key={row.id} className="bg-white/65">
+              <td className="rounded-l-xl px-4 py-3 font-semibold text-slate-950">{row.name}</td>
+              <td className="px-4 py-3 text-right text-slate-700">{money(row.revenueCents)}</td>
+              <td className="px-4 py-3 text-right text-slate-700">{money(row.materialCents)}</td>
+              <td className="px-4 py-3 text-right text-slate-700">{money(row.laborCents)}</td>
+              <td className="px-4 py-3 text-right text-slate-700">{money(row.fixedCents)}</td>
+              <td className="px-4 py-3 text-right text-slate-700">{money(row.shippingCogsCents)}</td>
+              <td className={`px-4 py-3 text-right font-semibold ${row.grossProfitCents >= 0 ? 'text-teal-800' : 'text-rose-700'}`}>{money(row.grossProfitCents)}</td>
+              <td className="px-4 py-3 text-right font-semibold"><MarginValue value={row.marginPercent} /></td>
+              <td className="px-4 py-3 text-right text-slate-700">{number(row.orderCount)}</td>
+              <td className="px-4 py-3 text-right text-slate-700">{money(row.averageOrderValueCents)}</td>
+              <td className="rounded-r-xl px-4 py-3 text-right text-slate-700">{number(row.estimatedLineCount)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function ItemProfitabilityTable({ rows }: { rows: ReturnType<typeof buildProfitabilityDashboard>['itemRows'] }) {
+  if (!rows.length) return <EmptyState message="No shipped item profitability found for the selected range." />;
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full min-w-[82rem] border-separate border-spacing-y-2 text-left text-sm">
+        <thead>
+          <tr className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+            <th className="px-4 py-2">Item</th>
+            <th className="px-4 py-2 text-right">Units</th>
+            <th className="px-4 py-2 text-right">Revenue</th>
+            <th className="px-4 py-2 text-right">Rev/unit</th>
+            <th className="px-4 py-2 text-right">Product COGS/unit</th>
+            <th className="px-4 py-2 text-right">Shipping</th>
+            <th className="px-4 py-2 text-right">Profit before ship</th>
+            <th className="px-4 py-2 text-right">Profit after ship</th>
+            <th className="px-4 py-2 text-right">Margin after ship</th>
+            <th className="px-4 py-2 text-right">Orders</th>
+            <th className="px-4 py-2 text-right">Estimated lines</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.slice(0, ROW_LIMIT).map((row) => (
+            <tr key={row.id} className="bg-white/65">
+              <td className="rounded-l-xl px-4 py-3 font-semibold text-slate-950">{row.name}</td>
+              <td className="px-4 py-3 text-right text-slate-700">{quantity(row.unitsSold)}</td>
+              <td className="px-4 py-3 text-right text-slate-700">{money(row.revenueCents)}</td>
+              <td className="px-4 py-3 text-right text-slate-700">{money(row.revenuePerUnitCents)}</td>
+              <td className="px-4 py-3 text-right text-slate-700">{money(row.productCogsPerUnitCents)}</td>
+              <td className="px-4 py-3 text-right text-slate-700">{money(row.shippingCogsCents)}</td>
+              <td className={`px-4 py-3 text-right font-semibold ${row.grossProfitBeforeShippingCents >= 0 ? 'text-teal-800' : 'text-rose-700'}`}>{money(row.grossProfitBeforeShippingCents)}</td>
+              <td className={`px-4 py-3 text-right font-semibold ${row.grossProfitAfterShippingCents >= 0 ? 'text-teal-800' : 'text-rose-700'}`}>{money(row.grossProfitAfterShippingCents)}</td>
+              <td className="px-4 py-3 text-right font-semibold"><MarginValue value={row.marginAfterShippingPercent} /></td>
+              <td className="px-4 py-3 text-right text-slate-700">{number(row.orderCount)}</td>
+              <td className="rounded-r-xl px-4 py-3 text-right text-slate-700">{number(row.estimatedLineCount)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function MarginBridgeTable({ rows }: { rows: ReturnType<typeof buildProfitabilityDashboard>['marginBridgeRows'] }) {
+  return (
+    <div className="space-y-3">
+      {rows.map((row) => (
+        <div key={row.label} className="grid gap-3 rounded-xl border border-slate-200/70 bg-white/65 px-4 py-3 text-sm sm:grid-cols-[minmax(0,1fr)_10rem] sm:items-center">
+          <div>
+            <p className="font-semibold text-slate-950">{row.label}</p>
+            <p className="mt-1 text-slate-500">{row.detail}</p>
+          </div>
+          <p className={`text-right text-lg font-semibold ${row.effectCents >= 0 ? 'text-teal-800' : 'text-rose-700'}`}>{signedMoney(row.effectCents)}</p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ProductionCogsTable({ rows }: { rows: ReturnType<typeof buildProfitabilityDashboard>['productionRows'] }) {
+  if (!rows.length) return <EmptyState message="No production runs found for the selected range." />;
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full min-w-[72rem] border-separate border-spacing-y-2 text-left text-sm">
+        <thead>
+          <tr className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+            <th className="px-4 py-2">Product</th>
+            <th className="px-4 py-2">Produced</th>
+            <th className="px-4 py-2 text-right">Qty</th>
+            <th className="px-4 py-2 text-right">Actual cost</th>
+            <th className="px-4 py-2 text-right">Estimated cost</th>
+            <th className="px-4 py-2 text-right">Variance</th>
+            <th className="px-4 py-2 text-right">Material</th>
+            <th className="px-4 py-2 text-right">Labor</th>
+            <th className="px-4 py-2 text-right">Fixed</th>
+            <th className="px-4 py-2 text-right">Usage variance</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.slice(0, ROW_LIMIT).map((row) => (
+            <tr key={row.id} className="bg-white/65">
+              <td className="rounded-l-xl px-4 py-3 font-semibold text-slate-950">{row.productName}</td>
+              <td className="px-4 py-3 text-slate-700">{dateLabel(row.producedAt, 'Unknown')}</td>
+              <td className="px-4 py-3 text-right text-slate-700">{quantity(row.quantityProduced)}</td>
+              <td className="px-4 py-3 text-right text-slate-700">{money(row.actualCostCents)}</td>
+              <td className="px-4 py-3 text-right text-slate-700">{money(row.estimatedCostCents)}</td>
+              <td className={`px-4 py-3 text-right font-semibold ${row.varianceCents <= 0 ? 'text-teal-800' : 'text-rose-700'}`}>{signedMoney(row.varianceCents)}</td>
+              <td className="px-4 py-3 text-right text-slate-700">{money(row.materialCostCents)}</td>
+              <td className="px-4 py-3 text-right text-slate-700">{money(row.laborCostCents)}</td>
+              <td className="px-4 py-3 text-right text-slate-700">{money(row.fixedCostCents)}</td>
+              <td className="rounded-r-xl px-4 py-3 text-right text-slate-700">{quantity(row.materialUsageVarianceQty)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function InventoryValueTable({ rows }: { rows: ReturnType<typeof buildProfitabilityDashboard>['inventoryRows'] }) {
+  if (!rows.length) return <EmptyState message="No inventory value data found." />;
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full min-w-[62rem] border-separate border-spacing-y-2 text-left text-sm">
+        <thead>
+          <tr className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+            <th className="px-4 py-2">Item</th>
+            <th className="px-4 py-2">Type</th>
+            <th className="px-4 py-2 text-right">Qty on hand</th>
+            <th className="px-4 py-2 text-right">Inventory value</th>
+            <th className="px-4 py-2 text-right">Avg cost</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.slice(0, ROW_LIMIT).map((row) => (
+            <tr key={row.id} className="bg-white/65">
+              <td className="rounded-l-xl px-4 py-3 font-semibold text-slate-950">{row.name}</td>
+              <td className="px-4 py-3 text-slate-700">{row.itemType.replaceAll('_', ' ')}</td>
+              <td className={`px-4 py-3 text-right font-semibold ${row.quantityOnHand < 0 ? 'text-rose-700' : 'text-slate-700'}`}>{quantity(row.quantityOnHand)} {row.unitLabel}</td>
+              <td className={`px-4 py-3 text-right font-semibold ${row.valueCents < 0 ? 'text-rose-700' : 'text-slate-950'}`}>{money(row.valueCents)}</td>
+              <td className="rounded-r-xl px-4 py-3 text-right text-slate-700">{money(row.averageUnitCostCents)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function FixedExpenseTable({ rows }: { rows: ReturnType<typeof buildProfitabilityDashboard>['fixedExpenseComparisonRows'] }) {
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full min-w-[44rem] border-separate border-spacing-y-2 text-left text-sm">
+        <thead>
+          <tr className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+            <th className="px-4 py-2">Expense</th>
+            <th className="px-4 py-2 text-right">Recipe COGS used</th>
+            <th className="px-4 py-2 text-right">Spend recorded</th>
+            <th className="px-4 py-2 text-right">Spend variance</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <tr key={row.label} className="bg-white/65">
+              <td className="rounded-l-xl px-4 py-3 font-semibold text-slate-950">{row.label}</td>
+              <td className="px-4 py-3 text-right text-slate-700">{money(row.imputedCogsCents)}</td>
+              <td className="px-4 py-3 text-right text-slate-700">{money(row.expenseSpendCents)}</td>
+              <td className={`rounded-r-xl px-4 py-3 text-right font-semibold ${row.varianceCents <= 0 ? 'text-teal-800' : 'text-rose-700'}`}>{signedMoney(row.varianceCents)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 function CriticalReportError({ message }: { message: string }) {
   return (
     <div className="space-y-6">
@@ -384,6 +684,40 @@ export default async function AdminReportsPage({
   searchParams?: Record<string, string | string[] | undefined>;
 }) {
   const supabase = await createClient();
+  const currentAccess = await getCurrentAdminAccess();
+  const canViewSalesReports = adminCanView(currentAccess.access, 'reports_sales');
+  const canViewProfitabilityReports = adminCanView(currentAccess.access, 'reports_profitability');
+  const allowedReports = REPORTS.filter((report) => (reportIsProfitability(report.id) ? canViewProfitabilityReports : canViewSalesReports));
+  if (!allowedReports.length) {
+    redirect('/admin/access-denied?section=reports');
+  }
+
+  const requestedReport = reportParam(searchParams?.report);
+  const fallbackReport = allowedReports[0].id;
+  const activeReport = allowedReports.some((report) => report.id === requestedReport) ? requestedReport : fallbackReport;
+  if (activeReport !== requestedReport) {
+    const redirectParams = paramsFromRecord(searchParams);
+    redirectParams.set('report', activeReport);
+    redirect(`/admin/reports?${redirectParams.toString()}`);
+  }
+
+  const salesRepSettingsResult = currentAccess.isOwner
+    ? await supabase.from('admin_commission_settings').select('profile_id').eq('is_sales_rep', true)
+    : { data: [], error: null };
+  const salesRepProfileIds = [...new Set((salesRepSettingsResult.data ?? []).map((row: { profile_id: string | null }) => row.profile_id).filter(Boolean))] as string[];
+  const salesRepsResult = currentAccess.isOwner && salesRepProfileIds.length
+    ? await supabase
+      .from('profiles')
+      .select('id,email,full_name,is_active')
+      .in('id', salesRepProfileIds)
+      .eq('is_admin', true)
+      .order('full_name', { ascending: true })
+    : { data: [], error: null };
+  const salesReps = ((salesRepsResult.data ?? []) as AdminRow[]).sort((a, b) => adminLabel(a).localeCompare(adminLabel(b)));
+  const requestedSalesRepId = stringParam(searchParams?.sales_rep);
+  const selectedSalesRepId = currentAccess.isOwner && salesReps.some((admin) => admin.id === requestedSalesRepId) ? requestedSalesRepId : '';
+  const centerScope = await getSalesScopedCenterIdsForAdmin({ current: currentAccess, selectedSalesProfileId: selectedSalesRepId, supabase });
+
   const now = new Date();
   const selectedMonth = parseMonthInput(searchParams?.month, now);
   const defaultRange = defaultRangeForMonth(selectedMonth);
@@ -395,6 +729,16 @@ export default async function AdminReportsPage({
       ? addDays(parsedRangeEnd, 1)
       : defaultRange.rangeEndExclusive;
 
+  const ordersQuery = scopeCenterRelatedQueryForAdmin(
+    supabase.from('orders').select('id,center_id,status,subtotal_cents,shipping_cost_cents,created_at,shipped_at').order('created_at', { ascending: false }).limit(20000),
+    'center_id',
+    centerScope
+  );
+  const centersQuery = scopeCentersForAdmin(
+    supabase.from('centers').select('id,name,is_active,created_at').order('name', { ascending: true }),
+    centerScope
+  );
+
   const [
     ordersResult,
     orderItemsResult,
@@ -403,14 +747,22 @@ export default async function AdminReportsPage({
     inventoryItemsResult,
     inventoryLotsResult,
     reorderSettingsResult,
+    productionRunsResult,
+    productionRunInputsResult,
+    shortageMovementsResult,
+    nonInventoryExpensesResult,
   ] = await Promise.all([
-    supabase.from('orders').select('id,center_id,status,subtotal_cents,created_at').order('created_at', { ascending: false }).limit(20000),
-    supabase.from('order_items').select('order_id,product_id,product_name_snapshot,qty,unit_price_cents,line_total_cents').limit(50000),
-    supabase.from('centers').select('id,name,is_active,created_at').order('name', { ascending: true }),
+    ordersQuery,
+    supabase.from('order_items').select('id,order_id,product_id,product_name_snapshot,qty,unit_price_cents,line_total_cents,shipping_boxes_used,cogs_material_cents,cogs_labor_cents,cogs_fixed_cents,cogs_tape_cents,cogs_shipping_label_cents,cogs_branding_label_cents,cogs_fixed_other_cents,cogs_product_cents,cogs_shipping_cents,cogs_total_cents,cogs_unit_cents,cogs_source,cogs_estimated,cogs_snapshot_at').limit(50000),
+    centersQuery,
     supabase.from('products').select('id,name,sku,category,active').order('name', { ascending: true }),
     supabase.from('inventory_items').select('id,name,sku,item_type,base_unit,product_id,active').order('name', { ascending: true }),
-    supabase.from('inventory_lots').select('inventory_item_id,quantity_remaining').limit(50000),
+    supabase.from('inventory_lots').select('inventory_item_id,quantity_remaining,unit_cost_cents').limit(50000),
     supabase.from('inventory_reorder_settings').select('inventory_item_id,reorder_point,target_stock,lead_time_days'),
+    supabase.from('production_runs').select('id,product_id,quantity_produced,estimated_unit_cost_cents,actual_unit_cost_cents,actual_labor_cost_cents,fixed_cost_cents,fixed_tape_cost_cents,fixed_shipping_label_cost_cents,fixed_branding_label_cost_cents,fixed_other_cost_cents,produced_at').order('produced_at', { ascending: false }).limit(50000),
+    supabase.from('production_run_inputs').select('production_run_id,quantity_expected,quantity_used,cost_cents').limit(50000),
+    supabase.from('inventory_movements').select('inventory_item_id,quantity_change,unit_cost_cents').eq('movement_type', 'shipment_consume').is('lot_id', null).limit(50000),
+    supabase.from('non_inventory_expenses').select('expense_type,amount_cents,spent_at').limit(50000),
   ]);
 
   if (ordersResult.error || orderItemsResult.error || centersResult.error || productsResult.error) {
@@ -445,8 +797,38 @@ export default async function AdminReportsPage({
     products,
     reorderSettings: reorderSettingsResult.error ? [] : ((reorderSettingsResult.data ?? []) as ReportingReorderSettingRow[]),
   });
+  const profitabilityDashboard = buildProfitabilityDashboard({
+    centerId,
+    centers,
+    inventoryItems: inventoryUnavailable ? [] : ((inventoryItemsResult.data ?? []) as any[]),
+    inventoryLots: inventoryUnavailable ? [] : ((inventoryLotsResult.data ?? []) as any[]),
+    nonInventoryExpenses: nonInventoryExpensesResult.error ? [] : ((nonInventoryExpensesResult.data ?? []) as any[]),
+    orderItems: (orderItemsResult.data ?? []) as ProfitabilityOrderItemRow[],
+    orders: (ordersResult.data ?? []) as ProfitabilityOrderRow[],
+    productId,
+    productionRunInputs: productionRunInputsResult.error ? [] : ((productionRunInputsResult.data ?? []) as any[]),
+    productionRuns: productionRunsResult.error ? [] : ((productionRunsResult.data ?? []) as any[]),
+    products,
+    rangeEndExclusive,
+    rangeStart,
+    shortageMovements: shortageMovementsResult.error ? [] : ((shortageMovementsResult.data ?? []) as any[]),
+  });
   const rangeEndInput = formatDateInput(addDays(rangeEndExclusive, -1));
-  const activeFilterCount = [productId, centerId, parsedRangeStart, parsedRangeEnd].filter(Boolean).length;
+  const activeFilterCount = [productId, centerId, selectedSalesRepId, parsedRangeStart, parsedRangeEnd].filter(Boolean).length;
+  const navParams = new URLSearchParams();
+  navParams.set('report', activeReport);
+  navParams.set('month', formatMonthInput(selectedMonth));
+  navParams.set('rangeStart', formatDateInput(rangeStart));
+  navParams.set('rangeEnd', rangeEndInput);
+  if (productId) navParams.set('product', productId);
+  if (centerId) navParams.set('center', centerId);
+  if (selectedSalesRepId) navParams.set('sales_rep', selectedSalesRepId);
+  const reportsTitle = canViewProfitabilityReports
+    ? 'Profitability, COGS, sales, and inventory reporting.'
+    : 'Sales and customer reporting.';
+  const reportsSubtitle = canViewProfitabilityReports
+    ? 'Start with margin by center and item, then drill into production costs, inventory value, expenses, and customer sales history.'
+    : 'Track revenue, order pace, product movement, customer activity, reorder timing, and demand planning.';
 
   return (
     <div className="space-y-6">
@@ -454,12 +836,11 @@ export default async function AdminReportsPage({
         <div className="grid gap-6 lg:grid-cols-[1.15fr_0.85fr] lg:items-end">
           <div>
             <span className="eyebrow">Reports</span>
-            <h1 className="page-title mt-4">Sales, customer, product, and inventory planning dashboard.</h1>
-            <p className="page-subtitle mt-3">
-              Focused reporting for wholesale order performance, reorder risk, product demand, and practical inventory planning.
-            </p>
+            <h1 className="page-title mt-4">{reportsTitle}</h1>
+            <p className="page-subtitle mt-3">{reportsSubtitle}</p>
           </div>
           <form className="rounded-xl border border-slate-200/70 bg-white/60 p-4">
+            <input type="hidden" name="report" value={activeReport} />
             <div className="grid gap-3 sm:grid-cols-2">
               <label className="space-y-2 text-sm font-medium text-slate-700">
                 Report month
@@ -491,17 +872,30 @@ export default async function AdminReportsPage({
                   ))}
                 </select>
               </label>
+              {currentAccess.isOwner ? (
+                <label className="space-y-2 text-sm font-medium text-slate-700 sm:col-span-2">
+                  Sales rep
+                  <select className="input" name="sales_rep" defaultValue={selectedSalesRepId}>
+                    <option value="">All sales reps</option>
+                    {salesReps.map((admin) => (
+                      <option key={admin.id} value={admin.id}>{adminLabel(admin)}</option>
+                    ))}
+                  </select>
+                </label>
+              ) : null}
             </div>
             <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center">
               <button className="btn-primary w-full sm:w-auto" type="submit">Update reports</button>
-              <Link href="/admin/reports" className="btn-secondary w-full sm:w-auto">Reset</Link>
+              <Link href={`/admin/reports?report=${activeReport}`} className="btn-secondary w-full sm:w-auto">Reset</Link>
             </div>
             <p className="mt-3 text-sm leading-6 text-slate-500">
-              {monthLabel(selectedMonth)} compared with {monthLabel(dashboard.previousMonthStart)}. Product tables use {dateLabel(rangeStart)} through {dateLabel(addDays(rangeEndExclusive, -1))}.
+              {REPORTS.find((report) => report.id === activeReport)?.label}. Using {dateLabel(rangeStart)} through {dateLabel(addDays(rangeEndExclusive, -1))}; sales comparisons still compare {monthLabel(selectedMonth)} with {monthLabel(dashboard.previousMonthStart)}.
             </p>
           </form>
         </div>
       </section>
+
+      <ReportNav activeReport={activeReport} reports={allowedReports} searchParams={navParams} />
 
       {!dashboard.hasOrders ? (
         <section className="card">
@@ -509,6 +903,129 @@ export default async function AdminReportsPage({
         </section>
       ) : null}
 
+      {activeReport === 'overview' ? (
+        <>
+          <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
+            <StatTile label="Revenue" value={money(profitabilityDashboard.current.revenueCents)} detail={`${number(profitabilityDashboard.current.orderCount)} shipped order${profitabilityDashboard.current.orderCount === 1 ? '' : 's'} in range.`} />
+            <StatTile label="Product COGS" value={money(profitabilityDashboard.current.productCogsCents)} detail="Material, labor, and fixed production COGS." />
+            <StatTile label="Shipping COGS" value={money(profitabilityDashboard.current.shippingCogsCents)} detail="Order shipping cost allocated to lines." />
+            <StatTile label="Gross Profit" value={money(profitabilityDashboard.current.grossProfitCents)} detail={`${profitabilityDashboard.current.estimatedLineCount} estimated line${profitabilityDashboard.current.estimatedLineCount === 1 ? '' : 's'} in this range.`} />
+            <StatTile label="Margin" value={`${percent(profitabilityDashboard.current.marginPercent).replace('+', '')}`} detail={`${signedMoney(profitabilityDashboard.current.grossProfitCents - profitabilityDashboard.previous.grossProfitCents)} vs previous range.`} />
+          </section>
+          <section className="card space-y-5">
+            <SectionHeading
+              eyebrow="COGS split"
+              title="Where product cost is landing"
+              subtitle="COGS comes from shipped order item snapshots; older shipped lines without snapshots are marked as estimated."
+            />
+            <CogsSplitGrid current={profitabilityDashboard.current} />
+          </section>
+          <section className="grid gap-5 xl:grid-cols-2">
+            <div className="card space-y-5">
+              <SectionHeading eyebrow="Best centers" title="Top center profit" subtitle="Highest gross profit after product and shipping COGS." />
+              <CenterProfitabilityTable rows={profitabilityDashboard.centerRows.slice(0, 6)} />
+            </div>
+            <div className="card space-y-5">
+              <SectionHeading eyebrow="Best items" title="Top item profit" subtitle="Highest gross profit after allocated shipping." />
+              <ItemProfitabilityTable rows={profitabilityDashboard.itemRows.slice(0, 6)} />
+            </div>
+          </section>
+        </>
+      ) : null}
+
+      {activeReport === 'centers' ? (
+        <section className="card space-y-5">
+          <SectionHeading
+            eyebrow="Center profitability"
+            title="Profit by customer or center"
+            subtitle="Revenue, COGS split, shipping COGS, gross profit, margin, order count, and estimated line visibility."
+          />
+          <CenterProfitabilityTable rows={profitabilityDashboard.centerRows} />
+        </section>
+      ) : null}
+
+      {activeReport === 'items' ? (
+        <section className="card space-y-5">
+          <SectionHeading
+            eyebrow="Item profitability"
+            title="Profit by product"
+            subtitle="Item-level revenue, product COGS before shipping, allocated shipping COGS, profit, and margin."
+          />
+          <ItemProfitabilityTable rows={profitabilityDashboard.itemRows} />
+        </section>
+      ) : null}
+
+      {activeReport === 'margin' ? (
+        <section className="grid gap-5 xl:grid-cols-[0.9fr_1.1fr]">
+          <div className="card space-y-5">
+            <SectionHeading
+              eyebrow="Margin bridge"
+              title="Where did margin go?"
+              subtitle="Compares this selected range against the immediately previous range of the same length."
+            />
+            <div className="grid gap-3 sm:grid-cols-2">
+              <StatTile label="Current Profit" value={money(profitabilityDashboard.current.grossProfitCents)} detail={`${percent(profitabilityDashboard.current.marginPercent).replace('+', '')} current margin.`} />
+              <StatTile label="Previous Profit" value={money(profitabilityDashboard.previous.grossProfitCents)} detail={`${percent(profitabilityDashboard.previous.marginPercent).replace('+', '')} previous margin.`} />
+            </div>
+          </div>
+          <div className="card space-y-5">
+            <SectionHeading eyebrow="Profit movement" title={signedMoney(profitabilityDashboard.current.grossProfitCents - profitabilityDashboard.previous.grossProfitCents)} subtitle="Positive numbers helped gross profit; negative numbers pulled it down." />
+            <MarginBridgeTable rows={profitabilityDashboard.marginBridgeRows} />
+          </div>
+        </section>
+      ) : null}
+
+      {activeReport === 'production' ? (
+        <>
+          <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
+            <StatTile label="Runs" value={number(profitabilityDashboard.productionSummary.runCount)} detail={`${quantity(profitabilityDashboard.productionSummary.quantityProduced)} finished units produced.`} />
+            <StatTile label="Actual COGS" value={money(profitabilityDashboard.productionSummary.actualCostCents)} detail="Total actual cost snapshotted into production lots." />
+            <StatTile label="Estimated COGS" value={money(profitabilityDashboard.productionSummary.estimatedCostCents)} detail="Expected recipe cost before actual usage." />
+            <StatTile label="Variance" value={signedMoney(profitabilityDashboard.productionSummary.varianceCents)} detail="Actual production cost minus estimate." />
+            <StatTile label="Labor" value={money(profitabilityDashboard.productionSummary.laborCostCents)} detail={`${money(profitabilityDashboard.productionSummary.fixedCostCents)} fixed packaging in runs.`} />
+          </section>
+          <section className="card space-y-5">
+            <SectionHeading
+              eyebrow="Production & COGS"
+              title="Expected versus actual run cost"
+              subtitle="Shows actual production cost, estimated recipe cost, labor, fixed packaging, and material usage variance."
+            />
+            <ProductionCogsTable rows={profitabilityDashboard.productionRows} />
+          </section>
+        </>
+      ) : null}
+
+      {activeReport === 'inventory' ? (
+        <>
+          <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+            <StatTile label="Raw Coffee Value" value={money(profitabilityDashboard.inventorySummary.rawCoffeeValueCents)} detail="Remaining raw coffee lot value." />
+            <StatTile label="Materials Value" value={money(profitabilityDashboard.inventorySummary.materialSupplyValueCents)} detail="Tracked materials and supplies on hand." />
+            <StatTile label="Sellable Value" value={money(profitabilityDashboard.inventorySummary.sellableValueCents)} detail="Finished goods value including negative shipment shortages." />
+            <StatTile label="Negative Items" value={number(profitabilityDashboard.inventorySummary.negativeSellableCount)} detail="Sellable products below zero on hand." />
+          </section>
+          <section className="grid gap-5 xl:grid-cols-[1.1fr_0.9fr]">
+            <div className="card space-y-5">
+              <SectionHeading
+                eyebrow="Inventory value"
+                title="Stock value by item"
+                subtitle="Raw coffee, materials, and sellable inventory stay separated; sellable items can show negative when shipped short."
+              />
+              <InventoryValueTable rows={profitabilityDashboard.inventoryRows} />
+            </div>
+            <div className="card space-y-5">
+              <SectionHeading
+                eyebrow="Non-inventory expenses"
+                title="Spend versus recipe-imputed COGS"
+                subtitle="Tape and labels are visible as spend, but not deducted again from gross margin."
+              />
+              <FixedExpenseTable rows={profitabilityDashboard.fixedExpenseComparisonRows} />
+            </div>
+          </section>
+        </>
+      ) : null}
+
+      {activeReport === 'sales' ? (
+        <>
       <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
         <StatTile label="Revenue Today" value={money(dashboard.dailySnapshot.revenueTodayCents)} detail={`${number(dashboard.dailySnapshot.ordersToday)} order${dashboard.dailySnapshot.ordersToday === 1 ? '' : 's'} today.`} />
         <StatTile label="MTD Revenue" value={money(dashboard.dailySnapshot.revenueMonthToDateCents)} detail={`${signedMoney(dashboard.dailySnapshot.revenueComparedToSameDayLastMonthCents)} vs same day last month.`} />
@@ -633,6 +1150,8 @@ export default async function AdminReportsPage({
         />
         <InventoryTable rows={dashboard.inventoryPlanningRows} unavailable={inventoryUnavailable} />
       </section>
+        </>
+      ) : null}
     </div>
   );
 }

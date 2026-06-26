@@ -24,7 +24,7 @@ async function updateRecurringOrder(formData: FormData) {
   const status = String(formData.get('status'));
   const statusFilter = String(formData.get('statusFilter') ?? '');
   const deniedQuery = statusFilter ? `?status=${encodeURIComponent(statusFilter)}&error=admin_write_denied` : '?error=admin_write_denied';
-  await requireAdminWriteAccess(`/admin/recurring-orders${deniedQuery}`);
+  await requireAdminWriteAccess(`/admin/recurring-orders${deniedQuery}`, 'recurring_orders');
 
   if (!recurringOrderId) redirect('/admin/recurring-orders?error=missing_id');
   if (!isRecurringFrequency(frequency)) redirect('/admin/recurring-orders?error=invalid_frequency');

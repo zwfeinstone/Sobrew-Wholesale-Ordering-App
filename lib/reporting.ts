@@ -25,6 +25,7 @@ export type ReportingOrderRow = {
   center_id: string | null;
   status: string | null;
   subtotal_cents: number | string | null;
+  shipping_cost_cents?: number | string | null;
   created_at: string | null;
 };
 
@@ -84,6 +85,8 @@ export type ReportingFilters = {
 
 export type SalesMetricSummary = {
   revenueCents: number;
+  shippingCostCents: number;
+  grossAfterShippingCents: number;
   orderCount: number;
   unitsSold: number;
   quantitySold: number;
@@ -234,6 +237,7 @@ type NormalizedOrder = {
   centerId: string | null;
   status: string | null;
   subtotalCents: number;
+  shippingCostCents: number;
   createdAt: Date;
 };
 
@@ -405,6 +409,9 @@ function metricForPeriod({
   const revenueCents = scope.productId
     ? scopedLines.reduce((sum, line) => sum + line.revenueCents, 0)
     : scopedOrders.reduce((sum, order) => sum + order.subtotalCents, 0);
+  const shippingCostCents = scope.productId
+    ? 0
+    : scopedOrders.reduce((sum, order) => sum + order.shippingCostCents, 0);
   const unitsSold = scopedLines.reduce((sum, line) => sum + line.qty, 0);
   let newCustomers = 0;
 
@@ -417,6 +424,8 @@ function metricForPeriod({
 
   return {
     revenueCents: Math.round(revenueCents),
+    shippingCostCents: Math.round(shippingCostCents),
+    grossAfterShippingCents: Math.round(revenueCents - shippingCostCents),
     orderCount,
     unitsSold,
     quantitySold: unitsSold,
@@ -430,6 +439,8 @@ function metricForPeriod({
 function buildComparisonRows(current: SalesMetricSummary, previous: SalesMetricSummary): MetricComparisonRow[] {
   const rows: Array<{ id: keyof SalesMetricSummary; label: string; format: 'currency' | 'number' }> = [
     { id: 'revenueCents', label: 'Total revenue', format: 'currency' },
+    { id: 'shippingCostCents', label: 'Shipping COGS', format: 'currency' },
+    { id: 'grossAfterShippingCents', label: 'Gross after shipping', format: 'currency' },
     { id: 'orderCount', label: 'Total orders', format: 'number' },
     { id: 'unitsSold', label: 'Units sold', format: 'number' },
     { id: 'quantitySold', label: 'Quantity sold', format: 'number' },
@@ -1086,6 +1097,7 @@ export function buildReportingDashboard({
         centerId: order.center_id,
         status: order.status,
         subtotalCents: numericValue(order.subtotal_cents),
+        shippingCostCents: numericValue(order.shipping_cost_cents),
         createdAt,
       };
     })

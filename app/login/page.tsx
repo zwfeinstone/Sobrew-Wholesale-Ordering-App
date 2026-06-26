@@ -1,8 +1,10 @@
 import { redirect } from 'next/navigation';
 import Image from 'next/image';
 import LoginSubmitButton from '@/components/login-submit-button';
+import { isOwnerEmail } from '@/lib/admin-permission-definitions';
 import { logAuthProfileIssue } from '@/lib/auth-diagnostics';
 import { recordUserLastSeen } from '@/lib/last-seen';
+import { supabaseAdmin } from '@/lib/supabase/admin';
 import { createClient } from '@/lib/supabase/server';
 
 type ServerSupabaseClient = Awaited<ReturnType<typeof createClient>>;
@@ -11,6 +13,11 @@ type LoginProfileError = {
   message?: string;
   details?: string;
   hint?: string;
+};
+type LoginProfile = {
+  email: string | null;
+  is_active: boolean | null;
+  is_admin: boolean | null;
 };
 
 const PROFILE_LOOKUP_RETRY_DELAYS_MS = [0, 250, 750];
@@ -25,7 +32,7 @@ async function getLoginProfileWithRetry(supabase: ServerSupabaseClient, userId: 
     if (delay) await sleep(delay);
     const { data: profile, error } = await supabase
       .from('profiles')
-      .select('is_admin,is_active')
+      .select('email,is_admin,is_active')
       .eq('id', userId)
       .maybeSingle();
 
@@ -34,6 +41,51 @@ async function getLoginProfileWithRetry(supabase: ServerSupabaseClient, userId: 
   }
 
   return { profile: null, error: lastError };
+}
+
+async function getLoginProfileWithAdminFallback({
+  email,
+  rlsError,
+  rlsProfile,
+  userId,
+}: {
+  email: string;
+  rlsError: LoginProfileError | null;
+  rlsProfile: LoginProfile | null;
+  userId: string;
+}) {
+  if (rlsProfile) return { profile: rlsProfile, error: null };
+
+  const adminLookup = await supabaseAdmin
+    .from('profiles')
+    .select('email,is_admin,is_active')
+    .eq('id', userId)
+    .maybeSingle();
+
+  if (adminLookup.data) return { profile: adminLookup.data as LoginProfile, error: null };
+
+  if (isOwnerEmail(email)) {
+    const repaired = await supabaseAdmin
+      .from('profiles')
+      .upsert(
+        {
+          email,
+          id: userId,
+          is_active: true,
+          is_admin: true,
+        },
+        { onConflict: 'id' }
+      )
+      .select('email,is_admin,is_active')
+      .single();
+
+    if (!repaired.error && repaired.data) {
+      return { profile: repaired.data as LoginProfile, error: null };
+    }
+    return { profile: null, error: repaired.error ?? adminLookup.error ?? rlsError };
+  }
+
+  return { profile: null, error: adminLookup.error ?? rlsError };
 }
 
 async function login(formData: FormData) {
@@ -49,7 +101,13 @@ async function login(formData: FormData) {
     redirect('/login?error=1');
   }
 
-  const { profile, error: profileError } = await getLoginProfileWithRetry(supabase, data.user.id);
+  const rlsProfileResult = await getLoginProfileWithRetry(supabase, data.user.id);
+  const { profile, error: profileError } = await getLoginProfileWithAdminFallback({
+    email,
+    rlsError: rlsProfileResult.error,
+    rlsProfile: rlsProfileResult.profile,
+    userId: data.user.id,
+  });
 
   if (profileError || !profile) {
     logAuthProfileIssue('Login profile lookup failed', profileError, data.user.id);
@@ -57,12 +115,12 @@ async function login(formData: FormData) {
     redirect('/login?error=profile');
   }
 
-  const { error: emailSyncError } = await supabase.from('profiles').update({ email }).eq('id', data.user.id);
+  const { error: emailSyncError } = await supabaseAdmin.from('profiles').update({ email }).eq('id', data.user.id);
   if (emailSyncError) {
     logAuthProfileIssue('Login profile email sync failed', emailSyncError, data.user.id);
   }
 
-  if (profile.is_active !== true) {
+  if (profile.is_active !== true && !isOwnerEmail(email)) {
     await supabase.auth.signOut();
     redirect('/login?inactive=1');
   }

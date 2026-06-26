@@ -5,27 +5,16 @@ import { AdminMobileSectionSelect } from '@/components/admin-mobile-section-sele
 import { AdminReadOnlyGuard } from '@/components/admin-read-only-guard';
 import { AdminRealtimeSync } from '@/components/admin-realtime-sync';
 import { LogoutButton } from '@/components/logout-button';
+import { ADMIN_NAV_LINKS, canViewAdminSection, type AdminAccessMap } from '@/lib/admin-permission-definitions';
 
-export function AdminShell({ children, canWrite, newOrders }: { children: ReactNode; canWrite: boolean; newOrders: number }) {
-  const links = [
-    { name: 'Dashboard', href: '/admin', exact: true },
-    { name: 'Sales', href: '/admin/sales', exact: true },
-    { name: 'Reports', href: '/admin/reports' },
-    { name: 'Prospecting', href: '/admin/sales/prospecting', child: true },
-    { name: 'Orders', href: '/admin/orders' },
-    { name: 'Archived Orders', href: '/admin/archived-orders' },
-    { name: 'Recurring Orders', href: '/admin/recurring-orders' },
-    { name: 'Canceled Recurring Orders', href: '/admin/canceled-recurring-orders' },
-    { name: 'Order Form', href: '/admin/order-form' },
-    { name: 'Centers', href: '/admin/users' },
-    { name: 'Products', href: '/admin/products' },
-    { name: 'Inventory', href: '/admin/inventory' },
-    { name: 'Settings', href: '/admin/settings' }
-  ];
+export function AdminShell({ access, children, isOwner, newOrders }: { access: AdminAccessMap; children: ReactNode; isOwner: boolean; newOrders: number }) {
+  const links = ADMIN_NAV_LINKS.filter((link) => canViewAdminSection(access, link.sectionKey));
+  const editableSections = Object.fromEntries(Object.entries(access).map(([key, state]) => [key, state.canEdit])) as Record<string, boolean>;
+
   return (
-    <div className="admin-shell min-h-screen md:flex" data-admin-can-write={canWrite ? 'true' : 'false'}>
+    <div className="admin-shell min-h-screen md:flex" data-admin-can-write={isOwner ? 'true' : 'false'}>
       <AdminRealtimeSync />
-      <AdminReadOnlyGuard canWrite={canWrite} />
+      <AdminReadOnlyGuard editableSections={editableSections} isOwner={isOwner} />
       <aside className="admin-sidebar border-b border-white/40 bg-white/70 p-3 backdrop-blur-xl sm:p-4 md:min-h-screen md:w-72 md:border-b-0 md:border-r md:px-5 md:py-6">
         <div className="admin-summary-card card space-y-6 p-4 sm:p-5">
           <div className="admin-brand flex items-start gap-3">
@@ -62,11 +51,6 @@ export function AdminShell({ children, canWrite, newOrders }: { children: ReactN
       </aside>
       <main className="admin-main min-w-0 flex-1 px-3 py-5 sm:px-4 md:px-8 md:py-8">
         <div className="mx-auto max-w-6xl">
-          {!canWrite ? (
-            <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-800">
-              Read-only admin access. Only zach@sobrew.com can create, edit, archive, or delete admin data.
-            </div>
-          ) : null}
           {children}
         </div>
       </main>

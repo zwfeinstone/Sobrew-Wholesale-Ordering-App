@@ -1,5 +1,7 @@
 import { supabaseAdmin } from '@/lib/supabase/admin';
-import { isAdminWriteAllowed } from '@/lib/admin-write-access';
+import { canEditAdminSectionForProfile } from '@/lib/admin-permissions';
+import { recordAdminAuditLog } from '@/lib/admin-audit';
+import { isOwnerEmail } from '@/lib/admin-permission-definitions';
 import { createClient } from '@/lib/supabase/server';
 import { toCents } from '@/lib/utils';
 import { NextResponse } from 'next/server';
@@ -15,7 +17,7 @@ export async function POST(request: Request) {
 
   const { data: adminProfile } = await supabase
     .from('profiles')
-    .select('is_admin,is_active')
+    .select('id,email,is_admin,is_active')
     .eq('id', user.id)
     .single();
 
@@ -23,7 +25,13 @@ export async function POST(request: Request) {
     return new Response('Forbidden', { status: 403 });
   }
 
-  if (!isAdminWriteAllowed(user.email)) {
+  const canEditCenters = await canEditAdminSectionForProfile({
+    email: user.email || adminProfile.email,
+    profileId: adminProfile.id,
+    sectionKey: 'centers',
+    supabase,
+  });
+  if (!canEditCenters) {
     return NextResponse.redirect(new URL('/admin/users/new?error=admin_write_denied', request.url));
   }
 
@@ -47,6 +55,41 @@ export async function POST(request: Request) {
 
   if (centerError || !center) {
     return NextResponse.redirect(new URL('/admin/users/new?error=1', request.url));
+  }
+
+  const { data: creatorCommissionSetting } = await supabaseAdmin
+    .from('admin_commission_settings')
+    .select('is_sales_rep')
+    .eq('profile_id', adminProfile.id)
+    .maybeSingle();
+  const creatorIsSalesRep = Boolean(creatorCommissionSetting?.is_sales_rep);
+
+  if (!isOwnerEmail(user.email || adminProfile.email)) {
+    const assignmentResult = await supabaseAdmin.from('admin_center_assignments').insert({
+      assigned_by: adminProfile.id,
+      center_id: center.id,
+      profile_id: adminProfile.id,
+      updated_by: adminProfile.id,
+    });
+
+    if (assignmentResult.error) {
+      await supabaseAdmin.from('centers').delete().eq('id', center.id);
+      return NextResponse.redirect(new URL('/admin/users/new?error=1', request.url));
+    }
+  }
+
+  if (creatorIsSalesRep) {
+    const salesAssignmentResult = await supabaseAdmin.from('center_sales_assignments').insert({
+      assigned_by: adminProfile.id,
+      center_id: center.id,
+      sales_profile_id: adminProfile.id,
+      updated_by: adminProfile.id,
+    });
+
+    if (salesAssignmentResult.error) {
+      await supabaseAdmin.from('centers').delete().eq('id', center.id);
+      return NextResponse.redirect(new URL('/admin/users/new?error=1', request.url));
+    }
   }
 
   const created = await supabaseAdmin.auth.admin.createUser({ email, password, email_confirm: true });
@@ -78,5 +121,13 @@ export async function POST(request: Request) {
       return NextResponse.redirect(new URL('/admin/users/new?error=1', request.url));
     }
   }
+  await recordAdminAuditLog({
+    action: 'center_created',
+    actorProfileId: adminProfile.id,
+    after: { center_id: center.id, assigned_to_creator: !isOwnerEmail(user.email || adminProfile.email), sales_assigned_to_creator: creatorIsSalesRep },
+    sectionKey: 'centers',
+    supabase: supabaseAdmin,
+    targetProfileId: adminProfile.id,
+  });
   return NextResponse.redirect(new URL(`/admin/users/${center.id}`, request.url));
 }

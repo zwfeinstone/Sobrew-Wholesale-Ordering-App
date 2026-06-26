@@ -1,4 +1,10 @@
 import { notFound, redirect } from 'next/navigation';
+import { AdminPermissionEditor } from '@/components/admin-permission-editor';
+import { recordAdminAuditLog } from '@/lib/admin-audit';
+import { requireCenterAccess } from '@/lib/admin-center-scope';
+import { isOwnerEmail } from '@/lib/admin-permission-definitions';
+import { loadSavedAdminPermissions, parseAdminPermissionsForm, saveAdminPermissions, serializePermissionSnapshot } from '@/lib/admin-permission-save';
+import { getCurrentAdminAccess, requireManageAdmins } from '@/lib/admin-permissions';
 import { requireAdminWriteAccess } from '@/lib/admin-write-access';
 import { productCategoryGroupKey, productCategoryLabel, productCategorySortRank, type ProductCategoryGroup } from '@/lib/product-categories';
 import { createClient } from '@/lib/supabase/server';
@@ -75,9 +81,11 @@ function adminUserDeniedHref(id: string) {
 }
 
 function adminActionErrorMessage(error: string) {
-  return error === 'admin_write_denied'
-    ? 'Only zach@sobrew.com can change admin data.'
-    : `Could not complete that action (${error}).`;
+  if (error === 'admin_write_denied') return 'You do not have edit access to this section.';
+  if (error === 'admin_permission_denied') return 'Only zach@sobrew.com can manage admin accounts and permissions.';
+  if (error === 'admin_save_failed') return 'The admin account could not be saved.';
+  if (error === 'admin_permissions_failed') return 'The admin permissions could not be saved.';
+  return `Could not complete that action (${error}).`;
 }
 
 async function syncCenterCatalog(centerId: string, formData: FormData) {
@@ -118,9 +126,10 @@ async function syncCenterCatalog(centerId: string, formData: FormData) {
 async function updateCenter(formData: FormData) {
   'use server';
   const centerId = String(formData.get('center_id') ?? '');
-  await requireAdminWriteAccess(adminUserDeniedHref(centerId));
+  await requireAdminWriteAccess(adminUserDeniedHref(centerId), 'centers');
 
   if (!centerId) redirect('/admin/users');
+  await requireCenterAccess(centerId, adminUserDeniedHref(centerId));
 
   try {
     const centerUpdateResult = await supabaseAdmin
@@ -164,9 +173,10 @@ function hasRequiredLocationFields(location: ReturnType<typeof locationFieldsFro
 async function addCenterLocation(formData: FormData) {
   'use server';
   const centerId = String(formData.get('center_id') ?? '');
-  await requireAdminWriteAccess(adminUserDeniedHref(centerId));
+  await requireAdminWriteAccess(adminUserDeniedHref(centerId), 'centers');
 
   if (!centerId) redirect('/admin/users');
+  await requireCenterAccess(centerId, adminUserDeniedHref(centerId));
 
   const location = locationFieldsFromForm(formData);
   if (!hasRequiredLocationFields(location)) {
@@ -185,9 +195,10 @@ async function updateCenterLocation(formData: FormData) {
   'use server';
   const centerId = String(formData.get('center_id') ?? '');
   const locationId = String(formData.get('location_id') ?? '');
-  await requireAdminWriteAccess(adminUserDeniedHref(centerId));
+  await requireAdminWriteAccess(adminUserDeniedHref(centerId), 'centers');
 
   if (!centerId || !locationId) redirect('/admin/users');
+  await requireCenterAccess(centerId, adminUserDeniedHref(centerId));
 
   const location = locationFieldsFromForm(formData);
   if (!hasRequiredLocationFields(location)) {
@@ -210,9 +221,10 @@ async function removeCenterLocation(formData: FormData) {
   'use server';
   const centerId = String(formData.get('center_id') ?? '');
   const locationId = String(formData.get('location_id') ?? '');
-  await requireAdminWriteAccess(adminUserDeniedHref(centerId));
+  await requireAdminWriteAccess(adminUserDeniedHref(centerId), 'centers');
 
   if (!centerId || !locationId) redirect('/admin/users');
+  await requireCenterAccess(centerId, adminUserDeniedHref(centerId));
 
   const result = await supabaseAdmin
     .from('center_locations')
@@ -226,7 +238,8 @@ async function removeCenterLocation(formData: FormData) {
 async function addCenterLogin(formData: FormData) {
   'use server';
   const centerId = String(formData.get('center_id') ?? '');
-  await requireAdminWriteAccess(adminUserDeniedHref(centerId));
+  await requireAdminWriteAccess(adminUserDeniedHref(centerId), 'centers');
+  if (centerId) await requireCenterAccess(centerId, adminUserDeniedHref(centerId));
 
   const email = String(formData.get('email') ?? '').trim().toLowerCase();
   const full_name = String(formData.get('full_name') ?? '').trim();
@@ -260,9 +273,10 @@ async function updateCenterLogin(formData: FormData) {
   'use server';
   const centerId = String(formData.get('center_id') ?? '');
   const memberId = String(formData.get('member_id') ?? '');
-  await requireAdminWriteAccess(adminUserDeniedHref(centerId));
+  await requireAdminWriteAccess(adminUserDeniedHref(centerId), 'centers');
 
   if (!centerId || !memberId) redirect('/admin/users');
+  await requireCenterAccess(centerId, adminUserDeniedHref(centerId));
 
   await supabaseAdmin
     .from('profiles')
@@ -286,9 +300,10 @@ async function removeCenterLogin(formData: FormData) {
   'use server';
   const centerId = String(formData.get('center_id') ?? '');
   const memberId = String(formData.get('member_id') ?? '');
-  await requireAdminWriteAccess(adminUserDeniedHref(centerId));
+  await requireAdminWriteAccess(adminUserDeniedHref(centerId), 'centers');
 
   if (!centerId || !memberId) redirect('/admin/users');
+  await requireCenterAccess(centerId, adminUserDeniedHref(centerId));
 
   await supabaseAdmin
     .from('profiles')
@@ -303,24 +318,85 @@ async function removeCenterLogin(formData: FormData) {
 async function updateAdminAccount(formData: FormData) {
   'use server';
   const id = String(formData.get('id') ?? '');
-  await requireAdminWriteAccess(adminUserDeniedHref(id));
+  const current = await requireManageAdmins(adminUserDeniedHref(id));
 
   if (!id) redirect('/admin/users');
 
-  await supabaseAdmin
+  const { data: beforeProfile } = await supabaseAdmin
     .from('profiles')
-    .update({
-      full_name: String(formData.get('full_name') ?? ''),
-      notes: String(formData.get('notes') ?? ''),
-      is_active: formData.get('is_active') === 'on',
-    })
+    .select('id,email,full_name,notes,is_active,is_admin')
+    .eq('id', id)
+    .eq('is_admin', true)
+    .maybeSingle();
+
+  if (!beforeProfile) redirect('/admin/users');
+
+  const beforePermissions = await loadSavedAdminPermissions(supabaseAdmin, id, beforeProfile.email);
+  const isOwnerAdmin = isOwnerEmail(beforeProfile.email);
+  const afterProfile = {
+    full_name: String(formData.get('full_name') ?? ''),
+    notes: String(formData.get('notes') ?? ''),
+    is_active: isOwnerAdmin ? true : formData.get('is_active') === 'on',
+  };
+  const updateResult = await supabaseAdmin
+    .from('profiles')
+    .update(afterProfile)
     .eq('id', id)
     .eq('is_admin', true);
 
+  if (updateResult.error) {
+    redirect(`${adminUserDeniedHref(id).replace('admin_write_denied', 'admin_save_failed')}`);
+  }
+
   const password = String(formData.get('password') ?? '');
   if (password) {
-    await supabaseAdmin.auth.admin.updateUserById(id, { password });
+    const passwordResult = await supabaseAdmin.auth.admin.updateUserById(id, { password });
+    if (passwordResult.error) {
+      redirect(`${adminUserDeniedHref(id).replace('admin_write_denied', 'admin_save_failed')}`);
+    }
+    await recordAdminAuditLog({
+      action: 'admin_password_reset',
+      actorProfileId: current.profile.id,
+      after: { passwordReset: true },
+      sectionKey: 'manage_admins',
+      supabase: supabaseAdmin,
+      targetProfileId: id,
+    });
   }
+
+  const permissionsResult = await saveAdminPermissions({
+    access: parseAdminPermissionsForm(formData),
+    email: beforeProfile.email,
+    profileId: id,
+    supabase: supabaseAdmin,
+  });
+
+  if (permissionsResult.error) {
+    redirect(`${adminUserDeniedHref(id).replace('admin_write_denied', 'admin_permissions_failed')}`);
+  }
+
+  await recordAdminAuditLog({
+    action: 'admin_profile_updated',
+    actorProfileId: current.profile.id,
+    after: afterProfile,
+    before: {
+      full_name: beforeProfile.full_name,
+      is_active: beforeProfile.is_active,
+      notes: beforeProfile.notes,
+    },
+    sectionKey: 'manage_admins',
+    supabase: supabaseAdmin,
+    targetProfileId: id,
+  });
+  await recordAdminAuditLog({
+    action: 'admin_permissions_updated',
+    actorProfileId: current.profile.id,
+    after: serializePermissionSnapshot(permissionsResult.access),
+    before: serializePermissionSnapshot(beforePermissions),
+    sectionKey: 'manage_admins',
+    supabase: supabaseAdmin,
+    targetProfileId: id,
+  });
 
   redirect(`/admin/users/${id}?success=admin_saved`);
 }
@@ -339,6 +415,8 @@ export default async function UserDetailPage({
   const { data: center } = await supabase.from('centers').select('*').eq('id', params.id).maybeSingle();
 
   if (center) {
+    await requireCenterAccess(center.id);
+
     const [{ data: products }, { data: assigned }, { data: prices }, { data: members }, { data: locations }] = await Promise.all([
       supabase.from('products').select('id,name,category').eq('active', true).order('name', { ascending: true }),
       supabase.from('user_products').select('product_id').eq('center_id', center.id),
@@ -534,9 +612,23 @@ export default async function UserDetailPage({
 
   const { data: adminUser } = await supabase.from('profiles').select('*').eq('id', params.id).eq('is_admin', true).maybeSingle();
   if (!adminUser) return notFound();
+  const currentAccess = await getCurrentAdminAccess();
+  const canManageAdmins = currentAccess.isOwner;
+  if (!canManageAdmins) redirect('/admin/access-denied?section=manage_admins');
+  const adminPermissions = await loadSavedAdminPermissions(supabase, adminUser.id, adminUser.email);
+  const isOwnerAdmin = isOwnerEmail(adminUser.email);
+  const { data: auditRows } = canManageAdmins
+    ? await supabase
+        .from('admin_audit_log')
+        .select('id,action,section_key,created_at')
+        .eq('target_profile_id', adminUser.id)
+        .order('created_at', { ascending: false })
+        .limit(8)
+    : { data: [] };
 
   return (
     <form action={updateAdminAccount} className="space-y-6">
+      {success === 'admin_created' ? <div className="card text-sm text-green-700">Admin account created. Permissions are saved below.</div> : null}
       {success === 'admin_saved' ? <div className="card text-sm text-green-700">Admin account updated.</div> : null}
       {error ? <div className="card text-sm text-red-700">{adminActionErrorMessage(error)}</div> : null}
       <input type="hidden" name="id" value={adminUser.id} />
@@ -546,18 +638,53 @@ export default async function UserDetailPage({
         <p className="page-subtitle mt-3">Update admin account details and reset passwords without affecting center ownership records.</p>
       </section>
       <section className="card space-y-4">
-        <input className="input" name="full_name" defaultValue={adminUser.full_name ?? ''} />
-        <textarea className="input min-h-28" name="notes" defaultValue={adminUser.notes ?? ''} />
+        {isOwnerAdmin ? (
+          <div className="rounded-2xl border border-teal-100 bg-teal-50/70 p-4 text-sm font-medium text-teal-900">
+            Zach has permanent owner access and cannot be restricted or deactivated.
+          </div>
+        ) : null}
+        <label className="space-y-2 text-sm font-medium text-slate-700">
+          Name
+          <input className="input" name="full_name" defaultValue={adminUser.full_name ?? ''} />
+        </label>
+        <label className="space-y-2 text-sm font-medium text-slate-700">
+          Notes
+          <textarea className="input min-h-28" name="notes" defaultValue={adminUser.notes ?? ''} />
+        </label>
         <div className="space-y-2">
           <label className="text-sm font-medium text-slate-700">Set new password</label>
           <input className="input" name="password" type="password" minLength={8} placeholder="Leave blank to keep current password" autoComplete="new-password" />
         </div>
         <label className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-white/60 px-4 py-3 text-sm font-medium text-slate-700">
-          <input type="checkbox" name="is_active" defaultChecked={adminUser.is_active} />
+          <input type="checkbox" name="is_active" defaultChecked={adminUser.is_active} disabled={isOwnerAdmin} />
           Active (uncheck to deactivate)
         </label>
       </section>
+      <section className="card space-y-5">
+        <div>
+          <h2 className="text-xl font-semibold text-slate-950">Permissions</h2>
+          <p className="mt-1 text-sm text-slate-500">Checking Edit automatically includes View. Removing View removes Edit.</p>
+        </div>
+        <AdminPermissionEditor allowManageAdmins={isOwnerAdmin} disabled={isOwnerAdmin} initialAccess={adminPermissions} />
+      </section>
       <button className="btn-primary w-full sm:w-auto">Save</button>
+      <section className="card space-y-4">
+        <div>
+          <h2 className="text-xl font-semibold text-slate-950">Audit log</h2>
+          <p className="mt-1 text-sm text-slate-500">Recent admin account and permission changes.</p>
+        </div>
+        {!auditRows?.length ? <div className="rounded-2xl border border-slate-200 bg-white/60 p-4 text-sm text-slate-600">No audit entries yet.</div> : null}
+        <div className="space-y-2">
+          {auditRows?.map((row: any) => (
+            <div key={row.id} className="rounded-2xl border border-slate-200 bg-white/70 px-4 py-3 text-sm">
+              <p className="font-semibold text-slate-950">{row.action.replaceAll('_', ' ')}</p>
+              <p className="mt-1 text-slate-500">
+                {row.section_key ?? 'admin'} - {row.created_at ? new Date(row.created_at).toLocaleString('en-US') : 'Unknown time'}
+              </p>
+            </div>
+          ))}
+        </div>
+      </section>
     </form>
   );
 }

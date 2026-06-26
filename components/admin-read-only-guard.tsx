@@ -2,10 +2,15 @@
 
 import { useEffect } from 'react';
 import { usePathname } from 'next/navigation';
+import { ADMIN_SECTION_LABELS, adminSectionForPath, type AdminPermissionKey } from '@/lib/admin-permission-definitions';
 
-const READ_ONLY_MESSAGE = 'Read-only admin accounts cannot change admin data.';
+function readOnlyMessage(sectionKey: AdminPermissionKey | null) {
+  const sectionName = sectionKey ? ADMIN_SECTION_LABELS[sectionKey] : 'this section';
+  return `You have read-only access to ${sectionName}.`;
+}
 
 function isMutatingAdminForm(form: HTMLFormElement) {
+  if (form.dataset.adminSelfService === 'true') return false;
   const method = (form.getAttribute('method') || form.method || 'get').toLowerCase();
   const action = form.getAttribute('action') || '';
   const hasServerAction = Array.from(form.elements).some((element) => {
@@ -15,7 +20,7 @@ function isMutatingAdminForm(form: HTMLFormElement) {
   return method === 'post' || hasServerAction || action.startsWith('/api/admin') || action.startsWith('javascript:');
 }
 
-function disableSubmitControls(form: HTMLFormElement) {
+function disableSubmitControls(form: HTMLFormElement, message: string) {
   if (form.dataset.adminReadonly === 'true') return;
   form.dataset.adminReadonly = 'true';
   form
@@ -23,17 +28,17 @@ function disableSubmitControls(form: HTMLFormElement) {
     .forEach((control) => {
       control.disabled = true;
       control.setAttribute('aria-disabled', 'true');
-      control.title = READ_ONLY_MESSAGE;
+      control.title = message;
     });
 }
 
-function disableCreateLinks() {
-  document.querySelectorAll<HTMLAnchorElement>('main a[href="/admin/users/new"], main a[href="/admin/products/new"]').forEach((link) => {
+function disableCreateLinks(message: string) {
+  document.querySelectorAll<HTMLAnchorElement>('main a[href="/admin/users/new"], main a[href="/admin/admins/new"], main a[href="/admin/products/new"]').forEach((link) => {
     if (link.dataset.adminReadonly === 'true') return;
     link.dataset.adminReadonly = 'true';
     link.classList.add('admin-readonly-disabled');
     link.setAttribute('aria-disabled', 'true');
-    link.title = READ_ONLY_MESSAGE;
+    link.title = message;
     link.addEventListener('click', preventReadOnlyNavigation);
   });
 }
@@ -43,17 +48,26 @@ function preventReadOnlyNavigation(event: MouseEvent) {
   event.stopPropagation();
 }
 
-export function AdminReadOnlyGuard({ canWrite }: { canWrite: boolean }) {
+export function AdminReadOnlyGuard({
+  editableSections,
+  isOwner,
+}: {
+  editableSections: Record<string, boolean>;
+  isOwner: boolean;
+}) {
   const pathname = usePathname();
+  const sectionKey = adminSectionForPath(pathname);
+  const canEditSection = isOwner || (sectionKey ? Boolean(editableSections[sectionKey]) : true);
+  const message = readOnlyMessage(sectionKey);
 
   useEffect(() => {
-    if (canWrite) return;
+    if (canEditSection) return;
 
     const applyReadOnlyState = () => {
       document.querySelectorAll<HTMLFormElement>('main form').forEach((form) => {
-        if (isMutatingAdminForm(form)) disableSubmitControls(form);
+        if (isMutatingAdminForm(form)) disableSubmitControls(form, message);
       });
-      disableCreateLinks();
+      disableCreateLinks(message);
     };
 
     applyReadOnlyState();
@@ -69,7 +83,13 @@ export function AdminReadOnlyGuard({ canWrite }: { canWrite: boolean }) {
         link.removeEventListener('click', preventReadOnlyNavigation);
       });
     };
-  }, [canWrite, pathname]);
+  }, [canEditSection, message, pathname]);
 
-  return null;
+  if (canEditSection) return null;
+
+  return (
+    <div className="fixed inset-x-3 bottom-4 z-50 mx-auto max-w-xl rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-900 shadow-lg shadow-slate-900/10">
+      {message}
+    </div>
+  );
 }
