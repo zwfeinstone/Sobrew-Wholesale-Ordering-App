@@ -5,10 +5,7 @@ import { env } from '@/lib/env';
 import { isRecurringOrderDue } from '@/lib/recurring';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 
-const TARGET_CRON_HOUR = 8;
-const TARGET_CRON_MINUTE = 0;
-const TARGET_CRON_WINDOW_MINUTES = 10;
-const RECURRING_CRON_TIME_ZONE = 'America/Chicago';
+type RecurringCronError = { recurringOrderId: string; message: string };
 
 function normalizeStatus(recurringOrder: { status?: string | null; active?: boolean | null }) {
   if (recurringOrder.status) return recurringOrder.status;
@@ -26,29 +23,54 @@ function isAuthorizedCronRequest(req: Request) {
   return providedSecret === env.cronSecret;
 }
 
-function centralCronTimeParts(now: Date) {
-  const parts = new Intl.DateTimeFormat('en-US', {
-    hour: '2-digit',
-    hourCycle: 'h23',
-    minute: '2-digit',
-    timeZone: RECURRING_CRON_TIME_ZONE,
-  }).formatToParts(now);
-  const hour = Number(parts.find((part) => part.type === 'hour')?.value);
-  const minute = Number(parts.find((part) => part.type === 'minute')?.value);
-  return { hour, minute };
-}
-
 function isForcedCronRequest(req: Request) {
   const url = new URL(req.url);
   return url.searchParams.get('force') === '1' || req.headers.get('x-cron-force') === 'true';
 }
 
-function isInTargetCronWindow(time: { hour: number; minute: number }) {
-  return (
-    time.hour === TARGET_CRON_HOUR &&
-    time.minute >= TARGET_CRON_MINUTE &&
-    time.minute <= TARGET_CRON_MINUTE + TARGET_CRON_WINDOW_MINUTES
-  );
+async function writeCronRunLog({
+  activeRecurringCount = 0,
+  completedAt = new Date().toISOString(),
+  created,
+  dueRecurringCount = 0,
+  errors,
+  forceRun,
+  req,
+  startedAt,
+  status,
+}: {
+  activeRecurringCount?: number;
+  completedAt?: string;
+  created: number;
+  dueRecurringCount?: number;
+  errors: RecurringCronError[];
+  forceRun: boolean;
+  req: Request;
+  startedAt: string;
+  status: 'success' | 'error';
+}) {
+  try {
+    const { error } = await supabaseAdmin.from('cron_run_log').insert({
+      active_recurring_count: activeRecurringCount,
+      completed_at: completedAt,
+      created_count: created,
+      cron_schedule: req.headers.get('x-vercel-cron-schedule'),
+      due_recurring_count: dueRecurringCount,
+      error_count: errors.length,
+      errors,
+      force_run: forceRun,
+      invoked_at: startedAt,
+      job_name: 'recurring_orders',
+      request_method: req.method,
+      status,
+      user_agent: req.headers.get('user-agent'),
+    });
+
+    if (!error) return;
+    console.error('[recurring-orders-cron] log insert failed', error);
+  } catch (error) {
+    console.error('[recurring-orders-cron] log insert threw', error);
+  }
 }
 
 async function runRecurringOrders(req: Request) {
@@ -57,28 +79,27 @@ async function runRecurringOrders(req: Request) {
   }
 
   const now = new Date();
-  const centralTime = centralCronTimeParts(now);
+  const startedAt = now.toISOString();
   const forceRun = isForcedCronRequest(req);
-  if (!forceRun && !isInTargetCronWindow(centralTime)) {
-    return NextResponse.json({
-      created: 0,
-      errors: [],
-      skipped: 'outside_recurring_order_window',
-      targetTime: '8:00 AM America/Chicago',
-      currentCentralTime: `${String(centralTime.hour).padStart(2, '0')}:${String(centralTime.minute).padStart(2, '0')}`,
-    });
-  }
 
   const { data: recurringOrders, error: recurringOrdersError } = await supabaseAdmin
     .from('recurring_orders')
     .select('id,user_id,center_id,source_order_id,frequency,amount_cents,status,active,created_at,last_generated_at,profiles(email,full_name),centers(name)');
 
   if (recurringOrdersError) {
+    await writeCronRunLog({
+      created: 0,
+      errors: [{ recurringOrderId: 'recurring_orders_query', message: recurringOrdersError.message }],
+      forceRun,
+      req,
+      startedAt,
+      status: 'error',
+    });
     return NextResponse.json({ error: recurringOrdersError.message }, { status: 500 });
   }
 
   let created = 0;
-  const errors: Array<{ recurringOrderId: string; message: string }> = [];
+  const errors: RecurringCronError[] = [];
 
   const activeRecurringOrders = (recurringOrders ?? []).filter((recurringOrder) => normalizeStatus(recurringOrder) === 'active');
   const dueRecurringOrders = activeRecurringOrders.filter((recurringOrder) => {
@@ -87,6 +108,16 @@ async function runRecurringOrders(req: Request) {
   });
 
   if (!dueRecurringOrders.length) {
+    await writeCronRunLog({
+      activeRecurringCount: activeRecurringOrders.length,
+      created,
+      dueRecurringCount: dueRecurringOrders.length,
+      errors,
+      forceRun,
+      req,
+      startedAt,
+      status: 'success',
+    });
     return NextResponse.json({ created, errors });
   }
 
@@ -105,10 +136,30 @@ async function runRecurringOrders(req: Request) {
   ]);
 
   if (sourceOrdersError) {
+    await writeCronRunLog({
+      activeRecurringCount: activeRecurringOrders.length,
+      created,
+      dueRecurringCount: dueRecurringOrders.length,
+      errors: [{ recurringOrderId: 'source_orders_query', message: sourceOrdersError.message }],
+      forceRun,
+      req,
+      startedAt,
+      status: 'error',
+    });
     return NextResponse.json({ error: sourceOrdersError.message }, { status: 500 });
   }
 
   if (recurringItemsError) {
+    await writeCronRunLog({
+      activeRecurringCount: activeRecurringOrders.length,
+      created,
+      dueRecurringCount: dueRecurringOrders.length,
+      errors: [{ recurringOrderId: 'recurring_items_query', message: recurringItemsError.message }],
+      forceRun,
+      req,
+      startedAt,
+      status: 'error',
+    });
     return NextResponse.json({ error: recurringItemsError.message }, { status: 500 });
   }
 
@@ -139,6 +190,16 @@ async function runRecurringOrders(req: Request) {
       }>, error: null as null | { message: string } };
 
   if (sourceOrderItemsError) {
+    await writeCronRunLog({
+      activeRecurringCount: activeRecurringOrders.length,
+      created,
+      dueRecurringCount: dueRecurringOrders.length,
+      errors: [{ recurringOrderId: 'source_order_items_query', message: sourceOrderItemsError.message }],
+      forceRun,
+      req,
+      startedAt,
+      status: 'error',
+    });
     return NextResponse.json({ error: sourceOrderItemsError.message }, { status: 500 });
   }
 
@@ -249,6 +310,17 @@ async function runRecurringOrders(req: Request) {
 
     created += 1;
   }
+
+  await writeCronRunLog({
+    activeRecurringCount: activeRecurringOrders.length,
+    created,
+    dueRecurringCount: dueRecurringOrders.length,
+    errors,
+    forceRun,
+    req,
+    startedAt,
+    status: errors.length ? 'error' : 'success',
+  });
 
   return NextResponse.json({ created, errors });
 }
