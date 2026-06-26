@@ -150,7 +150,7 @@ export default async function InventoryPage({
     supabase.from('product_recipes').select('product_id,output_qty,waste_percent,labor_minutes,labor_rate_cents,shipping_label_qty,branding_label_qty,product_recipe_components(id,inventory_item_id,quantity,unit,component_role,inventory_items(id,name,sku,item_type,base_unit,product_id,active))'),
     supabase.from('production_runs').select('product_id,actual_unit_cost_cents').order('produced_at', { ascending: false }).limit(500),
     supabase.from('orders').select('id,status,order_items(product_id,qty)').in('status', ['New', 'Processing']).is('archived_at', null),
-    supabase.from('inventory_movements').select('inventory_item_id,quantity_change,unit_cost_cents').eq('movement_type', 'shipment_consume').is('lot_id', null).limit(50000),
+    supabase.from('inventory_movements').select('inventory_item_id,quantity_change,unit_cost_cents').in('movement_type', ['shipment_consume', 'sample_box_consume']).is('lot_id', null).limit(50000),
   ]);
 
   if (itemsResult.error) {

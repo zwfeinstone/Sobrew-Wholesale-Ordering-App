@@ -94,6 +94,11 @@ function number(value: number, maximumFractionDigits = 0) {
   return new Intl.NumberFormat('en-US', { maximumFractionDigits }).format(value);
 }
 
+function normalizeReportNumber(value: unknown) {
+  const parsed = typeof value === 'number' ? value : Number.parseFloat(String(value ?? '0'));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
 function quantity(value: number) {
   return number(value, value % 1 === 0 ? 0 : 1);
 }
@@ -761,6 +766,7 @@ export default async function AdminReportsPage({
     productionRunInputsResult,
     shortageMovementsResult,
     nonInventoryExpensesResult,
+    sampleBoxRunsResult,
   ] = await Promise.all([
     ordersQuery,
     supabase.from('order_items').select('id,order_id,product_id,product_name_snapshot,qty,unit_price_cents,line_total_cents,shipping_boxes_used,cogs_material_cents,cogs_labor_cents,cogs_fixed_cents,cogs_tape_cents,cogs_shipping_label_cents,cogs_branding_label_cents,cogs_fixed_other_cents,cogs_product_cents,cogs_shipping_cents,cogs_processing_fee_cents,cogs_donation_cents,cogs_total_cents,cogs_unit_cents,cogs_source,cogs_estimated,cogs_snapshot_at').limit(50000),
@@ -771,8 +777,14 @@ export default async function AdminReportsPage({
     supabase.from('inventory_reorder_settings').select('inventory_item_id,reorder_point,target_stock,lead_time_days'),
     supabase.from('production_runs').select('id,product_id,quantity_produced,estimated_unit_cost_cents,actual_unit_cost_cents,actual_labor_cost_cents,fixed_cost_cents,fixed_tape_cost_cents,fixed_shipping_label_cost_cents,fixed_branding_label_cost_cents,fixed_other_cost_cents,produced_at').order('produced_at', { ascending: false }).limit(50000),
     supabase.from('production_run_inputs').select('production_run_id,quantity_expected,quantity_used,cost_cents').limit(50000),
-    supabase.from('inventory_movements').select('inventory_item_id,quantity_change,unit_cost_cents').eq('movement_type', 'shipment_consume').is('lot_id', null).limit(50000),
+    supabase.from('inventory_movements').select('inventory_item_id,quantity_change,unit_cost_cents').in('movement_type', ['shipment_consume', 'sample_box_consume']).is('lot_id', null).limit(50000),
     supabase.from('non_inventory_expenses').select('expense_type,amount_cents,spent_at').limit(50000),
+    supabase
+      .from('sample_box_runs')
+      .select('id,center_id,sales_profile_id,quantity_boxes,inventory_cogs_cents,product_cogs_cents,fixed_shipping_cents,fixed_misc_cents,total_cogs_cents,cogs_estimated,sent_at')
+      .gte('sent_at', rangeStart.toISOString())
+      .lt('sent_at', rangeEndExclusive.toISOString())
+      .limit(50000),
   ]);
 
   if (ordersResult.error || orderItemsResult.error || centersResult.error || productsResult.error) {
@@ -823,6 +835,34 @@ export default async function AdminReportsPage({
     rangeStart,
     shortageMovements: shortageMovementsResult.error ? [] : ((shortageMovementsResult.data ?? []) as any[]),
   });
+  const sampleBoxRuns = (sampleBoxRunsResult.error ? [] : (sampleBoxRunsResult.data ?? []) as Array<{
+    center_id: string | null;
+    cogs_estimated: boolean | null;
+    fixed_misc_cents: number | string | null;
+    fixed_shipping_cents: number | string | null;
+    inventory_cogs_cents: number | string | null;
+    product_cogs_cents: number | string | null;
+    quantity_boxes: number | string;
+    sales_profile_id: string | null;
+    total_cogs_cents: number | string | null;
+  }>).filter((run) => {
+    if (selectedSalesRepId && run.sales_profile_id !== selectedSalesRepId) return false;
+    if (!currentAccess.isOwner && run.sales_profile_id !== currentAccess.profile.id) return false;
+    if (centerScope !== null && run.center_id && !centerScope.includes(run.center_id)) return false;
+    return true;
+  });
+  const sampleBoxSummary = sampleBoxRuns.reduce(
+    (summary, run) => {
+      summary.boxes += normalizeReportNumber(run.quantity_boxes);
+      summary.inventoryCents += normalizeReportNumber(run.inventory_cogs_cents);
+      summary.productCents += normalizeReportNumber(run.product_cogs_cents);
+      summary.fixedCents += normalizeReportNumber(run.fixed_shipping_cents) + normalizeReportNumber(run.fixed_misc_cents);
+      summary.totalCents += normalizeReportNumber(run.total_cogs_cents);
+      if (run.cogs_estimated) summary.estimatedCount += 1;
+      return summary;
+    },
+    { boxes: 0, estimatedCount: 0, fixedCents: 0, inventoryCents: 0, productCents: 0, totalCents: 0 }
+  );
   const rangeEndInput = formatDateInput(addDays(rangeEndExclusive, -1));
   const activeFilterCount = [productId, centerId, selectedSalesRepId, parsedRangeStart, parsedRangeEnd].filter(Boolean).length;
   const navParams = new URLSearchParams();
@@ -1009,11 +1049,12 @@ export default async function AdminReportsPage({
 
       {activeReport === 'inventory' ? (
         <>
-          <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+          <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
             <StatTile label="Raw Coffee Value" value={money(profitabilityDashboard.inventorySummary.rawCoffeeValueCents)} detail="Remaining raw coffee lot value." />
             <StatTile label="Materials Value" value={money(profitabilityDashboard.inventorySummary.materialSupplyValueCents)} detail="Tracked materials and supplies on hand." />
-            <StatTile label="Sellable Value" value={money(profitabilityDashboard.inventorySummary.sellableValueCents)} detail="Finished goods value including negative shipment shortages." />
+            <StatTile label="Sellable Value" value={money(profitabilityDashboard.inventorySummary.sellableValueCents)} detail="Finished goods value including negative shipment and sample shortages." />
             <StatTile label="Negative Items" value={number(profitabilityDashboard.inventorySummary.negativeSellableCount)} detail="Sellable products below zero on hand." />
+            <StatTile label="Sample Box COGS" value={money(sampleBoxSummary.totalCents)} detail={`${quantity(sampleBoxSummary.boxes)} sample boxes; shown as prospecting expense only.`} />
           </section>
           <section className="grid gap-5 xl:grid-cols-[1.1fr_0.9fr]">
             <div className="card space-y-5">
@@ -1031,6 +1072,20 @@ export default async function AdminReportsPage({
                 subtitle="Tape and labels are visible as spend, but not deducted again from gross margin."
               />
               <FixedExpenseTable rows={profitabilityDashboard.fixedExpenseComparisonRows} />
+            </div>
+          </section>
+          <section className="card space-y-5">
+            <SectionHeading
+              eyebrow="Sample / Prospecting Expense"
+              title="Sample box COGS"
+              subtitle="Sample boxes consume inventory and finished products, but stay separate from shipped-order gross margin and commissions."
+            />
+            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+              <StatTile label="Total Sample COGS" value={money(sampleBoxSummary.totalCents)} detail={`${sampleBoxSummary.estimatedCount} estimated sample line${sampleBoxSummary.estimatedCount === 1 ? '' : 's'} in range.`} />
+              <StatTile label="Coffee & Materials" value={money(sampleBoxSummary.inventoryCents)} detail="Raw coffee and packaging consumed FIFO." />
+              <StatTile label="Finished Products" value={money(sampleBoxSummary.productCents)} detail="Included products and special add-ons." />
+              <StatTile label="Fixed Costs" value={money(sampleBoxSummary.fixedCents)} detail="Sample shipping and miscellaneous costs." />
+              <StatTile label="Boxes Sent" value={quantity(sampleBoxSummary.boxes)} detail="Sample boxes recorded in the selected range." />
             </div>
           </section>
         </>
