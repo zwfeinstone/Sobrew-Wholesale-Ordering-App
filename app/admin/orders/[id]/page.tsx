@@ -8,10 +8,10 @@ import { getCenterLoginEmails } from '@/lib/center-logins';
 import { createClient } from '@/lib/supabase/server';
 import { sendShippedEmail } from '@/lib/email';
 import { getOrderItemSummaries } from '@/lib/order-items';
-import { centsFromDollars, dollarsInputValueFromCents, normalizeInventoryNumber } from '@/lib/inventory';
+import { centsFromDollars, normalizeInventoryNumber } from '@/lib/inventory';
 import { snapshotOrderCommissionForShipment } from '@/lib/commissions';
 import { snapshotOrderCogsForShipment } from '@/lib/order-cogs';
-import { processingFeeCentsForRevenue } from '@/lib/order-fees';
+import { donationCogsCentsForRevenue, processingFeeCentsForRevenue } from '@/lib/order-fees';
 import { usd } from '@/lib/utils';
 
 function formatOrderTimestamp(value: string | null) {
@@ -55,7 +55,6 @@ async function shipOrder(formData: FormData) {
 
   const supabase = await createClient();
   const shippingCostCents = centsFromDollars(String(formData.get('shipping_cost') ?? '0'));
-  const donationCogsCents = centsFromDollars(String(formData.get('donation_cogs') ?? '0'));
   if (!id || shippingCostCents <= 0) redirect(`/admin/orders/${id}?toast=shipping_required`);
 
   const { data: order } = await supabase
@@ -65,6 +64,7 @@ async function shipOrder(formData: FormData) {
     .single();
   if (!order || order.archived_at) redirect(`/admin/orders/${id}?toast=ship_error`);
   const processingFeeCents = processingFeeCentsForRevenue((order as any).subtotal_cents);
+  const donationCogsCents = donationCogsCentsForRevenue((order as any).subtotal_cents);
 
   const { data: orderItems } = await supabase
     .from('order_items')
@@ -269,6 +269,7 @@ export default async function AdminOrderDetail({
     label: productBoxLabel(item),
   }));
   const processingFeePreviewCents = processingFeeCentsForRevenue(order.subtotal_cents);
+  const donationCogsPreviewCents = donationCogsCentsForRevenue(order.subtotal_cents);
   const shippingBoxesByOrderItemId = new Map<string, any[]>();
   for (const usage of shippingBoxUsages as any[]) {
     const rows = shippingBoxesByOrderItemId.get(usage.order_item_id) ?? [];
@@ -370,12 +371,12 @@ export default async function AdminOrderDetail({
           </label>
           <div className="rounded-2xl border border-slate-200 bg-white/65 px-4 py-3 text-sm text-slate-600">
             <p className="font-semibold text-slate-950">Processing fee COGS: {usd(processingFeePreviewCents)}</p>
-            <p className="mt-1">Auto-calculated at 3.99% + $0.30 for this order.</p>
+            <p className="mt-1">Auto-calculated at 2.99% + $0.30 for this order.</p>
           </div>
-          <label className="space-y-2 text-sm font-medium text-slate-700">
-            Donation COGS
-            <input className="input" name="donation_cogs" min="0" step="0.01" type="number" defaultValue={dollarsInputValueFromCents(order.donation_cogs_cents)} placeholder="0.00" />
-          </label>
+          <div className="rounded-2xl border border-slate-200 bg-white/65 px-4 py-3 text-sm text-slate-600">
+            <p className="font-semibold text-slate-950">Donation COGS: {usd(donationCogsPreviewCents)}</p>
+            <p className="mt-1">Auto-calculated at 1% of this order subtotal.</p>
+          </div>
           {productBoxRequiredLines.length ? (
             <div className="space-y-3">
               <p className="text-sm font-semibold text-slate-950">Product Boxes</p>

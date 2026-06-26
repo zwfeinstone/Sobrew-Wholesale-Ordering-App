@@ -9,6 +9,7 @@
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
     "check": "npm run typecheck && npm run lint",
+    "backfill:cogs": "node scripts/backfill-historical-cogs.mjs",
     "cron:recurring": "node scripts/run-recurring-cron.mjs"
   },
   "dependencies": {
