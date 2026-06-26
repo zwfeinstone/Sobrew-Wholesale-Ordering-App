@@ -452,11 +452,13 @@ function MarginValue({ value }: { value: number }) {
 
 function CogsSplitGrid({ current }: { current: ReturnType<typeof buildProfitabilityDashboard>['current'] }) {
   return (
-    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
       <StatTile label="Material COGS" value={money(current.materialCents)} detail="Coffee, bags, boxes, and tracked recipe inputs." />
       <StatTile label="Labor COGS" value={money(current.laborCents)} detail="Production labor snapshotted into finished goods." />
       <StatTile label="Fixed Packaging" value={money(current.fixedCents)} detail="Tape, labels, and legacy fixed recipe costs." />
       <StatTile label="Shipping COGS" value={money(current.shippingCogsCents)} detail="Required shipping cost allocated from shipped orders." />
+      <StatTile label="Processing Fees" value={money(current.processingFeeCogsCents)} detail="3.99% plus 30 cents per shipped order." />
+      <StatTile label="Donation COGS" value={money(current.donationCogsCents)} detail="Donation amounts entered at shipment." />
     </div>
   );
 }
@@ -466,7 +468,7 @@ function CenterProfitabilityTable({ rows }: { rows: ReturnType<typeof buildProfi
 
   return (
     <div className="overflow-x-auto">
-      <table className="w-full min-w-[82rem] border-separate border-spacing-y-2 text-left text-sm">
+      <table className="w-full min-w-[94rem] border-separate border-spacing-y-2 text-left text-sm">
         <thead>
           <tr className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
             <th className="px-4 py-2">Center</th>
@@ -475,6 +477,8 @@ function CenterProfitabilityTable({ rows }: { rows: ReturnType<typeof buildProfi
             <th className="px-4 py-2 text-right">Labor</th>
             <th className="px-4 py-2 text-right">Fixed</th>
             <th className="px-4 py-2 text-right">Shipping</th>
+            <th className="px-4 py-2 text-right">Fees</th>
+            <th className="px-4 py-2 text-right">Donation</th>
             <th className="px-4 py-2 text-right">Gross profit</th>
             <th className="px-4 py-2 text-right">Margin</th>
             <th className="px-4 py-2 text-right">Orders</th>
@@ -491,6 +495,8 @@ function CenterProfitabilityTable({ rows }: { rows: ReturnType<typeof buildProfi
               <td className="px-4 py-3 text-right text-slate-700">{money(row.laborCents)}</td>
               <td className="px-4 py-3 text-right text-slate-700">{money(row.fixedCents)}</td>
               <td className="px-4 py-3 text-right text-slate-700">{money(row.shippingCogsCents)}</td>
+              <td className="px-4 py-3 text-right text-slate-700">{money(row.processingFeeCogsCents)}</td>
+              <td className="px-4 py-3 text-right text-slate-700">{money(row.donationCogsCents)}</td>
               <td className={`px-4 py-3 text-right font-semibold ${row.grossProfitCents >= 0 ? 'text-teal-800' : 'text-rose-700'}`}>{money(row.grossProfitCents)}</td>
               <td className="px-4 py-3 text-right font-semibold"><MarginValue value={row.marginPercent} /></td>
               <td className="px-4 py-3 text-right text-slate-700">{number(row.orderCount)}</td>
@@ -509,7 +515,7 @@ function ItemProfitabilityTable({ rows }: { rows: ReturnType<typeof buildProfita
 
   return (
     <div className="overflow-x-auto">
-      <table className="w-full min-w-[82rem] border-separate border-spacing-y-2 text-left text-sm">
+      <table className="w-full min-w-[90rem] border-separate border-spacing-y-2 text-left text-sm">
         <thead>
           <tr className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
             <th className="px-4 py-2">Item</th>
@@ -518,9 +524,11 @@ function ItemProfitabilityTable({ rows }: { rows: ReturnType<typeof buildProfita
             <th className="px-4 py-2 text-right">Rev/unit</th>
             <th className="px-4 py-2 text-right">Product COGS/unit</th>
             <th className="px-4 py-2 text-right">Shipping</th>
-            <th className="px-4 py-2 text-right">Profit before ship</th>
-            <th className="px-4 py-2 text-right">Profit after ship</th>
-            <th className="px-4 py-2 text-right">Margin after ship</th>
+            <th className="px-4 py-2 text-right">Fees</th>
+            <th className="px-4 py-2 text-right">Donation</th>
+            <th className="px-4 py-2 text-right">Profit before order costs</th>
+            <th className="px-4 py-2 text-right">Profit after COGS</th>
+            <th className="px-4 py-2 text-right">Margin after COGS</th>
             <th className="px-4 py-2 text-right">Orders</th>
             <th className="px-4 py-2 text-right">Estimated lines</th>
           </tr>
@@ -534,6 +542,8 @@ function ItemProfitabilityTable({ rows }: { rows: ReturnType<typeof buildProfita
               <td className="px-4 py-3 text-right text-slate-700">{money(row.revenuePerUnitCents)}</td>
               <td className="px-4 py-3 text-right text-slate-700">{money(row.productCogsPerUnitCents)}</td>
               <td className="px-4 py-3 text-right text-slate-700">{money(row.shippingCogsCents)}</td>
+              <td className="px-4 py-3 text-right text-slate-700">{money(row.processingFeeCogsCents)}</td>
+              <td className="px-4 py-3 text-right text-slate-700">{money(row.donationCogsCents)}</td>
               <td className={`px-4 py-3 text-right font-semibold ${row.grossProfitBeforeShippingCents >= 0 ? 'text-teal-800' : 'text-rose-700'}`}>{money(row.grossProfitBeforeShippingCents)}</td>
               <td className={`px-4 py-3 text-right font-semibold ${row.grossProfitAfterShippingCents >= 0 ? 'text-teal-800' : 'text-rose-700'}`}>{money(row.grossProfitAfterShippingCents)}</td>
               <td className="px-4 py-3 text-right font-semibold"><MarginValue value={row.marginAfterShippingPercent} /></td>
@@ -730,7 +740,7 @@ export default async function AdminReportsPage({
       : defaultRange.rangeEndExclusive;
 
   const ordersQuery = scopeCenterRelatedQueryForAdmin(
-    supabase.from('orders').select('id,center_id,status,subtotal_cents,shipping_cost_cents,created_at,shipped_at').order('created_at', { ascending: false }).limit(20000),
+    supabase.from('orders').select('id,center_id,status,subtotal_cents,shipping_cost_cents,processing_fee_cents,donation_cogs_cents,created_at,shipped_at').order('created_at', { ascending: false }).limit(20000),
     'center_id',
     centerScope
   );
@@ -753,7 +763,7 @@ export default async function AdminReportsPage({
     nonInventoryExpensesResult,
   ] = await Promise.all([
     ordersQuery,
-    supabase.from('order_items').select('id,order_id,product_id,product_name_snapshot,qty,unit_price_cents,line_total_cents,shipping_boxes_used,cogs_material_cents,cogs_labor_cents,cogs_fixed_cents,cogs_tape_cents,cogs_shipping_label_cents,cogs_branding_label_cents,cogs_fixed_other_cents,cogs_product_cents,cogs_shipping_cents,cogs_total_cents,cogs_unit_cents,cogs_source,cogs_estimated,cogs_snapshot_at').limit(50000),
+    supabase.from('order_items').select('id,order_id,product_id,product_name_snapshot,qty,unit_price_cents,line_total_cents,shipping_boxes_used,cogs_material_cents,cogs_labor_cents,cogs_fixed_cents,cogs_tape_cents,cogs_shipping_label_cents,cogs_branding_label_cents,cogs_fixed_other_cents,cogs_product_cents,cogs_shipping_cents,cogs_processing_fee_cents,cogs_donation_cents,cogs_total_cents,cogs_unit_cents,cogs_source,cogs_estimated,cogs_snapshot_at').limit(50000),
     centersQuery,
     supabase.from('products').select('id,name,sku,category,active').order('name', { ascending: true }),
     supabase.from('inventory_items').select('id,name,sku,item_type,base_unit,product_id,active').order('name', { ascending: true }),
@@ -909,6 +919,8 @@ export default async function AdminReportsPage({
             <StatTile label="Revenue" value={money(profitabilityDashboard.current.revenueCents)} detail={`${number(profitabilityDashboard.current.orderCount)} shipped order${profitabilityDashboard.current.orderCount === 1 ? '' : 's'} in range.`} />
             <StatTile label="Product COGS" value={money(profitabilityDashboard.current.productCogsCents)} detail="Material, labor, and fixed production COGS." />
             <StatTile label="Shipping COGS" value={money(profitabilityDashboard.current.shippingCogsCents)} detail="Order shipping cost allocated to lines." />
+            <StatTile label="Processing Fees" value={money(profitabilityDashboard.current.processingFeeCogsCents)} detail="Payment processing COGS on shipped orders." />
+            <StatTile label="Donation COGS" value={money(profitabilityDashboard.current.donationCogsCents)} detail="Donation amounts recorded at shipment." />
             <StatTile label="Gross Profit" value={money(profitabilityDashboard.current.grossProfitCents)} detail={`${profitabilityDashboard.current.estimatedLineCount} estimated line${profitabilityDashboard.current.estimatedLineCount === 1 ? '' : 's'} in this range.`} />
             <StatTile label="Margin" value={`${percent(profitabilityDashboard.current.marginPercent).replace('+', '')}`} detail={`${signedMoney(profitabilityDashboard.current.grossProfitCents - profitabilityDashboard.previous.grossProfitCents)} vs previous range.`} />
           </section>
@@ -922,7 +934,7 @@ export default async function AdminReportsPage({
           </section>
           <section className="grid gap-5 xl:grid-cols-2">
             <div className="card space-y-5">
-              <SectionHeading eyebrow="Best centers" title="Top center profit" subtitle="Highest gross profit after product and shipping COGS." />
+              <SectionHeading eyebrow="Best centers" title="Top center profit" subtitle="Highest gross profit after product, shipping, processing, and donation COGS." />
               <CenterProfitabilityTable rows={profitabilityDashboard.centerRows.slice(0, 6)} />
             </div>
             <div className="card space-y-5">

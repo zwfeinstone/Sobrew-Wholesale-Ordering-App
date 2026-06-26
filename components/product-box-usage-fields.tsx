@@ -63,7 +63,7 @@ export function ProductBoxUsageFields({
 
       {!boxItems.length ? (
         <div className="rounded-2xl border border-rose-200 bg-rose-50/70 p-4 text-sm text-rose-800">
-          No active BOX- materials are available. Receive or create a box material before shipping this order.
+          No active box materials are available. Receive or create a box material before shipping this order.
         </div>
       ) : null}
 

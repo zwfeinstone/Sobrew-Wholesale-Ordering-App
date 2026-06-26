@@ -33,15 +33,18 @@ type CenterRow = {
 type PayoutRow = {
   commission_cents: number | string | null;
   commission_month: string;
+  donation_cogs_cents?: number | string | null;
   gross_profit_cents: number | string | null;
   id: string;
   order_count: number | null;
   paid_at: string | null;
+  processing_fee_cogs_cents?: number | string | null;
   product_cogs_cents: number | string | null;
   revenue_cents: number | string | null;
   sales_profile_id: string;
   shipping_cogs_cents: number | string | null;
   status: string;
+  total_cogs_cents?: number | string | null;
 };
 
 function profileLabel(profile: AdminRow | undefined | null) {
@@ -65,12 +68,18 @@ function percentChange(current: number, previous: number) {
 function payoutSummary(payout: PayoutRow): CommissionSummary {
   return {
     commissionCents: numericCents(payout.commission_cents),
+    donationCogsCents: numericCents(payout.donation_cogs_cents),
     grossProfitCents: numericCents(payout.gross_profit_cents),
     orderCount: payout.order_count ?? 0,
+    processingFeeCogsCents: numericCents(payout.processing_fee_cogs_cents),
     productCogsCents: numericCents(payout.product_cogs_cents),
     revenueCents: numericCents(payout.revenue_cents),
     shippingCogsCents: numericCents(payout.shipping_cogs_cents),
-    totalCogsCents: numericCents(payout.product_cogs_cents) + numericCents(payout.shipping_cogs_cents),
+    totalCogsCents: numericCents(payout.total_cogs_cents)
+      || numericCents(payout.product_cogs_cents)
+        + numericCents(payout.shipping_cogs_cents)
+        + numericCents(payout.processing_fee_cogs_cents)
+        + numericCents(payout.donation_cogs_cents),
   };
 }
 
@@ -184,12 +193,12 @@ export default async function CommissionPage({
   const [{ data: snapshots }, { data: payouts }, { data: assignments }, { data: centers }] = await Promise.all([
     supabaseAdmin
       .from('order_commission_snapshots')
-      .select('id,order_id,center_id,sales_profile_id,shipped_at,commission_month,revenue_cents,product_cogs_cents,shipping_cogs_cents,total_cogs_cents,gross_profit_cents,commission_percent,commission_cents,cogs_estimated')
+      .select('id,order_id,center_id,sales_profile_id,shipped_at,commission_month,revenue_cents,product_cogs_cents,shipping_cogs_cents,processing_fee_cogs_cents,donation_cogs_cents,total_cogs_cents,gross_profit_cents,commission_percent,commission_cents,cogs_estimated')
       .eq('sales_profile_id', selectedProfileId)
       .in('commission_month', historyMonths),
     supabaseAdmin
       .from('monthly_commission_payouts')
-      .select('id,sales_profile_id,commission_month,status,order_count,revenue_cents,product_cogs_cents,shipping_cogs_cents,gross_profit_cents,commission_cents,paid_at')
+      .select('id,sales_profile_id,commission_month,status,order_count,revenue_cents,product_cogs_cents,shipping_cogs_cents,processing_fee_cogs_cents,donation_cogs_cents,total_cogs_cents,gross_profit_cents,commission_cents,paid_at')
       .eq('sales_profile_id', selectedProfileId)
       .in('commission_month', historyMonths),
     supabaseAdmin
@@ -299,7 +308,7 @@ export default async function CommissionPage({
 
       <section className="grid gap-4 lg:grid-cols-4">
         <StatTile label="Revenue" value={money(currentSummary.revenueCents)} detail={`${currentSummary.orderCount.toLocaleString()} shipped order(s).`} />
-        <StatTile label="Gross profit" value={money(currentSummary.grossProfitCents)} detail="Revenue less product and shipping COGS." />
+        <StatTile label="Gross profit" value={money(currentSummary.grossProfitCents)} detail="Revenue less product, shipping, processing, and donation COGS." />
         <StatTile label="Commission" value={money(currentSummary.commissionCents)} detail={`MoM ${percent(percentChange(currentSummary.commissionCents, previousSummary.commissionCents))}.`} />
         <StatTile label="YoY commission" value={percent(percentChange(currentSummary.commissionCents, priorYearSummary.commissionCents))} detail={`Compared with ${commissionMonthLabel(priorYearMonth)}.`} />
       </section>

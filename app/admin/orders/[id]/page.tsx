@@ -8,9 +8,10 @@ import { getCenterLoginEmails } from '@/lib/center-logins';
 import { createClient } from '@/lib/supabase/server';
 import { sendShippedEmail } from '@/lib/email';
 import { getOrderItemSummaries } from '@/lib/order-items';
-import { centsFromDollars, normalizeInventoryNumber } from '@/lib/inventory';
+import { centsFromDollars, dollarsInputValueFromCents, normalizeInventoryNumber } from '@/lib/inventory';
 import { snapshotOrderCommissionForShipment } from '@/lib/commissions';
 import { snapshotOrderCogsForShipment } from '@/lib/order-cogs';
+import { processingFeeCentsForRevenue } from '@/lib/order-fees';
 import { usd } from '@/lib/utils';
 
 function formatOrderTimestamp(value: string | null) {
@@ -54,14 +55,16 @@ async function shipOrder(formData: FormData) {
 
   const supabase = await createClient();
   const shippingCostCents = centsFromDollars(String(formData.get('shipping_cost') ?? '0'));
+  const donationCogsCents = centsFromDollars(String(formData.get('donation_cogs') ?? '0'));
   if (!id || shippingCostCents <= 0) redirect(`/admin/orders/${id}?toast=shipping_required`);
 
   const { data: order } = await supabase
     .from('orders')
-    .select('id,user_id,center_id,status,archived_at,profiles(email)')
+    .select('id,user_id,center_id,status,archived_at,subtotal_cents,profiles(email)')
     .eq('id', id)
     .single();
   if (!order || order.archived_at) redirect(`/admin/orders/${id}?toast=ship_error`);
+  const processingFeeCents = processingFeeCentsForRevenue((order as any).subtotal_cents);
 
   const { data: orderItems } = await supabase
     .from('order_items')
@@ -76,7 +79,7 @@ async function shipOrder(formData: FormData) {
       .select('id')
       .eq('item_type', 'material_supply')
       .eq('active', true)
-      .like('sku', 'BOX-%');
+      .or('sku.ilike.BOX-%,name.ilike.%box%');
 
     if (boxItemsError) redirect(`/admin/orders/${id}?toast=ship_error`);
     const validBoxItemIds = new Set((boxItems ?? []).map((item: any) => String(item.id)));
@@ -139,7 +142,9 @@ async function shipOrder(formData: FormData) {
   }
 
   const cogsResult = await snapshotOrderCogsForShipment({
+    donationCogsCents,
     orderId: id,
+    processingFeeCents,
     shippingCostCents,
     supabase,
   });
@@ -163,6 +168,8 @@ async function shipOrder(formData: FormData) {
   const orderUpdateResult = await supabase
     .from('orders')
     .update({
+      donation_cogs_cents: donationCogsCents,
+      processing_fee_cents: processingFeeCents,
       status: 'Shipped',
       shipping_cost_cents: shippingCostCents,
       shipped_at: shippedAt,
@@ -237,9 +244,9 @@ export default async function AdminOrderDetail({
     shippingBoxUsagesResult,
     boxItemsResult,
   ] = await Promise.all([
-    supabase.from('order_items').select('id,qty,product_id,product_name_snapshot,shipping_boxes_used,cogs_product_cents,cogs_shipping_cents,cogs_total_cents,cogs_source,cogs_estimated,cogs_snapshot_at,products(name,shipping_box_count_required)').eq('order_id', order.id),
+    supabase.from('order_items').select('id,qty,product_id,product_name_snapshot,shipping_boxes_used,cogs_product_cents,cogs_shipping_cents,cogs_processing_fee_cents,cogs_donation_cents,cogs_total_cents,cogs_source,cogs_estimated,cogs_snapshot_at,products(name,shipping_box_count_required)').eq('order_id', order.id),
     supabase.from('order_item_shipping_boxes').select('order_item_id,quantity,total_cost_cents,cogs_estimated,inventory_items(name,sku)').eq('order_id', order.id),
-    supabase.from('inventory_items').select('id,name,sku').eq('item_type', 'material_supply').eq('active', true).like('sku', 'BOX-%').order('name', { ascending: true }),
+    supabase.from('inventory_items').select('id,name,sku').eq('item_type', 'material_supply').eq('active', true).or('sku.ilike.BOX-%,name.ilike.%box%').order('name', { ascending: true }),
   ]);
   const items = itemsResult.data ?? [];
   const shippingBoxUsages = shippingBoxUsagesResult.error ? [] : (shippingBoxUsagesResult.data ?? []);
@@ -261,6 +268,7 @@ export default async function AdminOrderDetail({
     id: item.id,
     label: productBoxLabel(item),
   }));
+  const processingFeePreviewCents = processingFeeCentsForRevenue(order.subtotal_cents);
   const shippingBoxesByOrderItemId = new Map<string, any[]>();
   for (const usage of shippingBoxUsages as any[]) {
     const rows = shippingBoxesByOrderItemId.get(usage.order_item_id) ?? [];
@@ -275,7 +283,7 @@ export default async function AdminOrderDetail({
       {toast === 'ship_on_detail_required' ? <StatusToast message="Use the shipping form to enter shipping cost before marking this order shipped." tone="error" /> : null}
       {toast === 'shipping_required' ? <StatusToast message="Shipping cost is required before this order can ship." tone="error" /> : null}
       {toast === 'box_count_required' ? <StatusToast message="Product box size and quantity are required for one or more products on this order." tone="error" /> : null}
-      {toast === 'box_inventory_required' ? <StatusToast message="Create or receive an active BOX- material before shipping this order." tone="error" /> : null}
+      {toast === 'box_inventory_required' ? <StatusToast message="Create or receive an active box material before shipping this order." tone="error" /> : null}
       {toast === 'order_shipped' ? <StatusToast message="Order shipped, COGS recorded, and customer email sent." tone="success" /> : null}
       {toast === 'ship_error' ? <StatusToast message="Unable to ship this order." tone="error" /> : null}
       {toast === 'archive_success' ? <StatusToast message="Order archived." tone="success" /> : null}
@@ -341,6 +349,12 @@ export default async function AdminOrderDetail({
         {order.shipping_cost_cents !== null && order.shipping_cost_cents !== undefined ? (
           <p className="mt-3 text-sm font-semibold text-slate-950">Shipping COGS: {usd(Math.round(normalizeInventoryNumber(order.shipping_cost_cents)))}</p>
         ) : null}
+        {order.processing_fee_cents !== null && order.processing_fee_cents !== undefined ? (
+          <p className="mt-2 text-sm font-semibold text-slate-950">Processing fee COGS: {usd(Math.round(normalizeInventoryNumber(order.processing_fee_cents)))}</p>
+        ) : null}
+        {order.donation_cogs_cents !== null && order.donation_cogs_cents !== undefined && normalizeInventoryNumber(order.donation_cogs_cents) > 0 ? (
+          <p className="mt-2 text-sm font-semibold text-slate-950">Donation COGS: {usd(Math.round(normalizeInventoryNumber(order.donation_cogs_cents)))}</p>
+        ) : null}
       </div>
       {!order.archived_at && order.status !== 'Shipped' ? (
         <form action={shipOrder} className="card space-y-4">
@@ -353,6 +367,14 @@ export default async function AdminOrderDetail({
           <label className="space-y-2 text-sm font-medium text-slate-700">
             Shipping cost
             <input className="input" name="shipping_cost" min="0.01" step="0.01" type="number" required placeholder="0.00" />
+          </label>
+          <div className="rounded-2xl border border-slate-200 bg-white/65 px-4 py-3 text-sm text-slate-600">
+            <p className="font-semibold text-slate-950">Processing fee COGS: {usd(processingFeePreviewCents)}</p>
+            <p className="mt-1">Auto-calculated at 3.99% + $0.30 for this order.</p>
+          </div>
+          <label className="space-y-2 text-sm font-medium text-slate-700">
+            Donation COGS
+            <input className="input" name="donation_cogs" min="0" step="0.01" type="number" defaultValue={dollarsInputValueFromCents(order.donation_cogs_cents)} placeholder="0.00" />
           </label>
           {productBoxRequiredLines.length ? (
             <div className="space-y-3">
@@ -394,6 +416,12 @@ export default async function AdminOrderDetail({
               ) : null}
               {i.cogs_shipping_cents !== null && i.cogs_shipping_cents !== undefined ? (
                 <p>Shipping COGS: {usd(Math.round(normalizeInventoryNumber(i.cogs_shipping_cents)))}</p>
+              ) : null}
+              {i.cogs_processing_fee_cents !== null && i.cogs_processing_fee_cents !== undefined && normalizeInventoryNumber(i.cogs_processing_fee_cents) > 0 ? (
+                <p>Processing fee COGS: {usd(Math.round(normalizeInventoryNumber(i.cogs_processing_fee_cents)))}</p>
+              ) : null}
+              {i.cogs_donation_cents !== null && i.cogs_donation_cents !== undefined && normalizeInventoryNumber(i.cogs_donation_cents) > 0 ? (
+                <p>Donation COGS: {usd(Math.round(normalizeInventoryNumber(i.cogs_donation_cents)))}</p>
               ) : null}
             </div>
           </div>

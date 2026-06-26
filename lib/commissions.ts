@@ -6,9 +6,11 @@ export type CommissionSnapshotRow = {
   commission_month: string;
   commission_percent: number | string | null;
   cogs_estimated?: boolean | null;
+  donation_cogs_cents?: number | string | null;
   gross_profit_cents: number | string | null;
   id: string;
   order_id: string;
+  processing_fee_cogs_cents?: number | string | null;
   product_cogs_cents: number | string | null;
   revenue_cents: number | string | null;
   sales_profile_id: string | null;
@@ -19,8 +21,10 @@ export type CommissionSnapshotRow = {
 
 export type CommissionSummary = {
   commissionCents: number;
+  donationCogsCents: number;
   grossProfitCents: number;
   orderCount: number;
+  processingFeeCogsCents: number;
   productCogsCents: number;
   revenueCents: number;
   shippingCogsCents: number;
@@ -88,6 +92,8 @@ export function summarizeCommissionRows(rows: CommissionSnapshotRow[]): Commissi
       summary.revenueCents += numericCents(row.revenue_cents);
       summary.productCogsCents += numericCents(row.product_cogs_cents);
       summary.shippingCogsCents += numericCents(row.shipping_cogs_cents);
+      summary.processingFeeCogsCents += numericCents(row.processing_fee_cogs_cents);
+      summary.donationCogsCents += numericCents(row.donation_cogs_cents);
       summary.totalCogsCents += numericCents(row.total_cogs_cents);
       summary.grossProfitCents += numericCents(row.gross_profit_cents);
       summary.commissionCents += numericCents(row.commission_cents);
@@ -95,8 +101,10 @@ export function summarizeCommissionRows(rows: CommissionSnapshotRow[]): Commissi
     },
     {
       commissionCents: 0,
+      donationCogsCents: 0,
       grossProfitCents: 0,
       orderCount: 0,
+      processingFeeCogsCents: 0,
       productCogsCents: 0,
       revenueCents: 0,
       shippingCogsCents: 0,
@@ -108,8 +116,10 @@ export function summarizeCommissionRows(rows: CommissionSnapshotRow[]): Commissi
 export function emptyCommissionSummary(): CommissionSummary {
   return {
     commissionCents: 0,
+    donationCogsCents: 0,
     grossProfitCents: 0,
     orderCount: 0,
+    processingFeeCogsCents: 0,
     productCogsCents: 0,
     revenueCents: 0,
     shippingCogsCents: 0,
@@ -141,7 +151,7 @@ export async function snapshotOrderCommissionForShipment({
 
   const orderResult = await supabase
     .from('orders')
-    .select('id,center_id,subtotal_cents,shipping_cost_cents')
+    .select('id,center_id,subtotal_cents,shipping_cost_cents,processing_fee_cents,donation_cogs_cents')
     .eq('id', orderId)
     .maybeSingle();
 
@@ -170,7 +180,7 @@ export async function snapshotOrderCommissionForShipment({
       .maybeSingle(),
     supabase
       .from('order_items')
-      .select('line_total_cents,qty,cogs_snapshot_at,cogs_product_cents,cogs_shipping_cents,cogs_total_cents,cogs_estimated')
+      .select('line_total_cents,qty,cogs_snapshot_at,cogs_product_cents,cogs_shipping_cents,cogs_processing_fee_cents,cogs_donation_cents,cogs_total_cents,cogs_source,cogs_estimated')
       .eq('order_id', orderId),
   ]);
 
@@ -182,15 +192,27 @@ export async function snapshotOrderCommissionForShipment({
   const productCogsCents = (items ?? []).reduce((sum: number, item: any) => {
     const productCogs = numericCents(item.cogs_product_cents);
     if (productCogs > 0) return sum + productCogs;
-    return sum + Math.max(0, numericCents(item.cogs_total_cents) - numericCents(item.cogs_shipping_cents));
+    return sum + Math.max(
+      0,
+      numericCents(item.cogs_total_cents)
+        - numericCents(item.cogs_shipping_cents)
+        - numericCents(item.cogs_processing_fee_cents)
+        - numericCents(item.cogs_donation_cents)
+    );
   }, 0);
   const shippingCogsFromItems = (items ?? []).reduce((sum: number, item: any) => sum + numericCents(item.cogs_shipping_cents), 0);
   const shippingCogsCents = shippingCogsFromItems || numericCents(shippingCostCents ?? order.shipping_cost_cents);
-  const totalCogsCents = productCogsCents + shippingCogsCents;
+  const processingFeeCogsFromItems = (items ?? []).reduce((sum: number, item: any) => sum + numericCents(item.cogs_processing_fee_cents), 0);
+  const processingFeeCogsCents = processingFeeCogsFromItems || numericCents((order as any).processing_fee_cents);
+  const donationCogsFromItems = (items ?? []).reduce((sum: number, item: any) => sum + numericCents(item.cogs_donation_cents), 0);
+  const donationCogsCents = donationCogsFromItems || numericCents((order as any).donation_cogs_cents);
+  const totalCogsCents = productCogsCents + shippingCogsCents + processingFeeCogsCents + donationCogsCents;
   const productCogsMissing = (items ?? []).some((item: any) => {
     const hasLineRevenue = numericCents(item.line_total_cents) > 0 || numericCents(item.qty) > 0;
     if (!hasLineRevenue) return false;
-    return !item.cogs_snapshot_at && numericCents(item.cogs_product_cents) <= 0 && numericCents(item.cogs_total_cents) <= 0;
+    const missingSnapshot = !item.cogs_snapshot_at && numericCents(item.cogs_product_cents) <= 0 && numericCents(item.cogs_total_cents) <= 0;
+    const missingProductCost = item.cogs_source === 'missing_cost' && numericCents(item.cogs_product_cents) <= 0;
+    return missingSnapshot || missingProductCost;
   });
   const grossProfitCents = productCogsMissing ? 0 : revenueCents - totalCogsCents;
   const commissionPercent = numericPercent(settings?.commission_percent);
@@ -205,11 +227,13 @@ export async function snapshotOrderCommissionForShipment({
     commission_percent: commissionPercent,
     gross_profit_cents: grossProfitCents,
     order_id: orderId,
+    processing_fee_cogs_cents: processingFeeCogsCents,
     product_cogs_cents: productCogsCents,
     revenue_cents: revenueCents,
     sales_profile_id: salesProfileId,
     shipped_at: shippedAt,
     shipping_cogs_cents: shippingCogsCents,
+    donation_cogs_cents: donationCogsCents,
     total_cogs_cents: totalCogsCents,
   };
 
