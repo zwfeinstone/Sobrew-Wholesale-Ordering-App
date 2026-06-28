@@ -73,6 +73,7 @@ async function getLoginProfileWithAdminFallback({
           id: userId,
           is_active: true,
           is_admin: true,
+          is_superadmin: true,
         },
         { onConflict: 'id' }
       )

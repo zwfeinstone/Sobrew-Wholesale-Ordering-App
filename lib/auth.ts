@@ -13,7 +13,7 @@ export async function requireUser() {
   if (!data.user) redirect('/login');
   const { data: profile, error: profileError } = await supabase
     .from('profiles')
-    .select('id,is_admin,is_active,email,full_name,avatar_url,center_id,centers!profiles_center_id_fkey(id,name,is_active)')
+    .select('id,is_admin,is_superadmin,is_active,email,full_name,avatar_url,center_id,centers!profiles_center_id_fkey(id,name,is_active)')
     .eq('id', data.user.id)
     .maybeSingle();
   if (profileError || !profile) {

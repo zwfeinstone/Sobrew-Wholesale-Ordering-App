@@ -22,7 +22,7 @@ export default async function AdminAccessDeniedPage({
       <section className="panel">
         <span className="eyebrow">Access denied</span>
         <h1 className="page-title mt-4">You do not have access to {label}.</h1>
-        <p className="page-subtitle mt-3">Only tabs and screens granted by Zach are available in this admin account.</p>
+        <p className="page-subtitle mt-3">Only tabs and screens granted to this admin account are available.</p>
       </section>
       <section className="card flex flex-col gap-3 text-sm text-slate-600 sm:flex-row sm:items-center sm:justify-between">
         <p>Go to the first admin section available for this login.</p>

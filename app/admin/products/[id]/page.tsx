@@ -253,12 +253,12 @@ export default async function ProductPage({
       </section>
       {error ? (
         <div className="card text-sm text-red-700">
-          {error === 'admin_write_denied' ? 'Only zach@sobrew.com can change admin data.' : 'Choose a product category before saving.'}
+          {error === 'admin_write_denied' ? 'Only superadmins can change admin data.' : 'Choose a product category before saving.'}
         </div>
       ) : null}
       {toast === 'recipe_saved' ? <StatusToast message="Product recipe saved." tone="success" /> : null}
       {toast === 'recipe_error' ? <StatusToast message="Unable to save product recipe." tone="error" /> : null}
-      {toast === 'admin_write_denied' ? <StatusToast message="Only zach@sobrew.com can change admin data." tone="error" /> : null}
+      {toast === 'admin_write_denied' ? <StatusToast message="Only superadmins can change admin data." tone="error" /> : null}
       <form action={updateProduct} className="card space-y-4">
         <input type="hidden" name="id" value={product.id} />
         <input className="input" name="name" defaultValue={product.name} required />

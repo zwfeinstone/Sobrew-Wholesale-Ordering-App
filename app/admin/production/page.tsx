@@ -174,7 +174,7 @@ export default async function ProductionPage({
       {toast === 'production_recorded' ? <StatusToast message="Production run recorded and sellable inventory updated." tone="success" /> : null}
       {toast === 'production_error' ? <StatusToast message="Unable to record production. Check recipe setup and available materials." tone="error" /> : null}
       {toast === 'production_unit_error' ? <StatusToast message="A recipe component uses units that cannot be converted." tone="error" /> : null}
-      {toast === 'admin_write_denied' ? <StatusToast message="Only zach@sobrew.com can change admin data." tone="error" /> : null}
+      {toast === 'admin_write_denied' ? <StatusToast message="Only superadmins can change admin data." tone="error" /> : null}
 
       <section className="panel">
         <span className="eyebrow">Production</span>

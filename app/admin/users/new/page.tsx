@@ -20,7 +20,7 @@ export default async function NewUserWizardPage({
       {error ? (
         <div className="card text-sm text-red-700">
           {error === 'admin_write_denied'
-            ? 'Only zach@sobrew.com can change admin data.'
+            ? 'Only superadmins can change admin data.'
             : 'Could not create the center right now. Check the login email and try again.'}
         </div>
       ) : null}

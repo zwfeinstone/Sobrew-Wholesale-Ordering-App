@@ -36,7 +36,7 @@ export default function NewProductPage({
       </section>
       {error ? (
         <div className="card text-sm text-red-700">
-          {error === 'admin_write_denied' ? 'Only zach@sobrew.com can change admin data.' : 'Choose a product category before saving.'}
+          {error === 'admin_write_denied' ? 'Only superadmins can change admin data.' : 'Choose a product category before saving.'}
         </div>
       ) : null}
       <section className="card space-y-4">

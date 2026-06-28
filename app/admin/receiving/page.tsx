@@ -279,7 +279,7 @@ export default async function ReceivingPage({
       {toast === 'adjustment_error' ? <StatusToast message="Unable to save inventory adjustment." tone="error" /> : null}
       {toast === 'expense_saved' ? <StatusToast message="Non-inventory expense recorded." tone="success" /> : null}
       {toast === 'expense_error' ? <StatusToast message="Unable to record that expense." tone="error" /> : null}
-      {toast === 'admin_write_denied' ? <StatusToast message="Only zach@sobrew.com can change admin data." tone="error" /> : null}
+      {toast === 'admin_write_denied' ? <StatusToast message="Only superadmins can change admin data." tone="error" /> : null}
 
       <section className="panel">
         <span className="eyebrow">Receiving</span>

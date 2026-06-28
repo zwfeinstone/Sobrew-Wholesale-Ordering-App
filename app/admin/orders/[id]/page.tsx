@@ -290,7 +290,7 @@ export default async function AdminOrderDetail({
       {toast === 'archive_success' ? <StatusToast message="Order archived." tone="success" /> : null}
       {toast === 'archive_error' ? <StatusToast message="Unable to archive this order." tone="error" /> : null}
       {toast === 'delete_error' ? <StatusToast message="Unable to delete this order." tone="error" /> : null}
-      {toast === 'admin_write_denied' ? <StatusToast message="Only zach@sobrew.com can change admin data." tone="error" /> : null}
+      {toast === 'admin_write_denied' ? <StatusToast message="Only superadmins can change admin data." tone="error" /> : null}
       <section className="panel">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <span className="eyebrow">Order Detail</span>

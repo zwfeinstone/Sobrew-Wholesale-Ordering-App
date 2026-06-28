@@ -5,7 +5,7 @@ import {
   type SalesAdminBulkRep,
 } from '@/components/sales-admin-bulk-assignment';
 import { recordAdminAuditLog } from '@/lib/admin-audit';
-import { isOwnerEmail } from '@/lib/admin-permission-definitions';
+import { hasSuperadminAccess } from '@/lib/admin-permission-definitions';
 import { requireAdminSectionEdit, requireAdminSectionView } from '@/lib/admin-permissions';
 import {
   addCommissionMonths,
@@ -28,6 +28,7 @@ type AdminRow = {
   full_name: string | null;
   id: string;
   is_active: boolean | null;
+  is_superadmin?: boolean | null;
 };
 
 type CenterRow = {
@@ -405,7 +406,7 @@ export default async function SalesAdminPage({
   const [{ data: admins }, { data: centers }, { data: assignments }, { data: accessAssignments }, { data: commissionSettings }, { data: snapshots }, { data: payouts }] = await Promise.all([
     supabaseAdmin
       .from('profiles')
-      .select('id,email,full_name,is_active')
+      .select('id,email,full_name,is_active,is_superadmin')
       .eq('is_admin', true)
       .order('full_name', { ascending: true }),
     supabaseAdmin
@@ -436,7 +437,7 @@ export default async function SalesAdminPage({
   const salesRepRows = adminRows.filter((admin) => Boolean(commissionByProfile.get(admin.id)?.is_sales_rep));
   const selectedSalesRepId = salesRepRows.some((admin) => admin.id === requestedSalesRepId) ? requestedSalesRepId : '';
   const reportAdminRows = selectedSalesRepId ? salesRepRows.filter((admin) => admin.id === selectedSalesRepId) : salesRepRows;
-  const assignableAdminRows = adminRows.filter((admin) => !isOwnerEmail(admin.email));
+  const assignableAdminRows = adminRows.filter((admin) => !hasSuperadminAccess(admin.email, admin.is_superadmin));
   const adminById = new Map(adminRows.map((admin) => [admin.id, admin]));
   const assignmentRows = (assignments ?? []) as AssignmentRow[];
   const assignmentByCenter = new Map(assignmentRows.map((assignment) => [assignment.center_id, assignment.sales_profile_id]));
@@ -638,7 +639,7 @@ export default async function SalesAdminPage({
       <section className="card space-y-4">
         <div>
           <h2 className="text-xl font-semibold text-slate-950">Center visibility assignments</h2>
-          <p className="mt-1 text-sm text-slate-500">These assignments control which centers non-Zach admins can see and work with.</p>
+          <p className="mt-1 text-sm text-slate-500">These assignments control which centers non-superadmin admins can see and work with.</p>
         </div>
         {!centers?.length ? <div className="rounded-2xl border border-slate-200 bg-white/60 p-4 text-sm text-slate-600">No centers found.</div> : null}
         <div className="grid gap-3 xl:grid-cols-2">
@@ -660,7 +661,7 @@ export default async function SalesAdminPage({
                     </label>
                   ))}
                 </div>
-                {!assignableAdminRows.length ? <div className="rounded-xl bg-slate-50 p-3 text-sm text-slate-500">No non-owner admins found.</div> : null}
+                {!assignableAdminRows.length ? <div className="rounded-xl bg-slate-50 p-3 text-sm text-slate-500">No non-superadmin admins found.</div> : null}
                 <button className="btn-primary w-full sm:w-auto" type="submit">Save Access</button>
               </form>
             );

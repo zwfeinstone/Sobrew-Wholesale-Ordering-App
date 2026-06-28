@@ -8,7 +8,7 @@ import {
   canViewAdminSection,
   enforceOwnerOnlyPermissions,
   firstAllowedAdminHref,
-  isOwnerEmail,
+  hasSuperadminAccess,
   legacyReadOnlyAccessMap,
   normalizeAccessMap,
   ownerAccessMap,
@@ -23,12 +23,14 @@ type SupabaseLike = {
 type ProfileLike = {
   email?: string | null;
   id: string;
+  is_superadmin?: boolean | null;
 };
 
 export type CurrentAdminAccess = {
   access: AdminAccessMap;
   firstAllowedHref: string;
   isOwner: boolean;
+  isSuperadmin: boolean;
   profile: any;
   user: any;
 };
@@ -47,14 +49,26 @@ function mapFromRows(rows: Array<{ can_edit: boolean | null; can_view: boolean |
 
 export async function getAdminAccessForProfile({
   email,
+  isSuperadmin,
   profileId,
   supabase,
 }: {
   email?: string | null;
+  isSuperadmin?: boolean | null;
   profileId: string;
   supabase: SupabaseLike;
 }) {
-  if (isOwnerEmail(email)) return ownerAccessMap();
+  let superadmin = Boolean(isSuperadmin);
+  if (isSuperadmin === undefined) {
+    const { data: profile } = await supabase
+      .from('profiles')
+      .select('is_superadmin')
+      .eq('id', profileId)
+      .maybeSingle();
+    superadmin = Boolean(profile?.is_superadmin);
+  }
+
+  if (hasSuperadminAccess(email, superadmin)) return ownerAccessMap();
 
   const { data, error } = await supabase
     .from('admin_permissions')
@@ -65,20 +79,21 @@ export async function getAdminAccessForProfile({
 
   const mapped = mapFromRows(data ?? []);
   const hasAnyRows = (data ?? []).length > 0;
-  return enforceOwnerOnlyPermissions(email, hasAnyRows ? mapped : legacyReadOnlyAccessMap());
+  return enforceOwnerOnlyPermissions(email, hasAnyRows ? mapped : legacyReadOnlyAccessMap(), superadmin);
 }
 
 export async function getCurrentAdminAccess(): Promise<CurrentAdminAccess> {
   const { user, profile } = await requireAdmin();
   const supabase = await createClient();
   const email = user.email || profile?.email;
-  const isOwner = isOwnerEmail(email);
-  const access = isOwner ? ownerAccessMap() : await getAdminAccessForProfile({ email, profileId: profile.id, supabase });
+  const isSuperadmin = hasSuperadminAccess(email, profile?.is_superadmin);
+  const access = isSuperadmin ? ownerAccessMap() : await getAdminAccessForProfile({ email, isSuperadmin, profileId: profile.id, supabase });
 
   return {
     access,
     firstAllowedHref: firstAllowedAdminHref(access),
-    isOwner,
+    isOwner: isSuperadmin,
+    isSuperadmin,
     profile,
     user,
   };
@@ -118,31 +133,35 @@ export async function requireManageAdmins(redirectTo = '/admin/users?error=admin
 
 export async function canEditAdminSectionForProfile({
   email,
+  isSuperadmin,
   profileId,
   sectionKey,
   supabase,
 }: {
   email?: string | null;
+  isSuperadmin?: boolean | null;
   profileId: string;
   sectionKey: AdminPermissionKey;
   supabase: SupabaseLike;
 }) {
-  const access = await getAdminAccessForProfile({ email, profileId, supabase });
+  const access = await getAdminAccessForProfile({ email, isSuperadmin, profileId, supabase });
   return canEditAdminSection(access, sectionKey);
 }
 
 export async function canViewAdminSectionForProfile({
   email,
+  isSuperadmin,
   profileId,
   sectionKey,
   supabase,
 }: {
   email?: string | null;
+  isSuperadmin?: boolean | null;
   profileId: string;
   sectionKey: AdminPermissionKey;
   supabase: SupabaseLike;
 }) {
-  const access = await getAdminAccessForProfile({ email, profileId, supabase });
+  const access = await getAdminAccessForProfile({ email, isSuperadmin, profileId, supabase });
   return canViewAdminSection(access, sectionKey);
 }
 
@@ -152,5 +171,5 @@ export function permissionDeniedMessage(sectionKey?: AdminPermissionKey) {
 }
 
 export function isOwnerProfile(profile: ProfileLike) {
-  return isOwnerEmail(profile.email);
+  return hasSuperadminAccess(profile.email, profile.is_superadmin);
 }

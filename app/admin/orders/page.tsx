@@ -171,7 +171,7 @@ export default async function AdminOrdersPage({ searchParams }: { searchParams: 
       {toast === 'delete_success' ? <StatusToast message="Order deleted." tone="success" /> : null}
       {toast === 'delete_success_with_recurring' ? <StatusToast message="Order and linked recurring schedule deleted." tone="success" /> : null}
       {toast === 'delete_error' ? <StatusToast message="Unable to delete this order." tone="error" /> : null}
-      {toast === 'admin_write_denied' ? <StatusToast message="Only zach@sobrew.com can change admin data." tone="error" /> : null}
+      {toast === 'admin_write_denied' ? <StatusToast message="Only superadmins can change admin data." tone="error" /> : null}
       <section className="panel">
         <span className="eyebrow">Order Queue</span>
         <h1 className="page-title mt-4">Manage wholesale orders</h1>

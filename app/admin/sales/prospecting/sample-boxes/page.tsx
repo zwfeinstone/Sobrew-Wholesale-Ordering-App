@@ -595,7 +595,7 @@ export default async function SampleBoxesPage({
           <SectionHeading
             eyebrow="Template"
             title="Default sample box setup"
-            subtitle="Zach can edit the fixed costs and the default inventory/product lines used whenever a sample box is recorded."
+            subtitle="Superadmins can edit the fixed costs and the default inventory/product lines used whenever a sample box is recorded."
           />
           <form action={updateTemplateSettings} className="grid gap-3 lg:grid-cols-2">
             <input type="hidden" name="template_id" value={activeTemplate.id} />

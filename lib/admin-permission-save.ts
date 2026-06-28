@@ -1,7 +1,7 @@
 import {
   ADMIN_PERMISSION_KEYS,
   enforceOwnerOnlyPermissions,
-  isOwnerEmail,
+  hasSuperadminAccess,
   legacyReadOnlyAccessMap,
   normalizeAccessMap,
   ownerAccessMap,
@@ -25,8 +25,8 @@ export function parseAdminPermissionsForm(formData: FormData): AdminAccessMap {
   return normalizeAccessMap(raw);
 }
 
-export function permissionsForProfileEmail(email: string | null | undefined, access: AdminAccessMap) {
-  return isOwnerEmail(email) ? ownerAccessMap() : enforceOwnerOnlyPermissions(email, access);
+export function permissionsForProfileEmail(email: string | null | undefined, access: AdminAccessMap, isSuperadmin?: boolean | null) {
+  return hasSuperadminAccess(email, isSuperadmin) ? ownerAccessMap() : enforceOwnerOnlyPermissions(email, access, isSuperadmin);
 }
 
 export function permissionsToRows(profileId: string, access: AdminAccessMap) {
@@ -46,8 +46,8 @@ export function serializePermissionSnapshot(access: AdminAccessMap) {
   }, {});
 }
 
-export async function loadSavedAdminPermissions(supabase: SupabaseLike, profileId: string, email?: string | null) {
-  if (isOwnerEmail(email)) return ownerAccessMap();
+export async function loadSavedAdminPermissions(supabase: SupabaseLike, profileId: string, email?: string | null, isSuperadmin?: boolean | null) {
+  if (hasSuperadminAccess(email, isSuperadmin)) return ownerAccessMap();
 
   const { data, error } = await supabase
     .from('admin_permissions')
@@ -65,21 +65,23 @@ export async function loadSavedAdminPermissions(supabase: SupabaseLike, profileI
     };
   }
 
-  return permissionsForProfileEmail(email, normalizeAccessMap(raw));
+  return permissionsForProfileEmail(email, normalizeAccessMap(raw), isSuperadmin);
 }
 
 export async function saveAdminPermissions({
   access,
   email,
+  isSuperadmin,
   profileId,
   supabase,
 }: {
   access: AdminAccessMap;
   email?: string | null;
+  isSuperadmin?: boolean | null;
   profileId: string;
   supabase: SupabaseLike;
 }) {
-  const normalized = permissionsForProfileEmail(email, access);
+  const normalized = permissionsForProfileEmail(email, access, isSuperadmin);
   const { error } = await supabase
     .from('admin_permissions')
     .upsert(permissionsToRows(profileId, normalized), { onConflict: 'profile_id,section_key' });

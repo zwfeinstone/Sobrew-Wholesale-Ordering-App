@@ -1674,7 +1674,7 @@ export default async function PayrollPage({
               {returnToInput(currentUrl)}
               <div>
                 <h2 className="text-xl font-semibold text-slate-950">Lock payroll range</h2>
-                <p className="mt-1 text-sm text-slate-500">Locks completed, non-void shifts in the selected range. Zach can still correct locked entries with a reason.</p>
+                <p className="mt-1 text-sm text-slate-500">Locks completed, non-void shifts in the selected range. Superadmins can still correct locked entries with a reason.</p>
               </div>
               <div className="grid gap-3 sm:grid-cols-2">
                 <label className="space-y-2 text-sm font-medium text-slate-700">

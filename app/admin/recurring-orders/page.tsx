@@ -95,7 +95,7 @@ export default async function AdminRecurringOrdersPage({ searchParams }: { searc
       {success === 'updated' ? <div className="card text-sm text-green-700">Recurring order updated.</div> : null}
       {error ? (
         <div className="card text-sm text-red-700">
-          {error === 'admin_write_denied' ? 'Only zach@sobrew.com can change admin data.' : `Unable to save recurring order (${error}).`}
+          {error === 'admin_write_denied' ? 'Only superadmins can change admin data.' : `Unable to save recurring order (${error}).`}
         </div>
       ) : null}
 

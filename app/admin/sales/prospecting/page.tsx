@@ -1,7 +1,7 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import ConfirmSubmitButton from '@/components/confirm-submit-button';
-import { isOwnerEmail } from '@/lib/admin-permission-definitions';
+import { hasSuperadminAccess } from '@/lib/admin-permission-definitions';
 import { getCurrentAdminAccess } from '@/lib/admin-permissions';
 import { requireAdminWriteAccess } from '@/lib/admin-write-access';
 import { createClient } from '@/lib/supabase/server';
@@ -424,7 +424,7 @@ function FormMessages({ toast }: { toast: string }) {
     save_error: { tone: 'border-rose-200 bg-rose-50 text-rose-700', text: 'Unable to save prospecting data. Make sure migrations 019, 020, and 021 have been run.' },
     update_error: { tone: 'border-rose-200 bg-rose-50 text-rose-700', text: 'Unable to update that prospecting block. Make sure migrations 019, 020, and 021 have been run.' },
     delete_error: { tone: 'border-rose-200 bg-rose-50 text-rose-700', text: 'Unable to delete that prospecting block.' },
-    admin_write_denied: { tone: 'border-rose-200 bg-rose-50 text-rose-700', text: 'Only zach@sobrew.com can change admin data.' },
+    admin_write_denied: { tone: 'border-rose-200 bg-rose-50 text-rose-700', text: 'Only superadmins can change admin data.' },
   };
   const message = messages[toast];
   return message ? <div className={`rounded-2xl border px-4 py-3 text-sm font-semibold ${message.tone}`}>{message.text}</div> : null;
@@ -506,7 +506,7 @@ async function updateCallBlock(formData: FormData) {
       updated_at: new Date().toISOString(),
     })
     .eq('id', blockId);
-  if (!isOwnerEmail(current.user.email || current.profile.email)) {
+  if (!hasSuperadminAccess(current.user.email || current.profile.email, current.profile.is_superadmin)) {
     updateQuery = updateQuery.eq('created_by', current.profile.id);
   }
   const { error } = await updateQuery;
@@ -530,7 +530,7 @@ async function deleteCallBlock(formData: FormData) {
   }
 
   let deleteQuery = supabase.from('sales_prospecting_blocks').delete().eq('id', blockId).select('id');
-  if (!isOwnerEmail(current.user.email || current.profile.email)) {
+  if (!hasSuperadminAccess(current.user.email || current.profile.email, current.profile.is_superadmin)) {
     deleteQuery = deleteQuery.eq('created_by', current.profile.id);
   }
   const { error, data } = await deleteQuery;
@@ -604,7 +604,7 @@ async function updateFollowUpBlock(formData: FormData) {
       updated_at: new Date().toISOString(),
     })
     .eq('id', blockId);
-  if (!isOwnerEmail(current.user.email || current.profile.email)) {
+  if (!hasSuperadminAccess(current.user.email || current.profile.email, current.profile.is_superadmin)) {
     updateQuery = updateQuery.eq('created_by', current.profile.id);
   }
   const { error } = await updateQuery;
@@ -628,7 +628,7 @@ async function deleteFollowUpBlock(formData: FormData) {
   }
 
   let deleteQuery = supabase.from('sales_prospecting_followup_blocks').delete().eq('id', blockId).select('id');
-  if (!isOwnerEmail(current.user.email || current.profile.email)) {
+  if (!hasSuperadminAccess(current.user.email || current.profile.email, current.profile.is_superadmin)) {
     deleteQuery = deleteQuery.eq('created_by', current.profile.id);
   }
   const { error, data } = await deleteQuery;

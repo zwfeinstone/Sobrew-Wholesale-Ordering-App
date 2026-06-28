@@ -1,7 +1,7 @@
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { canEditAdminSectionForProfile } from '@/lib/admin-permissions';
 import { recordAdminAuditLog } from '@/lib/admin-audit';
-import { isOwnerEmail } from '@/lib/admin-permission-definitions';
+import { hasSuperadminAccess } from '@/lib/admin-permission-definitions';
 import { createClient } from '@/lib/supabase/server';
 import { toCents } from '@/lib/utils';
 import { NextResponse } from 'next/server';
@@ -17,7 +17,7 @@ export async function POST(request: Request) {
 
   const { data: adminProfile } = await supabase
     .from('profiles')
-    .select('id,email,is_admin,is_active')
+    .select('id,email,is_admin,is_active,is_superadmin')
     .eq('id', user.id)
     .single();
 
@@ -27,6 +27,7 @@ export async function POST(request: Request) {
 
   const canEditCenters = await canEditAdminSectionForProfile({
     email: user.email || adminProfile.email,
+    isSuperadmin: adminProfile.is_superadmin,
     profileId: adminProfile.id,
     sectionKey: 'centers',
     supabase,
@@ -64,7 +65,9 @@ export async function POST(request: Request) {
     .maybeSingle();
   const creatorIsSalesRep = Boolean(creatorCommissionSetting?.is_sales_rep);
 
-  if (!isOwnerEmail(user.email || adminProfile.email)) {
+  const creatorIsSuperadmin = hasSuperadminAccess(user.email || adminProfile.email, adminProfile.is_superadmin);
+
+  if (!creatorIsSuperadmin) {
     const assignmentResult = await supabaseAdmin.from('admin_center_assignments').insert({
       assigned_by: adminProfile.id,
       center_id: center.id,
@@ -124,7 +127,7 @@ export async function POST(request: Request) {
   await recordAdminAuditLog({
     action: 'center_created',
     actorProfileId: adminProfile.id,
-    after: { center_id: center.id, assigned_to_creator: !isOwnerEmail(user.email || adminProfile.email), sales_assigned_to_creator: creatorIsSalesRep },
+    after: { center_id: center.id, assigned_to_creator: !creatorIsSuperadmin, sales_assigned_to_creator: creatorIsSalesRep },
     sectionKey: 'centers',
     supabase: supabaseAdmin,
     targetProfileId: adminProfile.id,

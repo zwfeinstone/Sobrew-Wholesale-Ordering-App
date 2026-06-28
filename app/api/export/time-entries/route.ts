@@ -55,14 +55,14 @@ export async function GET(request: NextRequest) {
 
   const { data: profile } = await supabase
     .from('profiles')
-    .select('id,email,is_admin,is_active')
+    .select('id,email,is_admin,is_active,is_superadmin')
     .eq('id', user.id)
     .maybeSingle();
   if (!profile?.is_admin || (profile.is_active !== true && !isOwnerEmail(user.email || profile.email))) {
     return new Response('Forbidden', { status: 403 });
   }
 
-  const access = await getAdminAccessForProfile({ email: user.email || profile.email, profileId: profile.id, supabase });
+  const access = await getAdminAccessForProfile({ email: user.email || profile.email, isSuperadmin: profile.is_superadmin, profileId: profile.id, supabase });
   if (!adminCanEdit(access, 'payroll')) {
     return new Response('Forbidden', { status: 403 });
   }

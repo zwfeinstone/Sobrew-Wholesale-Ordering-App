@@ -82,7 +82,7 @@ function adminUserDeniedHref(id: string) {
 
 function adminActionErrorMessage(error: string) {
   if (error === 'admin_write_denied') return 'You do not have edit access to this section.';
-  if (error === 'admin_permission_denied') return 'Only zach@sobrew.com can manage admin accounts and permissions.';
+  if (error === 'admin_permission_denied') return 'Only superadmins can manage admin accounts and permissions.';
   if (error === 'admin_save_failed') return 'The admin account could not be saved.';
   if (error === 'admin_permissions_failed') return 'The admin permissions could not be saved.';
   return `Could not complete that action (${error}).`;
@@ -324,19 +324,21 @@ async function updateAdminAccount(formData: FormData) {
 
   const { data: beforeProfile } = await supabaseAdmin
     .from('profiles')
-    .select('id,email,full_name,notes,is_active,is_admin')
+    .select('id,email,full_name,notes,is_active,is_admin,is_superadmin')
     .eq('id', id)
     .eq('is_admin', true)
     .maybeSingle();
 
   if (!beforeProfile) redirect('/admin/users');
 
-  const beforePermissions = await loadSavedAdminPermissions(supabaseAdmin, id, beforeProfile.email);
-  const isOwnerAdmin = isOwnerEmail(beforeProfile.email);
+  const beforePermissions = await loadSavedAdminPermissions(supabaseAdmin, id, beforeProfile.email, beforeProfile.is_superadmin);
+  const isPrimaryOwnerAdmin = isOwnerEmail(beforeProfile.email);
+  const isSuperadmin = isPrimaryOwnerAdmin || formData.get('is_superadmin') === 'on';
   const afterProfile = {
     full_name: String(formData.get('full_name') ?? ''),
+    is_active: isPrimaryOwnerAdmin ? true : formData.get('is_active') === 'on',
+    is_superadmin: isSuperadmin,
     notes: String(formData.get('notes') ?? ''),
-    is_active: isOwnerAdmin ? true : formData.get('is_active') === 'on',
   };
   const updateResult = await supabaseAdmin
     .from('profiles')
@@ -367,6 +369,7 @@ async function updateAdminAccount(formData: FormData) {
   const permissionsResult = await saveAdminPermissions({
     access: parseAdminPermissionsForm(formData),
     email: beforeProfile.email,
+    isSuperadmin,
     profileId: id,
     supabase: supabaseAdmin,
   });
@@ -382,6 +385,7 @@ async function updateAdminAccount(formData: FormData) {
     before: {
       full_name: beforeProfile.full_name,
       is_active: beforeProfile.is_active,
+      is_superadmin: beforeProfile.is_superadmin,
       notes: beforeProfile.notes,
     },
     sectionKey: 'manage_admins',
@@ -615,8 +619,9 @@ export default async function UserDetailPage({
   const currentAccess = await getCurrentAdminAccess();
   const canManageAdmins = currentAccess.isOwner;
   if (!canManageAdmins) redirect('/admin/access-denied?section=manage_admins');
-  const adminPermissions = await loadSavedAdminPermissions(supabase, adminUser.id, adminUser.email);
-  const isOwnerAdmin = isOwnerEmail(adminUser.email);
+  const isPrimaryOwnerAdmin = isOwnerEmail(adminUser.email);
+  const isSuperadmin = isPrimaryOwnerAdmin || Boolean(adminUser.is_superadmin);
+  const adminPermissions = await loadSavedAdminPermissions(supabase, adminUser.id, adminUser.email, isSuperadmin);
   const { data: auditRows } = canManageAdmins
     ? await supabase
         .from('admin_audit_log')
@@ -638,9 +643,9 @@ export default async function UserDetailPage({
         <p className="page-subtitle mt-3">Update admin account details and reset passwords without affecting center ownership records.</p>
       </section>
       <section className="card space-y-4">
-        {isOwnerAdmin ? (
+        {isPrimaryOwnerAdmin ? (
           <div className="rounded-2xl border border-teal-100 bg-teal-50/70 p-4 text-sm font-medium text-teal-900">
-            Zach has permanent owner access and cannot be restricted or deactivated.
+            The primary owner has permanent superadmin access and cannot be restricted or deactivated.
           </div>
         ) : null}
         <label className="space-y-2 text-sm font-medium text-slate-700">
@@ -656,7 +661,7 @@ export default async function UserDetailPage({
           <input className="input" name="password" type="password" minLength={8} placeholder="Leave blank to keep current password" autoComplete="new-password" />
         </div>
         <label className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-white/60 px-4 py-3 text-sm font-medium text-slate-700">
-          <input type="checkbox" name="is_active" defaultChecked={adminUser.is_active} disabled={isOwnerAdmin} />
+          <input type="checkbox" name="is_active" defaultChecked={adminUser.is_active} disabled={isPrimaryOwnerAdmin} />
           Active (uncheck to deactivate)
         </label>
       </section>
@@ -665,7 +670,14 @@ export default async function UserDetailPage({
           <h2 className="text-xl font-semibold text-slate-950">Permissions</h2>
           <p className="mt-1 text-sm text-slate-500">Checking Edit automatically includes View. Removing View removes Edit.</p>
         </div>
-        <AdminPermissionEditor allowManageAdmins={isOwnerAdmin} disabled={isOwnerAdmin} initialAccess={adminPermissions} />
+        <AdminPermissionEditor
+          allowManageAdmins={canManageAdmins}
+          disabled={isPrimaryOwnerAdmin}
+          initialAccess={adminPermissions}
+          initialSuperadmin={isSuperadmin}
+          showSuperadminToggle
+          superadminDisabled={isPrimaryOwnerAdmin}
+        />
       </section>
       <button className="btn-primary w-full sm:w-auto">Save</button>
       <section className="card space-y-4">

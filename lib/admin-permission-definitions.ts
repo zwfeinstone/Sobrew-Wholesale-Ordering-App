@@ -128,8 +128,8 @@ export const ADMIN_ROLE_PRESETS: Array<{
 }> = [
   {
     key: 'owner',
-    label: 'Owner',
-    description: 'Full access. Zach is the only effective owner account.',
+    label: 'Superadmin',
+    description: 'Full access to every admin screen, including admin accounts and payroll.',
     permissions: ownerAccessMap(),
   },
   {
@@ -180,9 +180,13 @@ export function isOwnerEmail(email: string | null | undefined) {
   return (email ?? '').trim().toLowerCase() === ADMIN_OWNER_EMAIL;
 }
 
-export function enforceOwnerOnlyPermissions(email: string | null | undefined, access: AdminAccessMap) {
+export function hasSuperadminAccess(email: string | null | undefined, isSuperadmin?: boolean | null) {
+  return Boolean(isSuperadmin) || isOwnerEmail(email);
+}
+
+export function enforceOwnerOnlyPermissions(email: string | null | undefined, access: AdminAccessMap, isSuperadmin?: boolean | null) {
   const normalized = normalizeAccessMap(access);
-  if (!isOwnerEmail(email)) {
+  if (!hasSuperadminAccess(email, isSuperadmin)) {
     normalized.manage_admins = { canEdit: false, canView: false };
     normalized.sales_admin = { canEdit: false, canView: false };
     normalized.payroll = { canEdit: false, canView: false };

@@ -1,7 +1,7 @@
 import { redirect } from 'next/navigation';
 import { AdminPermissionEditor } from '@/components/admin-permission-editor';
 import { recordAdminAuditLog } from '@/lib/admin-audit';
-import { legacyReadOnlyAccessMap } from '@/lib/admin-permission-definitions';
+import { isOwnerEmail, legacyReadOnlyAccessMap } from '@/lib/admin-permission-definitions';
 import { parseAdminPermissionsForm, saveAdminPermissions, serializePermissionSnapshot } from '@/lib/admin-permission-save';
 import { requireManageAdmins } from '@/lib/admin-permissions';
 import { supabaseAdmin } from '@/lib/supabase/admin';
@@ -27,6 +27,7 @@ async function createAdminAccount(formData: FormData) {
   }
 
   const access = parseAdminPermissionsForm(formData);
+  const isSuperadmin = formData.get('is_superadmin') === 'on' || isOwnerEmail(email);
   const created = await supabaseAdmin.auth.admin.createUser({
     email,
     password,
@@ -46,6 +47,7 @@ async function createAdminAccount(formData: FormData) {
     id: adminId,
     is_active: true,
     is_admin: true,
+    is_superadmin: isSuperadmin,
   };
   const profileResult = await supabaseAdmin.from('profiles').upsert(profile, { onConflict: 'id' });
 
@@ -57,6 +59,7 @@ async function createAdminAccount(formData: FormData) {
   const permissionsResult = await saveAdminPermissions({
     access,
     email,
+    isSuperadmin,
     profileId: adminId,
     supabase: supabaseAdmin,
   });
@@ -148,7 +151,7 @@ export default async function NewAdminPage({
           <h2 className="text-xl font-semibold text-slate-950">Permissions</h2>
           <p className="mt-1 text-sm text-slate-500">Choose a preset, then adjust view and edit access for each screen.</p>
         </div>
-        <AdminPermissionEditor initialAccess={initialAccess} />
+        <AdminPermissionEditor allowManageAdmins initialAccess={initialAccess} showSuperadminToggle />
       </section>
 
       <button className="btn-primary w-full sm:w-auto" type="submit">

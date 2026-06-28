@@ -8,6 +8,7 @@ import {
   ADMIN_PERMISSION_KEYS,
   canViewAdminSection,
   normalizeAccessMap,
+  ownerAccessMap,
   type AdminAccessMap,
   type AdminPermissionKey,
 } from '@/lib/admin-permission-definitions';
@@ -39,21 +40,41 @@ export function AdminPermissionEditor({
   allowManageAdmins = false,
   disabled = false,
   initialAccess,
+  initialSuperadmin = false,
+  showSuperadminToggle = false,
+  superadminDisabled = false,
 }: {
   allowManageAdmins?: boolean;
   disabled?: boolean;
   initialAccess: AdminAccessMap;
+  initialSuperadmin?: boolean;
+  showSuperadminToggle?: boolean;
+  superadminDisabled?: boolean;
 }) {
-  const [access, setAccess] = useState(() => cloneAccess(initialAccess, allowManageAdmins));
-  const visible = useMemo(() => visibleLabels(access), [access]);
+  const [isSuperadmin, setIsSuperadmin] = useState(initialSuperadmin);
+  const [access, setAccess] = useState(() => cloneAccess(initialSuperadmin ? ownerAccessMap() : initialAccess, allowManageAdmins && initialSuperadmin));
+  const displayedAccess = useMemo(() => (isSuperadmin ? ownerAccessMap() : access), [access, isSuperadmin]);
+  const controlsDisabled = disabled || isSuperadmin;
+  const allowRestrictedPermissions = allowManageAdmins && isSuperadmin;
+  const visible = useMemo(() => visibleLabels(displayedAccess), [displayedAccess]);
+
+  function setSuperadmin(checked: boolean) {
+    setIsSuperadmin(checked);
+    if (checked) {
+      setAccess(cloneAccess(ownerAccessMap(), true));
+    } else {
+      setAccess((current) => cloneAccess(current, false));
+    }
+  }
 
   function setPermission(key: AdminPermissionKey, field: 'canEdit' | 'canView', checked: boolean) {
+    if (isSuperadmin) return;
     setAccess((current) => {
-      if (key === 'manage_admins' && !allowManageAdmins) return current;
-      if ((key === 'sales_admin' || key === 'payroll') && !allowManageAdmins) return current;
-      if (key === 'commission' && field === 'canEdit' && !allowManageAdmins) return current;
-      if (key === 'time_clock' && field === 'canEdit' && !allowManageAdmins) return current;
-      const next = cloneAccess(current, allowManageAdmins);
+      if (key === 'manage_admins' && !allowRestrictedPermissions) return current;
+      if ((key === 'sales_admin' || key === 'payroll') && !allowRestrictedPermissions) return current;
+      if (key === 'commission' && field === 'canEdit' && !allowRestrictedPermissions) return current;
+      if (key === 'time_clock' && field === 'canEdit' && !allowRestrictedPermissions) return current;
+      const next = cloneAccess(current, allowRestrictedPermissions);
       if (field === 'canEdit') {
         next[key] = { canEdit: checked, canView: checked || next[key].canView };
       } else {
@@ -65,11 +86,34 @@ export function AdminPermissionEditor({
 
   function applyPreset(presetKey: string) {
     const preset = ADMIN_ROLE_PRESETS.find((role) => role.key === presetKey);
-    if (preset) setAccess(cloneAccess(preset.permissions, allowManageAdmins));
+    if (!preset) return;
+    if (preset.key === 'owner' && showSuperadminToggle) {
+      setSuperadmin(true);
+      return;
+    }
+    setIsSuperadmin(false);
+    setAccess(cloneAccess(preset.permissions, false));
   }
 
   return (
     <div className="space-y-5">
+      {showSuperadminToggle ? (
+        <label className="flex items-start gap-3 rounded-2xl border border-teal-100 bg-teal-50/70 px-4 py-3 text-sm text-teal-950">
+          <input
+            checked={isSuperadmin}
+            disabled={disabled || superadminDisabled}
+            name="is_superadmin"
+            onChange={(event) => setSuperadmin(event.target.checked)}
+            type="checkbox"
+          />
+          {superadminDisabled && isSuperadmin ? <input name="is_superadmin" type="hidden" value="on" /> : null}
+          <span>
+            <span className="block font-semibold">Superadmin full access</span>
+            <span className="mt-1 block leading-5 text-teal-800">Can see and edit every admin screen, manage admin accounts, payroll, permissions, and sales assignments.</span>
+          </span>
+        </label>
+      ) : null}
+
       <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
         {ADMIN_ROLE_PRESETS.map((preset) => (
           <button
@@ -103,16 +147,16 @@ export function AdminPermissionEditor({
                     <p className="font-semibold text-slate-950">{ADMIN_SECTION_LABELS[key]}</p>
                     {key === 'reports_profitability' ? <p className="mt-1 text-xs text-slate-500">Controls margin, COGS, profitability, production, and inventory value report screens.</p> : null}
                     {key === 'reports_sales' ? <p className="mt-1 text-xs text-slate-500">Controls sales and customer reporting without margin visibility.</p> : null}
-                    {key === 'manage_admins' ? <p className="mt-1 text-xs text-slate-500">Owner-only admin creation, permissions, and audit access.</p> : null}
-                    {key === 'time_clock' ? <p className="mt-1 text-xs text-slate-500">View lets admins clock their own time. Edit is Zach-only for payroll review.</p> : null}
-                    {key === 'sales_admin' ? <p className="mt-1 text-xs text-slate-500">Owner-only center assignment and sales team commission totals.</p> : null}
+                    {key === 'manage_admins' ? <p className="mt-1 text-xs text-slate-500">Superadmin-only admin creation, permissions, and audit access.</p> : null}
+                    {key === 'time_clock' ? <p className="mt-1 text-xs text-slate-500">View lets admins clock their own time. Edit is superadmin-only for payroll review.</p> : null}
+                    {key === 'sales_admin' ? <p className="mt-1 text-xs text-slate-500">Superadmin-only center assignment and sales team commission totals.</p> : null}
                     {key === 'commission' ? <p className="mt-1 text-xs text-slate-500">View lets sales admins see their own monthly commission statements.</p> : null}
-                    {key === 'payroll' ? <p className="mt-1 text-xs text-slate-500">Owner-only payroll setup, rates, and commission percentages.</p> : null}
+                    {key === 'payroll' ? <p className="mt-1 text-xs text-slate-500">Superadmin-only payroll setup, rates, and commission percentages.</p> : null}
                   </div>
                   <label className="flex items-center gap-2 text-sm font-medium text-slate-700">
                     <input
-                      checked={access[key].canView}
-                      disabled={disabled || ((key === 'manage_admins' || key === 'sales_admin' || key === 'payroll') && !allowManageAdmins)}
+                      checked={displayedAccess[key].canView}
+                      disabled={controlsDisabled || ((key === 'manage_admins' || key === 'sales_admin' || key === 'payroll') && !allowRestrictedPermissions)}
                       name={`view_${key}`}
                       onChange={(event) => setPermission(key, 'canView', event.target.checked)}
                       type="checkbox"
@@ -121,8 +165,8 @@ export function AdminPermissionEditor({
                   </label>
                   <label className="flex items-center gap-2 text-sm font-medium text-slate-700">
                     <input
-                      checked={access[key].canEdit}
-                      disabled={disabled || ((key === 'manage_admins' || key === 'sales_admin' || key === 'payroll' || key === 'commission' || key === 'time_clock') && !allowManageAdmins)}
+                      checked={displayedAccess[key].canEdit}
+                      disabled={controlsDisabled || ((key === 'manage_admins' || key === 'sales_admin' || key === 'payroll' || key === 'commission' || key === 'time_clock') && !allowRestrictedPermissions)}
                       name={`edit_${key}`}
                       onChange={(event) => setPermission(key, 'canEdit', event.target.checked)}
                       type="checkbox"

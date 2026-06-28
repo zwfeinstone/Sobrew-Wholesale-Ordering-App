@@ -82,7 +82,7 @@ export default async function SettingsPage({
         <p className="page-subtitle mt-3">Adjust the name, accent color, logo, and hero image used throughout the ordering experience.</p>
       </section>
       {error === 'admin_write_denied' ? (
-        <div className="card text-sm text-red-700">Only zach@sobrew.com can change admin data.</div>
+        <div className="card text-sm text-red-700">Only superadmins can change admin data.</div>
       ) : null}
       <form action={saveSettings} className="card space-y-4">
         <input type="hidden" name="id" value={settings.id} />
@@ -135,7 +135,7 @@ export default async function SettingsPage({
 
         {passwordError === 'admin_write_denied' ? (
           <div className="rounded-[1.5rem] border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">
-            Only zach@sobrew.com can change admin data.
+            Only superadmins can change admin data.
           </div>
         ) : null}
 

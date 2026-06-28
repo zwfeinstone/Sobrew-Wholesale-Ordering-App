@@ -518,7 +518,7 @@ export default async function PlanningPage({
       {toast === 'invalid_quantity' ? <StatusToast message="Enter a whole number greater than zero before adding production." tone="error" /> : null}
       {toast === 'par_saved' ? <StatusToast message="Par target saved." tone="success" /> : null}
       {toast === 'par_error' ? <StatusToast message="Unable to save par target." tone="error" /> : null}
-      {toast === 'admin_write_denied' ? <StatusToast message="Only zach@sobrew.com can change admin data." tone="error" /> : null}
+      {toast === 'admin_write_denied' ? <StatusToast message="Only superadmins can change admin data." tone="error" /> : null}
 
       <section className="panel">
         <span className="eyebrow">Planning</span>

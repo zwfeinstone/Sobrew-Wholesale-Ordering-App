@@ -118,7 +118,7 @@ export default async function UsersPage() {
     centersQuery,
     centerMembersQuery,
     currentAccess.isOwner
-      ? supabase.from('profiles').select('id,email,full_name,is_active,is_admin').eq('is_admin', true).order('created_at', { ascending: false })
+      ? supabase.from('profiles').select('id,email,full_name,is_active,is_admin,is_superadmin').eq('is_admin', true).order('created_at', { ascending: false })
       : Promise.resolve({ data: [] }),
     orderActivityQuery,
     supabaseAdmin.auth.admin.listUsers({ page: 1, perPage: 1000 }),
@@ -205,7 +205,7 @@ export default async function UsersPage() {
           <Link key={user.id} href={`/admin/users/${user.id}`} className="card block transition-all duration-200 hover:-translate-y-0.5 hover:bg-white/95">
             <p className="text-lg font-semibold text-slate-950">{user.full_name || user.email}</p>
             <p className="mt-2 break-all text-sm text-slate-500">{user.email}</p>
-            <p className="mt-2 text-sm text-slate-500">{!user.is_active ? 'Deactivated' : 'Active'}</p>
+            <p className="mt-2 text-sm text-slate-500">{!user.is_active ? 'Deactivated' : 'Active'}{user.is_superadmin ? ' - Superadmin' : ''}</p>
           </Link>
         ))}
       </section>
