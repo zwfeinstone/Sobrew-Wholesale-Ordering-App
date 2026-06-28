@@ -6,6 +6,7 @@ import {
   buildGrossProfitSimulator,
   type GrossProfitSimulatorDashboard,
   type GrossProfitSimulatorInputRow,
+  type GrossProfitSimulatorLaborRow,
   type GrossProfitSimulatorProductRow,
 } from '@/lib/gross-profit-simulator';
 import {
@@ -52,6 +53,7 @@ const REPORTS = [
 ] as const;
 
 type ReportId = (typeof REPORTS)[number]['id'];
+type SimulatorTab = 'labor' | 'raw' | 'supplies';
 
 type AdminRow = {
   email: string | null;
@@ -125,8 +127,44 @@ function simulatorUnitCostOverrides(searchParams: Record<string, string | string
   return overrides;
 }
 
+function simulatorLaborOverrides(searchParams: Record<string, string | string[] | undefined> | undefined) {
+  const laborMinutesOverrides = new Map<string, number>();
+  const laborRateOverridesCents = new Map<string, number>();
+  for (const [key, value] of Object.entries(searchParams ?? {})) {
+    const rawValue = stringParam(value).trim();
+    if (!rawValue) continue;
+    const parsed = Number.parseFloat(rawValue);
+    if (!Number.isFinite(parsed) || parsed < 0) continue;
+
+    if (key.startsWith('sim_labor_minutes_')) {
+      laborMinutesOverrides.set(key.replace('sim_labor_minutes_', ''), parsed);
+    }
+    if (key.startsWith('sim_labor_rate_')) {
+      laborRateOverridesCents.set(key.replace('sim_labor_rate_', ''), parsed * 100);
+    }
+  }
+
+  return { laborMinutesOverrides, laborRateOverridesCents };
+}
+
+function simulatorTabParam(value: string | string[] | undefined): SimulatorTab {
+  const raw = stringParam(value);
+  if (raw === 'raw' || raw === 'supplies') return raw;
+  return 'labor';
+}
+
 function unitCostInputValue(overrides: Map<string, number>, itemId: string) {
   const override = overrides.get(itemId);
+  return typeof override === 'number' && Number.isFinite(override) ? String(Number((override / 100).toFixed(4))) : '';
+}
+
+function laborMinutesInputValue(overrides: Map<string, number>, productId: string) {
+  const override = overrides.get(productId);
+  return typeof override === 'number' && Number.isFinite(override) ? String(Number(override.toFixed(4))) : '';
+}
+
+function laborRateInputValue(overrides: Map<string, number>, productId: string) {
+  const override = overrides.get(productId);
   return typeof override === 'number' && Number.isFinite(override) ? String(Number((override / 100).toFixed(4))) : '';
 }
 
@@ -719,13 +757,15 @@ function simulatorItemTypeLabel(value: string) {
 }
 
 function SimulatorInputTable({
+  emptyMessage = 'No recipe material inputs were found for the selected shipped orders.',
   overrides,
   rows,
 }: {
+  emptyMessage?: string;
   overrides: Map<string, number>;
   rows: GrossProfitSimulatorInputRow[];
 }) {
-  if (!rows.length) return <EmptyState message="No recipe material inputs were found for the selected shipped orders." />;
+  if (!rows.length) return <EmptyState message={emptyMessage} />;
 
   return (
     <div className="overflow-x-auto">
@@ -743,7 +783,7 @@ function SimulatorInputTable({
           </tr>
         </thead>
         <tbody>
-          {rows.slice(0, 18).map((row) => (
+          {rows.map((row) => (
             <tr key={row.id} className="bg-white/65">
               <td className="rounded-l-xl px-4 py-3">
                 <p className="font-semibold text-slate-950">{row.name}</p>
@@ -774,12 +814,84 @@ function SimulatorInputTable({
   );
 }
 
+function SimulatorLaborTable({
+  laborMinutesOverrides,
+  laborRateOverrides,
+  rows,
+}: {
+  laborMinutesOverrides: Map<string, number>;
+  laborRateOverrides: Map<string, number>;
+  rows: GrossProfitSimulatorLaborRow[];
+}) {
+  if (!rows.length) return <EmptyState message="No products with shipped order lines were found for the selected simulator range." />;
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full min-w-[92rem] border-separate border-spacing-y-2 text-left text-sm">
+        <thead>
+          <tr className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+            <th className="px-4 py-2">Product</th>
+            <th className="px-4 py-2 text-right">Units</th>
+            <th className="px-4 py-2 text-right">Current minutes</th>
+            <th className="px-4 py-2 text-right">Scenario minutes</th>
+            <th className="px-4 py-2 text-right">Current rate/hr</th>
+            <th className="px-4 py-2 text-right">Scenario rate/hr</th>
+            <th className="px-4 py-2 text-right">Scenario labor COGS</th>
+            <th className="px-4 py-2 text-right">Profit impact</th>
+            <th className="px-4 py-2 text-right">Unpriced lines</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <tr key={row.id} className="bg-white/65">
+              <td className="rounded-l-xl px-4 py-3">
+                <p className="font-semibold text-slate-950">{row.name}</p>
+                <p className="mt-1 text-xs text-slate-500">{number(row.lineCount)} shipped line{row.lineCount === 1 ? '' : 's'} - {money(row.revenueCents)} revenue</p>
+              </td>
+              <td className="px-4 py-3 text-right text-slate-700">{quantity(row.unitsSold)}</td>
+              <td className="px-4 py-3 text-right text-slate-700">{row.hasRecipe ? quantity(row.baselineLaborMinutes) : 'No recipe'}</td>
+              <td className="px-4 py-3 text-right">
+                <input
+                  className="input ml-auto w-32 text-right"
+                  disabled={!row.hasRecipe}
+                  min="0"
+                  name={`sim_labor_minutes_${row.id}`}
+                  placeholder={row.hasRecipe ? String(Number(row.baselineLaborMinutes.toFixed(4))) : ''}
+                  step="0.01"
+                  type="number"
+                  defaultValue={laborMinutesInputValue(laborMinutesOverrides, row.id)}
+                />
+              </td>
+              <td className="px-4 py-3 text-right text-slate-700">{row.hasRecipe ? money(row.baselineLaborRateCents) : 'No recipe'}</td>
+              <td className="px-4 py-3 text-right">
+                <input
+                  className="input ml-auto w-32 text-right"
+                  disabled={!row.hasRecipe}
+                  min="0"
+                  name={`sim_labor_rate_${row.id}`}
+                  placeholder={row.hasRecipe ? String(Number((row.baselineLaborRateCents / 100).toFixed(4))) : ''}
+                  step="0.01"
+                  type="number"
+                  defaultValue={laborRateInputValue(laborRateOverrides, row.id)}
+                />
+              </td>
+              <td className="px-4 py-3 text-right text-slate-700">{money(row.simulatedLaborCents)}</td>
+              <td className={`px-4 py-3 text-right font-semibold ${row.grossProfitImpactCents >= 0 ? 'text-teal-800' : 'text-rose-700'}`}>{signedMoney(row.grossProfitImpactCents)}</td>
+              <td className="rounded-r-xl px-4 py-3 text-right text-slate-700">{number(row.unresolvedLineCount)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 function SimulatorProductTable({ rows }: { rows: GrossProfitSimulatorProductRow[] }) {
   if (!rows.length) return <EmptyState message="No simulated product rows found for the selected month." />;
 
   return (
     <div className="overflow-x-auto">
-      <table className="w-full min-w-[78rem] border-separate border-spacing-y-2 text-left text-sm">
+      <table className="w-full min-w-[86rem] border-separate border-spacing-y-2 text-left text-sm">
         <thead>
           <tr className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
             <th className="px-4 py-2">Product</th>
@@ -787,6 +899,7 @@ function SimulatorProductTable({ rows }: { rows: GrossProfitSimulatorProductRow[
             <th className="px-4 py-2 text-right">Revenue</th>
             <th className="px-4 py-2 text-right">Actual GP</th>
             <th className="px-4 py-2 text-right">Scenario material</th>
+            <th className="px-4 py-2 text-right">Scenario labor</th>
             <th className="px-4 py-2 text-right">Simulated GP</th>
             <th className="px-4 py-2 text-right">Profit impact</th>
             <th className="px-4 py-2 text-right">Unpriced lines</th>
@@ -800,6 +913,7 @@ function SimulatorProductTable({ rows }: { rows: GrossProfitSimulatorProductRow[
               <td className="px-4 py-3 text-right text-slate-700">{money(row.revenueCents)}</td>
               <td className={`px-4 py-3 text-right font-semibold ${row.actualGrossProfitCents >= 0 ? 'text-teal-800' : 'text-rose-700'}`}>{money(row.actualGrossProfitCents)}</td>
               <td className="px-4 py-3 text-right text-slate-700">{money(row.simulatedMaterialCents)}</td>
+              <td className="px-4 py-3 text-right text-slate-700">{money(row.simulatedLaborCents)}</td>
               <td className={`px-4 py-3 text-right font-semibold ${row.simulatedGrossProfitCents >= 0 ? 'text-teal-800' : 'text-rose-700'}`}>{money(row.simulatedGrossProfitCents)}</td>
               <td className={`px-4 py-3 text-right font-semibold ${row.grossProfitImpactCents >= 0 ? 'text-teal-800' : 'text-rose-700'}`}>{signedMoney(row.grossProfitImpactCents)}</td>
               <td className="rounded-r-xl px-4 py-3 text-right text-slate-700">{number(row.unresolvedLineCount)}</td>
@@ -812,8 +926,11 @@ function SimulatorProductTable({ rows }: { rows: GrossProfitSimulatorProductRow[
 }
 
 function GrossProfitSimulatorReport({
+  activeTab,
   centerId,
   dashboard,
+  laborMinutesOverrides,
+  laborRateOverrides,
   materialSupplyPercentDelta,
   monthValue,
   overrides,
@@ -824,8 +941,11 @@ function GrossProfitSimulatorReport({
   resetHref,
   salesRepId,
 }: {
+  activeTab: SimulatorTab;
   centerId?: string;
   dashboard: GrossProfitSimulatorDashboard;
+  laborMinutesOverrides: Map<string, number>;
+  laborRateOverrides: Map<string, number>;
   materialSupplyPercentDelta: number;
   monthValue: string;
   overrides: Map<string, number>;
@@ -836,21 +956,26 @@ function GrossProfitSimulatorReport({
   resetHref: string;
   salesRepId?: string;
 }) {
+  const rawCoffeeRows = dashboard.inputRows.filter((row) => row.itemType === 'raw_coffee');
+  const materialSupplyRows = dashboard.inputRows.filter((row) => row.itemType === 'material_supply' || row.itemType === 'supply');
+
   return (
     <>
-      <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
+      <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+        <StatTile label="Total Revenue" value={money(dashboard.revenueCents)} detail="Revenue stays fixed while scenario COGS move." />
         <StatTile label="Actual Gross Profit" value={money(dashboard.actualGrossProfitCents)} detail={`${percent(dashboard.actualMarginPercent).replace('+', '')} actual margin.`} />
         <StatTile label="Simulated Gross Profit" value={money(dashboard.simulatedGrossProfitCents)} detail={`${percent(dashboard.simulatedMarginPercent).replace('+', '')} simulated margin.`} />
         <StatTile label="Profit Change" value={signedMoney(dashboard.grossProfitChangeCents)} detail={`${number(dashboard.orderCount)} shipped order${dashboard.orderCount === 1 ? '' : 's'} in scenario.`} />
         <StatTile label="Material COGS" value={money(dashboard.simulatedMaterialCents)} detail={`${signedMoney(dashboard.simulatedMaterialCents - dashboard.actualMaterialCents)} versus actual material COGS.`} />
+        <StatTile label="Labor COGS" value={money(dashboard.simulatedLaborCents)} detail={`${signedMoney(dashboard.simulatedLaborCents - dashboard.actualLaborCents)} versus actual labor COGS.`} />
         <StatTile label="Unpriced Lines" value={number(dashboard.unresolvedLineCount)} detail="Lines without a usable recipe remain unchanged." />
       </section>
 
       <section className="card space-y-5">
         <SectionHeading
           eyebrow="Gross profit simulator"
-          title="Material price what-if"
-          subtitle="Revenue, labor, fixed packaging, shipping, processing, and donation stay actual; the scenario changes recipe material costs only."
+          title="Labor and material what-if"
+          subtitle="Revenue, fixed packaging, shipping, processing, and donation stay actual; the scenario changes recipe labor and material costs."
           action={dashboard.appliedOverrideCount ? <span className="rounded-full bg-teal-50 px-3 py-1 text-sm font-semibold text-teal-800">{dashboard.appliedOverrideCount} override{dashboard.appliedOverrideCount === 1 ? '' : 's'}</span> : null}
         />
         <form>
@@ -862,27 +987,78 @@ function GrossProfitSimulatorReport({
           {centerId ? <input type="hidden" name="center" value={centerId} /> : null}
           {salesRepId ? <input type="hidden" name="sales_rep" value={salesRepId} /> : null}
 
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-            <label className="space-y-2 text-sm font-medium text-slate-700">
-              Raw coffee change
-              <div className="relative">
-                <input className="input pr-9 text-right" name="sim_raw_delta" type="number" step="0.01" defaultValue={String(rawCoffeePercentDelta)} />
-                <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-sm text-slate-500">%</span>
-              </div>
-            </label>
-            <label className="space-y-2 text-sm font-medium text-slate-700">
-              Materials & supplies change
-              <div className="relative">
-                <input className="input pr-9 text-right" name="sim_material_delta" type="number" step="0.01" defaultValue={String(materialSupplyPercentDelta)} />
-                <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-sm text-slate-500">%</span>
-              </div>
-            </label>
-            <StatTile label="Raw Coffee Impact" value={signedMoney(dashboard.rawCoffeeImpactCents)} detail={`${money(dashboard.rawCoffeeScenarioCents)} scenario raw coffee COGS.`} />
-            <StatTile label="Supply Impact" value={signedMoney(dashboard.materialSupplyImpactCents)} detail={`${money(dashboard.materialSupplyScenarioCents)} scenario material COGS.`} />
-          </div>
+          <div className="space-y-5 [&:has(#sim-tab-labor:checked)_.sim-tab-label-labor]:border-teal-200 [&:has(#sim-tab-labor:checked)_.sim-tab-label-labor]:bg-teal-50 [&:has(#sim-tab-labor:checked)_.sim-tab-label-labor]:text-teal-900 [&:has(#sim-tab-raw:checked)_.sim-tab-label-raw]:border-teal-200 [&:has(#sim-tab-raw:checked)_.sim-tab-label-raw]:bg-teal-50 [&:has(#sim-tab-raw:checked)_.sim-tab-label-raw]:text-teal-900 [&:has(#sim-tab-supplies:checked)_.sim-tab-label-supplies]:border-teal-200 [&:has(#sim-tab-supplies:checked)_.sim-tab-label-supplies]:bg-teal-50 [&:has(#sim-tab-supplies:checked)_.sim-tab-label-supplies]:text-teal-900">
+            <input className="peer/labor sr-only" id="sim-tab-labor" name="sim_tab" type="radio" value="labor" defaultChecked={activeTab === 'labor'} />
+            <input className="peer/raw sr-only" id="sim-tab-raw" name="sim_tab" type="radio" value="raw" defaultChecked={activeTab === 'raw'} />
+            <input className="peer/supplies sr-only" id="sim-tab-supplies" name="sim_tab" type="radio" value="supplies" defaultChecked={activeTab === 'supplies'} />
 
-          <div className="mt-5">
-            <SimulatorInputTable rows={dashboard.inputRows} overrides={overrides} />
+            <div className="grid gap-2 sm:grid-cols-3" role="tablist" aria-label="Simulator categories">
+              <label
+                className="sim-tab-label-labor cursor-pointer rounded-xl border border-slate-200 bg-white/70 px-4 py-3 text-center text-sm font-semibold text-slate-700 transition-colors hover:border-teal-200 hover:text-teal-800 peer-checked/labor:border-teal-200 peer-checked/labor:bg-teal-50 peer-checked/labor:text-teal-900"
+                htmlFor="sim-tab-labor"
+              >
+                Labor
+              </label>
+              <label
+                className="sim-tab-label-raw cursor-pointer rounded-xl border border-slate-200 bg-white/70 px-4 py-3 text-center text-sm font-semibold text-slate-700 transition-colors hover:border-teal-200 hover:text-teal-800 peer-checked/raw:border-teal-200 peer-checked/raw:bg-teal-50 peer-checked/raw:text-teal-900"
+                htmlFor="sim-tab-raw"
+              >
+                Raw Materials
+              </label>
+              <label
+                className="sim-tab-label-supplies cursor-pointer rounded-xl border border-slate-200 bg-white/70 px-4 py-3 text-center text-sm font-semibold text-slate-700 transition-colors hover:border-teal-200 hover:text-teal-800 peer-checked/supplies:border-teal-200 peer-checked/supplies:bg-teal-50 peer-checked/supplies:text-teal-900"
+                htmlFor="sim-tab-supplies"
+              >
+                Materials & Supplies
+              </label>
+            </div>
+
+            <div className="hidden space-y-5 peer-checked/labor:block">
+              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                <StatTile label="Labor Impact" value={signedMoney(dashboard.laborImpactCents)} detail={`${money(dashboard.laborScenarioCents)} scenario recipe labor COGS.`} />
+                <StatTile label="Scenario Labor COGS" value={money(dashboard.simulatedLaborCents)} detail={`${signedMoney(dashboard.simulatedLaborCents - dashboard.actualLaborCents)} versus actual labor COGS.`} />
+                <StatTile label="Labor Products" value={number(dashboard.laborRows.length)} detail="Products with shipped lines in this simulator scope." />
+              </div>
+              <SimulatorLaborTable rows={dashboard.laborRows} laborMinutesOverrides={laborMinutesOverrides} laborRateOverrides={laborRateOverrides} />
+            </div>
+
+            <div className="hidden space-y-5 peer-checked/raw:block">
+              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                <label className="space-y-2 text-sm font-medium text-slate-700">
+                  Raw coffee change
+                  <div className="relative">
+                    <input className="input pr-9 text-right" name="sim_raw_delta" type="number" step="0.01" defaultValue={String(rawCoffeePercentDelta)} />
+                    <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-sm text-slate-500">%</span>
+                  </div>
+                </label>
+                <StatTile label="Raw Coffee Impact" value={signedMoney(dashboard.rawCoffeeImpactCents)} detail={`${money(dashboard.rawCoffeeScenarioCents)} scenario raw coffee COGS.`} />
+                <StatTile label="Raw Inputs" value={number(rawCoffeeRows.length)} detail="Raw coffee inputs used by selected shipped products." />
+              </div>
+              <SimulatorInputTable
+                emptyMessage="No raw coffee inputs were found for the selected shipped orders."
+                rows={rawCoffeeRows}
+                overrides={overrides}
+              />
+            </div>
+
+            <div className="hidden space-y-5 peer-checked/supplies:block">
+              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                <label className="space-y-2 text-sm font-medium text-slate-700">
+                  Materials & supplies change
+                  <div className="relative">
+                    <input className="input pr-9 text-right" name="sim_material_delta" type="number" step="0.01" defaultValue={String(materialSupplyPercentDelta)} />
+                    <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-sm text-slate-500">%</span>
+                  </div>
+                </label>
+                <StatTile label="Supply Impact" value={signedMoney(dashboard.materialSupplyImpactCents)} detail={`${money(dashboard.materialSupplyScenarioCents)} scenario material COGS.`} />
+                <StatTile label="Supply Inputs" value={number(materialSupplyRows.length)} detail="Materials and supplies used by selected shipped products." />
+              </div>
+              <SimulatorInputTable
+                emptyMessage="No materials or supplies were found for the selected shipped orders."
+                rows={materialSupplyRows}
+                overrides={overrides}
+              />
+            </div>
           </div>
 
           <div className="mt-5 flex flex-col gap-3 sm:flex-row sm:items-center">
@@ -896,7 +1072,7 @@ function GrossProfitSimulatorReport({
         <SectionHeading
           eyebrow="Product impact"
           title="Which products move gross profit"
-          subtitle="Product rows keep actual revenue and non-material COGS, then apply the material price scenario from current recipes."
+          subtitle="Product rows keep actual revenue and non-simulated COGS, then apply labor and material scenarios from current recipes."
         />
         <SimulatorProductTable rows={dashboard.productRows} />
       </section>
@@ -1015,7 +1191,7 @@ export default async function AdminReportsPage({
       .limit(50000),
     supabase
       .from('product_recipes')
-      .select('product_id,output_qty,waste_percent,product_recipe_components(inventory_item_id,quantity,unit,component_role,inventory_items(id,name,sku,item_type,base_unit))')
+      .select('product_id,output_qty,waste_percent,labor_minutes,labor_rate_cents,product_recipe_components(inventory_item_id,quantity,unit,component_role,inventory_items(id,name,sku,item_type,base_unit))')
       .limit(50000),
   ]);
 
@@ -1070,6 +1246,8 @@ export default async function AdminReportsPage({
   const rawCoffeePercentDelta = simulatorPercentParam(searchParams?.sim_raw_delta);
   const materialSupplyPercentDelta = simulatorPercentParam(searchParams?.sim_material_delta);
   const itemUnitCostOverrides = simulatorUnitCostOverrides(searchParams);
+  const { laborMinutesOverrides, laborRateOverridesCents } = simulatorLaborOverrides(searchParams);
+  const simulatorTab = simulatorTabParam(searchParams?.sim_tab);
   const simulatorDashboard = buildGrossProfitSimulator({
     actual: profitabilityDashboard.current,
     centers,
@@ -1080,6 +1258,8 @@ export default async function AdminReportsPage({
     params: {
       centerId,
       itemUnitCostOverridesCents: itemUnitCostOverrides,
+      laborMinutesOverrides,
+      laborRateOverridesCents,
       materialSupplyPercentDelta,
       productId,
       rangeEndExclusive,
@@ -1286,8 +1466,11 @@ export default async function AdminReportsPage({
 
       {activeReport === 'simulator' ? (
         <GrossProfitSimulatorReport
+          activeTab={simulatorTab}
           centerId={centerId}
           dashboard={simulatorDashboard}
+          laborMinutesOverrides={laborMinutesOverrides}
+          laborRateOverrides={laborRateOverridesCents}
           materialSupplyPercentDelta={materialSupplyPercentDelta}
           monthValue={formatMonthInput(selectedMonth)}
           overrides={itemUnitCostOverrides}

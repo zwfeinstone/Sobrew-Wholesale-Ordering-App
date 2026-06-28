@@ -1,4 +1,4 @@
-import { convertInventoryQuantity } from '@/lib/inventory';
+import { convertInventoryQuantity, laborCostCents } from '@/lib/inventory';
 import type {
   ProfitabilityOrderItemRow,
   ProfitabilityOrderRow,
@@ -45,6 +45,8 @@ type RecipeComponentRow = {
 type RecipeRow = {
   product_id: string;
   output_qty: number | string;
+  labor_minutes?: number | string | null;
+  labor_rate_cents?: number | string | null;
   waste_percent?: number | string | null;
   product_recipe_components?: RecipeComponentRow[] | null;
 };
@@ -67,26 +69,50 @@ export type GrossProfitSimulatorInputRow = {
 
 export type GrossProfitSimulatorProductRow = {
   actualGrossProfitCents: number;
+  baselineLaborCents: number;
   baselineMaterialCents: number;
   grossProfitImpactCents: number;
   id: string;
   name: string;
   revenueCents: number;
   simulatedGrossProfitCents: number;
+  simulatedLaborCents: number;
   simulatedMaterialCents: number;
+  unitsSold: number;
+  unresolvedLineCount: number;
+};
+
+export type GrossProfitSimulatorLaborRow = {
+  baselineLaborCents: number;
+  baselineLaborMinutes: number;
+  baselineLaborRateCents: number;
+  grossProfitImpactCents: number;
+  hasRecipe: boolean;
+  id: string;
+  lineCount: number;
+  name: string;
+  revenueCents: number;
+  simulatedLaborCents: number;
+  simulatedLaborMinutes: number;
+  simulatedLaborRateCents: number;
   unitsSold: number;
   unresolvedLineCount: number;
 };
 
 export type GrossProfitSimulatorDashboard = {
   actualGrossProfitCents: number;
+  actualLaborCents: number;
   actualMarginPercent: number;
   actualMaterialCents: number;
   actualTotalCogsCents: number;
   appliedOverrideCount: number;
+  baselineRecipeLaborCents: number;
   baselineRecipeMaterialCents: number;
   grossProfitChangeCents: number;
   inputRows: GrossProfitSimulatorInputRow[];
+  laborImpactCents: number;
+  laborRows: GrossProfitSimulatorLaborRow[];
+  laborScenarioCents: number;
   materialSupplyImpactCents: number;
   materialSupplyScenarioCents: number;
   orderCount: number;
@@ -95,6 +121,7 @@ export type GrossProfitSimulatorDashboard = {
   rawCoffeeScenarioCents: number;
   revenueCents: number;
   simulatedGrossProfitCents: number;
+  simulatedLaborCents: number;
   simulatedMarginPercent: number;
   simulatedMaterialCents: number;
   simulatedTotalCogsCents: number;
@@ -104,6 +131,8 @@ export type GrossProfitSimulatorDashboard = {
 export type GrossProfitSimulatorParams = {
   centerId?: string;
   itemUnitCostOverridesCents: Map<string, number>;
+  laborMinutesOverrides: Map<string, number>;
+  laborRateOverridesCents: Map<string, number>;
   materialSupplyPercentDelta: number;
   productId?: string;
   rangeEndExclusive: Date;
@@ -131,6 +160,16 @@ type ComponentCost = {
   productId: string;
   quantity: number;
   scenarioCostCents: number;
+};
+
+type LaborCost = {
+  baselineCostCents: number;
+  baselineMinutes: number;
+  baselineRateCents: number;
+  hasRecipe: boolean;
+  scenarioCostCents: number;
+  scenarioMinutes: number;
+  scenarioRateCents: number;
 };
 
 function numericValue(value: unknown) {
@@ -230,6 +269,50 @@ function simulatedUnitCostCents({
   if (itemType === 'raw_coffee') return baseline * (1 + rawCoffeePercentDelta / 100);
   if (itemType === 'material_supply') return baseline * (1 + materialSupplyPercentDelta / 100);
   return baseline;
+}
+
+function validNonNegativeOverride(overrides: Map<string, number>, key: string) {
+  const override = overrides.get(key);
+  return typeof override === 'number' && Number.isFinite(override) && override >= 0 ? override : undefined;
+}
+
+function laborCostForLine({
+  line,
+  params,
+  recipe,
+}: {
+  line: NormalizedLine;
+  params: GrossProfitSimulatorParams;
+  recipe: RecipeRow | undefined;
+}): LaborCost {
+  if (!recipe) {
+    return {
+      baselineCostCents: 0,
+      baselineMinutes: 0,
+      baselineRateCents: 0,
+      hasRecipe: false,
+      scenarioCostCents: 0,
+      scenarioMinutes: 0,
+      scenarioRateCents: 0,
+    };
+  }
+
+  const outputQty = numericValue(recipe.output_qty) || 1;
+  const productKey = line.productId ?? line.productName;
+  const baselineMinutes = Math.max(0, numericValue(recipe.labor_minutes));
+  const baselineRateCents = Math.max(0, numericValue(recipe.labor_rate_cents));
+  const scenarioMinutes = validNonNegativeOverride(params.laborMinutesOverrides, productKey) ?? baselineMinutes;
+  const scenarioRateCents = validNonNegativeOverride(params.laborRateOverridesCents, productKey) ?? baselineRateCents;
+
+  return {
+    baselineCostCents: (laborCostCents(baselineMinutes, baselineRateCents) / outputQty) * line.qty,
+    baselineMinutes,
+    baselineRateCents,
+    hasRecipe: true,
+    scenarioCostCents: (laborCostCents(scenarioMinutes, scenarioRateCents) / outputQty) * line.qty,
+    scenarioMinutes,
+    scenarioRateCents,
+  };
 }
 
 function normalizeLines({
@@ -338,13 +421,18 @@ function recipeComponentCostsForLine({
 function emptyDashboard(actual: ProfitabilityTotals): GrossProfitSimulatorDashboard {
   return {
     actualGrossProfitCents: actual.grossProfitCents,
+    actualLaborCents: actual.laborCents,
     actualMarginPercent: actual.marginPercent,
     actualMaterialCents: actual.materialCents,
     actualTotalCogsCents: actual.totalCogsCents,
     appliedOverrideCount: 0,
+    baselineRecipeLaborCents: 0,
     baselineRecipeMaterialCents: 0,
     grossProfitChangeCents: 0,
     inputRows: [],
+    laborImpactCents: 0,
+    laborRows: [],
+    laborScenarioCents: 0,
     materialSupplyImpactCents: 0,
     materialSupplyScenarioCents: 0,
     orderCount: actual.orderCount,
@@ -353,6 +441,7 @@ function emptyDashboard(actual: ProfitabilityTotals): GrossProfitSimulatorDashbo
     rawCoffeeScenarioCents: 0,
     revenueCents: actual.revenueCents,
     simulatedGrossProfitCents: actual.grossProfitCents,
+    simulatedLaborCents: actual.laborCents,
     simulatedMarginPercent: actual.marginPercent,
     simulatedMaterialCents: actual.materialCents,
     simulatedTotalCogsCents: actual.totalCogsCents,
@@ -398,8 +487,12 @@ export function buildGrossProfitSimulator({
 
   const inputRowsById = new Map<string, GrossProfitSimulatorInputRow & { productIds: Set<string> }>();
   const productRowsById = new Map<string, GrossProfitSimulatorProductRow & { orderItemIds: Set<string> }>();
+  const laborRowsById = new Map<string, GrossProfitSimulatorLaborRow>();
+  let baselineRecipeLaborCents = 0;
   let baselineRecipeMaterialCents = 0;
+  let scenarioLaborCents = 0;
   let scenarioMaterialCents = 0;
+  let laborImpactCents = 0;
   let rawCoffeeImpactCents = 0;
   let rawCoffeeScenarioCents = 0;
   let materialSupplyImpactCents = 0;
@@ -416,18 +509,25 @@ export function buildGrossProfitSimulator({
       rawCoffeePercentDelta: params.rawCoffeePercentDelta,
       recipe,
     }).filter((cost) => inventoryItemById.has(cost.inventoryItem.id));
+    const laborCost = laborCostForLine({ line, params, recipe });
 
     if (!componentCosts.length) unresolvedLineCount += 1;
 
     const lineBaselineMaterialCents = componentCosts.reduce((sum, cost) => sum + cost.baselineCostCents, 0);
     const lineScenarioMaterialCents = componentCosts.reduce((sum, cost) => sum + cost.scenarioCostCents, 0);
     const lineMaterialDeltaCents = lineScenarioMaterialCents - lineBaselineMaterialCents;
+    const lineLaborDeltaCents = laborCost.scenarioCostCents - laborCost.baselineCostCents;
+    const lineLaborImpactCents = laborCost.baselineCostCents - laborCost.scenarioCostCents;
+    baselineRecipeLaborCents += laborCost.baselineCostCents;
     baselineRecipeMaterialCents += lineBaselineMaterialCents;
+    scenarioLaborCents += laborCost.scenarioCostCents;
     scenarioMaterialCents += lineScenarioMaterialCents;
+    laborImpactCents += lineLaborImpactCents;
 
     const productId = line.productId ?? line.productName;
     const productRow = productRowsById.get(productId) ?? {
       actualGrossProfitCents: 0,
+      baselineLaborCents: 0,
       baselineMaterialCents: 0,
       grossProfitImpactCents: 0,
       id: productId,
@@ -435,20 +535,49 @@ export function buildGrossProfitSimulator({
       orderItemIds: new Set<string>(),
       revenueCents: 0,
       simulatedGrossProfitCents: 0,
+      simulatedLaborCents: 0,
       simulatedMaterialCents: 0,
       unitsSold: 0,
       unresolvedLineCount: 0,
     };
     productRow.actualGrossProfitCents += line.actualGrossProfitCents;
+    productRow.baselineLaborCents += laborCost.baselineCostCents;
     productRow.baselineMaterialCents += lineBaselineMaterialCents;
-    productRow.grossProfitImpactCents -= lineMaterialDeltaCents;
+    productRow.grossProfitImpactCents -= lineMaterialDeltaCents + lineLaborDeltaCents;
     productRow.revenueCents += line.revenueCents;
-    productRow.simulatedGrossProfitCents += line.actualGrossProfitCents - lineMaterialDeltaCents;
+    productRow.simulatedGrossProfitCents += line.actualGrossProfitCents - lineMaterialDeltaCents - lineLaborDeltaCents;
+    productRow.simulatedLaborCents += laborCost.scenarioCostCents;
     productRow.simulatedMaterialCents += lineScenarioMaterialCents;
     productRow.unitsSold += line.qty;
     productRow.orderItemIds.add(line.id);
     if (!componentCosts.length) productRow.unresolvedLineCount += 1;
     productRowsById.set(productId, productRow);
+
+    const laborRow = laborRowsById.get(productId) ?? {
+      baselineLaborCents: 0,
+      baselineLaborMinutes: laborCost.baselineMinutes,
+      baselineLaborRateCents: laborCost.baselineRateCents,
+      grossProfitImpactCents: 0,
+      hasRecipe: laborCost.hasRecipe,
+      id: productId,
+      lineCount: 0,
+      name: line.productName,
+      revenueCents: 0,
+      simulatedLaborCents: 0,
+      simulatedLaborMinutes: laborCost.scenarioMinutes,
+      simulatedLaborRateCents: laborCost.scenarioRateCents,
+      unitsSold: 0,
+      unresolvedLineCount: 0,
+    };
+    laborRow.baselineLaborCents += laborCost.baselineCostCents;
+    laborRow.grossProfitImpactCents += lineLaborImpactCents;
+    laborRow.hasRecipe = laborRow.hasRecipe || laborCost.hasRecipe;
+    laborRow.lineCount += 1;
+    laborRow.revenueCents += line.revenueCents;
+    laborRow.simulatedLaborCents += laborCost.scenarioCostCents;
+    laborRow.unitsSold += line.qty;
+    if (!laborCost.hasRecipe) laborRow.unresolvedLineCount += 1;
+    laborRowsById.set(productId, laborRow);
 
     for (const cost of componentCosts) {
       const itemType = itemTypeForSimulation(cost.inventoryItem.item_type);
@@ -496,20 +625,29 @@ export function buildGrossProfitSimulator({
   }
 
   const materialDeltaCents = scenarioMaterialCents - baselineRecipeMaterialCents;
-  const simulatedGrossProfitCents = actual.grossProfitCents - materialDeltaCents;
-  const simulatedTotalCogsCents = actual.totalCogsCents + materialDeltaCents;
+  const laborDeltaCents = scenarioLaborCents - baselineRecipeLaborCents;
+  const simulatedGrossProfitCents = actual.grossProfitCents - materialDeltaCents - laborDeltaCents;
+  const simulatedTotalCogsCents = actual.totalCogsCents + materialDeltaCents + laborDeltaCents;
+  const validLaborMinuteOverrideCount = [...params.laborMinutesOverrides.values()].filter((value) => Number.isFinite(value) && value >= 0).length;
+  const validLaborRateOverrideCount = [...params.laborRateOverridesCents.values()].filter((value) => Number.isFinite(value) && value >= 0).length;
 
   return {
     actualGrossProfitCents: actual.grossProfitCents,
+    actualLaborCents: actual.laborCents,
     actualMarginPercent: actual.marginPercent,
     actualMaterialCents: actual.materialCents,
     actualTotalCogsCents: actual.totalCogsCents,
-    appliedOverrideCount: [...params.itemUnitCostOverridesCents.values()].filter((value) => Number.isFinite(value) && value >= 0).length,
+    appliedOverrideCount: [...params.itemUnitCostOverridesCents.values()].filter((value) => Number.isFinite(value) && value >= 0).length + validLaborMinuteOverrideCount + validLaborRateOverrideCount,
+    baselineRecipeLaborCents,
     baselineRecipeMaterialCents,
     grossProfitChangeCents: simulatedGrossProfitCents - actual.grossProfitCents,
     inputRows: [...inputRowsById.values()]
       .map(({ productIds, ...row }) => row)
       .sort((a, b) => Math.abs(b.grossProfitImpactCents) - Math.abs(a.grossProfitImpactCents) || b.simulatedCostCents - a.simulatedCostCents || a.name.localeCompare(b.name)),
+    laborImpactCents,
+    laborRows: [...laborRowsById.values()]
+      .sort((a, b) => Math.abs(b.grossProfitImpactCents) - Math.abs(a.grossProfitImpactCents) || b.simulatedLaborCents - a.simulatedLaborCents || a.name.localeCompare(b.name)),
+    laborScenarioCents: scenarioLaborCents,
     materialSupplyImpactCents,
     materialSupplyScenarioCents,
     orderCount: new Set(lines.map((line) => line.orderId)).size,
@@ -520,6 +658,7 @@ export function buildGrossProfitSimulator({
     rawCoffeeScenarioCents,
     revenueCents: actual.revenueCents,
     simulatedGrossProfitCents,
+    simulatedLaborCents: actual.laborCents + laborDeltaCents,
     simulatedMarginPercent: percent(simulatedGrossProfitCents, actual.revenueCents),
     simulatedMaterialCents: actual.materialCents + materialDeltaCents,
     simulatedTotalCogsCents,

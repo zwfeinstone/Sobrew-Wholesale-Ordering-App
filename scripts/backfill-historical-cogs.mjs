@@ -12,6 +12,7 @@ const FIXED_BRANDING_LABEL_COST_CENTS = 4;
 const PAGE_SIZE = 1000;
 const CHUNK_SIZE = 400;
 const CENTRAL_TIME_ZONE = 'America/Chicago';
+const LOCKED_RECIPE_COGS_SOURCE = 'locked_recipe_snapshot';
 const REFRESHABLE_RECIPE_COGS_SOURCES = new Set(['estimated_recipe', 'missing_cost']);
 
 function loadEnvFile(filePath) {
@@ -352,10 +353,13 @@ async function main() {
   loadEnvFile(path.resolve('.env.local'));
 
   const apply = process.argv.includes('--apply');
+  const lockRecipeSnapshots = process.argv.includes('--lock-recipe-snapshots');
   const help = process.argv.includes('--help') || process.argv.includes('-h');
   if (help) {
     console.log('Usage: npm run backfill:cogs           # dry run');
     console.log('Usage: npm run backfill:cogs -- --apply # write changes');
+    console.log('Usage: npm run backfill:cogs -- --lock-recipe-snapshots # dry run and mark refreshed recipe COGS as locked when applied');
+    console.log('Usage: npm run backfill:cogs -- --apply --lock-recipe-snapshots # write refreshed recipe COGS and lock them from future recipe backfills');
     return;
   }
 
@@ -509,6 +513,7 @@ async function main() {
   let totalBackfilledLaborCents = 0;
   let totalBackfilledFixedCents = 0;
   let recipeBackfilledItemCount = 0;
+  let recipeLockedItemCount = 0;
   let productCogsMissingOrderCount = 0;
   const missingProductCogsProducts = new Map();
 
@@ -590,6 +595,8 @@ async function main() {
       const processingFeeCogsCents = processingAllocations.get(item.id) ?? 0;
       const donationLineCogsCents = donationAllocations.get(item.id) ?? 0;
       const totalCogsCents = productCogsCents + shippingCogsCents + processingFeeCogsCents + donationLineCogsCents;
+      const shouldLockRecipeSnapshot = lockRecipeSnapshots && productBreakdown.productCogsWasFilledFromRecipe;
+      if (shouldLockRecipeSnapshot) recipeLockedItemCount += 1;
       const estimated = Boolean(item.cogs_estimated)
         || usedPlaceholderShipping
         || missingPoundsByItemId.has(item.id)
@@ -610,7 +617,7 @@ async function main() {
         cogs_shipping_cents: shippingCogsCents,
         cogs_shipping_label_cents: productBreakdown.shippingLabelCents,
         cogs_snapshot_at: item.cogs_snapshot_at ?? snapshotAt,
-        cogs_source: productBreakdown.source,
+        cogs_source: shouldLockRecipeSnapshot ? LOCKED_RECIPE_COGS_SOURCE : productBreakdown.source,
         cogs_tape_cents: productBreakdown.tapeCents,
         cogs_total_cents: totalCogsCents,
         cogs_unit_cents: qty > 0 ? productCogsCents / qty : 0,
@@ -664,6 +671,7 @@ async function main() {
   console.log(`  Material: $${(totalBackfilledMaterialCents / 100).toFixed(2)}`);
   console.log(`  Labor: $${(totalBackfilledLaborCents / 100).toFixed(2)}`);
   console.log(`  Fixed packaging: $${(totalBackfilledFixedCents / 100).toFixed(2)}`);
+  console.log(`Order items to lock as ${LOCKED_RECIPE_COGS_SOURCE}: ${recipeLockedItemCount}`);
   console.log(`Orders with missing product COGS: ${productCogsMissingOrderCount}`);
   console.log(`Commission snapshots to refresh/create: ${commissionUpserts}`);
   console.log(`Commission skipped with no center assignment: ${commissionSkippedNoAssignment}`);
