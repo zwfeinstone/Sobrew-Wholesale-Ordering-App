@@ -12,6 +12,7 @@ const FIXED_BRANDING_LABEL_COST_CENTS = 4;
 const PAGE_SIZE = 1000;
 const CHUNK_SIZE = 400;
 const CENTRAL_TIME_ZONE = 'America/Chicago';
+const REFRESHABLE_RECIPE_COGS_SOURCES = new Set(['estimated_recipe', 'missing_cost']);
 
 function loadEnvFile(filePath) {
   if (!fs.existsSync(filePath)) return;
@@ -262,7 +263,38 @@ function multiplyUnitBreakdown(unitBreakdown, quantity) {
   };
 }
 
+function shouldRefreshRecipeEstimate(item) {
+  return REFRESHABLE_RECIPE_COGS_SOURCES.has(String(item.cogs_source ?? ''));
+}
+
+function recipeBreakdownForItem(item, recipeEstimateByProductId) {
+  const recipeEstimate = item.product_id ? recipeEstimateByProductId.get(item.product_id) : null;
+  const qty = Math.max(0, numericValue(item.qty));
+  const lineBreakdown = recipeEstimate
+    ? multiplyUnitBreakdown(recipeEstimate, qty)
+    : multiplyUnitBreakdown(emptyUnitBreakdown(), qty);
+  const productCogsCents = lineBreakdown.materialCents + lineBreakdown.laborCents + lineBreakdown.fixedCents;
+
+  return {
+    brandingLabelCents: lineBreakdown.brandingLabelCents,
+    fixedCents: lineBreakdown.fixedCents,
+    fixedOtherCents: lineBreakdown.fixedOtherCents,
+    laborCents: lineBreakdown.laborCents,
+    materialCents: lineBreakdown.materialCents,
+    productCogsCents,
+    productCogsMissing: productCogsCents <= 0,
+    productCogsWasFilledFromRecipe: Boolean(recipeEstimate && productCogsCents > 0),
+    shippingLabelCents: lineBreakdown.shippingLabelCents,
+    source: lineBreakdown.source,
+    tapeCents: lineBreakdown.tapeCents,
+  };
+}
+
 function deriveProductCogsBreakdown(item, recipeEstimateByProductId) {
+  if (shouldRefreshRecipeEstimate(item)) {
+    return recipeBreakdownForItem(item, recipeEstimateByProductId);
+  }
+
   const explicitProductCogs = numericValue(item.cogs_product_cents);
   if (explicitProductCogs > 0) {
     const materialCents = numericValue(item.cogs_material_cents);
@@ -309,26 +341,7 @@ function deriveProductCogsBreakdown(item, recipeEstimateByProductId) {
     };
   }
 
-  const recipeEstimate = item.product_id ? recipeEstimateByProductId.get(item.product_id) : null;
-  const qty = Math.max(0, numericValue(item.qty));
-  const lineBreakdown = recipeEstimate
-    ? multiplyUnitBreakdown(recipeEstimate, qty)
-    : multiplyUnitBreakdown(emptyUnitBreakdown(), qty);
-  const productCogsCents = lineBreakdown.materialCents + lineBreakdown.laborCents + lineBreakdown.fixedCents;
-
-  return {
-    brandingLabelCents: lineBreakdown.brandingLabelCents,
-    fixedCents: lineBreakdown.fixedCents,
-    fixedOtherCents: lineBreakdown.fixedOtherCents,
-    laborCents: lineBreakdown.laborCents,
-    materialCents: lineBreakdown.materialCents,
-    productCogsCents,
-    productCogsMissing: productCogsCents <= 0,
-    productCogsWasFilledFromRecipe: Boolean(recipeEstimate && productCogsCents > 0),
-    shippingLabelCents: lineBreakdown.shippingLabelCents,
-    source: lineBreakdown.source,
-    tapeCents: lineBreakdown.tapeCents,
-  };
+  return recipeBreakdownForItem(item, recipeEstimateByProductId);
 }
 
 function productLabel(item) {

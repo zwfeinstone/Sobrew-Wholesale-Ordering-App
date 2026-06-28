@@ -3,6 +3,12 @@ import { redirect } from 'next/navigation';
 import { getSalesScopedCenterIdsForAdmin, scopeCenterRelatedQueryForAdmin, scopeCentersForAdmin } from '@/lib/admin-center-scope';
 import { adminCanView, getCurrentAdminAccess } from '@/lib/admin-permissions';
 import {
+  buildGrossProfitSimulator,
+  type GrossProfitSimulatorDashboard,
+  type GrossProfitSimulatorInputRow,
+  type GrossProfitSimulatorProductRow,
+} from '@/lib/gross-profit-simulator';
+import {
   buildProfitabilityDashboard,
   type ProfitabilityOrderItemRow,
   type ProfitabilityOrderRow,
@@ -39,6 +45,7 @@ const REPORTS = [
   { id: 'centers', label: 'Center Profitability' },
   { id: 'items', label: 'Item Profitability' },
   { id: 'margin', label: 'Where Did Margin Go' },
+  { id: 'simulator', label: 'Gross Profit Simulator' },
   { id: 'production', label: 'Production & COGS' },
   { id: 'inventory', label: 'Inventory Value & Expenses' },
   { id: 'sales', label: 'Sales & Customers' },
@@ -97,6 +104,34 @@ function number(value: number, maximumFractionDigits = 0) {
 function normalizeReportNumber(value: unknown) {
   const parsed = typeof value === 'number' ? value : Number.parseFloat(String(value ?? '0'));
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function simulatorPercentParam(value: string | string[] | undefined) {
+  const parsed = Number.parseFloat(stringParam(value));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function simulatorUnitCostOverrides(searchParams: Record<string, string | string[] | undefined> | undefined) {
+  const overrides = new Map<string, number>();
+  for (const [key, value] of Object.entries(searchParams ?? {})) {
+    if (!key.startsWith('sim_item_')) continue;
+    const rawValue = stringParam(value).trim();
+    if (!rawValue) continue;
+    const parsed = Number.parseFloat(rawValue);
+    if (Number.isFinite(parsed) && parsed >= 0) {
+      overrides.set(key.replace('sim_item_', ''), parsed * 100);
+    }
+  }
+  return overrides;
+}
+
+function unitCostInputValue(overrides: Map<string, number>, itemId: string) {
+  const override = overrides.get(itemId);
+  return typeof override === 'number' && Number.isFinite(override) ? String(Number((override / 100).toFixed(4))) : '';
+}
+
+function unitMoney(value: number) {
+  return `$${(Math.max(0, value) / 100).toFixed(4)}`;
 }
 
 function quantity(value: number) {
@@ -677,6 +712,198 @@ function FixedExpenseTable({ rows }: { rows: ReturnType<typeof buildProfitabilit
   );
 }
 
+function simulatorItemTypeLabel(value: string) {
+  if (value === 'raw_coffee') return 'Raw coffee';
+  if (value === 'material_supply' || value === 'supply') return 'Materials & supplies';
+  return value.replaceAll('_', ' ');
+}
+
+function SimulatorInputTable({
+  overrides,
+  rows,
+}: {
+  overrides: Map<string, number>;
+  rows: GrossProfitSimulatorInputRow[];
+}) {
+  if (!rows.length) return <EmptyState message="No recipe material inputs were found for the selected shipped orders." />;
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full min-w-[84rem] border-separate border-spacing-y-2 text-left text-sm">
+        <thead>
+          <tr className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+            <th className="px-4 py-2">Input</th>
+            <th className="px-4 py-2">Type</th>
+            <th className="px-4 py-2 text-right">Usage</th>
+            <th className="px-4 py-2 text-right">Current unit cost</th>
+            <th className="px-4 py-2 text-right">Scenario unit cost</th>
+            <th className="px-4 py-2 text-right">Override unit cost</th>
+            <th className="px-4 py-2 text-right">Scenario COGS</th>
+            <th className="px-4 py-2 text-right">Profit impact</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.slice(0, 18).map((row) => (
+            <tr key={row.id} className="bg-white/65">
+              <td className="rounded-l-xl px-4 py-3">
+                <p className="font-semibold text-slate-950">{row.name}</p>
+                <p className="mt-1 text-xs text-slate-500">{row.sku || `${number(row.productCount)} product${row.productCount === 1 ? '' : 's'}`}</p>
+              </td>
+              <td className="px-4 py-3 text-slate-700">{simulatorItemTypeLabel(row.itemType)}</td>
+              <td className="px-4 py-3 text-right text-slate-700">{quantity(row.quantityUsed)} {row.baseUnit}</td>
+              <td className="px-4 py-3 text-right text-slate-700">{unitMoney(row.actualUnitCostCents)}</td>
+              <td className="px-4 py-3 text-right font-semibold text-slate-950">{unitMoney(row.simulatedUnitCostCents)}</td>
+              <td className="px-4 py-3 text-right">
+                <input
+                  className="input ml-auto w-32 text-right"
+                  name={`sim_item_${row.id}`}
+                  placeholder={(row.actualUnitCostCents / 100).toFixed(4)}
+                  step="0.0001"
+                  min="0"
+                  type="number"
+                  defaultValue={unitCostInputValue(overrides, row.id)}
+                />
+              </td>
+              <td className="px-4 py-3 text-right text-slate-700">{money(row.simulatedCostCents)}</td>
+              <td className={`rounded-r-xl px-4 py-3 text-right font-semibold ${row.grossProfitImpactCents >= 0 ? 'text-teal-800' : 'text-rose-700'}`}>{signedMoney(row.grossProfitImpactCents)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function SimulatorProductTable({ rows }: { rows: GrossProfitSimulatorProductRow[] }) {
+  if (!rows.length) return <EmptyState message="No simulated product rows found for the selected month." />;
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full min-w-[78rem] border-separate border-spacing-y-2 text-left text-sm">
+        <thead>
+          <tr className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+            <th className="px-4 py-2">Product</th>
+            <th className="px-4 py-2 text-right">Units</th>
+            <th className="px-4 py-2 text-right">Revenue</th>
+            <th className="px-4 py-2 text-right">Actual GP</th>
+            <th className="px-4 py-2 text-right">Scenario material</th>
+            <th className="px-4 py-2 text-right">Simulated GP</th>
+            <th className="px-4 py-2 text-right">Profit impact</th>
+            <th className="px-4 py-2 text-right">Unpriced lines</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.slice(0, ROW_LIMIT).map((row) => (
+            <tr key={row.id} className="bg-white/65">
+              <td className="rounded-l-xl px-4 py-3 font-semibold text-slate-950">{row.name}</td>
+              <td className="px-4 py-3 text-right text-slate-700">{quantity(row.unitsSold)}</td>
+              <td className="px-4 py-3 text-right text-slate-700">{money(row.revenueCents)}</td>
+              <td className={`px-4 py-3 text-right font-semibold ${row.actualGrossProfitCents >= 0 ? 'text-teal-800' : 'text-rose-700'}`}>{money(row.actualGrossProfitCents)}</td>
+              <td className="px-4 py-3 text-right text-slate-700">{money(row.simulatedMaterialCents)}</td>
+              <td className={`px-4 py-3 text-right font-semibold ${row.simulatedGrossProfitCents >= 0 ? 'text-teal-800' : 'text-rose-700'}`}>{money(row.simulatedGrossProfitCents)}</td>
+              <td className={`px-4 py-3 text-right font-semibold ${row.grossProfitImpactCents >= 0 ? 'text-teal-800' : 'text-rose-700'}`}>{signedMoney(row.grossProfitImpactCents)}</td>
+              <td className="rounded-r-xl px-4 py-3 text-right text-slate-700">{number(row.unresolvedLineCount)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function GrossProfitSimulatorReport({
+  centerId,
+  dashboard,
+  materialSupplyPercentDelta,
+  monthValue,
+  overrides,
+  productId,
+  rangeEndInput,
+  rangeStartInput,
+  rawCoffeePercentDelta,
+  resetHref,
+  salesRepId,
+}: {
+  centerId?: string;
+  dashboard: GrossProfitSimulatorDashboard;
+  materialSupplyPercentDelta: number;
+  monthValue: string;
+  overrides: Map<string, number>;
+  productId?: string;
+  rangeEndInput: string;
+  rangeStartInput: string;
+  rawCoffeePercentDelta: number;
+  resetHref: string;
+  salesRepId?: string;
+}) {
+  return (
+    <>
+      <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
+        <StatTile label="Actual Gross Profit" value={money(dashboard.actualGrossProfitCents)} detail={`${percent(dashboard.actualMarginPercent).replace('+', '')} actual margin.`} />
+        <StatTile label="Simulated Gross Profit" value={money(dashboard.simulatedGrossProfitCents)} detail={`${percent(dashboard.simulatedMarginPercent).replace('+', '')} simulated margin.`} />
+        <StatTile label="Profit Change" value={signedMoney(dashboard.grossProfitChangeCents)} detail={`${number(dashboard.orderCount)} shipped order${dashboard.orderCount === 1 ? '' : 's'} in scenario.`} />
+        <StatTile label="Material COGS" value={money(dashboard.simulatedMaterialCents)} detail={`${signedMoney(dashboard.simulatedMaterialCents - dashboard.actualMaterialCents)} versus actual material COGS.`} />
+        <StatTile label="Unpriced Lines" value={number(dashboard.unresolvedLineCount)} detail="Lines without a usable recipe remain unchanged." />
+      </section>
+
+      <section className="card space-y-5">
+        <SectionHeading
+          eyebrow="Gross profit simulator"
+          title="Material price what-if"
+          subtitle="Revenue, labor, fixed packaging, shipping, processing, and donation stay actual; the scenario changes recipe material costs only."
+          action={dashboard.appliedOverrideCount ? <span className="rounded-full bg-teal-50 px-3 py-1 text-sm font-semibold text-teal-800">{dashboard.appliedOverrideCount} override{dashboard.appliedOverrideCount === 1 ? '' : 's'}</span> : null}
+        />
+        <form>
+          <input type="hidden" name="report" value="simulator" />
+          <input type="hidden" name="month" value={monthValue} />
+          <input type="hidden" name="rangeStart" value={rangeStartInput} />
+          <input type="hidden" name="rangeEnd" value={rangeEndInput} />
+          {productId ? <input type="hidden" name="product" value={productId} /> : null}
+          {centerId ? <input type="hidden" name="center" value={centerId} /> : null}
+          {salesRepId ? <input type="hidden" name="sales_rep" value={salesRepId} /> : null}
+
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+            <label className="space-y-2 text-sm font-medium text-slate-700">
+              Raw coffee change
+              <div className="relative">
+                <input className="input pr-9 text-right" name="sim_raw_delta" type="number" step="0.01" defaultValue={String(rawCoffeePercentDelta)} />
+                <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-sm text-slate-500">%</span>
+              </div>
+            </label>
+            <label className="space-y-2 text-sm font-medium text-slate-700">
+              Materials & supplies change
+              <div className="relative">
+                <input className="input pr-9 text-right" name="sim_material_delta" type="number" step="0.01" defaultValue={String(materialSupplyPercentDelta)} />
+                <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-sm text-slate-500">%</span>
+              </div>
+            </label>
+            <StatTile label="Raw Coffee Impact" value={signedMoney(dashboard.rawCoffeeImpactCents)} detail={`${money(dashboard.rawCoffeeScenarioCents)} scenario raw coffee COGS.`} />
+            <StatTile label="Supply Impact" value={signedMoney(dashboard.materialSupplyImpactCents)} detail={`${money(dashboard.materialSupplyScenarioCents)} scenario material COGS.`} />
+          </div>
+
+          <div className="mt-5">
+            <SimulatorInputTable rows={dashboard.inputRows} overrides={overrides} />
+          </div>
+
+          <div className="mt-5 flex flex-col gap-3 sm:flex-row sm:items-center">
+            <button className="btn-primary w-full sm:w-auto" type="submit">Run simulation</button>
+            <Link href={resetHref} className="btn-secondary w-full sm:w-auto">Clear simulation</Link>
+          </div>
+        </form>
+      </section>
+
+      <section className="card space-y-5">
+        <SectionHeading
+          eyebrow="Product impact"
+          title="Which products move gross profit"
+          subtitle="Product rows keep actual revenue and non-material COGS, then apply the material price scenario from current recipes."
+        />
+        <SimulatorProductTable rows={dashboard.productRows} />
+      </section>
+    </>
+  );
+}
+
 function CriticalReportError({ message }: { message: string }) {
   return (
     <div className="space-y-6">
@@ -767,13 +994,14 @@ export default async function AdminReportsPage({
     shortageMovementsResult,
     nonInventoryExpensesResult,
     sampleBoxRunsResult,
+    recipeResult,
   ] = await Promise.all([
     ordersQuery,
     supabase.from('order_items').select('id,order_id,product_id,product_name_snapshot,qty,unit_price_cents,line_total_cents,shipping_boxes_used,cogs_material_cents,cogs_labor_cents,cogs_fixed_cents,cogs_tape_cents,cogs_shipping_label_cents,cogs_branding_label_cents,cogs_fixed_other_cents,cogs_product_cents,cogs_shipping_cents,cogs_processing_fee_cents,cogs_donation_cents,cogs_total_cents,cogs_unit_cents,cogs_source,cogs_estimated,cogs_snapshot_at').limit(50000),
     centersQuery,
     supabase.from('products').select('id,name,sku,category,active').order('name', { ascending: true }),
     supabase.from('inventory_items').select('id,name,sku,item_type,base_unit,product_id,active').order('name', { ascending: true }),
-    supabase.from('inventory_lots').select('inventory_item_id,quantity_remaining,unit_cost_cents').limit(50000),
+    supabase.from('inventory_lots').select('inventory_item_id,quantity_remaining,unit_cost_cents,received_at,created_at').limit(50000),
     supabase.from('inventory_reorder_settings').select('inventory_item_id,reorder_point,target_stock,lead_time_days'),
     supabase.from('production_runs').select('id,product_id,quantity_produced,estimated_unit_cost_cents,actual_unit_cost_cents,actual_labor_cost_cents,fixed_cost_cents,fixed_tape_cost_cents,fixed_shipping_label_cost_cents,fixed_branding_label_cost_cents,fixed_other_cost_cents,produced_at').order('produced_at', { ascending: false }).limit(50000),
     supabase.from('production_run_inputs').select('production_run_id,quantity_expected,quantity_used,cost_cents').limit(50000),
@@ -784,6 +1012,10 @@ export default async function AdminReportsPage({
       .select('id,center_id,sales_profile_id,quantity_boxes,inventory_cogs_cents,product_cogs_cents,fixed_shipping_cents,fixed_misc_cents,total_cogs_cents,cogs_estimated,sent_at')
       .gte('sent_at', rangeStart.toISOString())
       .lt('sent_at', rangeEndExclusive.toISOString())
+      .limit(50000),
+    supabase
+      .from('product_recipes')
+      .select('product_id,output_qty,waste_percent,product_recipe_components(inventory_item_id,quantity,unit,component_role,inventory_items(id,name,sku,item_type,base_unit))')
       .limit(50000),
   ]);
 
@@ -835,6 +1067,28 @@ export default async function AdminReportsPage({
     rangeStart,
     shortageMovements: shortageMovementsResult.error ? [] : ((shortageMovementsResult.data ?? []) as any[]),
   });
+  const rawCoffeePercentDelta = simulatorPercentParam(searchParams?.sim_raw_delta);
+  const materialSupplyPercentDelta = simulatorPercentParam(searchParams?.sim_material_delta);
+  const itemUnitCostOverrides = simulatorUnitCostOverrides(searchParams);
+  const simulatorDashboard = buildGrossProfitSimulator({
+    actual: profitabilityDashboard.current,
+    centers,
+    inventoryItems: inventoryUnavailable ? [] : ((inventoryItemsResult.data ?? []) as any[]),
+    inventoryLots: inventoryUnavailable ? [] : ((inventoryLotsResult.data ?? []) as any[]),
+    orderItems: (orderItemsResult.data ?? []) as ProfitabilityOrderItemRow[],
+    orders: (ordersResult.data ?? []) as ProfitabilityOrderRow[],
+    params: {
+      centerId,
+      itemUnitCostOverridesCents: itemUnitCostOverrides,
+      materialSupplyPercentDelta,
+      productId,
+      rangeEndExclusive,
+      rangeStart,
+      rawCoffeePercentDelta,
+    },
+    products,
+    recipes: recipeResult.error ? [] : ((recipeResult.data ?? []) as any[]),
+  });
   const sampleBoxRuns = (sampleBoxRunsResult.error ? [] : (sampleBoxRunsResult.data ?? []) as Array<{
     center_id: string | null;
     cogs_estimated: boolean | null;
@@ -873,6 +1127,9 @@ export default async function AdminReportsPage({
   if (productId) navParams.set('product', productId);
   if (centerId) navParams.set('center', centerId);
   if (selectedSalesRepId) navParams.set('sales_rep', selectedSalesRepId);
+  const simulatorResetParams = new URLSearchParams(navParams);
+  simulatorResetParams.set('report', 'simulator');
+  const simulatorResetHref = `/admin/reports?${simulatorResetParams.toString()}`;
   const reportsTitle = canViewProfitabilityReports
     ? 'Profitability, COGS, sales, and inventory reporting.'
     : 'Sales and customer reporting.';
@@ -1025,6 +1282,22 @@ export default async function AdminReportsPage({
             <MarginBridgeTable rows={profitabilityDashboard.marginBridgeRows} />
           </div>
         </section>
+      ) : null}
+
+      {activeReport === 'simulator' ? (
+        <GrossProfitSimulatorReport
+          centerId={centerId}
+          dashboard={simulatorDashboard}
+          materialSupplyPercentDelta={materialSupplyPercentDelta}
+          monthValue={formatMonthInput(selectedMonth)}
+          overrides={itemUnitCostOverrides}
+          productId={productId}
+          rangeEndInput={rangeEndInput}
+          rangeStartInput={formatDateInput(rangeStart)}
+          rawCoffeePercentDelta={rawCoffeePercentDelta}
+          resetHref={simulatorResetHref}
+          salesRepId={selectedSalesRepId}
+        />
       ) : null}
 
       {activeReport === 'production' ? (
