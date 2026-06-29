@@ -1,4 +1,5 @@
 import { redirect } from 'next/navigation';
+import PendingSubmitButton from '@/components/pending-submit-button';
 import { requireAdminSectionView } from '@/lib/admin-permissions';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import {
@@ -264,7 +265,7 @@ function SelfClockCard({
             Note
             <input className="input" name="note" placeholder="Optional" />
           </label>
-          <button className="btn-primary w-full md:w-auto" type="submit">Clock In</button>
+          <PendingSubmitButton className="btn-primary w-full md:w-auto" label="Clock In" pendingLabel="Clocking in..." />
         </form>
       ) : null}
 
@@ -275,14 +276,14 @@ function SelfClockCard({
               Lunch note
               <input className="input" name="note" placeholder="Optional" />
             </label>
-            <button className="btn-secondary w-full md:w-auto" type="submit">Start Lunch</button>
+            <PendingSubmitButton className="btn-secondary w-full md:w-auto" label="Start Lunch" pendingLabel="Starting..." />
           </form>
           <form action={clockOut} className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-end" data-admin-self-service="true">
             <label className="space-y-2 text-sm font-medium text-slate-700">
               Clock-out note
               <input className="input" name="note" placeholder="Optional" />
             </label>
-            <button className="btn-primary w-full md:w-auto" type="submit">Clock Out</button>
+            <PendingSubmitButton className="btn-primary w-full md:w-auto" label="Clock Out" pendingLabel="Clocking out..." />
           </form>
         </div>
       ) : null}
@@ -293,7 +294,7 @@ function SelfClockCard({
             End lunch note
             <input className="input" name="note" placeholder={`Lunch started ${formatCentralDateTime(currentBreak.break_start_at)}`} />
           </label>
-          <button className="btn-primary w-full md:w-auto" type="submit">End Lunch</button>
+          <PendingSubmitButton className="btn-primary w-full md:w-auto" label="End Lunch" pendingLabel="Ending..." />
         </form>
       ) : null}
     </section>

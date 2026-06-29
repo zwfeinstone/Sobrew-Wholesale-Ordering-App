@@ -1,4 +1,5 @@
 import { redirect } from 'next/navigation';
+import PendingSubmitButton from '@/components/pending-submit-button';
 import StatusToast from '@/components/status-toast';
 import { requireAdminWriteAccess } from '@/lib/admin-write-access';
 import {
@@ -260,7 +261,7 @@ export default async function ProductionPage({
                 <input className="input" name="notes" placeholder="Run notes" />
               </label>
             </div>
-            <button className="btn-primary w-full sm:w-auto">Record production run</button>
+            <PendingSubmitButton className="btn-primary w-full sm:w-auto" label="Record production run" pendingLabel="Recording..." />
           </form>
         ) : (
           <div className="rounded-2xl border border-slate-200 bg-white/60 p-4 text-sm text-slate-600">

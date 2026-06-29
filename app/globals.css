@@ -1214,10 +1214,21 @@ input[type='reset'],
   transform-origin: center;
 }
 
+button:disabled,
+input[type='button']:disabled,
+input[type='submit']:disabled,
+input[type='reset']:disabled,
+button[aria-disabled='true'],
 button.is-press-locked {
-  cursor: wait;
-  opacity: 0.72;
+  cursor: not-allowed !important;
+  opacity: 0.58 !important;
+  filter: grayscale(0.35);
   transform: none !important;
+  box-shadow: none !important;
+}
+
+button.is-press-locked {
+  cursor: wait !important;
 }
 
 .btn-primary:active,

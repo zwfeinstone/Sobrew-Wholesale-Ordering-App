@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
+import PendingSubmitButton from '@/components/pending-submit-button';
 import { getSalesScopedCenterIdsForAdmin, scopeCentersForAdmin } from '@/lib/admin-center-scope';
 import { adminCanEdit, requireAdminSectionEdit, requireAdminSectionView } from '@/lib/admin-permissions';
 import {
@@ -582,9 +583,13 @@ export default async function SampleBoxesPage({
               </div>
             </div>
 
-            <button className="btn-primary w-full sm:w-auto" data-press-lock-key="record-sample-box" type="submit" disabled={!canEdit}>
-              Record sample box
-            </button>
+            <PendingSubmitButton
+              className="btn-primary w-full sm:w-auto"
+              data-press-lock-key="record-sample-box"
+              disabled={!canEdit}
+              label="Record sample box"
+              pendingLabel="Recording..."
+            />
             {!canEdit ? <p className="text-sm font-semibold text-slate-500">You have read-only access to Prospecting.</p> : null}
           </form>
         </section>
@@ -616,7 +621,7 @@ export default async function SampleBoxesPage({
               <input className="input mt-2" name="notes" defaultValue={activeTemplate.notes ?? ''} />
             </label>
             <div className="lg:col-span-2">
-              <button className="btn-primary w-full sm:w-auto" type="submit">Save template costs</button>
+              <PendingSubmitButton className="btn-primary w-full sm:w-auto" label="Save template costs" pendingLabel="Saving..." />
             </div>
           </form>
 
@@ -660,13 +665,15 @@ export default async function SampleBoxesPage({
                       </td>
                       <td className="rounded-r-xl px-4 py-3">
                         <div className="flex justify-end gap-2">
-                          <button form={`update-template-item-${item.id}`} className="btn-secondary" type="submit">Update</button>
+                          <button form={`update-template-item-${item.id}`} className="btn-secondary" data-press-lock-key={`update-template-item-${item.id}`} type="submit">Update</button>
                           <form action={deleteTemplateItem}>
                             <input type="hidden" name="template_id" value={activeTemplate.id} />
                             <input type="hidden" name="item_id" value={item.id} />
-                            <button className="rounded-full border border-rose-200 px-4 py-2 text-sm font-semibold text-rose-700 hover:bg-rose-50" type="submit">
-                              Remove
-                            </button>
+                            <PendingSubmitButton
+                              className="rounded-full border border-rose-200 px-4 py-2 text-sm font-semibold text-rose-700 hover:bg-rose-50"
+                              label="Remove"
+                              pendingLabel="Removing..."
+                            />
                           </form>
                         </div>
                       </td>
@@ -724,7 +731,7 @@ export default async function SampleBoxesPage({
                 <input className="input mt-2" name="sort_order" type="number" step="1" defaultValue="100" />
               </label>
             </div>
-            <button className="btn-primary mt-4 w-full sm:w-auto" type="submit">Add template item</button>
+            <PendingSubmitButton className="btn-primary mt-4 w-full sm:w-auto" label="Add template item" pendingLabel="Adding..." />
           </form>
         </section>
       ) : null}

@@ -1,6 +1,7 @@
 'use client';
 
 import { useMemo, useState } from 'react';
+import PendingSubmitButton from '@/components/pending-submit-button';
 import { productCategoryGroupKey, productCategoryLabel, productCategorySortRank, type ProductCategoryGroup } from '@/lib/product-categories';
 
 type Product = { id: string; name: string | null; category?: string | null };
@@ -204,7 +205,7 @@ export function UserWizard({ products }: { products: Product[] }) {
           </div>
           <div className="flex flex-col gap-3 sm:flex-row">
             <button type="button" className="btn-secondary w-full sm:w-auto" onClick={() => setStep(3)}>Back</button>
-            <button className="btn-primary w-full sm:w-auto">Create Center</button>
+            <PendingSubmitButton className="btn-primary w-full sm:w-auto" label="Create Center" pendingLabel="Creating..." />
           </div>
         </div>
       )}

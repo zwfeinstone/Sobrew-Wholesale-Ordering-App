@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
+import PendingSubmitButton from '@/components/pending-submit-button';
 import StatusToast from '@/components/status-toast';
 import { requireAdminWriteAccess } from '@/lib/admin-write-access';
 import {
@@ -695,7 +696,7 @@ export default async function PlanningPage({
             <input className="input" name="minimum_qty" min="0" step="1" type="number" placeholder="Minimum quantity" />
           </div>
           <textarea className="input min-h-20" name="notes" placeholder="Notes" />
-          <button className="btn-primary w-full sm:w-auto">Save par target</button>
+          <PendingSubmitButton className="btn-primary w-full sm:w-auto" label="Save par target" pendingLabel="Saving..." />
         </form>
       </section>
     </div>

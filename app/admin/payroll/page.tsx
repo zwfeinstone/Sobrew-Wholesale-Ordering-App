@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
+import PendingSubmitButton from '@/components/pending-submit-button';
 import StatusToast from '@/components/status-toast';
 import { recordAdminAuditLog } from '@/lib/admin-audit';
 import { requireAdminSectionEdit, requireAdminSectionView } from '@/lib/admin-permissions';
@@ -1029,7 +1030,7 @@ function EntriesTable({
                         <form action={approveEntry} className="space-y-2">
                           {returnToInput(returnTo)}
                           <input name="entry_id" type="hidden" value={entry.id} />
-                          <button className="btn-secondary w-full" type="submit">Approve</button>
+                          <PendingSubmitButton className="btn-secondary w-full" label="Approve" pendingLabel="Approving..." />
                         </form>
                       ) : null}
                       <form action={updateEntryWorkType} className="space-y-2">
@@ -1037,7 +1038,7 @@ function EntriesTable({
                         <input name="entry_id" type="hidden" value={entry.id} />
                         <WorkTypeSelect defaultValue={entry.work_type} />
                         <textarea className="input min-h-20" name="reason" required placeholder="Correction reason" />
-                        <button className="btn-primary w-full" type="submit">Save Labor Tag</button>
+                        <PendingSubmitButton className="btn-primary w-full" label="Save Labor Tag" pendingLabel="Saving..." />
                       </form>
                       <form action={updateEntryTimes} className="space-y-2 rounded-2xl border border-slate-200 bg-white/70 p-3">
                         {returnToInput(returnTo)}
@@ -1056,7 +1057,7 @@ function EntriesTable({
                         </label>
                         <WorkTypeSelect defaultValue={entry.work_type} />
                         <textarea className="input min-h-20" name="reason" required placeholder={entry.status === 'locked' ? 'Post-lock correction reason' : 'Correction reason'} />
-                        <button className="btn-primary w-full" type="submit">Save Time Correction</button>
+                        <PendingSubmitButton className="btn-primary w-full" label="Save Time Correction" pendingLabel="Saving..." />
                       </form>
                       {entry.clock_out_at && entry.status !== 'void' ? (
                         <form action={addAllocation} className="space-y-2">
@@ -1072,7 +1073,7 @@ function EntriesTable({
                           </select>
                           <input className="input" name="minutes" type="number" min="0.01" step="0.01" placeholder="Minutes" />
                           <textarea className="input min-h-16" name="notes" placeholder="Allocation note" />
-                          <button className="btn-secondary w-full" type="submit">Add Allocation</button>
+                          <PendingSubmitButton className="btn-secondary w-full" label="Add Allocation" pendingLabel="Adding..." />
                         </form>
                       ) : null}
                       {allocations.length ? (
@@ -1087,7 +1088,7 @@ function EntriesTable({
                                 <form action={removeAllocation} className="mt-2">
                                   {returnToInput(returnTo)}
                                   <input name="allocation_id" type="hidden" value={allocation.id} />
-                                  <button className="btn-secondary w-full" type="submit">Remove</button>
+                                  <PendingSubmitButton className="btn-secondary w-full" label="Remove" pendingLabel="Removing..." />
                                 </form>
                               </div>
                             );
@@ -1099,7 +1100,7 @@ function EntriesTable({
                           {returnToInput(returnTo)}
                           <input name="entry_id" type="hidden" value={entry.id} />
                           <input className="input" name="reason" required placeholder="Void shift reason" />
-                          <button className="btn-secondary w-full" type="submit">Void Shift</button>
+                          <PendingSubmitButton className="btn-secondary w-full" label="Void Shift" pendingLabel="Voiding..." />
                         </form>
                       ) : null}
                     </div>
@@ -1161,14 +1162,14 @@ function BreaksTable({ entries, returnTo }: { entries: TimeEntry[]; returnTo: st
                       <input className="input" name="break_start_at" type="datetime-local" defaultValue={formatCentralDateTimeInput(entryBreak.break_start_at)} required />
                       <input className="input" name="break_end_at" type="datetime-local" defaultValue={formatCentralDateTimeInput(entryBreak.break_end_at)} />
                       <textarea className="input min-h-20" name="reason" required placeholder={entry.status === 'locked' ? 'Post-lock correction reason' : 'Correction reason'} />
-                      <button className="btn-primary w-full" type="submit">Save Break</button>
+                      <PendingSubmitButton className="btn-primary w-full" label="Save Break" pendingLabel="Saving..." />
                     </form>
                     {entryBreak.status !== 'void' ? (
                       <form action={voidBreak} className="space-y-2">
                         {returnToInput(returnTo)}
                         <input name="break_id" type="hidden" value={entryBreak.id} />
                         <input className="input" name="reason" required placeholder="Void break reason" />
-                        <button className="btn-secondary w-full" type="submit">Void Break</button>
+                        <PendingSubmitButton className="btn-secondary w-full" label="Void Break" pendingLabel="Voiding..." />
                       </form>
                     ) : null}
                   </div>
@@ -1236,7 +1237,7 @@ function ManualEntriesPanel({
         </div>
         <textarea className="input min-h-20" name="reason" required placeholder="Manual entry reason" />
         <textarea className="input min-h-20" name="notes" placeholder="Optional notes" />
-        <button className="btn-primary w-full sm:w-auto" type="submit">Add Manual Shift</button>
+        <PendingSubmitButton className="btn-primary w-full sm:w-auto" label="Add Manual Shift" pendingLabel="Adding..." />
       </form>
 
       <form action={addManualBreak} className="card space-y-4">
@@ -1272,7 +1273,7 @@ function ManualEntriesPanel({
         </div>
         <textarea className="input min-h-20" name="reason" required placeholder="Manual break reason" />
         <textarea className="input min-h-20" name="notes" placeholder="Optional notes" />
-        <button className="btn-primary w-full sm:w-auto" type="submit">Add Break</button>
+        <PendingSubmitButton className="btn-primary w-full sm:w-auto" label="Add Break" pendingLabel="Adding..." />
       </form>
     </section>
   );
@@ -1662,7 +1663,7 @@ export default async function PayrollPage({
                   <form action={approveEntry}>
                     {returnToInput(currentUrl)}
                     <input name="entry_id" type="hidden" value={entry.id} />
-                    <button className="btn-primary w-full md:w-auto" type="submit">Approve</button>
+                    <PendingSubmitButton className="btn-primary w-full md:w-auto" label="Approve" pendingLabel="Approving..." />
                   </form>
                 </div>
               ))}
@@ -1696,7 +1697,7 @@ export default async function PayrollPage({
                 </select>
               </label>
               <textarea className="input min-h-20" name="notes" placeholder="Optional lock note" />
-              <button className="btn-primary w-full sm:w-auto" type="submit">Lock Range</button>
+              <PendingSubmitButton className="btn-primary w-full sm:w-auto" label="Lock Range" pendingLabel="Locking..." />
             </form>
 
             <section className="card space-y-4">
@@ -1748,7 +1749,7 @@ export default async function PayrollPage({
                     <input type="checkbox" name="is_sales_rep" defaultChecked={Boolean(commissionSetting?.is_sales_rep)} />
                     Sales Rep
                   </label>
-                  <button className="btn-primary w-full lg:w-auto" type="submit">Save</button>
+                  <PendingSubmitButton className="btn-primary w-full lg:w-auto" label="Save" pendingLabel="Saving..." />
                 </div>
                 <div>
                   <p className="mb-2 text-sm font-semibold text-slate-950">Labor tags</p>

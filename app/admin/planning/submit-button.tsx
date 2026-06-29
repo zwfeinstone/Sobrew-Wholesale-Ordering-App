@@ -6,7 +6,7 @@ export default function PlanningSubmitButton({ disabled = false }: { disabled?: 
   const { pending } = useFormStatus();
 
   return (
-    <button className="btn-primary w-full" disabled={disabled || pending} type="submit">
+    <button className="btn-primary w-full" disabled={disabled || pending} type="submit" aria-busy={pending}>
       {pending ? 'Adding...' : 'Add Production'}
     </button>
   );

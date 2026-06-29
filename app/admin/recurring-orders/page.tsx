@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
+import PendingSubmitButton from '@/components/pending-submit-button';
 import { requireAdminWriteAccess } from '@/lib/admin-write-access';
 import { formatNextRecurringOrderDate, isRecurringFrequency, RECURRING_FREQUENCY_OPTIONS } from '@/lib/recurring';
 import { createClient } from '@/lib/supabase/server';
@@ -173,7 +174,7 @@ export default async function AdminRecurringOrdersPage({ searchParams }: { searc
                 <option value="paused">Paused</option>
                 <option value="canceled">Canceled</option>
               </select>
-              <button className="btn-primary w-full sm:w-auto" type="submit">Save changes</button>
+              <PendingSubmitButton className="btn-primary w-full sm:w-auto" label="Save changes" pendingLabel="Saving..." />
             </form>
           </div>
         );

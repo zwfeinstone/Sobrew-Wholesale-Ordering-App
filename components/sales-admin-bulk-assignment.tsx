@@ -1,5 +1,7 @@
 'use client';
 
+import PendingSubmitButton from '@/components/pending-submit-button';
+
 export type SalesAdminBulkCenter = {
   assignedProfileId: string;
   assignedProfileLabel: string;
@@ -173,9 +175,12 @@ export function SalesAdminBulkAssignment({
           </table>
         </div>
 
-        <button className="btn-primary w-full sm:w-auto" disabled={!salesReps.length || !centers.length} type="submit">
-          Apply bulk assignment
-        </button>
+        <PendingSubmitButton
+          className="btn-primary w-full sm:w-auto"
+          disabled={!salesReps.length || !centers.length}
+          label="Apply bulk assignment"
+          pendingLabel="Applying..."
+        />
       </form>
     </section>
   );

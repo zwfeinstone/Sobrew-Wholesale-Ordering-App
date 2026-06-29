@@ -1,4 +1,5 @@
 import { redirect } from 'next/navigation';
+import PendingSubmitButton from '@/components/pending-submit-button';
 import { createClient } from '@/lib/supabase/server';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { env } from '@/lib/env';
@@ -46,7 +47,7 @@ export default function BootstrapPage() {
         <input className="input" name="email" type="email" required placeholder="Admin Email" />
         <input className="input" name="password" type="password" required placeholder="Admin Password" />
         <input className="input" name="token" type="password" required placeholder="Bootstrap Token" />
-        <button className="btn-primary w-full">Create admin</button>
+        <PendingSubmitButton className="btn-primary w-full" label="Create admin" pendingLabel="Creating..." />
       </form>
     </main>
   );

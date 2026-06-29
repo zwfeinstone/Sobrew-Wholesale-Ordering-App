@@ -1,6 +1,7 @@
 import { notFound, redirect } from 'next/navigation';
 import ConfirmSubmitButton from '@/components/confirm-submit-button';
 import { OrderStatusBadge, OrderStatusTimeline } from '@/components/order-status';
+import PendingSubmitButton from '@/components/pending-submit-button';
 import { ProductBoxUsageFields, type ProductBoxInventoryOption, type ProductBoxRequiredLine } from '@/components/product-box-usage-fields';
 import StatusToast from '@/components/status-toast';
 import { requireAdminWriteAccess } from '@/lib/admin-write-access';
@@ -31,6 +32,10 @@ function productBoxLabel(item: { name: string | null; sku: string | null }) {
   return item.sku ? `${item.name || 'Box'} (${item.sku})` : item.name || 'Box';
 }
 
+function fulfillmentLabel(value: unknown) {
+  return value === 'local_delivery' ? 'Local delivery' : 'Carrier shipping';
+}
+
 async function updateStatus(formData: FormData) {
   'use server';
   const id = String(formData.get('id'));
@@ -54,8 +59,22 @@ async function shipOrder(formData: FormData) {
   await requireAdminWriteAccess(id ? `/admin/orders/${id}?toast=admin_write_denied` : '/admin/orders?toast=admin_write_denied', 'orders');
 
   const supabase = await createClient();
-  const shippingCostCents = centsFromDollars(String(formData.get('shipping_cost') ?? '0'));
-  if (!id || shippingCostCents <= 0) redirect(`/admin/orders/${id}?toast=shipping_required`);
+  const shippingCostInput = String(formData.get('shipping_cost') ?? '').trim();
+  if (!id) redirect('/admin/orders?toast=shipping_required');
+  if (!shippingCostInput) redirect(`/admin/orders/${id}?toast=shipping_required`);
+  let shippingCostCents = 0;
+  try {
+    shippingCostCents = centsFromDollars(shippingCostInput);
+  } catch {
+    redirect(`/admin/orders/${id}?toast=shipping_required`);
+  }
+  const fulfillmentMethod = String(formData.get('fulfillment_method') ?? '');
+  const localDeliveryConfirmed = formData.get('local_delivery_zero_confirm') === 'on';
+  if (!['carrier', 'local_delivery'].includes(fulfillmentMethod)) redirect(`/admin/orders/${id}?toast=fulfillment_required`);
+  if (fulfillmentMethod === 'carrier' && shippingCostCents <= 0) redirect(`/admin/orders/${id}?toast=shipping_required`);
+  if (fulfillmentMethod === 'local_delivery' && shippingCostCents === 0 && !localDeliveryConfirmed) {
+    redirect(`/admin/orders/${id}?toast=local_delivery_confirm_required`);
+  }
 
   const { data: order } = await supabase
     .from('orders')
@@ -186,6 +205,7 @@ async function shipOrder(formData: FormData) {
     .update({
       donation_cogs_cents: donationCogsCents,
       processing_fee_cents: processingFeeCents,
+      fulfillment_method: fulfillmentMethod,
       status: 'Shipped',
       shipping_cost_cents: shippingCostCents,
       shipped_at: shippedAt,
@@ -317,6 +337,7 @@ export default async function AdminOrderDetail({
   }));
   const processingFeePreviewCents = processingFeeCentsForRevenue(order.subtotal_cents);
   const donationCogsPreviewCents = donationCogsCentsForRevenue(order.subtotal_cents);
+  const fulfillmentMethod = order.fulfillment_method === 'local_delivery' ? 'local_delivery' : 'carrier';
   const shippingBoxSummaryByItem = new Map<string, { label: string; quantity: number }>();
   for (const usage of shippingBoxUsages as any[]) {
     const boxItem = relatedOne(usage.inventory_items);
@@ -333,7 +354,9 @@ export default async function AdminOrderDetail({
       {toast === 'status_updated' ? <StatusToast message="Order status updated." tone="success" /> : null}
       {toast === 'status_error' ? <StatusToast message="Order status update failed." tone="error" /> : null}
       {toast === 'ship_on_detail_required' ? <StatusToast message="Use the shipping form to enter shipping cost before marking this order shipped." tone="error" /> : null}
-      {toast === 'shipping_required' ? <StatusToast message="Shipping cost is required before this order can ship." tone="error" /> : null}
+      {toast === 'shipping_required' ? <StatusToast message="Carrier shipping requires a shipping cost greater than $0.00." tone="error" /> : null}
+      {toast === 'fulfillment_required' ? <StatusToast message="Choose carrier shipping or local delivery before marking this order shipped." tone="error" /> : null}
+      {toast === 'local_delivery_confirm_required' ? <StatusToast message="Confirm this was a local delivery before recording $0.00 shipping." tone="error" /> : null}
       {toast === 'box_count_required' ? <StatusToast message="Product box size and quantity are required for one or more products on this order." tone="error" /> : null}
       {toast === 'box_inventory_required' ? <StatusToast message="Create or receive an active box material before shipping this order." tone="error" /> : null}
       {toast === 'order_shipped' ? <StatusToast message="Order shipped, COGS recorded, and customer email sent." tone="success" /> : null}
@@ -367,7 +390,7 @@ export default async function AdminOrderDetail({
             <select className="input" name="status" defaultValue={order.status}>
               <option>New</option><option>Processing</option>
             </select>
-            <button className="btn-primary w-full md:w-auto">Update status</button>
+            <PendingSubmitButton className="btn-primary w-full md:w-auto" label="Update status" pendingLabel="Updating..." />
           </form>
         ) : (
           <div className="text-sm font-semibold text-slate-700">This order was shipped {formatOrderTimestamp(order.shipped_at)}.</div>
@@ -376,7 +399,7 @@ export default async function AdminOrderDetail({
           {!order.archived_at && ['Processing', 'Shipped'].includes(order.status) ? (
             <form action={archiveOrder} className="w-full md:w-auto">
               <input type="hidden" name="id" value={order.id} />
-              <button className="btn-secondary w-full md:w-auto" type="submit">Archive order</button>
+              <PendingSubmitButton className="btn-secondary w-full md:w-auto" label="Archive order" pendingLabel="Archiving..." />
             </form>
           ) : null}
           <form action={deleteOrder} className="w-full md:w-auto">
@@ -398,8 +421,9 @@ export default async function AdminOrderDetail({
         <p className="text-xs uppercase tracking-[0.18em] text-slate-500">Shipping</p>
         <p className="mt-3 text-lg font-semibold text-slate-950">{order.shipping_name}</p>
         <p className="mt-2 text-sm text-slate-600">{order.shipping_address1}, {order.shipping_city}</p>
+        <p className="mt-3 text-sm font-semibold text-slate-950">Fulfillment: {fulfillmentLabel(fulfillmentMethod)}</p>
         {order.shipping_cost_cents !== null && order.shipping_cost_cents !== undefined ? (
-          <p className="mt-3 text-sm font-semibold text-slate-950">Shipping COGS: {usd(Math.round(normalizeInventoryNumber(order.shipping_cost_cents)))}</p>
+          <p className="mt-2 text-sm font-semibold text-slate-950">Shipping COGS: {usd(Math.round(normalizeInventoryNumber(order.shipping_cost_cents)))}</p>
         ) : null}
         {order.processing_fee_cents !== null && order.processing_fee_cents !== undefined ? (
           <p className="mt-2 text-sm font-semibold text-slate-950">Processing fee COGS: {usd(Math.round(normalizeInventoryNumber(order.processing_fee_cents)))}</p>
@@ -421,12 +445,36 @@ export default async function AdminOrderDetail({
           <div>
             <span className="eyebrow">Ship Order</span>
             <h2 className="mt-3 text-2xl font-semibold tracking-tight text-slate-950">Record shipping COGS</h2>
-            <p className="mt-2 text-sm text-slate-500">Shipping cost is required before this order can be marked shipped.</p>
+            <p className="mt-2 text-sm text-slate-500">Carrier shipping requires a cost greater than $0. Local delivery can be recorded as $0 with confirmation.</p>
           </div>
           <input type="hidden" name="id" value={order.id} />
+          <fieldset className="space-y-3">
+            <legend className="text-sm font-semibold text-slate-950">Fulfillment method</legend>
+            <label className="flex items-start gap-3 rounded-2xl border border-slate-200 bg-white/65 px-4 py-3 text-sm text-slate-700">
+              <input className="mt-1" name="fulfillment_method" type="radio" value="carrier" defaultChecked required />
+              <span>
+                <span className="block font-semibold text-slate-950">Carrier shipping</span>
+                <span className="mt-1 block text-slate-500">Use this when there is a carrier/shipping charge to record.</span>
+              </span>
+            </label>
+            <label className="flex items-start gap-3 rounded-2xl border border-slate-200 bg-white/65 px-4 py-3 text-sm text-slate-700">
+              <input className="mt-1" name="fulfillment_method" type="radio" value="local_delivery" required />
+              <span>
+                <span className="block font-semibold text-slate-950">Local delivery</span>
+                <span className="mt-1 block text-slate-500">Use this only for local drop-offs or pickups where carrier shipping may be $0.</span>
+              </span>
+            </label>
+          </fieldset>
           <label className="space-y-2 text-sm font-medium text-slate-700">
             Shipping cost
-            <input className="input" name="shipping_cost" min="0.01" step="0.01" type="number" required placeholder="0.00" />
+            <input className="input" name="shipping_cost" min="0" step="0.01" type="number" required placeholder="0.00" />
+          </label>
+          <label className="flex items-start gap-3 rounded-2xl border border-amber-200 bg-amber-50/70 px-4 py-3 text-sm text-amber-900">
+            <input className="mt-1" name="local_delivery_zero_confirm" type="checkbox" />
+            <span>
+              <span className="block font-semibold">Confirm $0 local delivery</span>
+              <span className="mt-1 block">Check this only when the fulfillment method is local delivery and there is no carrier shipping cost.</span>
+            </span>
           </label>
           <div className="rounded-2xl border border-slate-200 bg-white/65 px-4 py-3 text-sm text-slate-600">
             <p className="font-semibold text-slate-950">Processing fee COGS: {usd(processingFeePreviewCents)}</p>
@@ -442,7 +490,13 @@ export default async function AdminOrderDetail({
               <ProductBoxUsageFields boxItems={productBoxOptions} recipeBoxCoveredLabels={recipeBoxCoveredLabels} requiredLines={productBoxRequiredLines} />
             </div>
           ) : null}
-          <button className="btn-primary w-full sm:w-auto" disabled={productBoxRequiredLines.length > 0 && !productBoxOptions.length}>Mark shipped</button>
+          <PendingSubmitButton
+            className="btn-primary w-full sm:w-auto"
+            disabled={productBoxRequiredLines.length > 0 && !productBoxOptions.length}
+            disabledLabel="Box inventory required"
+            label="Mark shipped"
+            pendingLabel="Shipping..."
+          />
         </form>
       ) : null}
       {orderNotes ? (

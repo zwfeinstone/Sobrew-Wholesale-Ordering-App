@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import ConfirmSubmitButton from '@/components/confirm-submit-button';
+import PendingSubmitButton from '@/components/pending-submit-button';
 import { requireUser } from '@/lib/auth';
 import { daysForRecurringFrequency, formatNextRecurringOrderDate, isRecurringFrequency, labelForRecurringFrequency, RECURRING_FREQUENCY_OPTIONS } from '@/lib/recurring';
 import { getCenterLoginEmails } from '@/lib/center-logins';
@@ -656,7 +657,11 @@ export default async function RecurringOrdersPage({ searchParams }: { searchPara
                         ))}
                       </select>
                     </label>
-                    <button className="btn-secondary recurring-action-button w-full md:w-auto" type="submit">Save Schedule</button>
+                    <PendingSubmitButton
+                      className="btn-secondary recurring-action-button w-full md:w-auto"
+                      label="Save Schedule"
+                      pendingLabel="Saving..."
+                    />
                   </form>
 
                   <div className="recurring-item-forms space-y-3">
@@ -673,7 +678,11 @@ export default async function RecurringOrdersPage({ searchParams }: { searchPara
                             <span className="mb-1 block text-xs text-slate-500">Quantity</span>
                             <input className="input" type="number" name="qty" min={1} defaultValue={item.qty} />
                           </label>
-                          <button className="btn-primary recurring-action-button w-full md:w-auto" type="submit">Save Quantity</button>
+                          <PendingSubmitButton
+                            className="btn-primary recurring-action-button w-full md:w-auto"
+                            label="Save Quantity"
+                            pendingLabel="Saving..."
+                          />
                         </form>
                         {orderItems.length > 1 ? (
                           <form action={removeRecurringItem}>
@@ -705,7 +714,11 @@ export default async function RecurringOrdersPage({ searchParams }: { searchPara
                       pendingLabel="Resuming..."
                     />
                   ) : (
-                    <button className="btn-secondary recurring-action-button w-full" type="submit">Pause shipment</button>
+                    <PendingSubmitButton
+                      className="btn-secondary recurring-action-button w-full"
+                      label="Pause shipment"
+                      pendingLabel="Pausing..."
+                    />
                   )}
                 </form>
                 <form action={setRecurringStatus} className="w-full sm:w-auto">

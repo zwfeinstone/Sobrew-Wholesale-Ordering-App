@@ -1,4 +1,5 @@
 import { notFound, redirect } from 'next/navigation';
+import PendingSubmitButton from '@/components/pending-submit-button';
 import StatusToast from '@/components/status-toast';
 import { requireAdminWriteAccess } from '@/lib/admin-write-access';
 import {
@@ -272,7 +273,7 @@ export default async function ProductPage({
         <label className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-white/60 px-4 py-3 text-sm font-medium text-slate-700"><input type="checkbox" name="active" defaultChecked={product.active} /> Active</label>
         <label className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-white/60 px-4 py-3 text-sm font-medium text-slate-700"><input type="checkbox" name="shipping_box_count_required" defaultChecked={Boolean(product.shipping_box_count_required)} /> Box count required at shipping</label>
         <input className="input" type="file" name="image" accept="image/*" />
-        <button className="btn-primary">Save</button>
+        <PendingSubmitButton className="btn-primary" label="Save" pendingLabel="Saving..." />
       </form>
 
       <section className="card space-y-5">
@@ -392,11 +393,11 @@ export default async function ProductPage({
           </div>
 
           <textarea className="input min-h-20" name="recipe_notes" defaultValue={recipe?.notes ?? ''} placeholder="Recipe notes" />
-          <button className="btn-primary w-full sm:w-auto">Save product recipe</button>
+          <PendingSubmitButton className="btn-primary w-full sm:w-auto" label="Save product recipe" pendingLabel="Saving..." />
         </form>
       </section>
 
-      <form action={removeProduct}><input type="hidden" name="id" value={product.id} /><button className="rounded-full border border-rose-200 px-4 py-2.5 text-sm font-semibold text-rose-700 transition-all duration-200 hover:bg-rose-50">Delete</button></form>
+      <form action={removeProduct}><input type="hidden" name="id" value={product.id} /><PendingSubmitButton className="rounded-full border border-rose-200 px-4 py-2.5 text-sm font-semibold text-rose-700 transition-all duration-200 hover:bg-rose-50" label="Delete" pendingLabel="Deleting..." /></form>
     </div>
   );
 }

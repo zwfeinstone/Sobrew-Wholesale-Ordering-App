@@ -1,4 +1,5 @@
 import { redirect } from 'next/navigation';
+import PendingSubmitButton from '@/components/pending-submit-button';
 import { requireAdminWriteAccess } from '@/lib/admin-write-access';
 import { PRODUCT_CATEGORY_OPTIONS, isProductCategory } from '@/lib/product-categories';
 import { createClient } from '@/lib/supabase/server';
@@ -49,7 +50,7 @@ export default function NewProductPage({
           ))}
         </select>
         <textarea className="input min-h-28" name="description" placeholder="Description" />
-        <button className="btn-primary">Create</button>
+        <PendingSubmitButton className="btn-primary" label="Create" pendingLabel="Creating..." />
       </section>
     </form>
   );

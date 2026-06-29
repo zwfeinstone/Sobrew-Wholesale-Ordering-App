@@ -7,9 +7,10 @@ export default function LoginSubmitButton() {
 
   return (
     <button
-      className="btn-primary w-full disabled:cursor-not-allowed disabled:opacity-70"
+      className="btn-primary w-full"
       disabled={pending}
       type="submit"
+      aria-busy={pending}
     >
       {pending ? 'Logging in...' : 'Sign in'}
     </button>

@@ -1,4 +1,5 @@
 import { redirect } from 'next/navigation';
+import PendingSubmitButton from '@/components/pending-submit-button';
 import { requireUser } from '@/lib/auth';
 import { createClient } from '@/lib/supabase/server';
 
@@ -80,7 +81,7 @@ export default async function PortalSettingsPage({
             <label className="text-sm font-medium text-slate-700" htmlFor="settings-confirm-password">Confirm new password</label>
             <input id="settings-confirm-password" className="input" name="confirm_password" type="password" minLength={8} required placeholder="Confirm your new password" autoComplete="new-password" />
           </div>
-          <button className="btn-primary w-full sm:w-auto" type="submit">Save new password</button>
+          <PendingSubmitButton className="btn-primary w-full sm:w-auto" label="Save new password" pendingLabel="Saving..." />
         </form>
       </section>
     </div>

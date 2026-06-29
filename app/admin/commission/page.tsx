@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
+import PendingSubmitButton from '@/components/pending-submit-button';
 import StatusToast from '@/components/status-toast';
 import { recordAdminAuditLog } from '@/lib/admin-audit';
 import {
@@ -301,7 +302,7 @@ export default async function CommissionPage({
             </div>
             <input name="sales_profile_id" type="hidden" value={selectedProfileId} />
             <input name="month" type="hidden" value={monthInputValue(commissionMonth)} />
-            <button className="btn-secondary w-full sm:w-auto" type="submit">Sync missing shipped orders</button>
+            <PendingSubmitButton className="btn-secondary w-full sm:w-auto" label="Sync missing shipped orders" pendingLabel="Syncing..." />
           </form>
         ) : null}
       </section>

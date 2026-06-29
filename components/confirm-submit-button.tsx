@@ -31,6 +31,7 @@ export default function ConfirmSubmitButton({
       disabled={pending}
       type="submit"
       onClick={handleClick}
+      aria-busy={pending}
     >
       {pending ? pendingLabel ?? label : label}
     </button>

@@ -1,4 +1,5 @@
 import { redirect } from 'next/navigation';
+import PendingSubmitButton from '@/components/pending-submit-button';
 import StatusToast from '@/components/status-toast';
 import { requireAdminWriteAccess } from '@/lib/admin-write-access';
 import {
@@ -304,7 +305,7 @@ export default async function ReceivingPage({
           <input className="input" name="name" required placeholder="Item name" />
           <input className="input" name="sku" placeholder="SKU or internal code" />
           <textarea className="input min-h-24" name="description" placeholder="Supplier details, size, roast, or notes" />
-          <button className="btn-primary w-full sm:w-auto">Save inventory item</button>
+          <PendingSubmitButton className="btn-primary w-full sm:w-auto" label="Save inventory item" pendingLabel="Saving..." />
         </form>
 
         <form action={receiveInventory} className="card space-y-4">
@@ -334,7 +335,7 @@ export default async function ReceivingPage({
             <input className="input" name="other_cost" min="0" step="0.01" type="number" placeholder="Other landed cost" />
           </div>
           <textarea className="input min-h-20" name="notes" placeholder="Receipt notes" />
-          <button className="btn-primary w-full sm:w-auto">Receive lot</button>
+          <PendingSubmitButton className="btn-primary w-full sm:w-auto" label="Receive lot" pendingLabel="Receiving..." />
         </form>
       </section>
 
@@ -363,7 +364,7 @@ export default async function ReceivingPage({
             <input className="input" name="unit_cost" min="0" step="0.0001" type="number" placeholder="Unit cost for added stock" />
           </div>
           <textarea className="input min-h-20" name="notes" placeholder="Adjustment reason" />
-          <button className="btn-primary w-full sm:w-auto">Save adjustment</button>
+          <PendingSubmitButton className="btn-primary w-full sm:w-auto" label="Save adjustment" pendingLabel="Saving..." />
         </form>
 
         <form action={recordExpense} className="card space-y-4">
@@ -381,7 +382,7 @@ export default async function ReceivingPage({
             <input className="input" name="spent_at" type="date" defaultValue={new Date().toISOString().slice(0, 10)} />
           </div>
           <textarea className="input min-h-20" name="notes" placeholder="Expense notes" />
-          <button className="btn-primary w-full sm:w-auto">Record expense</button>
+          <PendingSubmitButton className="btn-primary w-full sm:w-auto" label="Record expense" pendingLabel="Recording..." />
         </form>
       </section>
 
