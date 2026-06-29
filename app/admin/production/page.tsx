@@ -13,6 +13,7 @@ import {
   type InventoryUnit,
 } from '@/lib/inventory';
 import { recordRecipeProductionRun } from '@/lib/inventory-production';
+import { supabaseAdmin } from '@/lib/supabase/admin';
 import { createClient } from '@/lib/supabase/server';
 import { usd } from '@/lib/utils';
 
@@ -89,7 +90,6 @@ async function recordProductionRun(formData: FormData) {
   'use server';
   await requireAdminWriteAccess(productionHref({ toast: 'admin_write_denied' }), 'production');
 
-  const supabase = await createClient();
   const productId = String(formData.get('product_id') ?? '');
   const quantityProduced = parsePositiveNumber(formData.get('quantity_produced'));
   const wasteQuantity = Math.max(0, parsePositiveNumber(formData.get('waste_quantity'), 0));
@@ -110,7 +110,7 @@ async function recordProductionRun(formData: FormData) {
     notes: String(formData.get('notes') ?? '').trim(),
     productId,
     quantityProduced,
-    supabase,
+    supabase: supabaseAdmin,
     wasteQuantity,
   });
 
@@ -174,7 +174,7 @@ export default async function ProductionPage({
       {toast === 'production_recorded' ? <StatusToast message="Production run recorded and sellable inventory updated." tone="success" /> : null}
       {toast === 'production_error' ? <StatusToast message="Unable to record production. Check recipe setup and available materials." tone="error" /> : null}
       {toast === 'production_unit_error' ? <StatusToast message="A recipe component uses units that cannot be converted." tone="error" /> : null}
-      {toast === 'admin_write_denied' ? <StatusToast message="Only superadmins can change admin data." tone="error" /> : null}
+      {toast === 'admin_write_denied' ? <StatusToast message="You do not have permission to edit production." tone="error" /> : null}
 
       <section className="panel">
         <span className="eyebrow">Production</span>
