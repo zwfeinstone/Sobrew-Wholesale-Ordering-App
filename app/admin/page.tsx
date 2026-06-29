@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import { OrderStatusBadge } from '@/components/order-status';
 import { getAssignedCenterIdsForAdmin, scopeCenterRelatedQueryForAdmin } from '@/lib/admin-center-scope';
 import { getCurrentAdminAccess } from '@/lib/admin-permissions';
 import { createClient } from '@/lib/supabase/server';
@@ -169,6 +170,21 @@ function formatCompactCurrency(cents: number) {
   }).format(cents / 100);
 }
 
+function formatOrderTimestamp(value: string | null) {
+  if (!value) return 'Unknown';
+  return new Date(value).toLocaleString('en-US', {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  });
+}
+
+function nextActionForStatus(status: string | null | undefined) {
+  if (status === 'New') return { label: 'Start processing', href: '/admin/orders?status=New', tone: 'Needs review' };
+  if (status === 'Processing') return { label: 'Ship order', href: '/admin/orders?status=Processing', tone: 'In progress' };
+  if (status === 'Shipped') return { label: 'View order', href: '/admin/orders?status=Shipped', tone: 'Completed' };
+  return { label: 'Open order', href: '/admin/orders', tone: 'Needs review' };
+}
+
 function StatChart({ buckets, color }: { buckets: ChartBucket[]; color: string }) {
   if (!buckets.length) {
     return <div className="rounded-[1.5rem] border border-dashed border-slate-200 bg-white/40 px-4 py-8 text-center text-sm text-slate-500">No data for this range yet.</div>;
@@ -313,21 +329,55 @@ export default async function AdminDashboard({
     'center_id',
     centerScope
   );
+  const processingOrdersQuery = scopeCenterRelatedQueryForAdmin(
+    supabase.from('orders').select('id', { head: true, count: 'exact' }).eq('status', 'Processing').is('archived_at', null),
+    'center_id',
+    centerScope
+  );
+  const shippedOrdersQuery = scopeCenterRelatedQueryForAdmin(
+    applyRangeToQuery(supabase.from('orders').select('id,center_id,created_at', { head: true, count: 'exact' }).eq('status', 'Shipped').is('archived_at', null), 'created_at', ordersRange, now),
+    'center_id',
+    centerScope
+  );
+  const workQueueQuery = scopeCenterRelatedQueryForAdmin(
+    supabase
+      .from('orders')
+      .select('id,status,created_at,center_id,subtotal_cents,profiles(email),centers(name)')
+      .in('status', ['New', 'Processing'])
+      .is('archived_at', null)
+      .order('created_at', { ascending: true })
+      .limit(PAGE_SIZE),
+    'center_id',
+    centerScope
+  );
   const recentOrdersQuery = scopeCenterRelatedQueryForAdmin(
-    supabase.from('orders').select('id,status,created_at,center_id,profiles(email),centers(name)').is('archived_at', null).order('created_at', { ascending: false }).limit(PAGE_SIZE),
+    supabase.from('orders').select('id,status,created_at,center_id,subtotal_cents,profiles(email),centers(name)').is('archived_at', null).order('created_at', { ascending: false }).limit(PAGE_SIZE),
     'center_id',
     centerScope
   );
 
-  const [{ count: newOrders }, { data: recent }, { data: orderMetricRows }, { data: revenueMetricRows }, { data: userMetricRows }] = await Promise.all([
+  const [
+    { count: newOrders },
+    { count: processingOrders },
+    { count: shippedOrders },
+    { data: workQueue },
+    { data: recent },
+    { data: orderMetricRows },
+    { data: revenueMetricRows },
+    { data: userMetricRows },
+  ] = await Promise.all([
     newOrdersQuery,
+    processingOrdersQuery,
+    shippedOrdersQuery,
+    workQueueQuery,
     recentOrdersQuery,
     ordersMetricQuery,
     revenueMetricQuery,
     usersMetricQuery,
   ]);
 
-  const orderIds = (recent ?? []).map((order: any) => order.id);
+  const dashboardOrders = [...(workQueue ?? []), ...(recent ?? [])];
+  const orderIds = [...new Set(dashboardOrders.map((order: any) => order.id))];
   const { data: items } = orderIds.length
     ? await supabase.from('order_items').select('order_id,product_id,product_name_snapshot').in('order_id', orderIds)
     : { data: [] as any[] };
@@ -350,31 +400,94 @@ export default async function AdminDashboard({
   const userBuckets = buildBuckets((userMetricRows ?? []) as MetricRow[], usersRange, now, () => 1);
 
   const totalRevenueCents = ((revenueMetricRows ?? []) as MetricRow[]).reduce((sum, row) => sum + (row.subtotal_cents ?? 0), 0);
+  const activeOrderCount = (newOrders ?? 0) + (processingOrders ?? 0);
+  const queueOrders = (workQueue?.length ? workQueue : recent ?? []) as any[];
 
   return (
     <div className="space-y-6">
-      <section className="panel">
-        <div className="grid gap-6 lg:grid-cols-[1.2fr_0.8fr] lg:items-end">
-          <div className="space-y-4">
-            <span className="eyebrow">Operations Snapshot</span>
+      <section className="panel space-y-5">
+        <div className="grid gap-5 lg:grid-cols-[1fr_auto] lg:items-end">
+          <div>
+            <span className="eyebrow">Admin Queue</span>
             <div>
-              <h1 className="page-title">Keep wholesale fulfillment moving with less friction.</h1>
-              <p className="page-subtitle mt-3">Track order volume, revenue, and customer growth from one dashboard without leaving the admin workspace.</p>
+              <h1 className="page-title mt-4">Start with what needs attention.</h1>
+              <p className="page-subtitle mt-3">New and processing orders are surfaced first so daily work starts from the next action.</p>
             </div>
           </div>
-          <div className="grid gap-3 sm:grid-cols-2">
-            <div className="stat-card">
-              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">New Orders</p>
-              <p className="mt-2 text-4xl font-semibold text-slate-950">{newOrders ?? 0}</p>
-              <p className="mt-2 text-sm text-slate-500">Orders currently waiting for review.</p>
-            </div>
-            <div className="stat-card">
-              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Recent Activity</p>
-              <p className="mt-2 text-4xl font-semibold text-slate-950">{recent?.length ?? 0}</p>
-              <p className="mt-2 text-sm text-slate-500">Most recent active orders shown below.</p>
-            </div>
-          </div>
+          <Link href="/admin/orders" className="btn-primary w-full sm:w-auto">Open order queue</Link>
         </div>
+        <div className="grid gap-3 md:grid-cols-4">
+          <Link href="/admin/orders?status=New" className="rounded-xl border border-sky-100 bg-sky-50/80 px-4 py-3 transition-all duration-200 hover:-translate-y-0.5 hover:bg-sky-50">
+            <p className="text-xs font-semibold uppercase tracking-[0.14em] text-sky-700">New Orders</p>
+            <p className="mt-2 text-3xl font-semibold text-slate-950">{newOrders ?? 0}</p>
+          </Link>
+          <Link href="/admin/orders?status=Processing" className="rounded-xl border border-amber-100 bg-amber-50/80 px-4 py-3 transition-all duration-200 hover:-translate-y-0.5 hover:bg-amber-50">
+            <p className="text-xs font-semibold uppercase tracking-[0.14em] text-amber-700">Processing</p>
+            <p className="mt-2 text-3xl font-semibold text-slate-950">{processingOrders ?? 0}</p>
+          </Link>
+          <Link href="/admin/orders" className="rounded-xl border border-teal-100 bg-teal-50/80 px-4 py-3 transition-all duration-200 hover:-translate-y-0.5 hover:bg-teal-50">
+            <p className="text-xs font-semibold uppercase tracking-[0.14em] text-teal-700">Active Queue</p>
+            <p className="mt-2 text-3xl font-semibold text-slate-950">{activeOrderCount}</p>
+          </Link>
+          <Link href={`/admin/orders?status=Shipped`} className="rounded-xl border border-emerald-100 bg-emerald-50/80 px-4 py-3 transition-all duration-200 hover:-translate-y-0.5 hover:bg-emerald-50">
+            <p className="text-xs font-semibold uppercase tracking-[0.14em] text-emerald-700">Shipped</p>
+            <p className="mt-2 text-3xl font-semibold text-slate-950">{shippedOrders ?? 0}</p>
+            <p className="mt-1 text-xs font-medium text-emerald-700">{TIME_RANGE_OPTIONS.find((option) => option.value === ordersRange)?.label}</p>
+          </Link>
+        </div>
+      </section>
+
+      <section className="card space-y-4">
+        <div className="flex flex-col items-start gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h2 className="text-xl font-semibold tracking-tight text-slate-950">Needs attention</h2>
+            <p className="mt-1 text-sm text-slate-500">Oldest open work appears first; completed work falls back to recent activity.</p>
+          </div>
+          <Link href="/admin/orders" className="btn-secondary w-full sm:w-auto">View all orders</Link>
+        </div>
+        {queueOrders.length ? (
+          <div className="overflow-hidden rounded-xl border border-slate-200/70 bg-white/60">
+            <div className="hidden grid-cols-[1.2fr_0.9fr_0.75fr_0.8fr_auto] gap-4 border-b border-slate-200/70 px-4 py-3 text-xs font-semibold uppercase tracking-[0.14em] text-slate-500 lg:grid">
+              <span>Order</span>
+              <span>Center</span>
+              <span>Status</span>
+              <span>Placed</span>
+              <span className="text-right">Action</span>
+            </div>
+            {queueOrders.map((order: any) => {
+              const action = nextActionForStatus(order.status);
+              return (
+                <Link
+                  key={order.id}
+                  href={`/admin/orders/${order.id}`}
+                  className="grid gap-3 border-b border-slate-100 px-4 py-4 transition-all duration-200 last:border-b-0 hover:bg-white lg:grid-cols-[1.2fr_0.9fr_0.75fr_0.8fr_auto] lg:items-center"
+                >
+                  <div className="min-w-0">
+                    <p className="font-semibold text-slate-950">{firstNameByOrderId.get(order.id) ?? 'Unknown product'}</p>
+                    <p className="mt-1 text-sm font-medium text-slate-500">{usd(order.subtotal_cents ?? 0)}</p>
+                  </div>
+                  <div className="min-w-0 text-sm text-slate-600">
+                    <p className="font-medium text-slate-700">{order.centers?.name || 'Unknown center'}</p>
+                    <p className="mt-1 break-all text-xs text-slate-500">{order.profiles?.email || 'No login email on file'}</p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <OrderStatusBadge status={order.status} />
+                  </div>
+                  <p className="text-sm text-slate-600">{formatOrderTimestamp(order.created_at)}</p>
+                  <div className="flex items-center justify-between gap-3 lg:justify-end">
+                    <span className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">{action.tone}</span>
+                    <span className="rounded-full bg-slate-950 px-3 py-1.5 text-sm font-semibold text-white">{action.label}</span>
+                  </div>
+                </Link>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="rounded-xl border border-dashed border-slate-200 bg-white/50 px-4 py-8 text-center">
+            <p className="font-semibold text-slate-950">No open orders need attention.</p>
+            <p className="mt-2 text-sm text-slate-500">New customer orders will show here first.</p>
+          </div>
+        )}
       </section>
 
       <section className="grid gap-5 xl:grid-cols-3">
@@ -411,31 +524,6 @@ export default async function AdminDashboard({
         />
       </section>
 
-      <section className="card space-y-4">
-        <div className="flex flex-col items-start gap-4 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <h2 className="text-xl font-semibold tracking-tight text-slate-950">Recent orders</h2>
-            <p className="mt-1 text-sm text-slate-500">Open any order to update status, check items, or confirm shipment progress.</p>
-          </div>
-          <Link href="/admin/orders" className="btn-secondary w-full sm:w-auto">View all orders</Link>
-        </div>
-        {recent?.map((order: any) => (
-          <Link
-            key={order.id}
-            href={`/admin/orders/${order.id}`}
-            className="flex flex-col gap-3 rounded-[1.5rem] border border-slate-200/70 bg-white/70 px-4 py-4 transition-all duration-200 hover:-translate-y-0.5 hover:border-teal-200 hover:bg-white sm:flex-row sm:items-center sm:justify-between"
-          >
-            <div className="min-w-0">
-              <p className="font-semibold text-slate-950">{firstNameByOrderId.get(order.id) ?? 'Unknown product'}</p>
-              <p className="mt-1 text-sm font-medium text-slate-700">{order.centers?.name || 'Unknown center'}</p>
-              <p className="mt-1 break-all text-sm text-slate-500">{order.profiles?.email || 'No login email on file'}</p>
-            </div>
-            <div className="self-start text-left sm:self-auto sm:text-right">
-              <p className="rounded-full bg-slate-100 px-3 py-1 text-sm font-medium text-slate-700">{order.status}</p>
-            </div>
-          </Link>
-        ))}
-      </section>
     </div>
   );
 }

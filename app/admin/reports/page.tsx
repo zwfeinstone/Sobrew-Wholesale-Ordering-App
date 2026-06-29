@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
+import PendingSubmitButton from '@/components/pending-submit-button';
 import { getSalesScopedCenterIdsForAdmin, scopeCenterRelatedQueryForAdmin, scopeCentersForAdmin } from '@/lib/admin-center-scope';
 import { adminCanView, getCurrentAdminAccess } from '@/lib/admin-permissions';
 import {
@@ -1062,7 +1063,7 @@ function GrossProfitSimulatorReport({
           </div>
 
           <div className="mt-5 flex flex-col gap-3 sm:flex-row sm:items-center">
-            <button className="btn-primary w-full sm:w-auto" type="submit">Run simulation</button>
+            <PendingSubmitButton className="btn-primary w-full sm:w-auto" label="Run simulation" pendingLabel="Running..." />
             <Link href={resetHref} className="btn-secondary w-full sm:w-auto">Clear simulation</Link>
           </div>
         </form>
@@ -1372,7 +1373,7 @@ export default async function AdminReportsPage({
               ) : null}
             </div>
             <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center">
-              <button className="btn-primary w-full sm:w-auto" type="submit">Update reports</button>
+              <PendingSubmitButton className="btn-primary w-full sm:w-auto" label="Update reports" pendingLabel="Updating..." />
               <Link href={`/admin/reports?report=${activeReport}`} className="btn-secondary w-full sm:w-auto">Reset</Link>
             </div>
             <p className="mt-3 text-sm leading-6 text-slate-500">

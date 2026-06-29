@@ -15,9 +15,10 @@ export default function CheckoutSubmitButton({ disabled = false, disabledLabel =
 
   return (
     <button
-      className="btn-primary w-full sm:w-auto disabled:cursor-not-allowed disabled:opacity-70"
+      className="btn-primary w-full sm:w-auto"
       disabled={isDisabled}
       type="submit"
+      aria-busy={isPending}
     >
       {isPending ? 'Placing order...' : disabled ? disabledLabel : 'Place order'}
     </button>

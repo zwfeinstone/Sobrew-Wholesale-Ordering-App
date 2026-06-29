@@ -1,5 +1,6 @@
 import { notFound, redirect } from 'next/navigation';
 import { AdminPermissionEditor } from '@/components/admin-permission-editor';
+import PendingSubmitButton from '@/components/pending-submit-button';
 import { recordAdminAuditLog } from '@/lib/admin-audit';
 import { requireCenterAccess } from '@/lib/admin-center-scope';
 import { isOwnerEmail } from '@/lib/admin-permission-definitions';
@@ -499,7 +500,7 @@ export default async function UserDetailPage({
             ))}
           </section>
 
-          <button className="btn-primary w-full sm:w-auto">Save Center</button>
+          <PendingSubmitButton className="btn-primary w-full sm:w-auto" label="Save Center" pendingLabel="Saving..." />
         </form>
 
         <section className="card space-y-5">
@@ -521,7 +522,7 @@ export default async function UserDetailPage({
               <input type="checkbox" name="is_active" defaultChecked />
               Active location
             </label>
-            <button className="btn-primary w-full lg:w-auto" type="submit">Add Location</button>
+            <PendingSubmitButton className="btn-primary w-full lg:w-auto" label="Add Location" pendingLabel="Adding..." />
           </form>
 
           <div className="space-y-4">
@@ -549,16 +550,16 @@ export default async function UserDetailPage({
                   <textarea className="input min-h-24 lg:col-span-2" name="location_notes" defaultValue={location.notes ?? ''} placeholder="Location notes" />
                   <label className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-white/60 px-4 py-3 text-sm font-medium text-slate-700">
                     <input type="checkbox" name="is_active" defaultChecked={location.is_active !== false} />
-                    Active location
+                  Active location
                   </label>
                   <div className="flex flex-col gap-2 sm:flex-row">
-                    <button className="btn-primary w-full sm:w-auto" type="submit">Save Location</button>
+                    <PendingSubmitButton className="btn-primary w-full sm:w-auto" label="Save Location" pendingLabel="Saving..." />
                   </div>
                 </form>
                 <form action={removeCenterLocation} className="mt-3">
                   <input type="hidden" name="center_id" value={center.id} />
                   <input type="hidden" name="location_id" value={location.id} />
-                  <button className="btn-secondary w-full sm:w-auto" type="submit">Remove Location</button>
+                  <PendingSubmitButton className="btn-secondary w-full sm:w-auto" label="Remove Location" pendingLabel="Removing..." />
                 </form>
               </div>
             ))}
@@ -575,7 +576,7 @@ export default async function UserDetailPage({
             <input className="input" name="full_name" placeholder="Login name" />
             <input className="input" name="email" type="email" required placeholder="Email address" />
             <input className="input" name="password" type="password" minLength={8} required placeholder="Temporary password" autoComplete="new-password" />
-            <button className="btn-primary w-full md:w-auto" type="submit">Add Login</button>
+            <PendingSubmitButton className="btn-primary w-full md:w-auto" label="Add Login" pendingLabel="Adding..." />
           </form>
         </section>
 
@@ -600,12 +601,12 @@ export default async function UserDetailPage({
                   <input type="checkbox" name="is_active" defaultChecked={member.is_active} />
                   Active
                 </label>
-                <button className="btn-primary w-full md:w-auto" type="submit">Save Login</button>
+                <PendingSubmitButton className="btn-primary w-full md:w-auto" label="Save Login" pendingLabel="Saving..." />
               </form>
               <form action={removeCenterLogin} className="w-full md:w-auto">
                 <input type="hidden" name="center_id" value={center.id} />
                 <input type="hidden" name="member_id" value={member.id} />
-                <button className="btn-secondary w-full md:w-auto" type="submit">Remove Login</button>
+                <PendingSubmitButton className="btn-secondary w-full md:w-auto" label="Remove Login" pendingLabel="Removing..." />
               </form>
             </div>
           ))}
@@ -679,7 +680,7 @@ export default async function UserDetailPage({
           superadminDisabled={isPrimaryOwnerAdmin}
         />
       </section>
-      <button className="btn-primary w-full sm:w-auto">Save</button>
+      <PendingSubmitButton className="btn-primary w-full sm:w-auto" label="Save" pendingLabel="Saving..." />
       <section className="card space-y-4">
         <div>
           <h2 className="text-xl font-semibold text-slate-950">Audit log</h2>

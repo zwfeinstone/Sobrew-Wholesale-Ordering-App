@@ -1,5 +1,6 @@
 import { redirect } from 'next/navigation';
 import { AdminPermissionEditor } from '@/components/admin-permission-editor';
+import PendingSubmitButton from '@/components/pending-submit-button';
 import { recordAdminAuditLog } from '@/lib/admin-audit';
 import { isOwnerEmail, legacyReadOnlyAccessMap } from '@/lib/admin-permission-definitions';
 import { parseAdminPermissionsForm, saveAdminPermissions, serializePermissionSnapshot } from '@/lib/admin-permission-save';
@@ -154,9 +155,7 @@ export default async function NewAdminPage({
         <AdminPermissionEditor allowManageAdmins initialAccess={initialAccess} showSuperadminToggle />
       </section>
 
-      <button className="btn-primary w-full sm:w-auto" type="submit">
-        Create Admin
-      </button>
+      <PendingSubmitButton className="btn-primary w-full sm:w-auto" label="Create Admin" pendingLabel="Creating..." />
     </form>
   );
 }

@@ -1,4 +1,5 @@
 import StatusToast from '@/components/status-toast';
+import PendingSubmitButton from '@/components/pending-submit-button';
 import {
   SalesAdminBulkAssignment,
   type SalesAdminBulkCenter,
@@ -608,13 +609,13 @@ export default async function SalesAdminPage({
                         <input type="hidden" name="sales_profile_id" value={row.admin.id} />
                         <input type="hidden" name="commission_month" value={commissionMonth} />
                         <input type="hidden" name="payout_action" value="locked" />
-                        <button className="btn-secondary w-full" type="submit">Lock</button>
+                        <PendingSubmitButton className="btn-secondary w-full" label="Lock" pendingLabel="Locking..." />
                       </form>
                       <form action={updateMonthlyPayout}>
                         <input type="hidden" name="sales_profile_id" value={row.admin.id} />
                         <input type="hidden" name="commission_month" value={commissionMonth} />
                         <input type="hidden" name="payout_action" value="paid" />
-                        <button className="btn-primary w-full" type="submit">Mark paid</button>
+                        <PendingSubmitButton className="btn-primary w-full" label="Mark paid" pendingLabel="Marking paid..." />
                       </form>
                     </div>
                   </td>
@@ -662,7 +663,7 @@ export default async function SalesAdminPage({
                   ))}
                 </div>
                 {!assignableAdminRows.length ? <div className="rounded-xl bg-slate-50 p-3 text-sm text-slate-500">No non-superadmin admins found.</div> : null}
-                <button className="btn-primary w-full sm:w-auto" type="submit">Save Access</button>
+                <PendingSubmitButton className="btn-primary w-full sm:w-auto" label="Save Access" pendingLabel="Saving..." />
               </form>
             );
           })}
@@ -700,7 +701,7 @@ export default async function SalesAdminPage({
                   ))}
                 </select>
               </label>
-              <button className="btn-primary w-full md:w-auto" type="submit">Save</button>
+              <PendingSubmitButton className="btn-primary w-full md:w-auto" label="Save" pendingLabel="Saving..." />
             </form>
             );
           })}

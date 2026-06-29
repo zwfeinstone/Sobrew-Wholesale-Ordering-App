@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import ConfirmSubmitButton from '@/components/confirm-submit-button';
+import PendingSubmitButton from '@/components/pending-submit-button';
 import { hasSuperadminAccess } from '@/lib/admin-permission-definitions';
 import { getCurrentAdminAccess } from '@/lib/admin-permissions';
 import { requireAdminWriteAccess } from '@/lib/admin-write-access';
@@ -837,7 +838,7 @@ export default async function ProspectingPage({
             <input className="input mt-2" name="notes" placeholder="Callback details, sample recipient, next step" />
           </label>
 
-          <button className="btn-primary w-full" data-press-lock-key="prospecting-save-call-block" type="submit">Save call block</button>
+          <PendingSubmitButton className="btn-primary w-full" data-press-lock-key="prospecting-save-call-block" label="Save call block" pendingLabel="Saving..." />
         </form>
 
         <form action={saveFollowUpBlock} className="card space-y-5">
@@ -893,7 +894,7 @@ export default async function ProspectingPage({
             <input className="input mt-2" name="notes" placeholder="Follow-up context, decision maker, close notes" />
           </label>
 
-          <button className="btn-primary w-full" data-press-lock-key="prospecting-save-follow-up-block" type="submit">Save follow-up block</button>
+          <PendingSubmitButton className="btn-primary w-full" data-press-lock-key="prospecting-save-follow-up-block" label="Save follow-up block" pendingLabel="Saving..." />
         </form>
       </section>
 
@@ -1105,7 +1106,7 @@ export default async function ProspectingPage({
                       Notes
                       <input className="input mt-2" name="notes" defaultValue={block.notes ?? ''} />
                     </label>
-                    <button className="btn-primary w-full" data-press-lock-key={`prospecting-update-call-block-${block.id}`} type="submit">Update call block</button>
+                    <PendingSubmitButton className="btn-primary w-full" data-press-lock-key={`prospecting-update-call-block-${block.id}`} label="Update call block" pendingLabel="Updating..." />
                   </form>
                 </details>
                 <form action={deleteCallBlock} className="mt-3">
@@ -1195,7 +1196,7 @@ export default async function ProspectingPage({
                       Notes
                       <input className="input mt-2" name="notes" defaultValue={block.notes ?? ''} />
                     </label>
-                    <button className="btn-primary w-full" data-press-lock-key={`prospecting-update-follow-up-block-${block.id}`} type="submit">Update follow-up block</button>
+                    <PendingSubmitButton className="btn-primary w-full" data-press-lock-key={`prospecting-update-follow-up-block-${block.id}`} label="Update follow-up block" pendingLabel="Updating..." />
                   </form>
                 </details>
                 <form action={deleteFollowUpBlock} className="mt-3">
