@@ -14,7 +14,6 @@ import {
   type InventoryUnit,
 } from '@/lib/inventory';
 import { recordRecipeProductionRun } from '@/lib/inventory-production';
-import { supabaseAdmin } from '@/lib/supabase/admin';
 import { createClient } from '@/lib/supabase/server';
 import { usd } from '@/lib/utils';
 
@@ -104,6 +103,7 @@ async function recordProductionRun(formData: FormData) {
 
   const actualLaborMinutesValue = String(formData.get('actual_labor_minutes') ?? '').trim();
   const actualLaborRateValue = String(formData.get('actual_labor_rate') ?? '').trim();
+  const supabase = await createClient();
   const result = await recordRecipeProductionRun({
     actualLaborMinutes: actualLaborMinutesValue ? Math.max(0, Number.parseFloat(actualLaborMinutesValue) || 0) : undefined,
     actualLaborRateCents: actualLaborRateValue ? centsFromDollars(actualLaborRateValue) : undefined,
@@ -111,12 +111,15 @@ async function recordProductionRun(formData: FormData) {
     notes: String(formData.get('notes') ?? '').trim(),
     productId,
     quantityProduced,
-    supabase: supabaseAdmin,
+    supabase,
     wasteQuantity,
   });
 
   if (result.error === 'unit_error') {
     redirect(productionHref({ produce_product: productId, produce_qty: String(quantityProduced), toast: 'production_unit_error' }));
+  }
+  if (result.error === 'insufficient_inventory') {
+    redirect(productionHref({ produce_product: productId, produce_qty: String(quantityProduced), toast: 'production_inventory_error' }));
   }
   redirect(productionHref({ toast: result.error ? 'production_error' : 'production_recorded' }));
 }
@@ -174,6 +177,7 @@ export default async function ProductionPage({
     <div className="space-y-6">
       {toast === 'production_recorded' ? <StatusToast message="Production run recorded and sellable inventory updated." tone="success" /> : null}
       {toast === 'production_error' ? <StatusToast message="Unable to record production. Check recipe setup and available materials." tone="error" /> : null}
+      {toast === 'production_inventory_error' ? <StatusToast message="Unable to record production because one or more recipe materials do not have enough inventory." tone="error" /> : null}
       {toast === 'production_unit_error' ? <StatusToast message="A recipe component uses units that cannot be converted." tone="error" /> : null}
       {toast === 'admin_write_denied' ? <StatusToast message="You do not have permission to edit production." tone="error" /> : null}
 

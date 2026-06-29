@@ -13,6 +13,12 @@ type SupabaseLike = {
   rpc: (fn: string, args: Record<string, unknown>) => any;
 };
 
+type ProductionRunError =
+  | 'insufficient_inventory'
+  | 'production_error'
+  | 'recipe_error'
+  | 'unit_error';
+
 type InventoryItemRow = {
   id: string;
   base_unit: InventoryUnit;
@@ -173,5 +179,14 @@ export async function recordRecipeProductionRun({
     p_fixed_other_cost_cents: Math.max(0, fixedCostForRun - fixedTapeCostForRun - fixedShippingLabelCostForRun - fixedBrandingLabelCostForRun),
   });
 
-  return { error: error ? 'production_error' as const : null };
+  if (error) {
+    console.error('[production] record_inventory_production_run failed', error);
+    const message = String(error.message ?? '');
+    const mappedError: ProductionRunError = message.includes('Insufficient inventory')
+      ? 'insufficient_inventory'
+      : 'production_error';
+    return { error: mappedError };
+  }
+
+  return { error: null };
 }

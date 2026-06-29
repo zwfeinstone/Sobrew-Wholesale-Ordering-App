@@ -515,6 +515,7 @@ export default async function PlanningPage({
     <div className="space-y-6">
       {toast === 'production_recorded' ? <StatusToast message="Forecasted production was recorded and inventory updated." tone="success" /> : null}
       {toast === 'production_error' || toast === 'recipe_error' ? <StatusToast message="Unable to produce that item. Check recipe setup and available materials." tone="error" /> : null}
+      {toast === 'insufficient_inventory' ? <StatusToast message="Unable to produce that item because one or more recipe materials do not have enough inventory." tone="error" /> : null}
       {toast === 'unit_error' ? <StatusToast message="A recipe component uses units that cannot be converted." tone="error" /> : null}
       {toast === 'invalid_quantity' ? <StatusToast message="Enter a whole number greater than zero before adding production." tone="error" /> : null}
       {toast === 'par_saved' ? <StatusToast message="Par target saved." tone="success" /> : null}
