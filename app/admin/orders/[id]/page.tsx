@@ -68,12 +68,11 @@ async function shipOrder(formData: FormData) {
 
   const { data: orderItems } = await supabase
     .from('order_items')
-    .select('id,product_id,product_name_snapshot,products(name,shipping_box_count_required)')
+    .select('id,qty,product_id,product_name_snapshot,products(name,shipping_box_count_required)')
     .eq('order_id', id);
 
   const requiredOrderItems = (orderItems ?? []).filter((item: any) => relatedOne(item.products)?.shipping_box_count_required);
-  const requiredOrderItemIds = new Set(requiredOrderItems.map((item: any) => String(item.id)));
-  if (requiredOrderItemIds.size) {
+  if (requiredOrderItems.length) {
     const { data: boxItems, error: boxItemsError } = await supabase
       .from('inventory_items')
       .select('id')
@@ -85,29 +84,46 @@ async function shipOrder(formData: FormData) {
     const validBoxItemIds = new Set((boxItems ?? []).map((item: any) => String(item.id)));
     if (!validBoxItemIds.size) redirect(`/admin/orders/${id}?toast=box_inventory_required`);
 
-    const orderItemIds = formData.getAll('box_order_item_id').map(String);
     const boxItemIds = formData.getAll('box_inventory_item_id').map(String);
     const quantities = formData.getAll('box_quantity').map((value) => Math.max(0, Number.parseFloat(String(value)) || 0));
+    const submittedUsageByBoxItem = new Map<string, number>();
     const usageByOrderItem = new Map<string, Map<string, number>>();
 
-    for (let index = 0; index < orderItemIds.length; index += 1) {
-      const orderItemId = orderItemIds[index];
+    for (let index = 0; index < Math.max(boxItemIds.length, quantities.length); index += 1) {
       const boxItemId = boxItemIds[index];
       const quantity = quantities[index] ?? 0;
-      const anyFieldPresent = Boolean(orderItemId || boxItemId || quantity);
+      const anyFieldPresent = Boolean(boxItemId || quantity);
       if (!anyFieldPresent) continue;
-      if (!requiredOrderItemIds.has(orderItemId) || !validBoxItemIds.has(boxItemId) || quantity <= 0) {
+      if (!validBoxItemIds.has(boxItemId) || quantity <= 0) {
         redirect(`/admin/orders/${id}?toast=box_count_required`);
       }
 
-      const existing = usageByOrderItem.get(orderItemId) ?? new Map<string, number>();
-      existing.set(boxItemId, (existing.get(boxItemId) ?? 0) + quantity);
-      usageByOrderItem.set(orderItemId, existing);
+      submittedUsageByBoxItem.set(boxItemId, (submittedUsageByBoxItem.get(boxItemId) ?? 0) + quantity);
     }
 
-    for (const requiredItem of requiredOrderItems as any[]) {
-      const totalQuantity = [...(usageByOrderItem.get(String(requiredItem.id))?.values() ?? [])].reduce((sum, quantity) => sum + quantity, 0);
-      if (totalQuantity <= 0) redirect(`/admin/orders/${id}?toast=box_count_required`);
+    const totalSubmittedQuantity = [...submittedUsageByBoxItem.values()].reduce((sum, quantity) => sum + quantity, 0);
+    if (totalSubmittedQuantity <= 0) redirect(`/admin/orders/${id}?toast=box_count_required`);
+
+    const requiredLines = (requiredOrderItems as any[]).map((item) => ({
+      id: String(item.id),
+      qty: Math.max(0, normalizeInventoryNumber(item.qty)),
+    }));
+    const totalRequiredQty = requiredLines.reduce((sum, item) => sum + item.qty, 0);
+    if (totalRequiredQty <= 0) redirect(`/admin/orders/${id}?toast=box_count_required`);
+
+    for (const [boxItemId, totalQuantity] of submittedUsageByBoxItem.entries()) {
+      let allocatedQuantity = 0;
+      requiredLines.forEach((line, index) => {
+        const quantity = index === requiredLines.length - 1
+          ? Math.max(0, totalQuantity - allocatedQuantity)
+          : (totalQuantity * line.qty) / totalRequiredQty;
+        allocatedQuantity += quantity;
+        if (quantity <= 0) return;
+
+        const existing = usageByOrderItem.get(line.id) ?? new Map<string, number>();
+        existing.set(boxItemId, (existing.get(boxItemId) ?? 0) + quantity);
+        usageByOrderItem.set(line.id, existing);
+      });
     }
 
     const deleteResult = await supabase
@@ -245,7 +261,7 @@ export default async function AdminOrderDetail({
     boxItemsResult,
   ] = await Promise.all([
     supabase.from('order_items').select('id,qty,product_id,product_name_snapshot,shipping_boxes_used,cogs_product_cents,cogs_shipping_cents,cogs_processing_fee_cents,cogs_donation_cents,cogs_total_cents,cogs_source,cogs_estimated,cogs_snapshot_at,products(name,shipping_box_count_required)').eq('order_id', order.id),
-    supabase.from('order_item_shipping_boxes').select('order_item_id,quantity,total_cost_cents,cogs_estimated,inventory_items(name,sku)').eq('order_id', order.id),
+    supabase.from('order_item_shipping_boxes').select('order_item_id,inventory_item_id,quantity,total_cost_cents,cogs_estimated,inventory_items(name,sku)').eq('order_id', order.id),
     supabase.from('inventory_items').select('id,name,sku').eq('item_type', 'material_supply').eq('active', true).or('sku.ilike.BOX-%,name.ilike.%box%').order('name', { ascending: true }),
   ]);
   const items = itemsResult.data ?? [];
@@ -264,18 +280,53 @@ export default async function AdminOrderDetail({
       label: `${product?.name || item.product_name_snapshot || 'Unknown product'} x ${item.qty}`,
     };
   });
+  const nonRequiredBoxRecipeProductIds = [
+    ...new Set(
+      (items as any[])
+        .filter((item) => item.product_id && !relatedOne(item.products)?.shipping_box_count_required)
+        .map((item) => String(item.product_id))
+    ),
+  ];
+  const { data: nonRequiredBoxRecipes } = productBoxRequiredLines.length && nonRequiredBoxRecipeProductIds.length
+    ? await supabase
+        .from('product_recipes')
+        .select('product_id,product_recipe_components(component_role,inventory_items(sku))')
+        .in('product_id', nonRequiredBoxRecipeProductIds)
+    : { data: [] };
+  const recipeBoxProductIds = new Set(
+    ((nonRequiredBoxRecipes ?? []) as any[])
+      .filter((recipe) => (recipe.product_recipe_components ?? []).some((component: any) => {
+        const componentItem = relatedOne(component.inventory_items);
+        return component.component_role === 'box' || Boolean(componentItem?.sku?.startsWith('BOX-'));
+      }))
+      .map((recipe) => String(recipe.product_id))
+  );
+  const recipeBoxCoveredLabels = [
+    ...new Set(
+      (items as any[])
+        .filter((item) => item.product_id && recipeBoxProductIds.has(String(item.product_id)))
+        .map((item) => {
+          const product = relatedOne(item.products);
+          return `${product?.name || item.product_name_snapshot || 'Unknown product'} x ${item.qty}`;
+        })
+    ),
+  ];
   const productBoxOptions: ProductBoxInventoryOption[] = (boxItems as any[]).map((item) => ({
     id: item.id,
     label: productBoxLabel(item),
   }));
   const processingFeePreviewCents = processingFeeCentsForRevenue(order.subtotal_cents);
   const donationCogsPreviewCents = donationCogsCentsForRevenue(order.subtotal_cents);
-  const shippingBoxesByOrderItemId = new Map<string, any[]>();
+  const shippingBoxSummaryByItem = new Map<string, { label: string; quantity: number }>();
   for (const usage of shippingBoxUsages as any[]) {
-    const rows = shippingBoxesByOrderItemId.get(usage.order_item_id) ?? [];
-    rows.push(usage);
-    shippingBoxesByOrderItemId.set(usage.order_item_id, rows);
+    const boxItem = relatedOne(usage.inventory_items);
+    const label = productBoxLabel(boxItem ?? { name: null, sku: null });
+    const key = String(usage.inventory_item_id ?? label);
+    const current = shippingBoxSummaryByItem.get(key) ?? { label, quantity: 0 };
+    current.quantity += Math.max(0, normalizeInventoryNumber(usage.quantity));
+    shippingBoxSummaryByItem.set(key, current);
   }
+  const shippingBoxSummary = [...shippingBoxSummaryByItem.values()].sort((a, b) => a.label.localeCompare(b.label));
 
   return (
     <div className="space-y-6">
@@ -356,6 +407,14 @@ export default async function AdminOrderDetail({
         {order.donation_cogs_cents !== null && order.donation_cogs_cents !== undefined && normalizeInventoryNumber(order.donation_cogs_cents) > 0 ? (
           <p className="mt-2 text-sm font-semibold text-slate-950">Donation COGS: {usd(Math.round(normalizeInventoryNumber(order.donation_cogs_cents)))}</p>
         ) : null}
+        {shippingBoxSummary.length ? (
+          <div className="mt-4 rounded-2xl border border-slate-200 bg-white/65 px-4 py-3 text-sm text-slate-600">
+            <p className="font-semibold text-slate-950">Product Boxes</p>
+            <p className="mt-1">
+              {shippingBoxSummary.map((usage) => `${normalizeInventoryNumber(usage.quantity)} x ${usage.label}`).join(', ')}
+            </p>
+          </div>
+        ) : null}
       </div>
       {!order.archived_at && order.status !== 'Shipped' ? (
         <form action={shipOrder} className="card space-y-4">
@@ -380,7 +439,7 @@ export default async function AdminOrderDetail({
           {productBoxRequiredLines.length ? (
             <div className="space-y-3">
               <p className="text-sm font-semibold text-slate-950">Product Boxes</p>
-              <ProductBoxUsageFields boxItems={productBoxOptions} requiredLines={productBoxRequiredLines} />
+              <ProductBoxUsageFields boxItems={productBoxOptions} recipeBoxCoveredLabels={recipeBoxCoveredLabels} requiredLines={productBoxRequiredLines} />
             </div>
           ) : null}
           <button className="btn-primary w-full sm:w-auto" disabled={productBoxRequiredLines.length > 0 && !productBoxOptions.length}>Mark shipped</button>
@@ -404,17 +463,6 @@ export default async function AdminOrderDetail({
               ) : null}
             </div>
             <div className="text-sm font-medium text-slate-600 sm:text-right">
-              {i.shipping_boxes_used !== null && i.shipping_boxes_used !== undefined ? (
-                <p>Product Boxes used: {normalizeInventoryNumber(i.shipping_boxes_used)}</p>
-              ) : null}
-              {(shippingBoxesByOrderItemId.get(i.id) ?? []).length ? (
-                <p>
-                  Product Boxes: {(shippingBoxesByOrderItemId.get(i.id) ?? []).map((usage: any) => {
-                    const boxItem = relatedOne(usage.inventory_items);
-                    return `${normalizeInventoryNumber(usage.quantity)} x ${productBoxLabel(boxItem ?? { name: null, sku: null })}`;
-                  }).join(', ')}
-                </p>
-              ) : null}
               {i.cogs_shipping_cents !== null && i.cogs_shipping_cents !== undefined ? (
                 <p>Shipping COGS: {usd(Math.round(normalizeInventoryNumber(i.cogs_shipping_cents)))}</p>
               ) : null}
