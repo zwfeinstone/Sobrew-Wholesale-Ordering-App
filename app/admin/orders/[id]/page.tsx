@@ -37,6 +37,15 @@ function fulfillmentLabel(value: unknown) {
   return value === 'local_delivery' ? 'Local delivery' : 'Carrier shipping';
 }
 
+function isMissingFulfillmentMethodColumn(error: unknown) {
+  const message = String((error as { message?: unknown } | null)?.message ?? '');
+  return message.includes('fulfillment_method') && (
+    message.includes('does not exist') ||
+    message.includes('schema cache') ||
+    message.includes('Could not find')
+  );
+}
+
 async function updateStatus(formData: FormData) {
   'use server';
   const id = String(formData.get('id'));
@@ -214,20 +223,32 @@ async function shipOrder(formData: FormData) {
     redirect(`/admin/orders/${id}?toast=ship_error`);
   }
 
-  const orderUpdateResult = await supabase
+  const orderUpdatePayload: Record<string, unknown> = {
+    donation_cogs_cents: donationCogsCents,
+    fulfillment_method: fulfillmentMethod,
+    processing_fee_cents: processingFeeCents,
+    shipping_cost_cents: shippingCostCents,
+    shipped_at: shippedAt,
+    status: 'Shipped',
+  };
+  let orderUpdateResult = await supabase
     .from('orders')
-    .update({
-      donation_cogs_cents: donationCogsCents,
-      processing_fee_cents: processingFeeCents,
-      fulfillment_method: fulfillmentMethod,
-      status: 'Shipped',
-      shipping_cost_cents: shippingCostCents,
-      shipped_at: shippedAt,
-    })
+    .update(orderUpdatePayload)
     .eq('id', id)
     .select('id');
 
+  if (orderUpdateResult.error && isMissingFulfillmentMethodColumn(orderUpdateResult.error)) {
+    const fallbackPayload = { ...orderUpdatePayload };
+    delete fallbackPayload.fulfillment_method;
+    orderUpdateResult = await supabase
+      .from('orders')
+      .update(fallbackPayload)
+      .eq('id', id)
+      .select('id');
+  }
+
   if (orderUpdateResult.error || !orderUpdateResult.data?.length) {
+    if (orderUpdateResult.error) console.error('[orders] shipment status update failed', orderUpdateResult.error);
     redirect(`/admin/orders/${id}?toast=ship_error`);
   }
 
