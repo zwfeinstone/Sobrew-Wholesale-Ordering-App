@@ -66,7 +66,7 @@ export function ProductBoxUsageFields({
 
       {!boxItems.length ? (
         <div className="rounded-2xl border border-rose-200 bg-rose-50/70 p-4 text-sm text-rose-800">
-          No active box materials are available. Receive or create a box material before shipping this order.
+          No active box materials are available. Carrier shipments still need an active box material; local deliveries can be shipped with 0 boxes after confirmation.
         </div>
       ) : null}
 
@@ -87,7 +87,7 @@ export function ProductBoxUsageFields({
             <div key={row.id} className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_9rem_auto] sm:items-end">
               <label className="space-y-2 text-sm font-medium text-slate-700">
                 Box size
-                <select className="input" disabled={!boxItems.length} name="box_inventory_item_id" required>
+                <select className="input" disabled={!boxItems.length} name="box_inventory_item_id">
                   <option value="">Select box</option>
                   {boxItems.map((item) => (
                     <option key={item.id} value={item.id}>{item.label}</option>
@@ -99,9 +99,9 @@ export function ProductBoxUsageFields({
                 <input
                   className="input"
                   disabled={!boxItems.length}
-                  min="0.0001"
+                  min="0"
                   name="box_quantity"
-                  required
+                  placeholder="0"
                   step="0.0001"
                   type="number"
                 />
