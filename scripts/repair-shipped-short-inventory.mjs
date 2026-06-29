@@ -161,26 +161,12 @@ for (const orderIdChunk of chunks(orderIds)) {
 }
 
 const orderItemIds = orderItems.map((item) => item.id);
-const movedOrderItemIds = new Set();
-for (const itemIdChunk of chunks(orderItemIds)) {
-  const rows = await fetchAll(() =>
-    supabase
-      .from('inventory_movements')
-      .select('order_item_id')
-      .eq('movement_type', 'shipment_consume')
-      .in('order_item_id', itemIdChunk)
-  );
-  rows.forEach((row) => {
-    if (row.order_item_id) movedOrderItemIds.add(row.order_item_id);
-  });
-}
-
-const candidateItems = orderItems.filter((item) =>
+const eligibleOrderItems = orderItems.filter((item) =>
   item.product_id &&
-  numericValue(item.qty) > 0 &&
-  !movedOrderItemIds.has(item.id)
+  numericValue(item.qty) > 0
 );
-const productIds = [...new Set(candidateItems.map((item) => item.product_id))];
+const orderItemById = new Map(eligibleOrderItems.map((item) => [item.id, item]));
+const productIds = [...new Set(eligibleOrderItems.map((item) => item.product_id))];
 
 const products = [];
 for (const productIdChunk of chunks(productIds)) {
@@ -203,31 +189,74 @@ for (const productIdChunk of chunks(productIds)) {
   if (error) throw error;
   finishedItems.push(...(data ?? []));
 }
-const finishedItemByProductId = new Map(
-  finishedItems
-    .filter((item) => item.product_id)
-    .map((item) => [item.product_id, item])
-);
+const finishedItemByProductId = new Map();
+const finishedItemIdsByProductId = new Map();
+for (const item of finishedItems) {
+  if (!item.product_id) continue;
+  if (!finishedItemByProductId.has(item.product_id)) {
+    finishedItemByProductId.set(item.product_id, item);
+  }
+  const existingIds = finishedItemIdsByProductId.get(item.product_id) ?? new Set();
+  existingIds.add(item.id);
+  finishedItemIdsByProductId.set(item.product_id, existingIds);
+}
 
 const missingFinishedProductIds = productIds.filter((productId) => !finishedItemByProductId.has(productId));
 const missingProductIds = missingFinishedProductIds.filter((productId) => !productById.has(productId));
 const creatableProductIds = missingFinishedProductIds.filter((productId) => productById.has(productId));
+const finishedItemsCreatedByProductId = new Set(creatableProductIds);
 
 if (apply) {
   for (const productId of creatableProductIds) {
     const item = await createFinishedItem(supabase, productById.get(productId));
     finishedItemByProductId.set(productId, item);
+    const existingIds = finishedItemIdsByProductId.get(productId) ?? new Set();
+    existingIds.add(item.id);
+    finishedItemIdsByProductId.set(productId, existingIds);
   }
 } else {
   for (const productId of creatableProductIds) {
     finishedItemByProductId.set(productId, { id: `dry-run-${productId}`, product_id: productId, base_unit: 'each' });
+    finishedItemIdsByProductId.set(productId, new Set([`dry-run-${productId}`]));
   }
 }
 
-const movementRows = candidateItems
-  .filter((item) => finishedItemByProductId.has(item.product_id))
+const movedFinishedGoodOrderItemIds = new Set();
+let shipmentMovementRowsScanned = 0;
+let ignoredNonProductMovementRows = 0;
+for (const itemIdChunk of chunks(orderItemIds)) {
+  const rows = await fetchAll(() =>
+    supabase
+      .from('inventory_movements')
+      .select('order_item_id,inventory_item_id')
+      .eq('movement_type', 'shipment_consume')
+      .in('order_item_id', itemIdChunk)
+  );
+  shipmentMovementRowsScanned += rows.length;
+  rows.forEach((row) => {
+    if (!row.order_item_id || !row.inventory_item_id) return;
+    const orderItem = orderItemById.get(row.order_item_id);
+    const finishedItemIds = orderItem?.product_id ? finishedItemIdsByProductId.get(orderItem.product_id) : undefined;
+    if (finishedItemIds?.has(row.inventory_item_id)) {
+      movedFinishedGoodOrderItemIds.add(row.order_item_id);
+    } else {
+      ignoredNonProductMovementRows += 1;
+    }
+  });
+}
+
+const candidateItems = eligibleOrderItems.filter((item) => !movedFinishedGoodOrderItemIds.has(item.id));
+const repairRows = candidateItems
   .map((item) => ({
-    inventory_item_id: finishedItemByProductId.get(item.product_id).id,
+    item,
+    product: productById.get(item.product_id),
+    finishedItem: finishedItemByProductId.get(item.product_id),
+    createsFinishedGood: finishedItemsCreatedByProductId.has(item.product_id),
+  }))
+  .filter((row) => row.finishedItem);
+const movementRows = repairRows
+  .map(({ item, finishedItem }) => ({
+    inventory_item_id: finishedItem.id,
     lot_id: null,
     movement_type: 'shipment_consume',
     order_id: item.order_id,
@@ -247,23 +276,30 @@ if (apply && movementRows.length) {
 
 console.log(`Shipped orders scanned: ${orders.length}`);
 console.log(`Order items scanned: ${orderItems.length}`);
-console.log(`Order items already having shipment movement: ${movedOrderItemIds.size}`);
+console.log(`Shipment movement rows scanned: ${shipmentMovementRowsScanned}`);
+console.log(`Non-product shipment movement rows ignored: ${ignoredNonProductMovementRows}`);
+console.log(`Order items already having finished-good shipment movement: ${movedFinishedGoodOrderItemIds.size}`);
 console.log(`Candidate shipped-short items needing movement: ${candidateItems.length}`);
 console.log(`Finished-good items to create: ${creatableProductIds.length}`);
 console.log(`Missing product rows skipped: ${missingProductIds.length}`);
 console.log(`Shipment movements to insert: ${movementRows.length}`);
 
-if (movementRows.length) {
-  console.log('\nSample movements:');
+if (repairRows.length) {
+  console.log('\nRepair candidates:');
   console.table(
-    movementRows.slice(0, 10).map((row) => ({
-      order_id: row.order_id,
-      order_item_id: row.order_item_id,
-      inventory_item_id: row.inventory_item_id,
-      quantity_change: row.quantity_change,
-      unit_cost_cents: row.unit_cost_cents,
+    repairRows.slice(0, 20).map(({ item, product, finishedItem, createsFinishedGood }) => ({
+      order_id: item.order_id,
+      order_item_id: item.id,
+      product: product?.name ?? item.product_name_snapshot ?? item.product_id,
+      sku: product?.sku ?? '',
+      quantity_to_repair: numericValue(item.qty),
+      finished_good_item_id: finishedItem.id,
+      creates_finished_good: createsFinishedGood ? 'yes' : 'no',
     }))
   );
+  if (repairRows.length > 20) {
+    console.log(`Showing 20 of ${repairRows.length} repair candidates.`);
+  }
 }
 
 if (!apply) {
