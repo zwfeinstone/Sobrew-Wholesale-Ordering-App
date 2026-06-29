@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit",
     "check": "npm run typecheck && npm run lint",
     "backfill:cogs": "node scripts/backfill-historical-cogs.mjs",
-    "cron:recurring": "node scripts/run-recurring-cron.mjs"
+    "cron:recurring": "node scripts/run-recurring-cron.mjs",
+    "repair:shipped-short-inventory": "node scripts/repair-shipped-short-inventory.mjs"
   },
   "dependencies": {
     "@supabase/ssr": "^0.5.2",

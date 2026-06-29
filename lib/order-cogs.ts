@@ -26,9 +26,12 @@ type OrderItemRow = {
 };
 
 type InventoryItemRow = {
+  active?: boolean | null;
   id: string;
+  name?: string | null;
   product_id: string | null;
   base_unit: InventoryUnit;
+  sku?: string | null;
 };
 
 type InventoryLotRow = {
@@ -85,6 +88,12 @@ type RecipeRow = {
   shipping_label_qty: number | string;
   branding_label_qty: number | string;
   product_recipe_components?: RecipeComponentRow[] | null;
+};
+
+type ProductRow = {
+  id: string;
+  name: string | null;
+  sku: string | null;
 };
 
 type UnitCostBreakdown = {
@@ -185,6 +194,91 @@ function unitBreakdownFromProductionRun(run: ProductionRunRow | undefined | null
 function isBoxComponent(component: RecipeComponentRow) {
   const item = relatedOne(component.inventory_items);
   return component.component_role === 'box' || Boolean(item?.sku?.startsWith('BOX-'));
+}
+
+function skuSegment(value: string | null | undefined) {
+  return (value ?? '').trim().replace(/\s+/g, '-').replace(/[^A-Za-z0-9_-]/g, '').slice(0, 48);
+}
+
+function finishedGoodSkuCandidates(product: ProductRow) {
+  const sku = skuSegment(product.sku);
+  const shortId = product.id.replace(/-/g, '').slice(0, 12);
+  return [...new Set([
+    `FIN-${sku || shortId}`,
+    `FIN-${shortId}`,
+    `FIN-${product.id}`,
+  ])];
+}
+
+async function refetchFinishedItem(supabase: SupabaseLike, productId: string) {
+  return supabase
+    .from('inventory_items')
+    .select('id,product_id,base_unit')
+    .eq('item_type', 'finished_good')
+    .eq('product_id', productId)
+    .maybeSingle();
+}
+
+async function ensureFinishedItemsForProducts({
+  existingByProductId,
+  productIds,
+  supabase,
+}: {
+  existingByProductId: Map<string, InventoryItemRow>;
+  productIds: string[];
+  supabase: SupabaseLike;
+}) {
+  const missingProductIds = productIds.filter((productId) => !existingByProductId.has(productId));
+  if (!missingProductIds.length) return { error: null };
+
+  const { data: products, error: productsError } = await supabase
+    .from('products')
+    .select('id,name,sku')
+    .in('id', missingProductIds);
+
+  if (productsError) return { error: 'finished_item_product_error' as const };
+
+  for (const product of (products ?? []) as ProductRow[]) {
+    if (existingByProductId.has(product.id)) continue;
+
+    const name = product.name?.trim() || product.sku?.trim() || 'Finished good';
+    let createdItem: InventoryItemRow | null = null;
+
+    for (const sku of finishedGoodSkuCandidates(product)) {
+      const { data, error } = await supabase
+        .from('inventory_items')
+        .insert({
+          active: true,
+          base_unit: 'each',
+          item_type: 'finished_good',
+          name,
+          product_id: product.id,
+          sku,
+        })
+        .select('id,product_id,base_unit')
+        .single();
+
+      if (!error && data) {
+        createdItem = data as InventoryItemRow;
+        break;
+      }
+
+      const { data: existing } = await refetchFinishedItem(supabase, product.id);
+      if (existing) {
+        createdItem = existing as InventoryItemRow;
+        break;
+      }
+    }
+
+    if (!createdItem) return { error: 'finished_item_insert_error' as const };
+    existingByProductId.set(product.id, createdItem);
+  }
+
+  if (missingProductIds.some((productId) => !existingByProductId.has(productId))) {
+    return { error: 'finished_item_product_error' as const };
+  }
+
+  return { error: null };
 }
 
 function recipeUnitCostBreakdown(recipe: RecipeRow, avgCostByItemId: Map<string, number>): UnitCostBreakdown {
@@ -504,6 +598,13 @@ export async function snapshotOrderCogsForShipment({
       .filter((item) => item.product_id)
       .map((item) => [item.product_id as string, item])
   );
+  const ensureFinishedItemsResult = await ensureFinishedItemsForProducts({
+    existingByProductId: finishedItemByProductId,
+    productIds,
+    supabase,
+  });
+  if (ensureFinishedItemsResult.error) return { error: ensureFinishedItemsResult.error };
+
   const finishedItemIds = [...finishedItemByProductId.values()].map((item) => item.id);
   const { data: finishedLots } = finishedItemIds.length
     ? await supabase
