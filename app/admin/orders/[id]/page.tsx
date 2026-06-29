@@ -3,6 +3,7 @@ import ConfirmSubmitButton from '@/components/confirm-submit-button';
 import { OrderStatusBadge, OrderStatusTimeline } from '@/components/order-status';
 import PendingSubmitButton from '@/components/pending-submit-button';
 import { ProductBoxUsageFields, type ProductBoxInventoryOption, type ProductBoxRequiredLine } from '@/components/product-box-usage-fields';
+import ShipOrderSubmitButton from '@/components/ship-order-submit-button';
 import StatusToast from '@/components/status-toast';
 import { requireAdminWriteAccess } from '@/lib/admin-write-access';
 import { getCenterLoginEmails } from '@/lib/center-logins';
@@ -70,6 +71,7 @@ async function shipOrder(formData: FormData) {
   }
   const fulfillmentMethod = String(formData.get('fulfillment_method') ?? '');
   const localDeliveryConfirmed = formData.get('local_delivery_zero_confirm') === 'on';
+  const zeroBoxesConfirmed = formData.get('zero_boxes_confirmed') === 'on';
   if (!['carrier', 'local_delivery'].includes(fulfillmentMethod)) redirect(`/admin/orders/${id}?toast=fulfillment_required`);
   if (fulfillmentMethod === 'carrier' && shippingCostCents <= 0) redirect(`/admin/orders/${id}?toast=shipping_required`);
   if (fulfillmentMethod === 'local_delivery' && shippingCostCents === 0 && !localDeliveryConfirmed) {
@@ -101,19 +103,27 @@ async function shipOrder(formData: FormData) {
 
     if (boxItemsError) redirect(`/admin/orders/${id}?toast=ship_error`);
     const validBoxItemIds = new Set((boxItems ?? []).map((item: any) => String(item.id)));
-    if (!validBoxItemIds.size) redirect(`/admin/orders/${id}?toast=box_inventory_required`);
 
     const boxItemIds = formData.getAll('box_inventory_item_id').map(String);
-    const quantities = formData.getAll('box_quantity').map((value) => Math.max(0, Number.parseFloat(String(value)) || 0));
+    const rawQuantities = formData.getAll('box_quantity').map((value) => String(value ?? '').trim());
+    const quantities = rawQuantities.map((value) => Math.max(0, Number.parseFloat(value) || 0));
     const submittedUsageByBoxItem = new Map<string, number>();
     const usageByOrderItem = new Map<string, Map<string, number>>();
 
     for (let index = 0; index < Math.max(boxItemIds.length, quantities.length); index += 1) {
       const boxItemId = boxItemIds[index];
+      const quantityInput = rawQuantities[index] ?? '';
       const quantity = quantities[index] ?? 0;
-      const anyFieldPresent = Boolean(boxItemId || quantity);
+      const anyFieldPresent = Boolean(boxItemId || quantityInput);
       if (!anyFieldPresent) continue;
-      if (!validBoxItemIds.has(boxItemId) || quantity <= 0) {
+
+      if (quantity <= 0) {
+        if (fulfillmentMethod === 'local_delivery') continue;
+        redirect(`/admin/orders/${id}?toast=zero_boxes_local_delivery_required`);
+      }
+
+      if (!validBoxItemIds.size) redirect(`/admin/orders/${id}?toast=box_inventory_required`);
+      if (!validBoxItemIds.has(boxItemId)) {
         redirect(`/admin/orders/${id}?toast=box_count_required`);
       }
 
@@ -121,8 +131,6 @@ async function shipOrder(formData: FormData) {
     }
 
     const totalSubmittedQuantity = [...submittedUsageByBoxItem.values()].reduce((sum, quantity) => sum + quantity, 0);
-    if (totalSubmittedQuantity <= 0) redirect(`/admin/orders/${id}?toast=box_count_required`);
-
     const requiredLines = (requiredOrderItems as any[]).map((item) => ({
       id: String(item.id),
       qty: Math.max(0, normalizeInventoryNumber(item.qty)),
@@ -130,19 +138,24 @@ async function shipOrder(formData: FormData) {
     const totalRequiredQty = requiredLines.reduce((sum, item) => sum + item.qty, 0);
     if (totalRequiredQty <= 0) redirect(`/admin/orders/${id}?toast=box_count_required`);
 
-    for (const [boxItemId, totalQuantity] of submittedUsageByBoxItem.entries()) {
-      let allocatedQuantity = 0;
-      requiredLines.forEach((line, index) => {
-        const quantity = index === requiredLines.length - 1
-          ? Math.max(0, totalQuantity - allocatedQuantity)
-          : (totalQuantity * line.qty) / totalRequiredQty;
-        allocatedQuantity += quantity;
-        if (quantity <= 0) return;
+    if (totalSubmittedQuantity <= 0) {
+      if (fulfillmentMethod !== 'local_delivery') redirect(`/admin/orders/${id}?toast=zero_boxes_local_delivery_required`);
+      if (!zeroBoxesConfirmed) redirect(`/admin/orders/${id}?toast=zero_boxes_confirm_required`);
+    } else {
+      for (const [boxItemId, totalQuantity] of submittedUsageByBoxItem.entries()) {
+        let allocatedQuantity = 0;
+        requiredLines.forEach((line, index) => {
+          const quantity = index === requiredLines.length - 1
+            ? Math.max(0, totalQuantity - allocatedQuantity)
+            : (totalQuantity * line.qty) / totalRequiredQty;
+          allocatedQuantity += quantity;
+          if (quantity <= 0) return;
 
-        const existing = usageByOrderItem.get(line.id) ?? new Map<string, number>();
-        existing.set(boxItemId, (existing.get(boxItemId) ?? 0) + quantity);
-        usageByOrderItem.set(line.id, existing);
-      });
+          const existing = usageByOrderItem.get(line.id) ?? new Map<string, number>();
+          existing.set(boxItemId, (existing.get(boxItemId) ?? 0) + quantity);
+          usageByOrderItem.set(line.id, existing);
+        });
+      }
     }
 
     const deleteResult = await supabase
@@ -166,12 +179,13 @@ async function shipOrder(formData: FormData) {
       if (insertResult.error) redirect(`/admin/orders/${id}?toast=ship_error`);
     }
 
-    for (const [orderItemId, boxMap] of usageByOrderItem.entries()) {
-      const boxesUsed = [...boxMap.values()].reduce((sum, quantity) => sum + quantity, 0);
+    for (const line of requiredLines) {
+      const boxMap = usageByOrderItem.get(line.id);
+      const boxesUsed = boxMap ? [...boxMap.values()].reduce((sum, quantity) => sum + quantity, 0) : 0;
       const { error: itemError } = await supabase
         .from('order_items')
         .update({ shipping_boxes_used: boxesUsed })
-        .eq('id', orderItemId);
+        .eq('id', line.id);
       if (itemError) redirect(`/admin/orders/${id}?toast=ship_error`);
     }
   }
@@ -357,7 +371,9 @@ export default async function AdminOrderDetail({
       {toast === 'shipping_required' ? <StatusToast message="Carrier shipping requires a shipping cost greater than $0.00." tone="error" /> : null}
       {toast === 'fulfillment_required' ? <StatusToast message="Choose carrier shipping or local delivery before marking this order shipped." tone="error" /> : null}
       {toast === 'local_delivery_confirm_required' ? <StatusToast message="Confirm this was a local delivery before recording $0.00 shipping." tone="error" /> : null}
-      {toast === 'box_count_required' ? <StatusToast message="Product box size and quantity are required for one or more products on this order." tone="error" /> : null}
+      {toast === 'zero_boxes_local_delivery_required' ? <StatusToast message="0 boxes is only allowed when fulfillment method is Local delivery." tone="error" /> : null}
+      {toast === 'zero_boxes_confirm_required' ? <StatusToast message="Confirm this local delivery has 0 boxes before marking it shipped." tone="error" /> : null}
+      {toast === 'box_count_required' ? <StatusToast message="Product box size and quantity are required unless this is a confirmed local delivery with 0 boxes." tone="error" /> : null}
       {toast === 'box_inventory_required' ? <StatusToast message="Create or receive an active box material before shipping this order." tone="error" /> : null}
       {toast === 'order_shipped' ? <StatusToast message="Order shipped, COGS recorded, and customer email sent." tone="success" /> : null}
       {toast === 'ship_error' ? <StatusToast message="Unable to ship this order." tone="error" /> : null}
@@ -448,6 +464,7 @@ export default async function AdminOrderDetail({
             <p className="mt-2 text-sm text-slate-500">Carrier shipping requires a cost greater than $0. Local delivery can be recorded as $0 with confirmation.</p>
           </div>
           <input type="hidden" name="id" value={order.id} />
+          <input type="hidden" name="zero_boxes_confirmed" value="" />
           <fieldset className="space-y-3">
             <legend className="text-sm font-semibold text-slate-950">Fulfillment method</legend>
             <label className="flex items-start gap-3 rounded-2xl border border-slate-200 bg-white/65 px-4 py-3 text-sm text-slate-700">
@@ -490,10 +507,9 @@ export default async function AdminOrderDetail({
               <ProductBoxUsageFields boxItems={productBoxOptions} recipeBoxCoveredLabels={recipeBoxCoveredLabels} requiredLines={productBoxRequiredLines} />
             </div>
           ) : null}
-          <PendingSubmitButton
+          <ShipOrderSubmitButton
             className="btn-primary w-full sm:w-auto"
-            disabled={productBoxRequiredLines.length > 0 && !productBoxOptions.length}
-            disabledLabel="Box inventory required"
+            hasRequiredBoxLines={productBoxRequiredLines.length > 0}
             label="Mark shipped"
             pendingLabel="Shipping..."
           />
