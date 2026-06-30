@@ -1,4 +1,8 @@
 import Link from 'next/link';
+import { redirect } from 'next/navigation';
+import PendingSubmitButton from '@/components/pending-submit-button';
+import StatusToast from '@/components/status-toast';
+import { requireAdminWriteAccess } from '@/lib/admin-write-access';
 import {
   PRODUCT_CATEGORY_OPTIONS,
   UNCATEGORIZED_PRODUCT_CATEGORY,
@@ -16,6 +20,12 @@ type ProductRow = {
   sku: string | null;
   category: string | null;
   active: boolean | null;
+};
+
+type RecipeLaborRow = {
+  id: string;
+  labor_minutes: number | string | null;
+  labor_rate_cents: number | string | null;
 };
 
 const productNameCollator = new Intl.Collator('en-US', { numeric: true, sensitivity: 'base' });
@@ -71,16 +81,100 @@ function buildProductsHref(category: ProductCategoryGroup | 'all', search: strin
   return query ? `/admin/products?${query}` : '/admin/products';
 }
 
+function safeProductsReturnHref(formData: FormData) {
+  const value = String(formData.get('return_to') ?? '');
+  return value.startsWith('/admin/products') ? value : '/admin/products';
+}
+
+function productsToastHref(returnTo: string, toast: string, params: Record<string, string | number | undefined> = {}) {
+  const url = new URL(returnTo, 'http://localhost');
+  url.searchParams.set('toast', toast);
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined && value !== '') url.searchParams.set(key, String(value));
+  }
+  return `${url.pathname}${url.search}`;
+}
+
+function parsePercentAdjustment(value: FormDataEntryValue | null) {
+  const raw = String(value ?? '').trim();
+  if (!raw) return { invalid: false, value: null };
+  const parsed = Number.parseFloat(raw);
+  if (!Number.isFinite(parsed) || parsed < -100 || parsed > 500) {
+    return { invalid: true, value: null };
+  }
+  return { invalid: false, value: parsed };
+}
+
+function numericValue(value: unknown) {
+  const parsed = Number(value ?? 0);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function roundRecipeNumber(value: number) {
+  return Math.round(value * 10000) / 10000;
+}
+
+async function massAdjustRecipeLabor(formData: FormData) {
+  'use server';
+  const returnTo = safeProductsReturnHref(formData);
+  await requireAdminWriteAccess(productsToastHref(returnTo, 'admin_write_denied'), 'products');
+
+  const minutesAdjustment = parsePercentAdjustment(formData.get('labor_minutes_percent'));
+  const rateAdjustment = parsePercentAdjustment(formData.get('labor_rate_percent'));
+  const confirmed = formData.get('confirm_bulk_labor_adjustment') === 'on';
+
+  if (minutesAdjustment.invalid || rateAdjustment.invalid || (minutesAdjustment.value === null && rateAdjustment.value === null)) {
+    redirect(productsToastHref(returnTo, 'bulk_labor_invalid'));
+  }
+  if (!confirmed) {
+    redirect(productsToastHref(returnTo, 'bulk_labor_confirm_required'));
+  }
+
+  const supabase = await createClient();
+  const { data: recipes, error } = await supabase
+    .from('product_recipes')
+    .select('id,labor_minutes,labor_rate_cents')
+    .limit(50000);
+  if (error) redirect(productsToastHref(returnTo, 'bulk_labor_error'));
+
+  const now = new Date().toISOString();
+  const rows = ((recipes ?? []) as RecipeLaborRow[]).map((recipe) => {
+    const minutesMultiplier = minutesAdjustment.value === null ? 1 : 1 + minutesAdjustment.value / 100;
+    const rateMultiplier = rateAdjustment.value === null ? 1 : 1 + rateAdjustment.value / 100;
+    return {
+      id: recipe.id,
+      labor_minutes: roundRecipeNumber(Math.max(0, numericValue(recipe.labor_minutes) * minutesMultiplier)),
+      labor_rate_cents: Math.round(Math.max(0, numericValue(recipe.labor_rate_cents) * rateMultiplier)),
+      updated_at: now,
+    };
+  });
+
+  if (rows.length) {
+    const { error: updateError } = await supabase
+      .from('product_recipes')
+      .upsert(rows, { onConflict: 'id' });
+    if (updateError) redirect(productsToastHref(returnTo, 'bulk_labor_error'));
+  }
+
+  redirect(productsToastHref(returnTo, 'bulk_labor_saved', { count: rows.length }));
+}
+
 export default async function ProductsPage({
   searchParams,
 }: {
   searchParams?: Record<string, string | string[] | undefined>;
 }) {
   const supabase = await createClient();
-  const { data } = await supabase.from('products').select('id,name,sku,category,active').order('name', { ascending: true });
+  const [{ data }, { count: recipeCount }] = await Promise.all([
+    supabase.from('products').select('id,name,sku,category,active').order('name', { ascending: true }),
+    supabase.from('product_recipes').select('id', { count: 'exact', head: true }),
+  ]);
   const products = (data ?? []) as ProductRow[];
   const categoryFilter = normalizeCategoryFilter(searchParams?.category);
   const search = typeof searchParams?.q === 'string' ? searchParams.q.trim() : '';
+  const toast = typeof searchParams?.toast === 'string' ? searchParams.toast : '';
+  const adjustedCount = typeof searchParams?.count === 'string' ? Number.parseInt(searchParams.count, 10) : 0;
+  const currentHref = buildProductsHref(categoryFilter, search);
   const filteredProducts = products.filter((product) => productMatchesCategory(product, categoryFilter) && productMatchesSearch(product, search));
   const groupedProducts = groupProductsByCategory(filteredProducts);
   const uncategorizedCount = products.filter((product) => productCategoryGroupKey(product.category) === UNCATEGORIZED_PRODUCT_CATEGORY).length;
@@ -105,6 +199,11 @@ export default async function ProductsPage({
 
   return (
     <div className="space-y-6">
+      {toast === 'bulk_labor_saved' ? <StatusToast message={`Updated labor on ${Number.isFinite(adjustedCount) ? adjustedCount : recipeCount ?? 0} product recipe${adjustedCount === 1 ? '' : 's'}.`} tone="success" /> : null}
+      {toast === 'bulk_labor_invalid' ? <StatusToast message="Enter at least one valid percentage between -100 and 500." tone="error" /> : null}
+      {toast === 'bulk_labor_confirm_required' ? <StatusToast message="Confirm the bulk labor adjustment before applying it." tone="error" /> : null}
+      {toast === 'bulk_labor_error' ? <StatusToast message="Unable to update product recipe labor." tone="error" /> : null}
+      {toast === 'admin_write_denied' ? <StatusToast message="You do not have permission to edit products." tone="error" /> : null}
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <span className="eyebrow">Catalog Admin</span>
@@ -140,6 +239,32 @@ export default async function ProductsPage({
             );
           })}
         </div>
+      </section>
+
+      <section className="card space-y-4">
+        <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-start">
+          <div>
+            <span className="eyebrow">Recipe Labor</span>
+            <h2 className="mt-3 text-xl font-semibold text-slate-950">Mass adjust labor</h2>
+            <p className="mt-2 text-sm text-slate-500">{recipeCount ?? 0} existing product recipe{recipeCount === 1 ? '' : 's'} will be eligible for this adjustment.</p>
+          </div>
+        </div>
+        <form action={massAdjustRecipeLabor} className="grid gap-3 lg:grid-cols-[11rem_11rem_minmax(0,1fr)_auto] lg:items-end">
+          <input name="return_to" type="hidden" value={currentHref} />
+          <label className="space-y-2 text-sm font-medium text-slate-700">
+            Labor minutes %
+            <input className="input" name="labor_minutes_percent" max="500" min="-100" placeholder="10 or -5" step="0.01" type="number" />
+          </label>
+          <label className="space-y-2 text-sm font-medium text-slate-700">
+            Labor rate %
+            <input className="input" name="labor_rate_percent" max="500" min="-100" placeholder="10 or -5" step="0.01" type="number" />
+          </label>
+          <label className="flex min-h-[3.25rem] items-center gap-3 rounded-2xl border border-slate-200 bg-white/65 px-4 py-3 text-sm font-semibold text-slate-700">
+            <input name="confirm_bulk_labor_adjustment" type="checkbox" />
+            Apply to every existing product recipe
+          </label>
+          <PendingSubmitButton className="btn-primary w-full lg:w-auto" label="Apply Adjustment" pendingLabel="Applying..." />
+        </form>
       </section>
 
       {!filteredProducts.length ? <div className="card text-sm text-slate-600">No products found.</div> : null}
