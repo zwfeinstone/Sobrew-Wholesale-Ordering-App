@@ -26,12 +26,29 @@ async function saveSettings(formData: FormData) {
     hero_image_url = supabaseAdmin.storage.from('branding').getPublicUrl(path).data.publicUrl;
   }
 
-  await supabase.from('app_settings').update({
+  const payload: Record<string, unknown> = {
     brand_name: String(formData.get('brand_name') ?? ''),
     accent_color: String(formData.get('accent_color') ?? '#7c3aed'),
     ...(logo_url ? { logo_url } : {}),
     ...(hero_image_url ? { hero_image_url } : {})
-  }).eq('id', id);
+  };
+
+  if (formData.has('shipping_origin_name')) {
+    Object.assign(payload, {
+      shipping_origin_name: String(formData.get('shipping_origin_name') ?? '').trim() || null,
+      shipping_origin_company: String(formData.get('shipping_origin_company') ?? '').trim() || null,
+      shipping_origin_address1: String(formData.get('shipping_origin_address1') ?? '').trim() || null,
+      shipping_origin_address2: String(formData.get('shipping_origin_address2') ?? '').trim() || null,
+      shipping_origin_city: String(formData.get('shipping_origin_city') ?? '').trim() || null,
+      shipping_origin_state: String(formData.get('shipping_origin_state') ?? '').trim() || null,
+      shipping_origin_zip: String(formData.get('shipping_origin_zip') ?? '').trim() || null,
+      shipping_origin_country: String(formData.get('shipping_origin_country') ?? 'US').trim() || 'US',
+      shipping_origin_phone: String(formData.get('shipping_origin_phone') ?? '').trim() || null,
+      shipping_origin_email: String(formData.get('shipping_origin_email') ?? '').trim() || null,
+    });
+  }
+
+  await supabase.from('app_settings').update(payload).eq('id', id);
 
   redirect('/admin/settings');
 }
@@ -102,6 +119,62 @@ export default async function SettingsPage({
         </label>
         <PendingSubmitButton className="btn-primary w-full sm:w-auto" label="Save" pendingLabel="Saving..." />
       </form>
+
+      <section className="card space-y-5">
+        <div>
+          <p className="text-xs uppercase tracking-[0.18em] text-slate-500">Shipping origin</p>
+          <h2 className="mt-2 text-2xl font-semibold tracking-tight text-slate-950">EasyPost ship-from address</h2>
+          <p className="mt-2 text-sm leading-6 text-slate-500">Used for carrier rate lookup and label purchase on order shipments.</p>
+        </div>
+        <form action={saveSettings} className="grid gap-4 md:grid-cols-2">
+          <input type="hidden" name="id" value={settings.id} />
+          <input type="hidden" name="brand_name" value={settings.brand_name ?? 'Sobrew'} />
+          <input type="hidden" name="accent_color" value={settings.accent_color ?? '#7c3aed'} />
+          <label className="space-y-2 text-sm font-medium text-slate-700">
+            Contact name
+            <input className="input" name="shipping_origin_name" defaultValue={settings.shipping_origin_name ?? ''} placeholder="Sobrew Shipping" />
+          </label>
+          <label className="space-y-2 text-sm font-medium text-slate-700">
+            Company
+            <input className="input" name="shipping_origin_company" defaultValue={settings.shipping_origin_company ?? ''} placeholder="Sobrew" />
+          </label>
+          <label className="space-y-2 text-sm font-medium text-slate-700 md:col-span-2">
+            Address 1
+            <input className="input" name="shipping_origin_address1" defaultValue={settings.shipping_origin_address1 ?? ''} placeholder="Street address" />
+          </label>
+          <label className="space-y-2 text-sm font-medium text-slate-700 md:col-span-2">
+            Address 2
+            <input className="input" name="shipping_origin_address2" defaultValue={settings.shipping_origin_address2 ?? ''} placeholder="Suite, unit, dock, etc." />
+          </label>
+          <label className="space-y-2 text-sm font-medium text-slate-700">
+            City
+            <input className="input" name="shipping_origin_city" defaultValue={settings.shipping_origin_city ?? ''} />
+          </label>
+          <label className="space-y-2 text-sm font-medium text-slate-700">
+            State
+            <input className="input" name="shipping_origin_state" defaultValue={settings.shipping_origin_state ?? ''} maxLength={2} placeholder="MO" />
+          </label>
+          <label className="space-y-2 text-sm font-medium text-slate-700">
+            ZIP
+            <input className="input" name="shipping_origin_zip" defaultValue={settings.shipping_origin_zip ?? ''} />
+          </label>
+          <label className="space-y-2 text-sm font-medium text-slate-700">
+            Country
+            <input className="input" name="shipping_origin_country" defaultValue={settings.shipping_origin_country ?? 'US'} />
+          </label>
+          <label className="space-y-2 text-sm font-medium text-slate-700">
+            Phone
+            <input className="input" name="shipping_origin_phone" defaultValue={settings.shipping_origin_phone ?? ''} />
+          </label>
+          <label className="space-y-2 text-sm font-medium text-slate-700">
+            Email
+            <input className="input" name="shipping_origin_email" type="email" defaultValue={settings.shipping_origin_email ?? ''} />
+          </label>
+          <div className="md:col-span-2">
+            <PendingSubmitButton className="btn-primary w-full sm:w-auto" label="Save shipping origin" pendingLabel="Saving..." />
+          </div>
+        </form>
+      </section>
 
       <section className="card space-y-5">
         <div>
