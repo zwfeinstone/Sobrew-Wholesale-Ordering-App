@@ -47,18 +47,32 @@ function nextActionForStatus(status: string | null | undefined) {
 
 async function updateStatus(formData: FormData) {
   'use server';
-  const id = String(formData.get('id'));
-  const status = String(formData.get('status'));
+  const id = String(formData.get('id') ?? '').trim();
+  const status = String(formData.get('status') ?? '').trim();
   const statusFilter = String(formData.get('statusFilter') ?? '');
   const qFilter = String(formData.get('qFilter') ?? '');
 
   await requireAdminWriteAccess(ordersToastHref(statusFilter, 'admin_write_denied', qFilter), 'orders');
+
+  if (!id || !isOrderStatus(status)) {
+    console.error('[orders] invalid status update request', { orderId: id, requestedStatus: status });
+    redirect(ordersToastHref(statusFilter, 'status_error', qFilter));
+  }
 
   const supabase = await createClient();
   if (status === 'Shipped') {
     redirect(ordersToastHref(statusFilter, 'ship_on_detail_required', qFilter));
   }
   const orderUpdateResult = await supabase.from('orders').update({ status }).eq('id', id).select('id');
+  if (orderUpdateResult.error || !orderUpdateResult.data?.length) {
+    console.error('[orders] status update failed', {
+      code: orderUpdateResult.error?.code,
+      details: orderUpdateResult.error?.details,
+      message: orderUpdateResult.error?.message,
+      orderId: id,
+      requestedStatus: status,
+    });
+  }
   redirect(ordersToastHref(statusFilter, orderUpdateResult.error || !orderUpdateResult.data?.length ? 'status_error' : 'status_updated', qFilter));
 }
 
@@ -209,7 +223,7 @@ export default async function AdminOrdersPage({ searchParams }: { searchParams: 
       {toast === 'delete_success' ? <StatusToast message="Order deleted." tone="success" /> : null}
       {toast === 'delete_success_with_recurring' ? <StatusToast message="Order and linked recurring schedule deleted." tone="success" /> : null}
       {toast === 'delete_error' ? <StatusToast message="Unable to delete this order." tone="error" /> : null}
-      {toast === 'admin_write_denied' ? <StatusToast message="Only superadmins can change admin data." tone="error" /> : null}
+      {toast === 'admin_write_denied' ? <StatusToast message="You do not have permission to edit orders." tone="error" /> : null}
       <section className="panel space-y-5">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
           <div>

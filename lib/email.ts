@@ -8,6 +8,7 @@ const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KE
 
 type Line = { name: string; qty: number; price: number; line: number };
 type ShippedLine = { name: string; qty: number };
+type TrackingLine = { carrier?: string | null; service?: string | null; trackingCode: string };
 
 type OrderEmailPayload = {
   customerEmail: string | string[];
@@ -87,7 +88,7 @@ export async function sendOrderEmails(payload: OrderEmailPayload) {
   await sendOrderEmail(payload);
 }
 
-export async function sendShippedEmail(to: string | string[], items: ShippedLine[]) {
+export async function sendShippedEmail(to: string | string[], items: ShippedLine[], trackingLines: TrackingLine[] = []) {
   if (!resend) {
     console.error('Resend disabled: missing RESEND_API_KEY');
     return;
@@ -103,13 +104,20 @@ export async function sendShippedEmail(to: string | string[], items: ShippedLine
     .map((item) => `<li>${item.name} x ${item.qty}</li>`)
     .join('');
   const itemsHtml = itemRows ? `<p>Items in this shipment:</p><ul>${itemRows}</ul>` : '<p>Items in this shipment:</p><p>Unavailable</p>';
+  const trackingRows = trackingLines
+    .map((tracking) => {
+      const carrier = [tracking.carrier, tracking.service].filter(Boolean).join(' ');
+      return `<li>${carrier ? `${carrier}: ` : ''}${tracking.trackingCode}</li>`;
+    })
+    .join('');
+  const trackingHtml = trackingRows ? `<p>Tracking:</p><ul>${trackingRows}</ul>` : '';
 
   try {
     const response = await resend.emails.send({
       from: RESEND_FROM,
       to: recipients,
       subject: 'Your Order Has Been Shipped!',
-      html: `<p>Thank you for your business!</p>${itemsHtml}`,
+      html: `<p>Thank you for your business!</p>${itemsHtml}${trackingHtml}`,
     });
     console.log('Shipped email sent', response);
   } catch (error) {

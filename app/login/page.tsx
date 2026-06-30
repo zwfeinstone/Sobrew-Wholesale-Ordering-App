@@ -1,7 +1,8 @@
 import { redirect } from 'next/navigation';
 import Image from 'next/image';
 import LoginSubmitButton from '@/components/login-submit-button';
-import { isOwnerEmail } from '@/lib/admin-permission-definitions';
+import { firstAllowedAdminHref, isOwnerEmail } from '@/lib/admin-permission-definitions';
+import { loadSavedAdminPermissions } from '@/lib/admin-permission-save';
 import { logAuthProfileIssue } from '@/lib/auth-diagnostics';
 import { recordUserLastSeen } from '@/lib/last-seen';
 import { supabaseAdmin } from '@/lib/supabase/admin';
@@ -18,6 +19,7 @@ type LoginProfile = {
   email: string | null;
   is_active: boolean | null;
   is_admin: boolean | null;
+  is_superadmin: boolean | null;
 };
 
 const PROFILE_LOOKUP_RETRY_DELAYS_MS = [0, 250, 750];
@@ -32,7 +34,7 @@ async function getLoginProfileWithRetry(supabase: ServerSupabaseClient, userId: 
     if (delay) await sleep(delay);
     const { data: profile, error } = await supabase
       .from('profiles')
-      .select('email,is_admin,is_active')
+      .select('email,is_admin,is_active,is_superadmin')
       .eq('id', userId)
       .maybeSingle();
 
@@ -58,7 +60,7 @@ async function getLoginProfileWithAdminFallback({
 
   const adminLookup = await supabaseAdmin
     .from('profiles')
-    .select('email,is_admin,is_active')
+    .select('email,is_admin,is_active,is_superadmin')
     .eq('id', userId)
     .maybeSingle();
 
@@ -77,7 +79,7 @@ async function getLoginProfileWithAdminFallback({
         },
         { onConflict: 'id' }
       )
-      .select('email,is_admin,is_active')
+      .select('email,is_admin,is_active,is_superadmin')
       .single();
 
     if (!repaired.error && repaired.data) {
@@ -126,7 +128,12 @@ async function login(formData: FormData) {
     redirect('/login?inactive=1');
   }
   await recordUserLastSeen(data.user);
-  redirect(profile.is_admin === true ? '/admin' : '/portal');
+  if (profile.is_admin === true) {
+    const profileEmail = data.user.email || profile.email || email;
+    const access = await loadSavedAdminPermissions(supabaseAdmin, data.user.id, profileEmail, profile.is_superadmin);
+    redirect(firstAllowedAdminHref(access));
+  }
+  redirect('/portal');
 }
 
 export default function LoginPage({ searchParams }: { searchParams: Record<string, string | string[] | undefined> }) {
