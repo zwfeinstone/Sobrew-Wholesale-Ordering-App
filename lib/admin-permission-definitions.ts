@@ -86,6 +86,7 @@ export const ADMIN_NAV_LINKS: Array<{
   { name: 'Planning', href: '/admin/planning', sectionKey: 'planning' },
   { name: 'Production', href: '/admin/production', sectionKey: 'production' },
   { name: 'Time Clock', href: '/admin/time-clock', sectionKey: 'time_clock' },
+  { name: 'Week Hours', href: '/admin/week-hours', sectionKey: 'time_clock' },
   { name: 'Payroll', href: '/admin/payroll', sectionKey: 'payroll' },
   { name: 'Settings', href: '/admin/settings', sectionKey: 'settings' },
 ];
@@ -253,6 +254,7 @@ export function adminSectionForPath(pathname: string): AdminPermissionKey | null
   if (pathname === '/admin/planning' || pathname.startsWith('/admin/planning/')) return 'planning';
   if (pathname === '/admin/production' || pathname.startsWith('/admin/production/')) return 'production';
   if (pathname === '/admin/time-clock' || pathname.startsWith('/admin/time-clock/')) return 'time_clock';
+  if (pathname === '/admin/week-hours' || pathname.startsWith('/admin/week-hours/')) return 'time_clock';
   if (pathname === '/admin/payroll' || pathname.startsWith('/admin/payroll/')) return 'payroll';
   if (pathname === '/admin/settings' || pathname.startsWith('/admin/settings/')) return 'settings';
   return null;
