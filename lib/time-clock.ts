@@ -16,6 +16,22 @@ export const UNASSIGNED_WORK_TYPE = 'unassigned';
 export type LaborWorkType = (typeof LABOR_WORK_TYPES)[number]['value'];
 export type TimeEntryWorkType = LaborWorkType | typeof UNASSIGNED_WORK_TYPE;
 
+export const COMPENSATION_TYPES = [
+  { label: 'Hourly', value: 'hourly' },
+  { label: 'Salary', value: 'salary' },
+] as const;
+
+export const SALARY_PAY_FREQUENCIES = [
+  { label: 'Annual salary', value: 'annual' },
+  { label: 'Monthly salary', value: 'monthly' },
+  { label: 'Semimonthly paycheck', value: 'semimonthly' },
+  { label: 'Biweekly paycheck', value: 'biweekly' },
+  { label: 'Weekly paycheck', value: 'weekly' },
+] as const;
+
+export type CompensationType = (typeof COMPENSATION_TYPES)[number]['value'];
+export type SalaryPayFrequency = (typeof SALARY_PAY_FREQUENCIES)[number]['value'];
+
 export type TimeClockBreakRow = {
   break_end_at: string | null;
   break_start_at: string;
@@ -31,6 +47,8 @@ export type TimeClockEntryRow = {
 };
 
 const laborWorkTypeValues = new Set<string>(LABOR_WORK_TYPES.map((workType) => workType.value));
+const compensationTypeValues = new Set<string>(COMPENSATION_TYPES.map((type) => type.value));
+const salaryPayFrequencyValues = new Set<string>(SALARY_PAY_FREQUENCIES.map((frequency) => frequency.value));
 
 export function isLaborWorkType(value: string | null | undefined): value is LaborWorkType {
   return laborWorkTypeValues.has(String(value ?? ''));
@@ -41,10 +59,30 @@ export function normalizeWorkType(value: string | null | undefined): TimeEntryWo
   return isLaborWorkType(raw) ? raw : UNASSIGNED_WORK_TYPE;
 }
 
+export function normalizeCompensationType(value: string | null | undefined): CompensationType {
+  const raw = String(value ?? '').trim();
+  return compensationTypeValues.has(raw) ? raw as CompensationType : 'hourly';
+}
+
+export function normalizeSalaryPayFrequency(value: string | null | undefined): SalaryPayFrequency {
+  const raw = String(value ?? '').trim();
+  return salaryPayFrequencyValues.has(raw) ? raw as SalaryPayFrequency : 'annual';
+}
+
 export function workTypeLabel(value: string | null | undefined) {
   const normalized = normalizeWorkType(value);
   if (normalized === UNASSIGNED_WORK_TYPE) return 'Unassigned';
   return LABOR_WORK_TYPES.find((workType) => workType.value === normalized)?.label ?? 'Unassigned';
+}
+
+export function compensationTypeLabel(value: string | null | undefined) {
+  const normalized = normalizeCompensationType(value);
+  return COMPENSATION_TYPES.find((type) => type.value === normalized)?.label ?? 'Hourly';
+}
+
+export function salaryPayFrequencyLabel(value: string | null | undefined) {
+  const normalized = normalizeSalaryPayFrequency(value);
+  return SALARY_PAY_FREQUENCIES.find((frequency) => frequency.value === normalized)?.label ?? 'Annual salary';
 }
 
 const centralDateFormatter = new Intl.DateTimeFormat('en-US', {
@@ -186,6 +224,33 @@ export function hoursFromMinutes(minutes: number) {
 
 export function wageCentsForMinutes(minutes: number, hourlyRateCents: number | string | null | undefined) {
   return Math.round((minutes / 60) * normalizeMoneyCents(hourlyRateCents));
+}
+
+function salaryAnnualizedCents(amountCents: number, frequency: SalaryPayFrequency) {
+  if (frequency === 'weekly') return amountCents * 52;
+  if (frequency === 'biweekly') return amountCents * 26;
+  if (frequency === 'semimonthly') return amountCents * 24;
+  if (frequency === 'monthly') return amountCents * 12;
+  return amountCents;
+}
+
+export function salaryCentsForDateRange({
+  end,
+  salaryAmountCents,
+  salaryFrequency,
+  start,
+}: {
+  end: Date;
+  salaryAmountCents: number | string | null | undefined;
+  salaryFrequency: string | null | undefined;
+  start: Date;
+}) {
+  const amountCents = normalizeMoneyCents(salaryAmountCents);
+  if (amountCents <= 0 || end < start) return 0;
+  const frequency = normalizeSalaryPayFrequency(salaryFrequency);
+  const rangeMs = end.getTime() - start.getTime();
+  const days = Math.max(1, Math.round(rangeMs / 86400000));
+  return Math.round((salaryAnnualizedCents(amountCents, frequency) / 365) * days);
 }
 
 export function hoursLabel(minutes: number) {

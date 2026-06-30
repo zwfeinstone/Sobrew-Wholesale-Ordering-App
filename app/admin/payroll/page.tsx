@@ -5,11 +5,15 @@ import StatusToast from '@/components/status-toast';
 import { recordAdminAuditLog } from '@/lib/admin-audit';
 import { requireAdminSectionEdit, requireAdminSectionView } from '@/lib/admin-permissions';
 import { numericPercent } from '@/lib/commissions';
+import { getCurrentPayrollWeekWindow } from '@/lib/payroll-status';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import {
+  COMPENSATION_TYPES,
   LABOR_WORK_TYPES,
+  SALARY_PAY_FREQUENCIES,
   UNASSIGNED_WORK_TYPE,
   completedBreakMinutes,
+  compensationTypeLabel,
   dollarsInputFromCents,
   dollarsToCents,
   formatCentralDateInput,
@@ -18,19 +22,25 @@ import {
   hoursLabel,
   isLaborWorkType,
   minutesBetween,
+  normalizeCompensationType,
   normalizeMoneyCents,
+  normalizeSalaryPayFrequency,
   normalizeWorkType,
   paidMinutes,
   parseCentralDateInput,
   parseCentralDateTimeInput,
+  salaryCentsForDateRange,
+  salaryPayFrequencyLabel,
   wageCentsForMinutes,
   workTypeLabel,
+  type CompensationType,
   type LaborWorkType,
+  type SalaryPayFrequency,
   type TimeEntryWorkType,
 } from '@/lib/time-clock';
 import { usd } from '@/lib/utils';
 
-type PayrollTab = 'overview' | 'labor' | 'entries' | 'breaks' | 'manual' | 'approvals' | 'settings' | 'production' | 'export';
+type PayrollTab = 'review' | 'time' | 'reports' | 'settings' | 'export';
 
 type AdminProfileRow = {
   email: string | null;
@@ -80,18 +90,14 @@ type AllocationRow = {
   work_type: string | null;
 };
 
-type ProductionRunRow = {
-  actual_labor_cost_cents: number | string | null;
-  id: string;
-  labor_minutes: number | string | null;
-  produced_at: string | null;
-  products?: { name: string | null } | { name: string | null }[] | null;
-  quantity_produced: number | string | null;
-};
-
 type TimeSettingRow = {
+  active: boolean | null;
+  compensation_type: string | null;
   hourly_rate_cents: number | string | null;
   profile_id: string;
+  salary_amount_cents: number | string | null;
+  salary_frequency: string | null;
+  salary_labor_work_type: string | null;
 };
 
 type CommissionSettingRow = {
@@ -114,6 +120,29 @@ type PayrollSegment = {
   workType: TimeEntryWorkType;
 };
 
+type SalaryPayrollRow = {
+  frequency: SalaryPayFrequency;
+  profileId: string;
+  salaryAmountCents: number;
+  salaryCents: number;
+  workType: LaborWorkType;
+};
+
+type EmployeePayrollGroup = {
+  entryCount: Set<string>;
+  hourlyWageCents: number;
+  minutes: number;
+  salaryCents: number;
+  workTypes: Map<TimeEntryWorkType, number>;
+};
+
+type WorkTypePayrollGroup = {
+  entryCount: Set<string>;
+  hourlyWageCents: number;
+  minutes: number;
+  salaryCents: number;
+};
+
 type PayrollLockRow = {
   id: string;
   lock_end_at: string;
@@ -123,14 +152,10 @@ type PayrollLockRow = {
 };
 
 const PAYROLL_TABS: Array<{ id: PayrollTab; label: string }> = [
-  { id: 'overview', label: 'Overview' },
-  { id: 'labor', label: 'Labor Reports' },
-  { id: 'entries', label: 'Entries & Corrections' },
-  { id: 'breaks', label: 'Breaks / Lunch' },
-  { id: 'manual', label: 'Manual Entries' },
-  { id: 'approvals', label: 'Approvals & Locks' },
-  { id: 'settings', label: 'Rates, Commissions & Labor Tags' },
-  { id: 'production', label: 'Production Reconciliation' },
+  { id: 'review', label: 'Review' },
+  { id: 'time', label: 'Time' },
+  { id: 'reports', label: 'Reports' },
+  { id: 'settings', label: 'Settings' },
   { id: 'export', label: 'Export' },
 ];
 
@@ -146,6 +171,14 @@ function payrollHref(params: Record<string, string | null | undefined> = {}) {
   return `/admin/payroll${query ? `?${query}` : ''}`;
 }
 
+function formatDateInputLabel(value: string) {
+  const [year, month, day] = value.split('-').map(Number);
+  return new Date(Date.UTC(year, month - 1, day)).toLocaleDateString('en-US', {
+    day: 'numeric',
+    month: 'short',
+  });
+}
+
 function safeReturnHref(formData: FormData, fallback = '/admin/payroll') {
   const value = String(formData.get('return_to') ?? '');
   return value.startsWith('/admin/payroll') ? value : fallback;
@@ -156,8 +189,10 @@ function stringParam(value: string | string[] | undefined) {
 }
 
 function activeTabParam(value: string | string[] | undefined): PayrollTab {
-  if (value === 'employee' || value === 'work-type' || value === 'exceptions') return 'labor';
-  return PAYROLL_TABS.some((tab) => tab.id === value) ? value as PayrollTab : 'overview';
+  if (value === 'approvals') return 'review';
+  if (value === 'entries' || value === 'breaks' || value === 'manual') return 'time';
+  if (value === 'overview' || value === 'labor' || value === 'production' || value === 'employee' || value === 'work-type' || value === 'exceptions') return 'reports';
+  return PAYROLL_TABS.some((tab) => tab.id === value) ? value as PayrollTab : 'review';
 }
 
 function profileForEntry(entry: TimeEntry) {
@@ -166,11 +201,6 @@ function profileForEntry(entry: TimeEntry) {
 
 function profileLabel(profile: AdminProfileRow | null | undefined) {
   return profile?.full_name || profile?.email || 'Unknown admin';
-}
-
-function relatedOne<T>(value: T | T[] | null | undefined): T | null {
-  if (Array.isArray(value)) return value[0] ?? null;
-  return value ?? null;
 }
 
 function entryBreaks(entry: TimeEntry) {
@@ -187,9 +217,8 @@ function percentInputValue(value: number | string | null | undefined) {
   return percent.toFixed(percent % 1 === 0 ? 0 : 2);
 }
 
-function percent(value: number) {
-  if (!Number.isFinite(value)) return '0%';
-  return `${value >= 0 ? '+' : ''}${value.toFixed(0)}%`;
+function normalizeSalaryLaborWorkType(value: string | null | undefined): LaborWorkType {
+  return isLaborWorkType(String(value ?? '')) ? String(value) as LaborWorkType : 'admin';
 }
 
 function statusTone(status: string | null | undefined) {
@@ -198,13 +227,6 @@ function statusTone(status: string | null | undefined) {
   if (status === 'approved') return 'bg-emerald-50 text-emerald-700 ring-emerald-100';
   if (status === 'open') return 'bg-amber-50 text-amber-700 ring-amber-100';
   return 'bg-teal-50 text-teal-700 ring-teal-100';
-}
-
-function productionRunLabel(run: ProductionRunRow | null | undefined) {
-  if (!run) return 'Unlinked';
-  const product = relatedOne(run.products);
-  const date = run.produced_at ? new Date(run.produced_at).toLocaleDateString('en-US') : 'Unknown date';
-  return `${product?.name || 'Production run'} - ${date}`;
 }
 
 function tabHref(tab: PayrollTab, params: Record<string, string>) {
@@ -221,6 +243,8 @@ function errorMessage(error: string) {
   if (error === 'invalid_time') return 'Check the time values and available unallocated minutes.';
   if (error === 'missing_reason') return 'A reason is required for that change.';
   if (error === 'invalid_work_type') return 'Choose a valid labor tag.';
+  if (error === 'open_entries') return 'Close all open shifts before completing payroll.';
+  if (error === 'unapproved_entries') return 'Approve completed shifts before completing payroll.';
   return `Could not complete that payroll action (${error}).`;
 }
 
@@ -232,7 +256,8 @@ function successMessage(success: string) {
   if (success === 'manual_break_added') return 'Manual lunch/break added.';
   if (success === 'break_corrected') return 'Lunch/break corrected.';
   if (success === 'break_voided') return 'Lunch/break voided.';
-  if (success === 'range_locked') return 'Payroll range locked.';
+  if (success === 'range_locked') return 'Payroll week completed.';
+  if (success === 'entries_approved') return 'Completed shifts approved.';
   if (success === 'allocation_added') return 'Labor allocation added.';
   if (success === 'allocation_removed') return 'Labor allocation removed.';
   if (success === 'entry_approved') return 'Shift approved.';
@@ -265,7 +290,7 @@ async function updatePayrollSettings(formData: FormData) {
   const [{ data: beforeTime }, { data: beforeCommission }, { data: beforeTags }] = await Promise.all([
     supabaseAdmin
       .from('admin_time_settings')
-      .select('hourly_rate_cents')
+      .select('hourly_rate_cents,compensation_type,salary_amount_cents,salary_frequency,salary_labor_work_type')
       .eq('profile_id', profileId)
       .maybeSingle(),
     supabaseAdmin
@@ -280,6 +305,10 @@ async function updatePayrollSettings(formData: FormData) {
   ]);
 
   const hourlyRateCents = dollarsToCents(String(formData.get('hourly_rate') ?? '0'));
+  const compensationType = normalizeCompensationType(String(formData.get('compensation_type') ?? 'hourly'));
+  const salaryAmountCents = compensationType === 'salary' ? dollarsToCents(String(formData.get('salary_amount') ?? '0')) : 0;
+  const salaryFrequency = normalizeSalaryPayFrequency(String(formData.get('salary_frequency') ?? 'annual'));
+  const salaryLaborWorkType = normalizeSalaryLaborWorkType(String(formData.get('salary_labor_work_type') ?? 'admin'));
   const commissionPercent = Math.min(100, numericPercent(String(formData.get('commission_percent') ?? '0')));
   const isSalesRep = formData.get('is_sales_rep') === 'on';
 
@@ -287,8 +316,12 @@ async function updatePayrollSettings(formData: FormData) {
     supabaseAdmin.from('admin_time_settings').upsert(
       {
         active: true,
+        compensation_type: compensationType,
         hourly_rate_cents: hourlyRateCents,
         profile_id: profileId,
+        salary_amount_cents: salaryAmountCents,
+        salary_frequency: salaryFrequency,
+        salary_labor_work_type: salaryLaborWorkType,
         updated_at: new Date().toISOString(),
         updated_by: current.profile.id,
       },
@@ -331,6 +364,37 @@ async function updatePayrollSettings(formData: FormData) {
       actorProfileId: current.profile.id,
       after: { hourly_rate_cents: hourlyRateCents },
       before: { hourly_rate_cents: beforeTime?.hourly_rate_cents ?? 0 },
+      sectionKey: 'payroll',
+      supabase: supabaseAdmin,
+      targetProfileId: profileId,
+    });
+  }
+
+  const beforeCompensationType = normalizeCompensationType((beforeTime as TimeSettingRow | null | undefined)?.compensation_type);
+  const beforeSalaryAmountCents = normalizeMoneyCents((beforeTime as TimeSettingRow | null | undefined)?.salary_amount_cents);
+  const beforeSalaryFrequency = normalizeSalaryPayFrequency((beforeTime as TimeSettingRow | null | undefined)?.salary_frequency);
+  const beforeSalaryLaborWorkType = normalizeSalaryLaborWorkType((beforeTime as TimeSettingRow | null | undefined)?.salary_labor_work_type);
+  if (
+    beforeCompensationType !== compensationType ||
+    beforeSalaryAmountCents !== salaryAmountCents ||
+    beforeSalaryFrequency !== salaryFrequency ||
+    beforeSalaryLaborWorkType !== salaryLaborWorkType
+  ) {
+    await recordAdminAuditLog({
+      action: 'payroll_compensation_updated',
+      actorProfileId: current.profile.id,
+      after: {
+        compensation_type: compensationType,
+        salary_amount_cents: salaryAmountCents,
+        salary_frequency: salaryFrequency,
+        salary_labor_work_type: salaryLaborWorkType,
+      },
+      before: {
+        compensation_type: beforeCompensationType,
+        salary_amount_cents: beforeSalaryAmountCents,
+        salary_frequency: beforeSalaryFrequency,
+        salary_labor_work_type: beforeSalaryLaborWorkType,
+      },
       sectionKey: 'payroll',
       supabase: supabaseAdmin,
       targetProfileId: profileId,
@@ -380,8 +444,8 @@ async function updatePayrollSettings(formData: FormData) {
 
 async function updateEntryWorkType(formData: FormData) {
   'use server';
-  const current = await requireAdminSectionEdit('payroll', payrollHref({ error: 'write_denied', tab: 'entries' }));
-  const returnTo = safeReturnHref(formData, payrollHref({ tab: 'entries' }));
+  const current = await requireAdminSectionEdit('payroll', payrollHref({ error: 'write_denied', tab: 'time' }));
+  const returnTo = safeReturnHref(formData, payrollHref({ tab: 'time' }));
   const entryId = String(formData.get('entry_id') ?? '');
   const workType = normalizeWorkType(String(formData.get('work_type') ?? ''));
   const reason = String(formData.get('reason') ?? '').trim();
@@ -418,8 +482,8 @@ async function updateEntryWorkType(formData: FormData) {
 
 async function updateEntryTimes(formData: FormData) {
   'use server';
-  const current = await requireAdminSectionEdit('payroll', payrollHref({ error: 'write_denied', tab: 'entries' }));
-  const returnTo = safeReturnHref(formData, payrollHref({ tab: 'entries' }));
+  const current = await requireAdminSectionEdit('payroll', payrollHref({ error: 'write_denied', tab: 'time' }));
+  const returnTo = safeReturnHref(formData, payrollHref({ tab: 'time' }));
   const entryId = String(formData.get('entry_id') ?? '');
   const clockIn = parseCentralDateTimeInput(String(formData.get('clock_in_at') ?? ''));
   const clockOutRaw = String(formData.get('clock_out_at') ?? '').trim();
@@ -475,8 +539,8 @@ async function updateEntryTimes(formData: FormData) {
 
 async function addManualEntry(formData: FormData) {
   'use server';
-  const current = await requireAdminSectionEdit('payroll', payrollHref({ error: 'write_denied', tab: 'manual' }));
-  const returnTo = safeReturnHref(formData, payrollHref({ tab: 'manual' }));
+  const current = await requireAdminSectionEdit('payroll', payrollHref({ error: 'write_denied', tab: 'time' }));
+  const returnTo = safeReturnHref(formData, payrollHref({ tab: 'time' }));
   const profileId = String(formData.get('profile_id') ?? '');
   const clockIn = parseCentralDateTimeInput(String(formData.get('clock_in_at') ?? ''));
   const clockOut = parseCentralDateTimeInput(String(formData.get('clock_out_at') ?? ''));
@@ -526,8 +590,8 @@ async function addManualEntry(formData: FormData) {
 
 async function addManualBreak(formData: FormData) {
   'use server';
-  const current = await requireAdminSectionEdit('payroll', payrollHref({ error: 'write_denied', tab: 'manual' }));
-  const returnTo = safeReturnHref(formData, payrollHref({ tab: 'manual' }));
+  const current = await requireAdminSectionEdit('payroll', payrollHref({ error: 'write_denied', tab: 'time' }));
+  const returnTo = safeReturnHref(formData, payrollHref({ tab: 'time' }));
   const entryId = String(formData.get('entry_id') ?? '');
   const breakStart = parseCentralDateTimeInput(String(formData.get('break_start_at') ?? ''));
   const breakEnd = parseCentralDateTimeInput(String(formData.get('break_end_at') ?? ''));
@@ -571,8 +635,8 @@ async function addManualBreak(formData: FormData) {
 
 async function updateBreakTimes(formData: FormData) {
   'use server';
-  const current = await requireAdminSectionEdit('payroll', payrollHref({ error: 'write_denied', tab: 'breaks' }));
-  const returnTo = safeReturnHref(formData, payrollHref({ tab: 'breaks' }));
+  const current = await requireAdminSectionEdit('payroll', payrollHref({ error: 'write_denied', tab: 'time' }));
+  const returnTo = safeReturnHref(formData, payrollHref({ tab: 'time' }));
   const breakId = String(formData.get('break_id') ?? '');
   const breakStart = parseCentralDateTimeInput(String(formData.get('break_start_at') ?? ''));
   const breakEndRaw = String(formData.get('break_end_at') ?? '').trim();
@@ -621,8 +685,8 @@ async function updateBreakTimes(formData: FormData) {
 
 async function voidBreak(formData: FormData) {
   'use server';
-  const current = await requireAdminSectionEdit('payroll', payrollHref({ error: 'write_denied', tab: 'breaks' }));
-  const returnTo = safeReturnHref(formData, payrollHref({ tab: 'breaks' }));
+  const current = await requireAdminSectionEdit('payroll', payrollHref({ error: 'write_denied', tab: 'time' }));
+  const returnTo = safeReturnHref(formData, payrollHref({ tab: 'time' }));
   const breakId = String(formData.get('break_id') ?? '');
   const reason = String(formData.get('reason') ?? '').trim();
   if (!breakId || !reason) redirect(`${returnTo}${returnTo.includes('?') ? '&' : '?'}error=missing_reason`);
@@ -664,13 +728,30 @@ async function voidBreak(formData: FormData) {
 
 async function lockPayrollRange(formData: FormData) {
   'use server';
-  const current = await requireAdminSectionEdit('payroll', payrollHref({ error: 'write_denied', tab: 'approvals' }));
-  const returnTo = safeReturnHref(formData, payrollHref({ tab: 'approvals' }));
+  const current = await requireAdminSectionEdit('payroll', payrollHref({ error: 'write_denied', tab: 'review' }));
+  const returnTo = safeReturnHref(formData, payrollHref({ tab: 'review' }));
   const lockStart = parseCentralDateInput(String(formData.get('lock_start') ?? ''));
   const lockEnd = parseCentralDateInput(String(formData.get('lock_end') ?? ''), true);
   const profileId = String(formData.get('profile_id') ?? '');
   const notes = String(formData.get('notes') ?? '').trim() || null;
   if (!lockStart || !lockEnd || lockEnd < lockStart) redirect(`${returnTo}${returnTo.includes('?') ? '&' : '?'}error=invalid_time`);
+
+  let reviewQuery = supabaseAdmin
+    .from('admin_time_entries')
+    .select('id,status,clock_out_at')
+    .gte('clock_in_at', lockStart.toISOString())
+    .lte('clock_in_at', lockEnd.toISOString())
+    .limit(50000);
+  if (profileId) reviewQuery = reviewQuery.eq('profile_id', profileId);
+  const { data: reviewRows, error: reviewError } = await reviewQuery;
+  if (reviewError) redirect(`${returnTo}${returnTo.includes('?') ? '&' : '?'}error=save_error`);
+  const reviewableRows = ((reviewRows ?? []) as Array<{ clock_out_at: string | null; id: string; status: string | null }>).filter((entry) => entry.status !== 'void');
+  if (reviewableRows.some((entry) => !entry.clock_out_at)) {
+    redirect(`${returnTo}${returnTo.includes('?') ? '&' : '?'}error=open_entries`);
+  }
+  if (reviewableRows.some((entry) => entry.clock_out_at && !['approved', 'locked'].includes(entry.status ?? ''))) {
+    redirect(`${returnTo}${returnTo.includes('?') ? '&' : '?'}error=unapproved_entries`);
+  }
 
   const lockResult = await supabaseAdmin.from('admin_payroll_locks').insert({
     lock_end_at: lockEnd.toISOString(),
@@ -680,21 +761,19 @@ async function lockPayrollRange(formData: FormData) {
   }).select('id').single();
   if (lockResult.error) redirect(`${returnTo}${returnTo.includes('?') ? '&' : '?'}error=save_error`);
 
-  let updateQuery = supabaseAdmin
-    .from('admin_time_entries')
-    .update({
-      locked_at: new Date().toISOString(),
-      locked_by: current.profile.id,
-      status: 'locked',
-      updated_at: new Date().toISOString(),
-      updated_by: current.profile.id,
-    })
-    .gte('clock_in_at', lockStart.toISOString())
-    .lte('clock_in_at', lockEnd.toISOString())
-    .not('clock_out_at', 'is', null)
-    .neq('status', 'void');
-  if (profileId) updateQuery = updateQuery.eq('profile_id', profileId);
-  const updateResult = await updateQuery;
+  const lockableEntryIds = reviewableRows.filter((entry) => entry.clock_out_at).map((entry) => entry.id);
+  const updateResult = lockableEntryIds.length
+    ? await supabaseAdmin
+        .from('admin_time_entries')
+        .update({
+          locked_at: new Date().toISOString(),
+          locked_by: current.profile.id,
+          status: 'locked',
+          updated_at: new Date().toISOString(),
+          updated_by: current.profile.id,
+        })
+        .in('id', lockableEntryIds)
+    : { error: null };
 
   await recordAdminAuditLog({
     action: 'payroll_range_locked',
@@ -708,10 +787,63 @@ async function lockPayrollRange(formData: FormData) {
   redirect(`${returnTo}${returnTo.includes('?') ? '&' : '?'}${updateResult.error ? 'error=save_error' : 'success=range_locked'}`);
 }
 
+async function approveCompletedWeekEntries(formData: FormData) {
+  'use server';
+  const current = await requireAdminSectionEdit('payroll', payrollHref({ error: 'write_denied', tab: 'review' }));
+  const returnTo = safeReturnHref(formData, payrollHref({ tab: 'review' }));
+  const lockStart = parseCentralDateInput(String(formData.get('lock_start') ?? ''));
+  const lockEnd = parseCentralDateInput(String(formData.get('lock_end') ?? ''), true);
+  const profileId = String(formData.get('profile_id') ?? '');
+  if (!lockStart || !lockEnd || lockEnd < lockStart) redirect(`${returnTo}${returnTo.includes('?') ? '&' : '?'}error=invalid_time`);
+
+  let entriesQuery = supabaseAdmin
+    .from('admin_time_entries')
+    .select('id,profile_id,status,clock_out_at')
+    .gte('clock_in_at', lockStart.toISOString())
+    .lte('clock_in_at', lockEnd.toISOString())
+    .not('clock_out_at', 'is', null)
+    .limit(50000);
+  if (profileId) entriesQuery = entriesQuery.eq('profile_id', profileId);
+  const { data: rows, error: rowsError } = await entriesQuery;
+  if (rowsError) redirect(`${returnTo}${returnTo.includes('?') ? '&' : '?'}error=save_error`);
+
+  const entriesToApprove = ((rows ?? []) as Array<{ id: string; profile_id: string; status: string | null }>).filter((entry) => entry.status !== 'void' && !['approved', 'locked'].includes(entry.status ?? ''));
+  if (!entriesToApprove.length) redirect(`${returnTo}${returnTo.includes('?') ? '&' : '?'}success=entries_approved`);
+
+  const result = await supabaseAdmin
+    .from('admin_time_entries')
+    .update({
+      approved_at: new Date().toISOString(),
+      approved_by: current.profile.id,
+      status: 'approved',
+      updated_at: new Date().toISOString(),
+      updated_by: current.profile.id,
+    })
+    .in('id', entriesToApprove.map((entry) => entry.id));
+
+  if (!result.error) {
+    await recordAdminAuditLog({
+      action: 'time_clock_entries_bulk_approved',
+      actorProfileId: current.profile.id,
+      after: {
+        count: entriesToApprove.length,
+        lock_end_at: lockEnd.toISOString(),
+        lock_start_at: lockStart.toISOString(),
+        profile_id: profileId || null,
+      },
+      sectionKey: 'payroll',
+      supabase: supabaseAdmin,
+      targetProfileId: profileId || null,
+    });
+  }
+
+  redirect(`${returnTo}${returnTo.includes('?') ? '&' : '?'}${result.error ? 'error=save_error' : 'success=entries_approved'}`);
+}
+
 async function approveEntry(formData: FormData) {
   'use server';
-  const current = await requireAdminSectionEdit('payroll', payrollHref({ error: 'write_denied', tab: 'entries' }));
-  const returnTo = safeReturnHref(formData, payrollHref({ tab: 'entries' }));
+  const current = await requireAdminSectionEdit('payroll', payrollHref({ error: 'write_denied', tab: 'review' }));
+  const returnTo = safeReturnHref(formData, payrollHref({ tab: 'review' }));
   const entryId = String(formData.get('entry_id') ?? '');
   if (!entryId) redirect(`${returnTo}${returnTo.includes('?') ? '&' : '?'}error=save_error`);
 
@@ -748,8 +880,8 @@ async function approveEntry(formData: FormData) {
 
 async function voidEntry(formData: FormData) {
   'use server';
-  const current = await requireAdminSectionEdit('payroll', payrollHref({ error: 'write_denied', tab: 'entries' }));
-  const returnTo = safeReturnHref(formData, payrollHref({ tab: 'entries' }));
+  const current = await requireAdminSectionEdit('payroll', payrollHref({ error: 'write_denied', tab: 'time' }));
+  const returnTo = safeReturnHref(formData, payrollHref({ tab: 'time' }));
   const entryId = String(formData.get('entry_id') ?? '');
   const reason = String(formData.get('reason') ?? '').trim();
   if (!entryId || !reason) redirect(`${returnTo}${returnTo.includes('?') ? '&' : '?'}error=missing_reason`);
@@ -793,8 +925,8 @@ async function voidEntry(formData: FormData) {
 
 async function addAllocation(formData: FormData) {
   'use server';
-  const current = await requireAdminSectionEdit('payroll', payrollHref({ error: 'write_denied', tab: 'entries' }));
-  const returnTo = safeReturnHref(formData, payrollHref({ tab: 'entries' }));
+  const current = await requireAdminSectionEdit('payroll', payrollHref({ error: 'write_denied', tab: 'time' }));
+  const returnTo = safeReturnHref(formData, payrollHref({ tab: 'time' }));
   const entryId = String(formData.get('entry_id') ?? '');
   const workType = normalizeWorkType(String(formData.get('work_type') ?? ''));
   const productionRunId = workType === 'production' ? String(formData.get('production_run_id') ?? '').trim() || null : null;
@@ -854,8 +986,8 @@ async function addAllocation(formData: FormData) {
 
 async function removeAllocation(formData: FormData) {
   'use server';
-  const current = await requireAdminSectionEdit('payroll', payrollHref({ error: 'write_denied', tab: 'entries' }));
-  const returnTo = safeReturnHref(formData, payrollHref({ tab: 'entries' }));
+  const current = await requireAdminSectionEdit('payroll', payrollHref({ error: 'write_denied', tab: 'time' }));
+  const returnTo = safeReturnHref(formData, payrollHref({ tab: 'time' }));
   const allocationId = String(formData.get('allocation_id') ?? '');
   if (!allocationId) redirect(`${returnTo}${returnTo.includes('?') ? '&' : '?'}error=save_error`);
 
@@ -926,12 +1058,12 @@ function buildSegments(entries: TimeEntry[], allocationsByEntry: Map<string, All
 }
 
 function groupSegmentsByEmployee(segments: PayrollSegment[]) {
-  const grouped = new Map<string, { entryCount: Set<string>; minutes: number; wageCents: number; workTypes: Map<TimeEntryWorkType, number> }>();
+  const grouped = new Map<string, EmployeePayrollGroup>();
   for (const segment of segments) {
-    const row = grouped.get(segment.entry.profile_id) ?? { entryCount: new Set<string>(), minutes: 0, wageCents: 0, workTypes: new Map<TimeEntryWorkType, number>() };
+    const row = grouped.get(segment.entry.profile_id) ?? { entryCount: new Set<string>(), hourlyWageCents: 0, minutes: 0, salaryCents: 0, workTypes: new Map<TimeEntryWorkType, number>() };
     row.entryCount.add(segment.entry.id);
     row.minutes += segment.minutes;
-    row.wageCents += segment.wageCents;
+    row.hourlyWageCents += segment.wageCents;
     row.workTypes.set(segment.workType, (row.workTypes.get(segment.workType) ?? 0) + segment.minutes);
     grouped.set(segment.entry.profile_id, row);
   }
@@ -939,15 +1071,70 @@ function groupSegmentsByEmployee(segments: PayrollSegment[]) {
 }
 
 function groupSegmentsByWorkType(segments: PayrollSegment[]) {
-  const grouped = new Map<TimeEntryWorkType, { entryCount: Set<string>; minutes: number; wageCents: number }>();
+  const grouped = new Map<TimeEntryWorkType, WorkTypePayrollGroup>();
   for (const segment of segments) {
-    const row = grouped.get(segment.workType) ?? { entryCount: new Set<string>(), minutes: 0, wageCents: 0 };
+    const row = grouped.get(segment.workType) ?? { entryCount: new Set<string>(), hourlyWageCents: 0, minutes: 0, salaryCents: 0 };
     row.entryCount.add(segment.entry.id);
     row.minutes += segment.minutes;
-    row.wageCents += segment.wageCents;
+    row.hourlyWageCents += segment.wageCents;
     grouped.set(segment.workType, row);
   }
   return grouped;
+}
+
+function buildSalaryRows({
+  filterWorkType,
+  fromDate,
+  selectedAdmin,
+  timeSettings,
+  toDate,
+}: {
+  filterWorkType: TimeEntryWorkType | '';
+  fromDate: Date;
+  selectedAdmin: string;
+  timeSettings: TimeSettingRow[];
+  toDate: Date;
+}) {
+  const rows: SalaryPayrollRow[] = [];
+  for (const setting of timeSettings) {
+    if (setting.active === false) continue;
+    if (selectedAdmin && setting.profile_id !== selectedAdmin) continue;
+    if (normalizeCompensationType(setting.compensation_type) !== 'salary') continue;
+    const workType = normalizeSalaryLaborWorkType(setting.salary_labor_work_type);
+    if (filterWorkType && workType !== filterWorkType) continue;
+    const salaryCents = salaryCentsForDateRange({
+      end: toDate,
+      salaryAmountCents: setting.salary_amount_cents,
+      salaryFrequency: setting.salary_frequency,
+      start: fromDate,
+    });
+    if (salaryCents <= 0) continue;
+    rows.push({
+      frequency: normalizeSalaryPayFrequency(setting.salary_frequency),
+      profileId: setting.profile_id,
+      salaryAmountCents: normalizeMoneyCents(setting.salary_amount_cents),
+      salaryCents,
+      workType,
+    });
+  }
+  return rows;
+}
+
+function applySalaryRowsToEmployeeGroups(grouped: Map<string, EmployeePayrollGroup>, salaryRows: SalaryPayrollRow[]) {
+  for (const salary of salaryRows) {
+    const row = grouped.get(salary.profileId) ?? { entryCount: new Set<string>(), hourlyWageCents: 0, minutes: 0, salaryCents: 0, workTypes: new Map<TimeEntryWorkType, number>() };
+    row.salaryCents += salary.salaryCents;
+    if (!row.workTypes.has(salary.workType)) row.workTypes.set(salary.workType, 0);
+    grouped.set(salary.profileId, row);
+  }
+}
+
+function applySalaryRowsToWorkTypeGroups(grouped: Map<TimeEntryWorkType, WorkTypePayrollGroup>, salaryRows: SalaryPayrollRow[]) {
+  for (const salary of salaryRows) {
+    const row = grouped.get(salary.workType) ?? { entryCount: new Set<string>(), hourlyWageCents: 0, minutes: 0, salaryCents: 0 };
+    row.salaryCents += salary.salaryCents;
+    grouped.set(salary.workType, row);
+  }
 }
 
 function WorkTypeSelect({ defaultValue, includeUnassigned = true, name = 'work_type' }: { defaultValue?: string | null; includeUnassigned?: boolean; name?: string }) {
@@ -964,12 +1151,10 @@ function WorkTypeSelect({ defaultValue, includeUnassigned = true, name = 'work_t
 function EntriesTable({
   allocationsByEntry,
   entries,
-  productionRuns,
   returnTo,
 }: {
   allocationsByEntry: Map<string, AllocationRow[]>;
   entries: TimeEntry[];
-  productionRuns: ProductionRunRow[];
   returnTo: string;
 }) {
   if (!entries.length) return <EmptyState message="No time entries found for the selected filters." />;
@@ -1065,12 +1250,6 @@ function EntriesTable({
                           <input name="entry_id" type="hidden" value={entry.id} />
                           <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Remaining: {hoursLabel(remainingMinutes)} hours</p>
                           <WorkTypeSelect defaultValue={entry.work_type} />
-                          <select className="input" name="production_run_id" defaultValue="">
-                            <option value="">No production run</option>
-                            {productionRuns.map((run) => (
-                              <option key={run.id} value={run.id}>{productionRunLabel(run)}</option>
-                            ))}
-                          </select>
                           <input className="input" name="minutes" type="number" min="0.01" step="0.01" placeholder="Minutes" />
                           <textarea className="input min-h-16" name="notes" placeholder="Allocation note" />
                           <PendingSubmitButton className="btn-secondary w-full" label="Add Allocation" pendingLabel="Adding..." />
@@ -1079,20 +1258,16 @@ function EntriesTable({
                       {allocations.length ? (
                         <div className="space-y-2 rounded-2xl border border-slate-200 bg-white/70 p-3">
                           <p className="font-semibold text-slate-950">Allocations</p>
-                          {allocations.map((allocation) => {
-                            const run = productionRuns.find((productionRun) => productionRun.id === allocation.production_run_id);
-                            return (
-                              <div key={allocation.id} className="rounded-xl bg-slate-50 p-2">
-                                <p className="text-sm font-semibold text-slate-950">{workTypeLabel(allocation.work_type)} - {hoursLabel(numericValue(allocation.minutes))} hrs</p>
-                                {allocation.production_run_id ? <p className="mt-1 text-xs text-slate-500">{productionRunLabel(run)}</p> : null}
-                                <form action={removeAllocation} className="mt-2">
-                                  {returnToInput(returnTo)}
-                                  <input name="allocation_id" type="hidden" value={allocation.id} />
-                                  <PendingSubmitButton className="btn-secondary w-full" label="Remove" pendingLabel="Removing..." />
-                                </form>
-                              </div>
-                            );
-                          })}
+                          {allocations.map((allocation) => (
+                            <div key={allocation.id} className="rounded-xl bg-slate-50 p-2">
+                              <p className="text-sm font-semibold text-slate-950">{workTypeLabel(allocation.work_type)} - {hoursLabel(numericValue(allocation.minutes))} hrs</p>
+                              <form action={removeAllocation} className="mt-2">
+                                {returnToInput(returnTo)}
+                                <input name="allocation_id" type="hidden" value={allocation.id} />
+                                <PendingSubmitButton className="btn-secondary w-full" label="Remove" pendingLabel="Removing..." />
+                              </form>
+                            </div>
+                          ))}
                         </div>
                       ) : null}
                       {entry.status !== 'void' ? (
@@ -1289,14 +1464,16 @@ export default async function PayrollPage({
   const success = stringParam(searchParams?.success);
   const error = stringParam(searchParams?.error);
   const todayInput = formatCentralDateInput();
-  const defaultFrom = `${todayInput.slice(0, 8)}01`;
+  const currentPayrollWeek = getCurrentPayrollWeekWindow();
+  const defaultFrom = activeTab === 'reports' ? `${todayInput.slice(0, 8)}01` : currentPayrollWeek.weekStartInput;
+  const defaultTo = activeTab === 'reports' ? todayInput : currentPayrollWeek.weekEndInput;
   const fromInput = stringParam(searchParams?.from) || defaultFrom;
-  const toInput = stringParam(searchParams?.to) || todayInput;
+  const toInput = stringParam(searchParams?.to) || defaultTo;
   const selectedAdmin = stringParam(searchParams?.admin);
   const selectedWorkType = normalizeWorkType(stringParam(searchParams?.work_type));
   const filterWorkType = stringParam(searchParams?.work_type) ? selectedWorkType : '';
   const fromDate = parseCentralDateInput(fromInput) ?? parseCentralDateInput(defaultFrom)!;
-  const toDate = parseCentralDateInput(toInput, true) ?? parseCentralDateInput(todayInput, true)!;
+  const toDate = parseCentralDateInput(toInput, true) ?? parseCentralDateInput(defaultTo, true)!;
   const currentParams = {
     admin: selectedAdmin,
     from: fromInput,
@@ -1310,9 +1487,6 @@ export default async function PayrollPage({
     timeSettingsResult,
     commissionSettingsResult,
     tagAssignmentsResult,
-    productionRunsResult,
-    productionRunLaborResult,
-    shippedLaborResult,
     payrollLocksResult,
   ] = await Promise.all([
     supabaseAdmin
@@ -1322,31 +1496,13 @@ export default async function PayrollPage({
       .order('full_name', { ascending: true }),
     supabaseAdmin
       .from('admin_time_settings')
-      .select('profile_id,hourly_rate_cents'),
+      .select('profile_id,hourly_rate_cents,active,compensation_type,salary_amount_cents,salary_frequency,salary_labor_work_type'),
     supabaseAdmin
       .from('admin_commission_settings')
       .select('profile_id,commission_percent,is_sales_rep'),
     supabaseAdmin
       .from('admin_labor_tag_assignments')
       .select('profile_id,work_type'),
-    supabaseAdmin
-      .from('production_runs')
-      .select('id,quantity_produced,labor_minutes,actual_labor_cost_cents,produced_at,products(name)')
-      .order('produced_at', { ascending: false })
-      .limit(500),
-    supabaseAdmin
-      .from('production_runs')
-      .select('actual_labor_cost_cents')
-      .gte('produced_at', fromDate.toISOString())
-      .lte('produced_at', toDate.toISOString())
-      .limit(50000),
-    supabaseAdmin
-      .from('order_items')
-      .select('cogs_labor_cents,orders!inner(status,shipped_at)')
-      .eq('orders.status', 'Shipped')
-      .gte('orders.shipped_at', fromDate.toISOString())
-      .lte('orders.shipped_at', toDate.toISOString())
-      .limit(50000),
     supabaseAdmin
       .from('admin_payroll_locks')
       .select('id,lock_start_at,lock_end_at,locked_at,notes')
@@ -1392,7 +1548,8 @@ export default async function PayrollPage({
 
   const admins = ((adminsResult.data ?? []) as AdminProfileRow[]).sort((a, b) => profileLabel(a).localeCompare(profileLabel(b)));
   const adminById = new Map(admins.map((admin) => [admin.id, admin]));
-  const timeByProfile = new Map(((timeSettingsResult.data ?? []) as TimeSettingRow[]).map((setting) => [setting.profile_id, setting]));
+  const timeSettings = (timeSettingsResult.data ?? []) as TimeSettingRow[];
+  const timeByProfile = new Map(timeSettings.map((setting) => [setting.profile_id, setting]));
   const commissionByProfile = new Map(((commissionSettingsResult.data ?? []) as CommissionSettingRow[]).map((setting) => [setting.profile_id, setting]));
   const tagsByProfile = new Map<string, Set<LaborWorkType>>();
   for (const assignment of (tagAssignmentsResult.data ?? []) as LaborTagAssignmentRow[]) {
@@ -1410,33 +1567,23 @@ export default async function PayrollPage({
     rows.push(allocation);
     allocationsByEntry.set(allocation.time_entry_id, rows);
   }
-  const productionRuns = (productionRunsResult.data ?? []) as ProductionRunRow[];
   const payrollLocks = (payrollLocksResult.data ?? []) as PayrollLockRow[];
-  const productionRunById = new Map(productionRuns.map((run) => [run.id, run]));
   const segments = buildSegments(entries, allocationsByEntry);
+  const salaryRows = buildSalaryRows({ filterWorkType, fromDate, selectedAdmin, timeSettings, toDate });
   const byEmployee = groupSegmentsByEmployee(segments);
   const byWorkType = groupSegmentsByWorkType(segments);
+  applySalaryRowsToEmployeeGroups(byEmployee, salaryRows);
+  applySalaryRowsToWorkTypeGroups(byWorkType, salaryRows);
 
   const totalPaidMinutes = segments.reduce((sum, segment) => sum + segment.minutes, 0);
-  const totalWages = segments.reduce((sum, segment) => sum + segment.wageCents, 0);
+  const totalHourlyWages = segments.reduce((sum, segment) => sum + segment.wageCents, 0);
+  const totalSalaryPay = salaryRows.reduce((sum, salary) => sum + salary.salaryCents, 0);
+  const totalPay = totalHourlyWages + totalSalaryPay;
   const totalLunchMinutes = entries.reduce((sum, entry) => sum + completedBreakMinutes(entryBreaks(entry)), 0);
-  const productionPayrollWages = segments.filter((segment) => segment.workType === 'production').reduce((sum, segment) => sum + segment.wageCents, 0);
-  const linkedProductionWages = segments.filter((segment) => segment.workType === 'production' && segment.productionRunId).reduce((sum, segment) => sum + segment.wageCents, 0);
-  const unlinkedProductionWages = Math.max(0, productionPayrollWages - linkedProductionWages);
-  const productionRunLaborCogs = ((productionRunLaborResult.data ?? []) as Array<{ actual_labor_cost_cents: number | string | null }>).reduce(
-    (sum, run) => sum + numericValue(run.actual_labor_cost_cents),
-    0
-  );
-  const shippedLaborCogs = ((shippedLaborResult.data ?? []) as Array<{ cogs_labor_cents: number | string | null }>).reduce((sum, item) => sum + numericValue(item.cogs_labor_cents), 0);
-  const productionRunVariance = productionPayrollWages - productionRunLaborCogs;
-  const shippedVariance = productionPayrollWages - shippedLaborCogs;
-  const shippedVariancePercent = shippedLaborCogs ? (shippedVariance / shippedLaborCogs) * 100 : productionPayrollWages ? 100 : 0;
-  const productionRunCogsDetail = selectedAdmin || filterWorkType
-    ? 'Date range only; admin and tag filters do not apply to production runs.'
-    : 'Actual labor COGS recorded into finished production.';
-  const productionRunVarianceDetail = selectedAdmin || filterWorkType
-    ? 'Filtered payroll labor minus date-only production run labor COGS.'
-    : 'Payroll production labor minus production run labor COGS.';
+  const productionHourlyWages = segments.filter((segment) => segment.workType === 'production').reduce((sum, segment) => sum + segment.wageCents, 0);
+  const productionSalaryPay = salaryRows.filter((salary) => salary.workType === 'production').reduce((sum, salary) => sum + salary.salaryCents, 0);
+  const productionPayrollWages = productionHourlyWages + productionSalaryPay;
+  const productionPaidMinutes = segments.filter((segment) => segment.workType === 'production').reduce((sum, segment) => sum + segment.minutes, 0);
 
   const now = new Date();
   const openEntries = entries.filter((entry) => !entry.clock_out_at && entry.status !== 'void');
@@ -1454,15 +1601,19 @@ export default async function PayrollPage({
   const correctedEntries = entries.filter((entry) => Boolean(entry.correction_reason));
   const voidedEntries = entries.filter((entry) => entry.status === 'void');
   const productionSegments = segments.filter((segment) => segment.workType === 'production');
-  const productionLinkedByRun = new Map<string, { minutes: number; wageCents: number }>();
+  const productionByDayEmployee = new Map<string, { dateInput: string; entryCount: Set<string>; minutes: number; profileId: string; wageCents: number }>();
   for (const segment of productionSegments) {
-    if (!segment.productionRunId) continue;
-    const row = productionLinkedByRun.get(segment.productionRunId) ?? { minutes: 0, wageCents: 0 };
+    const dateInput = formatCentralDateInput(segment.entry.clock_in_at);
+    const key = `${dateInput}:${segment.entry.profile_id}`;
+    const row = productionByDayEmployee.get(key) ?? { dateInput, entryCount: new Set<string>(), minutes: 0, profileId: segment.entry.profile_id, wageCents: 0 };
+    row.entryCount.add(segment.entry.id);
     row.minutes += segment.minutes;
     row.wageCents += segment.wageCents;
-    productionLinkedByRun.set(segment.productionRunId, row);
+    productionByDayEmployee.set(key, row);
   }
-  const productionRunsMissingPayroll = productionRuns.filter((run) => !productionLinkedByRun.has(run.id));
+  const productionDailyRows = [...productionByDayEmployee.values()].sort((a, b) => `${b.dateInput}:${profileLabel(adminById.get(b.profileId))}`.localeCompare(`${a.dateInput}:${profileLabel(adminById.get(a.profileId))}`));
+  const rangeHasCoveringLock = payrollLocks.some((lock) => new Date(lock.lock_start_at) <= fromDate && new Date(lock.lock_end_at) >= toDate);
+  const canCompletePayroll = !rangeHasCoveringLock && openEntries.length === 0 && unapprovedEntries.length === 0;
 
   return (
     <div className="space-y-6">
@@ -1472,10 +1623,10 @@ export default async function PayrollPage({
       <section className="panel">
         <span className="eyebrow">Payroll</span>
         <h1 className="page-title mt-4">Payroll and labor reporting</h1>
-        <p className="page-subtitle mt-3">Manage time entries, labor tags, commission percentages, and production labor reconciliation.</p>
+        <p className="page-subtitle mt-3">Review weekly hours, manage time entries, and report labor by employee, tag, and production day.</p>
       </section>
 
-      <nav aria-label="Payroll sections" className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+      <nav aria-label="Payroll sections" className="grid gap-2 sm:grid-cols-2 xl:grid-cols-5">
         {PAYROLL_TABS.map((tab) => (
           <Link
             key={tab.id}
@@ -1521,28 +1672,24 @@ export default async function PayrollPage({
         </div>
       </form>
 
-      {activeTab === 'overview' ? (
+      {activeTab === 'reports' ? (
         <section className="space-y-5">
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
             <StatTile label="Paid Hours" value={hoursLabel(totalPaidMinutes)} detail="Completed, non-void time in range." />
             <StatTile label="Unpaid Lunch" value={hoursLabel(totalLunchMinutes)} detail="Completed, non-void lunch time." />
-            <StatTile label="Estimated Wages" value={usd(totalWages)} detail="Uses each shift's rate snapshot." />
+            <StatTile label="Hourly Wages" value={usd(totalHourlyWages)} detail="Uses each shift's rate snapshot." />
+            <StatTile label="Salary Pay" value={usd(totalSalaryPay)} detail="Prorated for salaried employees in range." />
+          </div>
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+            <StatTile label="Estimated Pay" value={usd(totalPay)} detail="Hourly wages plus salaried pay." />
             <StatTile label="Open Issues" value={String(longOpenEntries.length + longOpenBreaks.length + unapprovedEntries.length)} detail="Long open shifts/lunches and unapproved shifts." />
-          </div>
-          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
             <StatTile label="Payroll Production Labor" value={usd(productionPayrollWages)} detail="Production-tagged payroll wages." />
-            <StatTile label="Linked to Production Runs" value={usd(linkedProductionWages)} detail="Production payroll assigned to runs." />
-            <StatTile label="Production Run Labor COGS" value={usd(productionRunLaborCogs)} detail={productionRunCogsDetail} />
-            <StatTile label="Payroll vs Run COGS" value={usd(productionRunVariance)} detail={productionRunVarianceDetail} />
-          </div>
-          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-            <StatTile label="Shipped Labor COGS" value={usd(shippedLaborCogs)} detail="Labor COGS in shipped order lines." />
-            <StatTile label="Labor COGS Variance" value={usd(shippedVariance)} detail={`${percent(shippedVariancePercent)} versus shipped labor COGS.`} />
+            <StatTile label="Production Hours" value={hoursLabel(productionPaidMinutes)} detail="Hours clocked or allocated to Production." />
           </div>
         </section>
       ) : null}
 
-      {activeTab === 'labor' ? (
+      {activeTab === 'reports' ? (
         <section className="space-y-5">
           <section className="card space-y-4">
             <h2 className="text-xl font-semibold text-slate-950">Labor by employee</h2>
@@ -1554,7 +1701,9 @@ export default async function PayrollPage({
                     <th className="px-4 py-2">Employee</th>
                     <th className="px-4 py-2 text-right">Entries</th>
                     <th className="px-4 py-2 text-right">Paid hours</th>
-                    <th className="px-4 py-2 text-right">Wages</th>
+                    <th className="px-4 py-2 text-right">Hourly</th>
+                    <th className="px-4 py-2 text-right">Salary</th>
+                    <th className="px-4 py-2 text-right">Total</th>
                     <th className="px-4 py-2">Top tags</th>
                   </tr>
                 </thead>
@@ -1569,7 +1718,9 @@ export default async function PayrollPage({
                         <td className="rounded-l-xl px-4 py-3 font-semibold text-slate-950">{profileLabel(adminById.get(profileId))}</td>
                         <td className="px-4 py-3 text-right text-slate-700">{row.entryCount.size}</td>
                         <td className="px-4 py-3 text-right text-slate-700">{hoursLabel(row.minutes)}</td>
-                        <td className="px-4 py-3 text-right font-semibold text-slate-950">{usd(row.wageCents)}</td>
+                        <td className="px-4 py-3 text-right text-slate-700">{usd(row.hourlyWageCents)}</td>
+                        <td className="px-4 py-3 text-right text-slate-700">{usd(row.salaryCents)}</td>
+                        <td className="px-4 py-3 text-right font-semibold text-slate-950">{usd(row.hourlyWageCents + row.salaryCents)}</td>
                         <td className="rounded-r-xl px-4 py-3 text-slate-600">{topTags || 'None'}</td>
                       </tr>
                     );
@@ -1583,17 +1734,52 @@ export default async function PayrollPage({
             <h2 className="text-xl font-semibold text-slate-950">Labor by tag</h2>
             <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
               {[UNASSIGNED_WORK_TYPE, ...LABOR_WORK_TYPES.map((workType) => workType.value)].map((workType) => {
-                const row = byWorkType.get(workType as TimeEntryWorkType) ?? { entryCount: new Set<string>(), minutes: 0, wageCents: 0 };
+                const row = byWorkType.get(workType as TimeEntryWorkType) ?? { entryCount: new Set<string>(), hourlyWageCents: 0, minutes: 0, salaryCents: 0 };
+                const totalCents = row.hourlyWageCents + row.salaryCents;
                 return (
                   <StatTile
                     key={workType}
                     label={workTypeLabel(workType)}
-                    value={usd(row.wageCents)}
-                    detail={`${hoursLabel(row.minutes)} paid hours across ${row.entryCount.size} shift(s).`}
+                    value={usd(totalCents)}
+                    detail={`${hoursLabel(row.minutes)} paid hours across ${row.entryCount.size} shift(s).${row.salaryCents ? ` Salary ${usd(row.salaryCents)}.` : ''}`}
                   />
                 );
               })}
             </div>
+          </section>
+
+          <section className="card space-y-4">
+            <div>
+              <h2 className="text-xl font-semibold text-slate-950">Production hours by day</h2>
+              <p className="mt-1 text-sm text-slate-500">Production is counted from time entries or allocations tagged as Production.</p>
+            </div>
+            {!productionDailyRows.length ? <EmptyState message="No Production-tagged hours found for the selected filters." /> : null}
+            {productionDailyRows.length ? (
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[44rem] border-separate border-spacing-y-2 text-left text-sm">
+                  <thead>
+                    <tr className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+                      <th className="px-4 py-2">Date</th>
+                      <th className="px-4 py-2">Employee</th>
+                      <th className="px-4 py-2 text-right">Entries</th>
+                      <th className="px-4 py-2 text-right">Hours</th>
+                      <th className="px-4 py-2 text-right">Wages</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {productionDailyRows.map((row) => (
+                      <tr key={`${row.dateInput}-${row.profileId}`} className="bg-white/70">
+                        <td className="rounded-l-xl px-4 py-3 font-semibold text-slate-950">{formatDateInputLabel(row.dateInput)}</td>
+                        <td className="px-4 py-3 text-slate-700">{profileLabel(adminById.get(row.profileId))}</td>
+                        <td className="px-4 py-3 text-right text-slate-700">{row.entryCount.size}</td>
+                        <td className="px-4 py-3 text-right font-semibold text-slate-950">{hoursLabel(row.minutes)}</td>
+                        <td className="rounded-r-xl px-4 py-3 text-right font-semibold text-slate-950">{usd(row.wageCents)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : null}
           </section>
 
           <section className="grid gap-5 xl:grid-cols-2">
@@ -1611,49 +1797,22 @@ export default async function PayrollPage({
               <p className="text-sm text-slate-600">Manual entries: {manualEntries.length}</p>
               <p className="text-sm text-slate-600">Corrected entries: {correctedEntries.length}</p>
               <p className="text-sm text-slate-600">Voided entries: {voidedEntries.length}</p>
-              <p className="text-sm text-slate-600">Production payroll not linked to a run: {usd(unlinkedProductionWages)}</p>
             </div>
           </section>
         </section>
       ) : null}
 
-      {activeTab === 'production' ? (
-        <section className="space-y-5">
-          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-            <StatTile label="Production Payroll" value={usd(productionPayrollWages)} detail="All production-tagged payroll wages." />
-            <StatTile label="Linked Payroll" value={usd(linkedProductionWages)} detail="Assigned to production runs." />
-            <StatTile label="Unlinked Payroll" value={usd(unlinkedProductionWages)} detail="Production labor still needing run assignment." />
-            <StatTile label="Run Gaps" value={String(productionRunsMissingPayroll.length)} detail="Recent production runs without linked payroll labor." />
-          </div>
-          <section className="card space-y-4">
-            <h2 className="text-xl font-semibold text-slate-950">Production run links</h2>
-            {!productionLinkedByRun.size ? <EmptyState message="No payroll labor has been linked to production runs in this range." /> : null}
-            <div className="space-y-2">
-              {[...productionLinkedByRun.entries()].map(([runId, row]) => (
-                <div key={runId} className="rounded-2xl border border-slate-200 bg-white/65 px-4 py-3">
-                  <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
-                    <p className="font-semibold text-slate-950">{productionRunLabel(productionRunById.get(runId))}</p>
-                    <p className="font-semibold text-slate-950">{usd(row.wageCents)}</p>
-                  </div>
-                  <p className="mt-1 text-sm text-slate-500">{hoursLabel(row.minutes)} linked payroll hours.</p>
-                </div>
-              ))}
-            </div>
-          </section>
-        </section>
-      ) : null}
-
-      {activeTab === 'entries' ? (
+      {activeTab === 'time' ? (
         <section className="card space-y-5">
           <div>
             <h2 className="text-xl font-semibold text-slate-950">Entries & corrections</h2>
-            <p className="mt-1 text-sm text-slate-500">Correct times, tags, rate snapshots, approve entries, void bad punches, and split labor across work types or production runs.</p>
+            <p className="mt-1 text-sm text-slate-500">Correct times, tags, rate snapshots, approve entries, void bad punches, and split labor across work types.</p>
           </div>
-          <EntriesTable allocationsByEntry={allocationsByEntry} entries={entries} productionRuns={productionRuns} returnTo={currentUrl} />
+          <EntriesTable allocationsByEntry={allocationsByEntry} entries={entries} returnTo={currentUrl} />
         </section>
       ) : null}
 
-      {activeTab === 'breaks' ? (
+      {activeTab === 'time' ? (
         <section className="card space-y-5">
           <div>
             <h2 className="text-xl font-semibold text-slate-950">Breaks / lunch</h2>
@@ -1663,16 +1822,52 @@ export default async function PayrollPage({
         </section>
       ) : null}
 
-      {activeTab === 'manual' ? (
+      {activeTab === 'time' ? (
         <ManualEntriesPanel admins={admins} entries={entries} returnTo={currentUrl} selectedAdmin={selectedAdmin} timeByProfile={timeByProfile} />
       ) : null}
 
-      {activeTab === 'approvals' ? (
+      {activeTab === 'review' ? (
         <section className="space-y-5">
+          <section className={`card space-y-4 ${rangeHasCoveringLock ? 'border-emerald-200 bg-emerald-50/60' : 'border-amber-100 bg-amber-50/40'}`}>
+            <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-start">
+              <div>
+                <h2 className="text-xl font-semibold text-slate-950">Weekly payroll review</h2>
+                <p className="mt-1 text-sm text-slate-600">
+                  {formatDateInputLabel(fromInput)} to {formatDateInputLabel(toInput)}{selectedAdmin ? ` for ${profileLabel(adminById.get(selectedAdmin))}` : ''}.
+                </p>
+              </div>
+              <span className={`w-fit rounded-full px-3 py-1 text-sm font-semibold ${rangeHasCoveringLock ? 'bg-emerald-100 text-emerald-800' : 'bg-white text-amber-800 ring-1 ring-amber-100'}`}>
+                {rangeHasCoveringLock ? 'Completed' : 'Needs approval'}
+              </span>
+            </div>
+            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+              <StatTile label="Open Shifts" value={String(openEntries.length)} detail="Must be clocked out before completion." />
+              <StatTile label="Need Approval" value={String(unapprovedEntries.length)} detail="Completed shifts not approved or locked." />
+              <StatTile label="Paid Hours" value={hoursLabel(totalPaidMinutes)} detail="Completed, non-void time in this range." />
+              <StatTile label="Estimated Pay" value={usd(totalPay)} detail="Hourly wages plus prorated salary." />
+            </div>
+            <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap">
+              <form action={approveCompletedWeekEntries}>
+                {returnToInput(currentUrl)}
+                <input name="lock_start" type="hidden" value={fromInput} />
+                <input name="lock_end" type="hidden" value={toInput} />
+                <input name="profile_id" type="hidden" value={selectedAdmin} />
+                <PendingSubmitButton
+                  className="btn-primary w-full sm:w-auto"
+                  disabled={!unapprovedEntries.length || rangeHasCoveringLock}
+                  disabledLabel={rangeHasCoveringLock ? 'Week Completed' : 'No Shifts to Approve'}
+                  label="Approve Completed Shifts"
+                  pendingLabel="Approving..."
+                />
+              </form>
+              <Link className="btn-secondary w-full sm:w-auto" href={payrollHref({ ...currentParams, tab: 'time' })}>Review Time Entries</Link>
+            </div>
+          </section>
+
           <section className="card space-y-4">
             <div>
               <h2 className="text-xl font-semibold text-slate-950">Approvals needed</h2>
-              <p className="mt-1 text-sm text-slate-500">Approve completed submitted shifts, or lock a payroll date range after review.</p>
+              <p className="mt-1 text-sm text-slate-500">Approve completed submitted shifts before completing the week.</p>
             </div>
             {!unapprovedEntries.length ? <EmptyState message="No unapproved completed shifts found for this range." /> : null}
             <div className="space-y-2">
@@ -1696,16 +1891,16 @@ export default async function PayrollPage({
             <form action={lockPayrollRange} className="card space-y-4">
               {returnToInput(currentUrl)}
               <div>
-                <h2 className="text-xl font-semibold text-slate-950">Lock payroll range</h2>
-                <p className="mt-1 text-sm text-slate-500">Locks completed, non-void shifts in the selected range. Superadmins can still correct locked entries with a reason.</p>
+                <h2 className="text-xl font-semibold text-slate-950">Complete payroll week</h2>
+                <p className="mt-1 text-sm text-slate-500">Locks the selected week after all shifts are closed and approved.</p>
               </div>
               <div className="grid gap-3 sm:grid-cols-2">
                 <label className="space-y-2 text-sm font-medium text-slate-700">
-                  Lock start
+                  Week start
                   <input className="input" name="lock_start" type="date" defaultValue={fromInput} required />
                 </label>
                 <label className="space-y-2 text-sm font-medium text-slate-700">
-                  Lock end
+                  Week end
                   <input className="input" name="lock_end" type="date" defaultValue={toInput} required />
                 </label>
               </div>
@@ -1719,7 +1914,13 @@ export default async function PayrollPage({
                 </select>
               </label>
               <textarea className="input min-h-20" name="notes" placeholder="Optional lock note" />
-              <PendingSubmitButton className="btn-primary w-full sm:w-auto" label="Lock Range" pendingLabel="Locking..." />
+              <PendingSubmitButton
+                className="btn-primary w-full sm:w-auto"
+                disabled={!canCompletePayroll}
+                disabledLabel={rangeHasCoveringLock ? 'Week Completed' : openEntries.length ? 'Close Open Shifts First' : 'Approve Shifts First'}
+                label="Complete Payroll Week"
+                pendingLabel="Completing..."
+              />
             </form>
 
             <section className="card space-y-4">
@@ -1742,7 +1943,7 @@ export default async function PayrollPage({
         <section className="space-y-4">
           <section className="card space-y-2">
             <h2 className="text-xl font-semibold text-slate-950">Rates, commissions, and labor tags</h2>
-            <p className="text-sm text-slate-500">Hourly rates snapshot when employees clock in. Commission percentages apply to shipped-order gross profit and snapshot when orders ship.</p>
+            <p className="text-sm text-slate-500">Hourly rates snapshot when employees clock in. Salary pay is prorated into the selected payroll date range. Commission percentages apply to shipped-order gross profit and snapshot when orders ship.</p>
           </section>
           {!admins.length ? <EmptyState message="No admin employees found." /> : null}
           {admins.map((admin) => {
@@ -1753,12 +1954,20 @@ export default async function PayrollPage({
               <form key={admin.id} action={updatePayrollSettings} className="card space-y-4">
                 {returnToInput(currentUrl)}
                 <input type="hidden" name="profile_id" value={admin.id} />
-                <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_10rem_10rem_9rem_auto] lg:items-end">
+                <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_10rem_10rem_10rem_auto] lg:items-end">
                   <div>
                     <p className="text-lg font-semibold text-slate-950">{profileLabel(admin)}</p>
                     <p className="mt-1 break-all text-sm text-slate-500">{admin.email}</p>
                     <p className="mt-1 text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">{admin.is_active === false ? 'Inactive' : 'Active'}</p>
                   </div>
+                  <label className="space-y-2 text-sm font-medium text-slate-700">
+                    Pay type
+                    <select className="input" name="compensation_type" defaultValue={normalizeCompensationType(timeSetting?.compensation_type)}>
+                      {COMPENSATION_TYPES.map((type) => (
+                        <option key={type.value} value={type.value}>{type.label}</option>
+                      ))}
+                    </select>
+                  </label>
                   <label className="space-y-2 text-sm font-medium text-slate-700">
                     Hourly rate
                     <input className="input" name="hourly_rate" type="number" min="0" step="0.01" defaultValue={dollarsInputFromCents(timeSetting?.hourly_rate_cents)} />
@@ -1767,11 +1976,38 @@ export default async function PayrollPage({
                     Commission %
                     <input className="input" name="commission_percent" type="number" min="0" max="100" step="0.01" defaultValue={percentInputValue(commissionSetting?.commission_percent)} />
                   </label>
+                  <PendingSubmitButton className="btn-primary w-full lg:w-auto" label="Save" pendingLabel="Saving..." />
+                </div>
+                <div className="grid gap-4 md:grid-cols-3">
+                  <label className="space-y-2 text-sm font-medium text-slate-700">
+                    Salary amount
+                    <input className="input" name="salary_amount" type="number" min="0" step="0.01" defaultValue={dollarsInputFromCents(timeSetting?.salary_amount_cents)} />
+                  </label>
+                  <label className="space-y-2 text-sm font-medium text-slate-700">
+                    Salary frequency
+                    <select className="input" name="salary_frequency" defaultValue={normalizeSalaryPayFrequency(timeSetting?.salary_frequency)}>
+                      {SALARY_PAY_FREQUENCIES.map((frequency) => (
+                        <option key={frequency.value} value={frequency.value}>{frequency.label}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="space-y-2 text-sm font-medium text-slate-700">
+                    Salary labor tag
+                    <select className="input" name="salary_labor_work_type" defaultValue={normalizeSalaryLaborWorkType(timeSetting?.salary_labor_work_type)}>
+                      {LABOR_WORK_TYPES.map((workType) => (
+                        <option key={workType.value} value={workType.value}>{workType.label}</option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+                <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
+                  <p className="text-sm text-slate-500">
+                    Current setup: {compensationTypeLabel(timeSetting?.compensation_type)}{normalizeCompensationType(timeSetting?.compensation_type) === 'salary' ? ` - ${usd(normalizeMoneyCents(timeSetting?.salary_amount_cents))} ${salaryPayFrequencyLabel(timeSetting?.salary_frequency).toLowerCase()}` : ''}.
+                  </p>
                   <label className="flex min-h-[3.25rem] items-center gap-3 rounded-2xl border border-slate-200 bg-white/65 px-4 py-3 text-sm font-semibold text-slate-700">
                     <input type="checkbox" name="is_sales_rep" defaultChecked={Boolean(commissionSetting?.is_sales_rep)} />
                     Sales Rep
                   </label>
-                  <PendingSubmitButton className="btn-primary w-full lg:w-auto" label="Save" pendingLabel="Saving..." />
                 </div>
                 <div>
                   <p className="mb-2 text-sm font-semibold text-slate-950">Labor tags</p>
@@ -1793,8 +2029,8 @@ export default async function PayrollPage({
 
       {activeTab === 'export' ? (
         <section className="card space-y-4">
-          <h2 className="text-xl font-semibold text-slate-950">Export payroll time</h2>
-          <p className="text-sm text-slate-500">Exports include labor tag, lunch time, paid hours, rate snapshot, estimated wages, and review metadata.</p>
+          <h2 className="text-xl font-semibold text-slate-950">Export payroll</h2>
+          <p className="text-sm text-slate-500">Exports include time entries, salary rows, labor tag, lunch time, paid hours, pay amount, and review metadata.</p>
           <Link
             className="btn-primary w-full sm:w-fit"
             href={`/api/export/time-entries?from=${encodeURIComponent(fromInput)}&to=${encodeURIComponent(toInput)}${selectedAdmin ? `&admin=${encodeURIComponent(selectedAdmin)}` : ''}${filterWorkType ? `&work_type=${encodeURIComponent(filterWorkType)}` : ''}`}

@@ -1,7 +1,9 @@
 import Link from 'next/link';
 import { OrderStatusBadge } from '@/components/order-status';
 import { getAssignedCenterIdsForAdmin, scopeCenterRelatedQueryForAdmin } from '@/lib/admin-center-scope';
+import { canViewAdminSection } from '@/lib/admin-permission-definitions';
 import { getCurrentAdminAccess } from '@/lib/admin-permissions';
+import { getWeeklyPayrollStatus } from '@/lib/payroll-status';
 import { createClient } from '@/lib/supabase/server';
 import { usd } from '@/lib/utils';
 
@@ -178,6 +180,14 @@ function formatOrderTimestamp(value: string | null) {
   });
 }
 
+function formatDateInputLabel(value: string) {
+  const [year, month, day] = value.split('-').map(Number);
+  return new Date(Date.UTC(year, month - 1, day)).toLocaleDateString('en-US', {
+    day: 'numeric',
+    month: 'short',
+  });
+}
+
 function nextActionForStatus(status: string | null | undefined) {
   if (status === 'New') return { label: 'Start processing', href: '/admin/orders?status=New', tone: 'Needs review' };
   if (status === 'Processing') return { label: 'Ship order', href: '/admin/orders?status=Processing', tone: 'In progress' };
@@ -304,6 +314,7 @@ export default async function AdminDashboard({
   const currentAccess = await getCurrentAdminAccess();
   const centerScope = await getAssignedCenterIdsForAdmin({ current: currentAccess, supabase });
   const now = new Date();
+  const payrollStatus = canViewAdminSection(currentAccess.access, 'payroll') ? await getWeeklyPayrollStatus() : null;
 
   const ordersRange = normalizeTimeRange(searchParams?.ordersRange);
   const revenueRange = normalizeTimeRange(searchParams?.revenueRange);
@@ -436,6 +447,23 @@ export default async function AdminDashboard({
           </Link>
         </div>
       </section>
+
+      {payrollStatus?.needsApproval ? (
+        <section className="rounded-xl border border-rose-200 bg-rose-50/80 p-5 shadow-sm">
+          <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-rose-700">{payrollStatus.isOverdue ? 'Payroll overdue' : 'Payroll due today'}</p>
+              <h2 className="mt-2 text-2xl font-semibold tracking-tight text-slate-950">
+                Approve payroll for {formatDateInputLabel(payrollStatus.weekStartInput)} to {formatDateInputLabel(payrollStatus.weekEndInput)}
+              </h2>
+              <p className="mt-2 text-sm text-rose-800">
+                {payrollStatus.openEntryCount} open shift{payrollStatus.openEntryCount === 1 ? '' : 's'} and {payrollStatus.unapprovedEntryCount} unapproved completed shift{payrollStatus.unapprovedEntryCount === 1 ? '' : 's'} need review before the week is complete.
+              </p>
+            </div>
+            <Link href={payrollStatus.payrollHref} className="btn-primary w-full bg-rose-600 hover:bg-rose-700 sm:w-auto">Review payroll</Link>
+          </div>
+        </section>
+      ) : null}
 
       <section className="card space-y-4">
         <div className="flex flex-col items-start gap-3 sm:flex-row sm:items-center sm:justify-between">

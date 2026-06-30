@@ -7,7 +7,19 @@ import { AdminRealtimeSync } from '@/components/admin-realtime-sync';
 import { LogoutButton } from '@/components/logout-button';
 import { ADMIN_NAV_LINKS, canViewAdminSection, type AdminAccessMap } from '@/lib/admin-permission-definitions';
 
-export function AdminShell({ access, children, isOwner, newOrders }: { access: AdminAccessMap; children: ReactNode; isOwner: boolean; newOrders: number }) {
+export function AdminShell({
+  access,
+  children,
+  isOwner,
+  newOrders,
+  payrollBadgeCount = 0,
+}: {
+  access: AdminAccessMap;
+  children: ReactNode;
+  isOwner: boolean;
+  newOrders: number;
+  payrollBadgeCount?: number;
+}) {
   const links = ADMIN_NAV_LINKS.filter((link) => canViewAdminSection(access, link.sectionKey));
   const editableSections = Object.fromEntries(Object.entries(access).map(([key, state]) => [key, state.canEdit])) as Record<string, boolean>;
 
@@ -45,6 +57,7 @@ export function AdminShell({ access, children, isOwner, newOrders }: { access: A
             >
               <span>{name}</span>
               {name === 'Orders' && newOrders > 0 ? <span className="rounded-full bg-rose-500 px-2.5 py-1 text-xs font-semibold text-white">{newOrders}</span> : null}
+              {name === 'Payroll' && payrollBadgeCount > 0 ? <span className="rounded-full bg-rose-500 px-2.5 py-1 text-xs font-semibold text-white">{payrollBadgeCount}</span> : null}
             </ActiveNavLink>
           ))}
         </nav>
