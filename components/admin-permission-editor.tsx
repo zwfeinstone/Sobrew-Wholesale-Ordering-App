@@ -26,6 +26,7 @@ function cloneAccess(access: AdminAccessMap, allowManageAdmins: boolean) {
     normalized.payroll = { canEdit: false, canView: false };
     normalized.commission = { ...normalized.commission, canEdit: false };
     normalized.time_clock = { ...normalized.time_clock, canEdit: false };
+    normalized.week_hours = { ...normalized.week_hours, canEdit: false };
   }
   return normalized;
 }
@@ -74,6 +75,7 @@ export function AdminPermissionEditor({
       if ((key === 'sales_admin' || key === 'payroll') && !allowRestrictedPermissions) return current;
       if (key === 'commission' && field === 'canEdit' && !allowRestrictedPermissions) return current;
       if (key === 'time_clock' && field === 'canEdit' && !allowRestrictedPermissions) return current;
+      if (key === 'week_hours' && field === 'canEdit') return current;
       const next = cloneAccess(current, allowRestrictedPermissions);
       if (field === 'canEdit') {
         next[key] = { canEdit: checked, canView: checked || next[key].canView };
@@ -147,8 +149,10 @@ export function AdminPermissionEditor({
                     <p className="font-semibold text-slate-950">{ADMIN_SECTION_LABELS[key]}</p>
                     {key === 'reports_profitability' ? <p className="mt-1 text-xs text-slate-500">Controls margin, COGS, profitability, production, and inventory value report screens.</p> : null}
                     {key === 'reports_sales' ? <p className="mt-1 text-xs text-slate-500">Controls sales and customer reporting without margin visibility.</p> : null}
+                    {key === 'marketing' ? <p className="mt-1 text-xs text-slate-500">Weekly marketing recaps. View can read the team history, edit can save and manage recaps.</p> : null}
                     {key === 'manage_admins' ? <p className="mt-1 text-xs text-slate-500">Superadmin-only admin creation, permissions, and audit access.</p> : null}
                     {key === 'time_clock' ? <p className="mt-1 text-xs text-slate-500">View lets admins clock their own time. Edit is superadmin-only for payroll review.</p> : null}
+                    {key === 'week_hours' ? <p className="mt-1 text-xs text-slate-500">View-only self-service page for employees to see their own week, month, and YTD hours.</p> : null}
                     {key === 'sales_admin' ? <p className="mt-1 text-xs text-slate-500">Superadmin-only center assignment and sales team commission totals.</p> : null}
                     {key === 'commission' ? <p className="mt-1 text-xs text-slate-500">View lets sales admins see their own monthly commission statements.</p> : null}
                     {key === 'payroll' ? <p className="mt-1 text-xs text-slate-500">Superadmin-only payroll setup, rates, and commission percentages.</p> : null}
@@ -166,7 +170,7 @@ export function AdminPermissionEditor({
                   <label className="flex items-center gap-2 text-sm font-medium text-slate-700">
                     <input
                       checked={displayedAccess[key].canEdit}
-                      disabled={controlsDisabled || ((key === 'manage_admins' || key === 'sales_admin' || key === 'payroll' || key === 'commission' || key === 'time_clock') && !allowRestrictedPermissions)}
+                      disabled={controlsDisabled || key === 'week_hours' || ((key === 'manage_admins' || key === 'sales_admin' || key === 'payroll' || key === 'commission' || key === 'time_clock') && !allowRestrictedPermissions)}
                       name={`edit_${key}`}
                       onChange={(event) => setPermission(key, 'canEdit', event.target.checked)}
                       type="checkbox"

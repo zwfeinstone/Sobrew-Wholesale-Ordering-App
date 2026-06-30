@@ -9,6 +9,7 @@ export const ADMIN_PERMISSION_KEYS = [
   'reports',
   'reports_sales',
   'reports_profitability',
+  'marketing',
   'prospecting',
   'orders',
   'archived_orders',
@@ -22,6 +23,7 @@ export const ADMIN_PERMISSION_KEYS = [
   'planning',
   'production',
   'time_clock',
+  'week_hours',
   'settings',
   'manage_admins',
 ] as const;
@@ -47,6 +49,7 @@ export const ADMIN_SECTION_LABELS: Record<AdminPermissionKey, string> = {
   planning: 'Planning',
   production: 'Production',
   products: 'Products',
+  marketing: 'Marketing',
   prospecting: 'Prospecting',
   receiving: 'Receiving',
   recurring_orders: 'Recurring Orders',
@@ -59,6 +62,7 @@ export const ADMIN_SECTION_LABELS: Record<AdminPermissionKey, string> = {
   payroll: 'Payroll',
   settings: 'Settings',
   time_clock: 'Time Clock',
+  week_hours: 'Week Hours',
 };
 
 export const ADMIN_NAV_LINKS: Array<{
@@ -73,6 +77,7 @@ export const ADMIN_NAV_LINKS: Array<{
   { name: 'Sales Admin', href: '/admin/sales-admin', sectionKey: 'sales_admin' },
   { name: 'Commission', href: '/admin/commission', sectionKey: 'commission' },
   { name: 'Reports', href: '/admin/reports', sectionKey: 'reports' },
+  { name: 'Marketing', href: '/admin/marketing', sectionKey: 'marketing' },
   { name: 'Prospecting', href: '/admin/sales/prospecting', child: true, sectionKey: 'prospecting' },
   { name: 'Orders', href: '/admin/orders', sectionKey: 'orders' },
   { name: 'Archived Orders', href: '/admin/archived-orders', sectionKey: 'archived_orders' },
@@ -86,15 +91,15 @@ export const ADMIN_NAV_LINKS: Array<{
   { name: 'Planning', href: '/admin/planning', sectionKey: 'planning' },
   { name: 'Production', href: '/admin/production', sectionKey: 'production' },
   { name: 'Time Clock', href: '/admin/time-clock', sectionKey: 'time_clock' },
-  { name: 'Week Hours', href: '/admin/week-hours', sectionKey: 'time_clock' },
+  { name: 'Week Hours', href: '/admin/week-hours', sectionKey: 'week_hours' },
   { name: 'Payroll', href: '/admin/payroll', sectionKey: 'payroll' },
   { name: 'Settings', href: '/admin/settings', sectionKey: 'settings' },
 ];
 
 export const ADMIN_PERMISSION_GROUPS: Array<{ keys: AdminPermissionKey[]; label: string }> = [
   { label: 'Core', keys: ['dashboard', 'orders', 'order_form', 'centers', 'settings', 'manage_admins'] },
-  { label: 'Sales & Reports', keys: ['sales', 'sales_admin', 'commission', 'prospecting', 'reports', 'reports_sales', 'reports_profitability'] },
-  { label: 'Catalog & Operations', keys: ['products', 'inventory', 'receiving', 'planning', 'production', 'time_clock', 'payroll'] },
+  { label: 'Sales & Reports', keys: ['sales', 'sales_admin', 'commission', 'marketing', 'prospecting', 'reports', 'reports_sales', 'reports_profitability'] },
+  { label: 'Catalog & Operations', keys: ['products', 'inventory', 'receiving', 'planning', 'production', 'time_clock', 'week_hours', 'payroll'] },
   { label: 'Order History', keys: ['archived_orders', 'recurring_orders', 'canceled_recurring_orders'] },
 ];
 
@@ -111,6 +116,7 @@ function grant(access: AdminAccessMap, keys: AdminPermissionKey[], canEdit: bool
 export function ownerAccessMap(): AdminAccessMap {
   const access = emptyAccess();
   grant(access, [...ADMIN_PERMISSION_KEYS], true);
+  access.week_hours = { canEdit: false, canView: true };
   return access;
 }
 
@@ -151,7 +157,19 @@ export const ADMIN_ROLE_PRESETS: Array<{
     permissions: (() => {
       const access = emptyAccess();
       grant(access, ['dashboard', 'sales', 'commission', 'prospecting', 'centers', 'orders', 'reports', 'reports_sales', 'time_clock'], false);
+      grant(access, ['week_hours'], false);
       grant(access, ['sales', 'prospecting', 'centers'], true);
+      return access;
+    })(),
+  },
+  {
+    key: 'marketing',
+    label: 'Marketing',
+    description: 'Can record weekly marketing recaps and see their own time visibility pages.',
+    permissions: (() => {
+      const access = emptyAccess();
+      grant(access, ['dashboard', 'time_clock', 'week_hours'], false);
+      grant(access, ['marketing'], true);
       return access;
     })(),
   },
@@ -161,7 +179,7 @@ export const ADMIN_ROLE_PRESETS: Array<{
     description: 'Can view sales and customer reports without profit visibility.',
     permissions: (() => {
       const access = emptyAccess();
-      grant(access, ['dashboard', 'reports', 'reports_sales', 'time_clock'], false);
+      grant(access, ['dashboard', 'reports', 'reports_sales', 'time_clock', 'week_hours'], false);
       return access;
     })(),
   },
@@ -171,7 +189,7 @@ export const ADMIN_ROLE_PRESETS: Array<{
     description: 'Can view profitability, COGS, production, and inventory value reports.',
     permissions: (() => {
       const access = emptyAccess();
-      grant(access, ['dashboard', 'reports', 'reports_profitability', 'time_clock'], false);
+      grant(access, ['dashboard', 'reports', 'reports_profitability', 'time_clock', 'week_hours'], false);
       return access;
     })(),
   },
@@ -193,6 +211,7 @@ export function enforceOwnerOnlyPermissions(email: string | null | undefined, ac
     normalized.payroll = { canEdit: false, canView: false };
     normalized.commission = { ...normalized.commission, canEdit: false };
     normalized.time_clock = { ...normalized.time_clock, canEdit: false };
+    normalized.week_hours = { ...normalized.week_hours, canEdit: false };
   }
   return normalized;
 }
@@ -212,6 +231,7 @@ export function normalizeAccessMap(access: Partial<Record<AdminPermissionKey, Pa
     normalized.reports.canEdit = true;
     normalized.reports.canView = true;
   }
+  normalized.week_hours.canEdit = false;
   return normalized;
 }
 
@@ -239,6 +259,7 @@ export function adminSectionForPath(pathname: string): AdminPermissionKey | null
   if (pathname === '/admin') return 'dashboard';
   if (pathname === '/admin/sales-admin' || pathname.startsWith('/admin/sales-admin/')) return 'sales_admin';
   if (pathname === '/admin/commission' || pathname.startsWith('/admin/commission/')) return 'commission';
+  if (pathname === '/admin/marketing' || pathname.startsWith('/admin/marketing/')) return 'marketing';
   if (pathname === '/admin/sales/prospecting' || pathname.startsWith('/admin/sales/prospecting/')) return 'prospecting';
   if (pathname === '/admin/sales' || pathname.startsWith('/admin/sales/')) return 'sales';
   if (pathname === '/admin/reports' || pathname.startsWith('/admin/reports/')) return 'reports';
@@ -254,7 +275,7 @@ export function adminSectionForPath(pathname: string): AdminPermissionKey | null
   if (pathname === '/admin/planning' || pathname.startsWith('/admin/planning/')) return 'planning';
   if (pathname === '/admin/production' || pathname.startsWith('/admin/production/')) return 'production';
   if (pathname === '/admin/time-clock' || pathname.startsWith('/admin/time-clock/')) return 'time_clock';
-  if (pathname === '/admin/week-hours' || pathname.startsWith('/admin/week-hours/')) return 'time_clock';
+  if (pathname === '/admin/week-hours' || pathname.startsWith('/admin/week-hours/')) return 'week_hours';
   if (pathname === '/admin/payroll' || pathname.startsWith('/admin/payroll/')) return 'payroll';
   if (pathname === '/admin/settings' || pathname.startsWith('/admin/settings/')) return 'settings';
   return null;
