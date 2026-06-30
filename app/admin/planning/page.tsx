@@ -31,6 +31,11 @@ type InventoryItemRow = {
   active: boolean;
 };
 
+type InventoryMovementRow = {
+  inventory_item_id: string;
+  quantity_change: number | string | null;
+};
+
 type RecipeComponentRow = {
   id: string;
   inventory_item_id: string;
@@ -322,6 +327,7 @@ export default async function PlanningPage({
     recurringOrdersResult,
     centersResult,
     parLevelsResult,
+    shortageMovementsResult,
   ] = await Promise.all([
     supabase.from('products').select('id,name,sku,active').order('name', { ascending: true }),
     supabase.from('inventory_items').select('id,name,sku,item_type,base_unit,product_id,active').order('name', { ascending: true }),
@@ -337,6 +343,7 @@ export default async function PlanningPage({
     supabase.from('recurring_orders').select('id,center_id,frequency,status,active,created_at,last_generated_at,recurring_order_items(product_id,qty),centers(is_active)').neq('status', 'canceled'),
     supabase.from('centers').select('id,name,is_active').eq('is_active', true).order('name', { ascending: true }),
     supabase.from('inventory_center_par_levels').select('center_id,product_id,par_qty,minimum_qty,notes,centers(name,is_active),products(name,active)'),
+    supabase.from('inventory_movements').select('inventory_item_id,quantity_change').in('movement_type', ['shipment_consume', 'sample_box_consume']).is('lot_id', null).limit(50000),
   ]);
 
   const products = (productsResult.data ?? []) as ProductRow[];
@@ -349,6 +356,7 @@ export default async function PlanningPage({
   const recurringOrders = (recurringOrdersResult.data ?? []) as RecurringOrderRow[];
   const centers = (centersResult.data ?? []) as any[];
   const parLevels = (parLevelsResult.data ?? []) as any[];
+  const shortageMovements = shortageMovementsResult.error ? [] : ((shortageMovementsResult.data ?? []) as InventoryMovementRow[]);
   const itemsById = new Map(items.map((item) => [item.id, item]));
   const recipeByProductId = new Map(recipes.map((recipe) => [recipe.product_id, recipe]));
   const finishedItemByProductId = new Map(
@@ -360,6 +368,12 @@ export default async function PlanningPage({
   const onHandByItemId = new Map<string, number>();
   for (const lot of lots) {
     onHandByItemId.set(lot.inventory_item_id, (onHandByItemId.get(lot.inventory_item_id) ?? 0) + normalizeInventoryNumber(lot.quantity_remaining));
+  }
+  for (const movement of shortageMovements) {
+    onHandByItemId.set(
+      movement.inventory_item_id,
+      (onHandByItemId.get(movement.inventory_item_id) ?? 0) + normalizeInventoryNumber(movement.quantity_change)
+    );
   }
 
   const reservedQtyByProductId = new Map<string, number>();
