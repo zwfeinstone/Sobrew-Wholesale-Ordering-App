@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import { revalidatePath } from 'next/cache';
 import { redirect } from 'next/navigation';
 import PendingSubmitButton from '@/components/pending-submit-button';
 import StatusToast from '@/components/status-toast';
@@ -13,6 +14,7 @@ import {
   type ProductCategoryGroup
 } from '@/lib/product-categories';
 import { createClient } from '@/lib/supabase/server';
+import { supabaseAdmin } from '@/lib/supabase/admin';
 
 type ProductRow = {
   id: string;
@@ -24,6 +26,7 @@ type ProductRow = {
 
 type RecipeLaborRow = {
   id: string;
+  product_id: string | null;
   labor_minutes: number | string | null;
   labor_rate_cents: number | string | null;
 };
@@ -123,19 +126,22 @@ async function massAdjustRecipeLabor(formData: FormData) {
   const rateAdjustment = parsePercentAdjustment(formData.get('labor_rate_percent'));
   const confirmed = formData.get('confirm_bulk_labor_adjustment') === 'on';
 
-  if (minutesAdjustment.invalid || rateAdjustment.invalid || (minutesAdjustment.value === null && rateAdjustment.value === null)) {
+  const hasNoAdjustment = [minutesAdjustment.value, rateAdjustment.value].every((value) => value === null || value === 0);
+  if (minutesAdjustment.invalid || rateAdjustment.invalid || hasNoAdjustment) {
     redirect(productsToastHref(returnTo, 'bulk_labor_invalid'));
   }
   if (!confirmed) {
     redirect(productsToastHref(returnTo, 'bulk_labor_confirm_required'));
   }
 
-  const supabase = await createClient();
-  const { data: recipes, error } = await supabase
+  const { data: recipes, error } = await supabaseAdmin
     .from('product_recipes')
-    .select('id,labor_minutes,labor_rate_cents')
+    .select('id,product_id,labor_minutes,labor_rate_cents')
     .limit(50000);
-  if (error) redirect(productsToastHref(returnTo, 'bulk_labor_error'));
+  if (error) {
+    console.error('[admin-products] bulk labor recipe load failed', { error });
+    redirect(productsToastHref(returnTo, 'bulk_labor_error'));
+  }
 
   const now = new Date().toISOString();
   const rows = ((recipes ?? []) as RecipeLaborRow[]).map((recipe) => {
@@ -143,20 +149,51 @@ async function massAdjustRecipeLabor(formData: FormData) {
     const rateMultiplier = rateAdjustment.value === null ? 1 : 1 + rateAdjustment.value / 100;
     return {
       id: recipe.id,
+      product_id: recipe.product_id,
       labor_minutes: roundRecipeNumber(Math.max(0, numericValue(recipe.labor_minutes) * minutesMultiplier)),
       labor_rate_cents: Math.round(Math.max(0, numericValue(recipe.labor_rate_cents) * rateMultiplier)),
       updated_at: now,
     };
   });
 
-  if (rows.length) {
-    const { error: updateError } = await supabase
-      .from('product_recipes')
-      .upsert(rows, { onConflict: 'id' });
-    if (updateError) redirect(productsToastHref(returnTo, 'bulk_labor_error'));
+  if (!rows.length) {
+    redirect(productsToastHref(returnTo, 'bulk_labor_none'));
   }
 
-  redirect(productsToastHref(returnTo, 'bulk_labor_saved', { count: rows.length }));
+  let updatedCount = 0;
+  const batchSize = 20;
+  for (let index = 0; index < rows.length; index += batchSize) {
+    const chunk = rows.slice(index, index + batchSize);
+    const results = await Promise.all(
+      chunk.map((row) =>
+        supabaseAdmin
+          .from('product_recipes')
+          .update({
+            labor_minutes: row.labor_minutes,
+            labor_rate_cents: row.labor_rate_cents,
+            updated_at: row.updated_at,
+          })
+          .eq('id', row.id)
+          .select('id')
+      )
+    );
+    const failed = results.find((result) => result.error);
+    if (failed?.error) {
+      console.error('[admin-products] bulk labor update failed', { error: failed.error });
+      redirect(productsToastHref(returnTo, 'bulk_labor_error'));
+    }
+    updatedCount += results.reduce((sum, result) => sum + (result.data?.length ?? 0), 0);
+  }
+
+  revalidatePath('/admin/products');
+  revalidatePath('/admin/reports');
+  revalidatePath('/admin/inventory');
+  revalidatePath('/admin/production');
+  for (const productId of [...new Set(rows.map((row) => row.product_id).filter(Boolean))].slice(0, 250)) {
+    revalidatePath(`/admin/products/${productId}`);
+  }
+
+  redirect(productsToastHref(returnTo, 'bulk_labor_saved', { count: updatedCount }));
 }
 
 export default async function ProductsPage({
@@ -200,8 +237,9 @@ export default async function ProductsPage({
   return (
     <div className="space-y-6">
       {toast === 'bulk_labor_saved' ? <StatusToast message={`Updated labor on ${Number.isFinite(adjustedCount) ? adjustedCount : recipeCount ?? 0} product recipe${adjustedCount === 1 ? '' : 's'}.`} tone="success" /> : null}
-      {toast === 'bulk_labor_invalid' ? <StatusToast message="Enter at least one valid percentage between -100 and 500." tone="error" /> : null}
+      {toast === 'bulk_labor_invalid' ? <StatusToast message="Enter at least one non-zero percentage between -100 and 500." tone="error" /> : null}
       {toast === 'bulk_labor_confirm_required' ? <StatusToast message="Confirm the bulk labor adjustment before applying it." tone="error" /> : null}
+      {toast === 'bulk_labor_none' ? <StatusToast message="No product recipes were found to update." tone="error" /> : null}
       {toast === 'bulk_labor_error' ? <StatusToast message="Unable to update product recipe labor." tone="error" /> : null}
       {toast === 'admin_write_denied' ? <StatusToast message="You do not have permission to edit products." tone="error" /> : null}
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
