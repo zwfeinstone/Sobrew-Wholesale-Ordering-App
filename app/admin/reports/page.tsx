@@ -65,6 +65,7 @@ type AdminRow = {
 };
 
 type ProfitabilityCenterRows = ReturnType<typeof buildProfitabilityDashboard>['centerRows'];
+type ProfitabilityItemRows = ReturnType<typeof buildProfitabilityDashboard>['itemRows'];
 
 function reportIsProfitability(reportId: ReportId) {
   return reportId !== 'sales';
@@ -638,49 +639,95 @@ function CenterProfitabilityTable({ rows }: { rows: ProfitabilityCenterRows }) {
   );
 }
 
-function ItemProfitabilityTable({ rows }: { rows: ReturnType<typeof buildProfitabilityDashboard>['itemRows'] }) {
+function ItemProfitabilityTableHead() {
+  return (
+    <thead>
+      <tr className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+        <th className="px-4 py-2">Item</th>
+        <th className="px-4 py-2 text-right">Units</th>
+        <th className="px-4 py-2 text-right">Revenue</th>
+        <th className="px-4 py-2 text-right">Rev/unit</th>
+        <th className="px-4 py-2 text-right">Product COGS/unit</th>
+        <th className="px-4 py-2 text-right">Shipping</th>
+        <th className="px-4 py-2 text-right">Fees</th>
+        <th className="px-4 py-2 text-right">Donation</th>
+        <th className="px-4 py-2 text-right">Profit before order costs</th>
+        <th className="px-4 py-2 text-right">Profit after COGS</th>
+        <th className="px-4 py-2 text-right">Margin after COGS</th>
+        <th className="px-4 py-2 text-right">Orders</th>
+        <th className="px-4 py-2 text-right">Estimated lines</th>
+      </tr>
+    </thead>
+  );
+}
+
+function ItemProfitabilityRows({ rows }: { rows: ProfitabilityItemRows }) {
+  return (
+    <>
+      {rows.map((row) => (
+        <tr key={row.id} className="bg-white/65">
+          <td className="rounded-l-xl px-4 py-3 font-semibold text-slate-950">{row.name}</td>
+          <td className="px-4 py-3 text-right text-slate-700">{quantity(row.unitsSold)}</td>
+          <td className="px-4 py-3 text-right text-slate-700">{money(row.revenueCents)}</td>
+          <td className="px-4 py-3 text-right text-slate-700">{money(row.revenuePerUnitCents)}</td>
+          <td className="px-4 py-3 text-right text-slate-700">{money(row.productCogsPerUnitCents)}</td>
+          <td className="px-4 py-3 text-right text-slate-700">{money(row.shippingCogsCents)}</td>
+          <td className="px-4 py-3 text-right text-slate-700">{money(row.processingFeeCogsCents)}</td>
+          <td className="px-4 py-3 text-right text-slate-700">{money(row.donationCogsCents)}</td>
+          <td className={`px-4 py-3 text-right font-semibold ${row.grossProfitBeforeShippingCents >= 0 ? 'text-teal-800' : 'text-rose-700'}`}>{money(row.grossProfitBeforeShippingCents)}</td>
+          <td className={`px-4 py-3 text-right font-semibold ${row.grossProfitAfterShippingCents >= 0 ? 'text-teal-800' : 'text-rose-700'}`}>{money(row.grossProfitAfterShippingCents)}</td>
+          <td className="px-4 py-3 text-right font-semibold"><MarginValue value={row.marginAfterShippingPercent} /></td>
+          <td className="px-4 py-3 text-right text-slate-700">{number(row.orderCount)}</td>
+          <td className="rounded-r-xl px-4 py-3 text-right text-slate-700">{number(row.estimatedLineCount)}</td>
+        </tr>
+      ))}
+    </>
+  );
+}
+
+function ItemProfitabilityTable({ rows }: { rows: ProfitabilityItemRows }) {
   if (!rows.length) return <EmptyState message="No shipped item profitability found for the selected range." />;
 
+  const previewRows = rows.slice(0, ROW_LIMIT);
+  const remainingRows = rows.slice(ROW_LIMIT);
+
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full min-w-[90rem] border-separate border-spacing-y-2 text-left text-sm">
-        <thead>
-          <tr className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
-            <th className="px-4 py-2">Item</th>
-            <th className="px-4 py-2 text-right">Units</th>
-            <th className="px-4 py-2 text-right">Revenue</th>
-            <th className="px-4 py-2 text-right">Rev/unit</th>
-            <th className="px-4 py-2 text-right">Product COGS/unit</th>
-            <th className="px-4 py-2 text-right">Shipping</th>
-            <th className="px-4 py-2 text-right">Fees</th>
-            <th className="px-4 py-2 text-right">Donation</th>
-            <th className="px-4 py-2 text-right">Profit before order costs</th>
-            <th className="px-4 py-2 text-right">Profit after COGS</th>
-            <th className="px-4 py-2 text-right">Margin after COGS</th>
-            <th className="px-4 py-2 text-right">Orders</th>
-            <th className="px-4 py-2 text-right">Estimated lines</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.slice(0, ROW_LIMIT).map((row) => (
-            <tr key={row.id} className="bg-white/65">
-              <td className="rounded-l-xl px-4 py-3 font-semibold text-slate-950">{row.name}</td>
-              <td className="px-4 py-3 text-right text-slate-700">{quantity(row.unitsSold)}</td>
-              <td className="px-4 py-3 text-right text-slate-700">{money(row.revenueCents)}</td>
-              <td className="px-4 py-3 text-right text-slate-700">{money(row.revenuePerUnitCents)}</td>
-              <td className="px-4 py-3 text-right text-slate-700">{money(row.productCogsPerUnitCents)}</td>
-              <td className="px-4 py-3 text-right text-slate-700">{money(row.shippingCogsCents)}</td>
-              <td className="px-4 py-3 text-right text-slate-700">{money(row.processingFeeCogsCents)}</td>
-              <td className="px-4 py-3 text-right text-slate-700">{money(row.donationCogsCents)}</td>
-              <td className={`px-4 py-3 text-right font-semibold ${row.grossProfitBeforeShippingCents >= 0 ? 'text-teal-800' : 'text-rose-700'}`}>{money(row.grossProfitBeforeShippingCents)}</td>
-              <td className={`px-4 py-3 text-right font-semibold ${row.grossProfitAfterShippingCents >= 0 ? 'text-teal-800' : 'text-rose-700'}`}>{money(row.grossProfitAfterShippingCents)}</td>
-              <td className="px-4 py-3 text-right font-semibold"><MarginValue value={row.marginAfterShippingPercent} /></td>
-              <td className="px-4 py-3 text-right text-slate-700">{number(row.orderCount)}</td>
-              <td className="rounded-r-xl px-4 py-3 text-right text-slate-700">{number(row.estimatedLineCount)}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+    <div className="space-y-3">
+      <div className="overflow-x-auto">
+        <table className="w-full min-w-[90rem] border-separate border-spacing-y-2 text-left text-sm">
+          <ItemProfitabilityTableHead />
+          <tbody>
+            <ItemProfitabilityRows rows={previewRows} />
+          </tbody>
+        </table>
+      </div>
+      {remainingRows.length ? (
+        <details className="rounded-xl border border-slate-200/70 bg-white/50">
+          <summary className="cursor-pointer px-4 py-3">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <p className="font-semibold text-slate-950">Show all products</p>
+                <p className="mt-1 text-sm text-slate-500">
+                  Showing the top {number(previewRows.length)} by profit after COGS. Expand to review {number(remainingRows.length)} more product{remainingRows.length === 1 ? '' : 's'}.
+                </p>
+              </div>
+              <span className="w-fit rounded-full bg-white px-3 py-1 text-sm font-semibold text-slate-700 ring-1 ring-slate-200">
+                {number(rows.length)} products
+              </span>
+            </div>
+          </summary>
+          <div className="border-t border-slate-200/70 px-4 pb-4 pt-3">
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[90rem] border-separate border-spacing-y-2 text-left text-sm">
+                <ItemProfitabilityTableHead />
+                <tbody>
+                  <ItemProfitabilityRows rows={remainingRows} />
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </details>
+      ) : null}
     </div>
   );
 }
