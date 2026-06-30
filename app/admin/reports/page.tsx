@@ -64,6 +64,8 @@ type AdminRow = {
   is_active: boolean | null;
 };
 
+type ProfitabilityCenterRows = ReturnType<typeof buildProfitabilityDashboard>['centerRows'];
+
 function reportIsProfitability(reportId: ReportId) {
   return reportId !== 'sales';
 }
@@ -543,49 +545,95 @@ function CogsSplitGrid({ current }: { current: ReturnType<typeof buildProfitabil
   );
 }
 
-function CenterProfitabilityTable({ rows }: { rows: ReturnType<typeof buildProfitabilityDashboard>['centerRows'] }) {
+function CenterProfitabilityTableHead() {
+  return (
+    <thead>
+      <tr className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+        <th className="px-4 py-2">Center</th>
+        <th className="px-4 py-2 text-right">Revenue</th>
+        <th className="px-4 py-2 text-right">Material</th>
+        <th className="px-4 py-2 text-right">Labor</th>
+        <th className="px-4 py-2 text-right">Fixed</th>
+        <th className="px-4 py-2 text-right">Shipping</th>
+        <th className="px-4 py-2 text-right">Fees</th>
+        <th className="px-4 py-2 text-right">Donation</th>
+        <th className="px-4 py-2 text-right">Gross profit</th>
+        <th className="px-4 py-2 text-right">Margin</th>
+        <th className="px-4 py-2 text-right">Orders</th>
+        <th className="px-4 py-2 text-right">AOV</th>
+        <th className="px-4 py-2 text-right">Estimated lines</th>
+      </tr>
+    </thead>
+  );
+}
+
+function CenterProfitabilityRows({ rows }: { rows: ProfitabilityCenterRows }) {
+  return (
+    <>
+      {rows.map((row) => (
+        <tr key={row.id} className="bg-white/65">
+          <td className="rounded-l-xl px-4 py-3 font-semibold text-slate-950">{row.name}</td>
+          <td className="px-4 py-3 text-right text-slate-700">{money(row.revenueCents)}</td>
+          <td className="px-4 py-3 text-right text-slate-700">{money(row.materialCents)}</td>
+          <td className="px-4 py-3 text-right text-slate-700">{money(row.laborCents)}</td>
+          <td className="px-4 py-3 text-right text-slate-700">{money(row.fixedCents)}</td>
+          <td className="px-4 py-3 text-right text-slate-700">{money(row.shippingCogsCents)}</td>
+          <td className="px-4 py-3 text-right text-slate-700">{money(row.processingFeeCogsCents)}</td>
+          <td className="px-4 py-3 text-right text-slate-700">{money(row.donationCogsCents)}</td>
+          <td className={`px-4 py-3 text-right font-semibold ${row.grossProfitCents >= 0 ? 'text-teal-800' : 'text-rose-700'}`}>{money(row.grossProfitCents)}</td>
+          <td className="px-4 py-3 text-right font-semibold"><MarginValue value={row.marginPercent} /></td>
+          <td className="px-4 py-3 text-right text-slate-700">{number(row.orderCount)}</td>
+          <td className="px-4 py-3 text-right text-slate-700">{money(row.averageOrderValueCents)}</td>
+          <td className="rounded-r-xl px-4 py-3 text-right text-slate-700">{number(row.estimatedLineCount)}</td>
+        </tr>
+      ))}
+    </>
+  );
+}
+
+function CenterProfitabilityTable({ rows }: { rows: ProfitabilityCenterRows }) {
   if (!rows.length) return <EmptyState message="No shipped center profitability found for the selected range." />;
 
+  const previewRows = rows.slice(0, ROW_LIMIT);
+  const remainingRows = rows.slice(ROW_LIMIT);
+
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full min-w-[94rem] border-separate border-spacing-y-2 text-left text-sm">
-        <thead>
-          <tr className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
-            <th className="px-4 py-2">Center</th>
-            <th className="px-4 py-2 text-right">Revenue</th>
-            <th className="px-4 py-2 text-right">Material</th>
-            <th className="px-4 py-2 text-right">Labor</th>
-            <th className="px-4 py-2 text-right">Fixed</th>
-            <th className="px-4 py-2 text-right">Shipping</th>
-            <th className="px-4 py-2 text-right">Fees</th>
-            <th className="px-4 py-2 text-right">Donation</th>
-            <th className="px-4 py-2 text-right">Gross profit</th>
-            <th className="px-4 py-2 text-right">Margin</th>
-            <th className="px-4 py-2 text-right">Orders</th>
-            <th className="px-4 py-2 text-right">AOV</th>
-            <th className="px-4 py-2 text-right">Estimated lines</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.slice(0, ROW_LIMIT).map((row) => (
-            <tr key={row.id} className="bg-white/65">
-              <td className="rounded-l-xl px-4 py-3 font-semibold text-slate-950">{row.name}</td>
-              <td className="px-4 py-3 text-right text-slate-700">{money(row.revenueCents)}</td>
-              <td className="px-4 py-3 text-right text-slate-700">{money(row.materialCents)}</td>
-              <td className="px-4 py-3 text-right text-slate-700">{money(row.laborCents)}</td>
-              <td className="px-4 py-3 text-right text-slate-700">{money(row.fixedCents)}</td>
-              <td className="px-4 py-3 text-right text-slate-700">{money(row.shippingCogsCents)}</td>
-              <td className="px-4 py-3 text-right text-slate-700">{money(row.processingFeeCogsCents)}</td>
-              <td className="px-4 py-3 text-right text-slate-700">{money(row.donationCogsCents)}</td>
-              <td className={`px-4 py-3 text-right font-semibold ${row.grossProfitCents >= 0 ? 'text-teal-800' : 'text-rose-700'}`}>{money(row.grossProfitCents)}</td>
-              <td className="px-4 py-3 text-right font-semibold"><MarginValue value={row.marginPercent} /></td>
-              <td className="px-4 py-3 text-right text-slate-700">{number(row.orderCount)}</td>
-              <td className="px-4 py-3 text-right text-slate-700">{money(row.averageOrderValueCents)}</td>
-              <td className="rounded-r-xl px-4 py-3 text-right text-slate-700">{number(row.estimatedLineCount)}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+    <div className="space-y-3">
+      <div className="overflow-x-auto">
+        <table className="w-full min-w-[94rem] border-separate border-spacing-y-2 text-left text-sm">
+          <CenterProfitabilityTableHead />
+          <tbody>
+            <CenterProfitabilityRows rows={previewRows} />
+          </tbody>
+        </table>
+      </div>
+      {remainingRows.length ? (
+        <details className="rounded-xl border border-slate-200/70 bg-white/50">
+          <summary className="cursor-pointer px-4 py-3">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <p className="font-semibold text-slate-950">Show all centers</p>
+                <p className="mt-1 text-sm text-slate-500">
+                  Showing the top {number(previewRows.length)} by gross profit. Expand to review {number(remainingRows.length)} more center{remainingRows.length === 1 ? '' : 's'}.
+                </p>
+              </div>
+              <span className="w-fit rounded-full bg-white px-3 py-1 text-sm font-semibold text-slate-700 ring-1 ring-slate-200">
+                {number(rows.length)} centers
+              </span>
+            </div>
+          </summary>
+          <div className="border-t border-slate-200/70 px-4 pb-4 pt-3">
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[94rem] border-separate border-spacing-y-2 text-left text-sm">
+                <CenterProfitabilityTableHead />
+                <tbody>
+                  <CenterProfitabilityRows rows={remainingRows} />
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </details>
+      ) : null}
     </div>
   );
 }
