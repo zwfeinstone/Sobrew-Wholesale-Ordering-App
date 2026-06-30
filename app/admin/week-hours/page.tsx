@@ -71,7 +71,7 @@ function EmptyState() {
 }
 
 export default async function WeekHoursPage() {
-  const current = await requireAdminSectionView('time_clock');
+  const current = await requireAdminSectionView('week_hours');
   const now = new Date();
   const todayInput = formatCentralDateInput(now);
   const week = getCurrentPayrollWeekWindow(now);
