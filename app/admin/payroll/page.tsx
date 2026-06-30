@@ -232,6 +232,11 @@ function percentInputValue(value: number | string | null | undefined) {
   return percent.toFixed(percent % 1 === 0 ? 0 : 2);
 }
 
+function percent(value: number) {
+  if (!Number.isFinite(value)) return '0%';
+  return `${value >= 0 ? '+' : ''}${value.toFixed(0)}%`;
+}
+
 function isDateInput(value: string) {
   return /^\d{4}-\d{2}-\d{2}$/.test(value);
 }
@@ -1611,6 +1616,8 @@ export default async function PayrollPage({
     timeSettingsResult,
     commissionSettingsResult,
     tagAssignmentsResult,
+    productionRunLaborResult,
+    shippedLaborResult,
     payrollLocksResult,
     salaryPaymentsResult,
   ] = await Promise.all([
@@ -1628,6 +1635,19 @@ export default async function PayrollPage({
     supabaseAdmin
       .from('admin_labor_tag_assignments')
       .select('profile_id,work_type'),
+    supabaseAdmin
+      .from('production_runs')
+      .select('actual_labor_cost_cents')
+      .gte('produced_at', fromDate.toISOString())
+      .lte('produced_at', toDate.toISOString())
+      .limit(50000),
+    supabaseAdmin
+      .from('order_items')
+      .select('cogs_labor_cents,orders!inner(status,shipped_at)')
+      .eq('orders.status', 'Shipped')
+      .gte('orders.shipped_at', fromDate.toISOString())
+      .lte('orders.shipped_at', toDate.toISOString())
+      .limit(50000),
     supabaseAdmin
       .from('admin_payroll_locks')
       .select('id,lock_start_at,lock_end_at,locked_at,notes')
@@ -1678,6 +1698,12 @@ export default async function PayrollPage({
   }
   if (salaryPaymentsResult.error) {
     console.error('[admin-payroll] salary payment records failed', { error: salaryPaymentsResult.error });
+  }
+  if (productionRunLaborResult.error || shippedLaborResult.error) {
+    console.error('[admin-payroll] cogs report cards failed', {
+      productionRunLaborError: productionRunLaborResult.error,
+      shippedLaborError: shippedLaborResult.error,
+    });
   }
 
   const admins = ((adminsResult.data ?? []) as AdminProfileRow[]).sort((a, b) => profileLabel(a).localeCompare(profileLabel(b)));
@@ -1744,7 +1770,23 @@ export default async function PayrollPage({
   const productionHourlyWages = segments.filter((segment) => segment.workType === 'production').reduce((sum, segment) => sum + segment.wageCents, 0);
   const productionSalaryPay = salaryRows.filter((salary) => salary.workType === 'production').reduce((sum, salary) => sum + salary.salaryCents, 0);
   const productionPayrollWages = productionHourlyWages + productionSalaryPay;
-  const productionPaidMinutes = segments.filter((segment) => segment.workType === 'production').reduce((sum, segment) => sum + segment.minutes, 0);
+  const productionSegments = segments.filter((segment) => segment.workType === 'production');
+  const productionPaidMinutes = productionSegments.reduce((sum, segment) => sum + segment.minutes, 0);
+  const linkedProductionWages = productionSegments.filter((segment) => segment.productionRunId).reduce((sum, segment) => sum + segment.wageCents, 0);
+  const productionRunLaborCogs = productionRunLaborResult.error ? 0 : ((productionRunLaborResult.data ?? []) as Array<{ actual_labor_cost_cents: number | string | null }>).reduce(
+    (sum, run) => sum + numericValue(run.actual_labor_cost_cents),
+    0
+  );
+  const shippedLaborCogs = shippedLaborResult.error ? 0 : ((shippedLaborResult.data ?? []) as Array<{ cogs_labor_cents: number | string | null }>).reduce((sum, item) => sum + numericValue(item.cogs_labor_cents), 0);
+  const productionRunVariance = productionPayrollWages - productionRunLaborCogs;
+  const shippedVariance = productionPayrollWages - shippedLaborCogs;
+  const shippedVariancePercent = shippedLaborCogs ? (shippedVariance / shippedLaborCogs) * 100 : productionPayrollWages ? 100 : 0;
+  const productionRunCogsDetail = selectedAdmin || filterWorkType
+    ? 'Date range only; admin and tag filters do not apply to production runs.'
+    : 'Actual labor COGS recorded into finished production.';
+  const productionRunVarianceDetail = selectedAdmin || filterWorkType
+    ? 'Filtered payroll labor minus date-only production run labor COGS.'
+    : 'Payroll production labor minus production run labor COGS.';
 
   const now = new Date();
   const openEntries = entries.filter((entry) => !entry.clock_out_at && entry.status !== 'void');
@@ -1761,7 +1803,6 @@ export default async function PayrollPage({
   const manualEntries = entries.filter((entry) => Boolean(entry.manual_reason));
   const correctedEntries = entries.filter((entry) => Boolean(entry.correction_reason));
   const voidedEntries = entries.filter((entry) => entry.status === 'void');
-  const productionSegments = segments.filter((segment) => segment.workType === 'production');
   const productionByDayEmployee = new Map<string, { dateInput: string; entryCount: Set<string>; minutes: number; profileId: string; wageCents: number }>();
   for (const segment of productionSegments) {
     const dateInput = formatCentralDateInput(segment.entry.clock_in_at);
@@ -1839,14 +1880,23 @@ export default async function PayrollPage({
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
             <StatTile label="Paid Hours" value={hoursLabel(totalPaidMinutes)} detail="Completed, non-void time in range." />
             <StatTile label="Unpaid Lunch" value={hoursLabel(totalLunchMinutes)} detail="Completed, non-void lunch time." />
-            <StatTile label="Hourly Wages" value={usd(totalHourlyWages)} detail="Uses each shift's rate snapshot." />
-            <StatTile label="Estimated Salary" value={usd(totalSalaryPay)} detail="Prorated estimate for salaried employees in range." />
+            <StatTile label="Estimated Wages" value={usd(totalHourlyWages)} detail="Uses each shift's rate snapshot." />
+            <StatTile label="Open Issues" value={String(longOpenEntries.length + longOpenBreaks.length + unapprovedEntries.length)} detail="Long open shifts/lunches and unapproved shifts." />
           </div>
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-            <StatTile label="Estimated Pay" value={usd(totalPay)} detail="Hourly wages plus estimated salary." />
-            <StatTile label="Paid Salary Records" value={usd(selectedSalaryPaidCents)} detail={`${selectedSalaryPaymentRows.length} salary payment record${selectedSalaryPaymentRows.length === 1 ? '' : 's'} in range.`} />
-            <StatTile label="Open Issues" value={String(longOpenEntries.length + longOpenBreaks.length + unapprovedEntries.length)} detail="Long open shifts/lunches and unapproved shifts." />
             <StatTile label="Payroll Production Labor" value={usd(productionPayrollWages)} detail="Production-tagged payroll wages." />
+            <StatTile label="Linked to Production Runs" value={usd(linkedProductionWages)} detail="Production payroll assigned to runs." />
+            <StatTile label="Production Run Labor COGS" value={usd(productionRunLaborCogs)} detail={productionRunCogsDetail} />
+            <StatTile label="Payroll vs Run COGS" value={usd(productionRunVariance)} detail={productionRunVarianceDetail} />
+          </div>
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+            <StatTile label="Shipped Labor COGS" value={usd(shippedLaborCogs)} detail="Labor COGS in shipped order lines." />
+            <StatTile label="Labor COGS Variance" value={usd(shippedVariance)} detail={`${percent(shippedVariancePercent)} versus shipped labor COGS.`} />
+          </div>
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+            <StatTile label="Estimated Salary" value={usd(totalSalaryPay)} detail="Prorated estimate for salaried employees in range." />
+            <StatTile label="Paid Salary Records" value={usd(selectedSalaryPaidCents)} detail={`${selectedSalaryPaymentRows.length} salary payment record${selectedSalaryPaymentRows.length === 1 ? '' : 's'} in range.`} />
+            <StatTile label="Estimated Pay" value={usd(totalPay)} detail="Hourly wages plus estimated salary." />
             <StatTile label="Production Hours" value={hoursLabel(productionPaidMinutes)} detail="Hours clocked or allocated to Production." />
           </div>
         </section>
