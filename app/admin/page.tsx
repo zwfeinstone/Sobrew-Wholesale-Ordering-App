@@ -3,7 +3,7 @@ import { OrderStatusBadge } from '@/components/order-status';
 import { getAssignedCenterIdsForAdmin, scopeCenterRelatedQueryForAdmin } from '@/lib/admin-center-scope';
 import { canViewAdminSection } from '@/lib/admin-permission-definitions';
 import { getCurrentAdminAccess } from '@/lib/admin-permissions';
-import { getWeeklyPayrollStatus } from '@/lib/payroll-status';
+import { getPayrollStatus } from '@/lib/payroll-status';
 import { createClient } from '@/lib/supabase/server';
 import { usd } from '@/lib/utils';
 
@@ -314,7 +314,7 @@ export default async function AdminDashboard({
   const currentAccess = await getCurrentAdminAccess();
   const centerScope = await getAssignedCenterIdsForAdmin({ current: currentAccess, supabase });
   const now = new Date();
-  const payrollStatus = canViewAdminSection(currentAccess.access, 'payroll') ? await getWeeklyPayrollStatus() : null;
+  const payrollStatus = canViewAdminSection(currentAccess.access, 'payroll') ? await getPayrollStatus() : null;
 
   const ordersRange = normalizeTimeRange(searchParams?.ordersRange);
   const revenueRange = normalizeTimeRange(searchParams?.revenueRange);
@@ -448,19 +448,36 @@ export default async function AdminDashboard({
         </div>
       </section>
 
-      {payrollStatus?.needsApproval ? (
+      {payrollStatus?.weekly.needsApproval ? (
         <section className="rounded-xl border border-rose-200 bg-rose-50/80 p-5 shadow-sm">
           <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
             <div>
-              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-rose-700">{payrollStatus.isOverdue ? 'Payroll overdue' : 'Payroll due today'}</p>
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-rose-700">{payrollStatus.weekly.isOverdue ? 'Payroll overdue' : 'Payroll due today'}</p>
               <h2 className="mt-2 text-2xl font-semibold tracking-tight text-slate-950">
-                Approve payroll for {formatDateInputLabel(payrollStatus.weekStartInput)} to {formatDateInputLabel(payrollStatus.weekEndInput)}
+                Approve payroll for {formatDateInputLabel(payrollStatus.weekly.weekStartInput)} to {formatDateInputLabel(payrollStatus.weekly.weekEndInput)}
               </h2>
               <p className="mt-2 text-sm text-rose-800">
-                {payrollStatus.openEntryCount} open shift{payrollStatus.openEntryCount === 1 ? '' : 's'} and {payrollStatus.unapprovedEntryCount} unapproved completed shift{payrollStatus.unapprovedEntryCount === 1 ? '' : 's'} need review before the week is complete.
+                {payrollStatus.weekly.openEntryCount} open shift{payrollStatus.weekly.openEntryCount === 1 ? '' : 's'} and {payrollStatus.weekly.unapprovedEntryCount} unapproved completed shift{payrollStatus.weekly.unapprovedEntryCount === 1 ? '' : 's'} need review before the week is complete.
               </p>
             </div>
-            <Link href={payrollStatus.payrollHref} className="btn-primary w-full bg-rose-600 hover:bg-rose-700 sm:w-auto">Review payroll</Link>
+            <Link href={payrollStatus.weekly.payrollHref} className="btn-primary w-full bg-rose-600 hover:bg-rose-700 sm:w-auto">Review payroll</Link>
+          </div>
+        </section>
+      ) : null}
+
+      {payrollStatus?.monthlySalary.needsApproval ? (
+        <section className="rounded-xl border border-rose-200 bg-rose-50/80 p-5 shadow-sm">
+          <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-rose-700">{payrollStatus.monthlySalary.isOverdue ? 'Salary payroll overdue' : 'Salary payroll due today'}</p>
+              <h2 className="mt-2 text-2xl font-semibold tracking-tight text-slate-950">
+                Approve monthly salary for {formatDateInputLabel(payrollStatus.monthlySalary.periodStartInput)} to {formatDateInputLabel(payrollStatus.monthlySalary.periodEndInput)}
+              </h2>
+              <p className="mt-2 text-sm text-rose-800">
+                {payrollStatus.monthlySalary.dueEmployeeCount} monthly salaried employee{payrollStatus.monthlySalary.dueEmployeeCount === 1 ? '' : 's'} need approval and paid records. Estimated due: {usd(payrollStatus.monthlySalary.unpaidSalaryPayCents)}.
+              </p>
+            </div>
+            <Link href={payrollStatus.monthlySalary.payrollHref} className="btn-primary w-full bg-rose-600 hover:bg-rose-700 sm:w-auto">Review salary payroll</Link>
           </div>
         </section>
       ) : null}

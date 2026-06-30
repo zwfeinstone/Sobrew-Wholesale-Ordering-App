@@ -54,6 +54,20 @@ type ExportTimeSetting = {
   salary_labor_work_type: string | null;
 };
 
+type ExportSalaryPayment = {
+  approved_at: string | null;
+  notes: string | null;
+  paid_at: string | null;
+  payroll_month: string;
+  period_end_date: string;
+  period_start_date: string;
+  profile_id: string;
+  salary_amount_cents: number | string | null;
+  salary_frequency: string | null;
+  salary_labor_work_type: string | null;
+  salary_pay_cents: number | string | null;
+};
+
 function csvCell(value: unknown) {
   const raw = String(value ?? '');
   return `"${raw.replaceAll('"', '""')}"`;
@@ -113,7 +127,16 @@ export async function GET(request: NextRequest) {
 
   if (adminId) query = query.eq('profile_id', adminId);
   if (hasWorkTypeFilter) query = query.eq('work_type', workType);
-  const [{ data, error }, settingsResult, adminsResult] = await Promise.all([
+  let salaryPaymentsQuery = supabaseAdmin
+    .from('admin_salary_payroll_payments')
+    .select('profile_id,payroll_month,period_start_date,period_end_date,salary_amount_cents,salary_frequency,salary_labor_work_type,salary_pay_cents,approved_at,paid_at,notes')
+    .gte('payroll_month', fromInput ?? '')
+    .lte('payroll_month', toInput ?? '')
+    .order('payroll_month', { ascending: true });
+
+  if (adminId) salaryPaymentsQuery = salaryPaymentsQuery.eq('profile_id', adminId);
+
+  const [{ data, error }, settingsResult, adminsResult, salaryPaymentsResult] = await Promise.all([
     query,
     supabaseAdmin
       .from('admin_time_settings')
@@ -122,10 +145,14 @@ export async function GET(request: NextRequest) {
       .from('profiles')
       .select('id,email,full_name')
       .eq('is_admin', true),
+    salaryPaymentsQuery,
   ]);
   if (error) return new Response(error.message, { status: 500 });
   if (settingsResult.error) return new Response(settingsResult.error.message, { status: 500 });
   if (adminsResult.error) return new Response(adminsResult.error.message, { status: 500 });
+  if (salaryPaymentsResult.error) {
+    console.error('[export-time-entries] salary payment records failed', salaryPaymentsResult.error);
+  }
 
   const adminById = new Map(((adminsResult.data ?? []) as ExportAdminProfile[]).map((admin) => [admin.id, admin]));
   const salaryRows = ((settingsResult.data ?? []) as ExportTimeSetting[])
@@ -144,6 +171,12 @@ export async function GET(request: NextRequest) {
     }))
     .filter((setting) => setting.salaryCents > 0)
     .filter((setting) => !hasWorkTypeFilter || setting.workType === workType);
+  const paidSalaryRows = ((salaryPaymentsResult.error ? [] : salaryPaymentsResult.data ?? []) as ExportSalaryPayment[])
+    .map((payment) => ({
+      ...payment,
+      workType: normalizeSalaryLaborWorkType(payment.salary_labor_work_type),
+    }))
+    .filter((payment) => !hasWorkTypeFilter || payment.workType === workType);
 
   const rows = [
     [
@@ -166,6 +199,8 @@ export async function GET(request: NextRequest) {
       'void_reason',
       'compensation_type',
       'salary_frequency',
+      'payroll_month',
+      'paid_at',
     ],
     ...((data ?? []) as ExportEntry[]).map((entry) => {
       const breaks = (entry.admin_time_breaks ?? []).filter((entryBreak) => entryBreak.status !== 'void');
@@ -192,10 +227,12 @@ export async function GET(request: NextRequest) {
         entry.void_reason ?? '',
         'hourly',
         '',
+        '',
+        '',
       ];
     }),
     ...salaryRows.map((salary) => [
-      'salary',
+      'salary_estimate',
       adminProfileLabel(adminById.get(salary.profile_id)),
       'salary',
       workTypeLabel(salary.workType),
@@ -214,6 +251,31 @@ export async function GET(request: NextRequest) {
       '',
       'salary',
       salaryPayFrequencyLabel(salary.salary_frequency),
+      '',
+      '',
+    ]),
+    ...paidSalaryRows.map((salary) => [
+      'salary_paid',
+      adminProfileLabel(adminById.get(salary.profile_id)),
+      'paid',
+      workTypeLabel(salary.workType),
+      '',
+      '',
+      '0.00',
+      '0.00',
+      usd(Number(salary.salary_amount_cents ?? 0)),
+      usd(Number(salary.salary_pay_cents ?? 0)),
+      salary.notes ?? '',
+      '',
+      '',
+      formatCentralDateTime(salary.approved_at, ''),
+      '',
+      '',
+      '',
+      'salary',
+      salaryPayFrequencyLabel(salary.salary_frequency),
+      salary.payroll_month,
+      formatCentralDateTime(salary.paid_at, ''),
     ]),
   ];
 
