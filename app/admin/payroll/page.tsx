@@ -3,9 +3,9 @@ import { redirect } from 'next/navigation';
 import PendingSubmitButton from '@/components/pending-submit-button';
 import StatusToast from '@/components/status-toast';
 import { recordAdminAuditLog } from '@/lib/admin-audit';
-import { requireAdminSectionEdit, requireAdminSectionView } from '@/lib/admin-permissions';
+import { adminCanEdit, requireAdminSectionEdit, requireAdminSectionView } from '@/lib/admin-permissions';
 import { numericPercent } from '@/lib/commissions';
-import { getCurrentPayrollWeekWindow } from '@/lib/payroll-status';
+import { getCurrentMonthlySalaryPayrollWindow, getCurrentPayrollWeekWindow } from '@/lib/payroll-status';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import {
   COMPENSATION_TYPES,
@@ -128,6 +128,21 @@ type SalaryPayrollRow = {
   workType: LaborWorkType;
 };
 
+type SalaryPaymentRow = {
+  approved_at: string | null;
+  id: string;
+  notes: string | null;
+  paid_at: string | null;
+  payroll_month: string;
+  period_end_date: string;
+  period_start_date: string;
+  profile_id: string;
+  salary_amount_cents: number | string | null;
+  salary_frequency: string | null;
+  salary_labor_work_type: string | null;
+  salary_pay_cents: number | string | null;
+};
+
 type EmployeePayrollGroup = {
   entryCount: Set<string>;
   hourlyWageCents: number;
@@ -217,6 +232,10 @@ function percentInputValue(value: number | string | null | undefined) {
   return percent.toFixed(percent % 1 === 0 ? 0 : 2);
 }
 
+function isDateInput(value: string) {
+  return /^\d{4}-\d{2}-\d{2}$/.test(value);
+}
+
 function normalizeSalaryLaborWorkType(value: string | null | undefined): LaborWorkType {
   return isLaborWorkType(String(value ?? '')) ? String(value) as LaborWorkType : 'admin';
 }
@@ -240,6 +259,8 @@ function returnToInput(value: string) {
 function errorMessage(error: string) {
   if (error === 'write_denied') return 'You do not have edit access to Payroll.';
   if (error === 'save_error') return 'Unable to save payroll settings.';
+  if (error === 'salary_invalid') return 'Choose a valid monthly salary payment.';
+  if (error === 'salary_not_ready') return 'That employee is not an active monthly salaried employee.';
   if (error === 'invalid_time') return 'Check the time values and available unallocated minutes.';
   if (error === 'missing_reason') return 'A reason is required for that change.';
   if (error === 'invalid_work_type') return 'Choose a valid labor tag.';
@@ -258,6 +279,8 @@ function successMessage(success: string) {
   if (success === 'break_voided') return 'Lunch/break voided.';
   if (success === 'range_locked') return 'Payroll week completed.';
   if (success === 'entries_approved') return 'Completed shifts approved.';
+  if (success === 'salary_paid') return 'Monthly salary approved and marked paid.';
+  if (success === 'salary_already_paid') return 'Monthly salary was already marked paid.';
   if (success === 'allocation_added') return 'Labor allocation added.';
   if (success === 'allocation_removed') return 'Labor allocation removed.';
   if (success === 'entry_approved') return 'Shift approved.';
@@ -785,6 +808,105 @@ async function lockPayrollRange(formData: FormData) {
   });
 
   redirect(`${returnTo}${returnTo.includes('?') ? '&' : '?'}${updateResult.error ? 'error=save_error' : 'success=range_locked'}`);
+}
+
+async function approveMonthlySalaryPayment(formData: FormData) {
+  'use server';
+  const current = await requireAdminSectionEdit('payroll', payrollHref({ error: 'write_denied', tab: 'review' }));
+  const returnTo = safeReturnHref(formData, payrollHref({ tab: 'review' }));
+  const profileId = String(formData.get('profile_id') ?? '');
+  const payrollMonth = String(formData.get('payroll_month') ?? '');
+  const periodStartDate = String(formData.get('period_start_date') ?? '');
+  const periodEndDate = String(formData.get('period_end_date') ?? '');
+  const notes = String(formData.get('notes') ?? '').trim() || null;
+
+  if (!profileId || !isDateInput(payrollMonth) || !isDateInput(periodStartDate) || !isDateInput(periodEndDate)) {
+    redirect(`${returnTo}${returnTo.includes('?') ? '&' : '?'}error=salary_invalid`);
+  }
+
+  const [{ data: profile }, { data: setting }, { data: existing }] = await Promise.all([
+    supabaseAdmin
+      .from('profiles')
+      .select('id,email,full_name,is_active')
+      .eq('id', profileId)
+      .eq('is_admin', true)
+      .maybeSingle(),
+    supabaseAdmin
+      .from('admin_time_settings')
+      .select('profile_id,active,compensation_type,salary_amount_cents,salary_frequency,salary_labor_work_type')
+      .eq('profile_id', profileId)
+      .maybeSingle(),
+    supabaseAdmin
+      .from('admin_salary_payroll_payments')
+      .select('id')
+      .eq('profile_id', profileId)
+      .eq('payroll_month', payrollMonth)
+      .maybeSingle(),
+  ]);
+
+  if (existing?.id) {
+    redirect(`${returnTo}${returnTo.includes('?') ? '&' : '?'}success=salary_already_paid`);
+  }
+
+  const salaryAmountCents = normalizeMoneyCents(setting?.salary_amount_cents);
+  const salaryFrequency = normalizeSalaryPayFrequency(setting?.salary_frequency);
+  const salaryLaborWorkType = normalizeSalaryLaborWorkType(setting?.salary_labor_work_type);
+  const isActiveMonthlySalary =
+    profile &&
+    profile.is_active !== false &&
+    setting?.active !== false &&
+    normalizeCompensationType(setting?.compensation_type) === 'salary' &&
+    salaryFrequency === 'monthly' &&
+    salaryAmountCents > 0;
+
+  if (!isActiveMonthlySalary) {
+    redirect(`${returnTo}${returnTo.includes('?') ? '&' : '?'}error=salary_not_ready`);
+  }
+
+  const now = new Date().toISOString();
+  const result = await supabaseAdmin
+    .from('admin_salary_payroll_payments')
+    .insert({
+      approved_at: now,
+      approved_by: current.profile.id,
+      created_by: current.profile.id,
+      notes,
+      paid_at: now,
+      paid_by: current.profile.id,
+      payroll_month: payrollMonth,
+      period_end_date: periodEndDate,
+      period_start_date: periodStartDate,
+      profile_id: profileId,
+      salary_amount_cents: salaryAmountCents,
+      salary_frequency: salaryFrequency,
+      salary_labor_work_type: salaryLaborWorkType,
+      salary_pay_cents: salaryAmountCents,
+      updated_at: now,
+      updated_by: current.profile.id,
+    })
+    .select('id')
+    .single();
+
+  if (!result.error) {
+    await recordAdminAuditLog({
+      action: 'salary_payroll_marked_paid',
+      actorProfileId: current.profile.id,
+      after: {
+        payment_id: result.data?.id,
+        payroll_month: payrollMonth,
+        period_end_date: periodEndDate,
+        period_start_date: periodStartDate,
+        salary_frequency: salaryFrequency,
+        salary_labor_work_type: salaryLaborWorkType,
+        salary_pay_cents: salaryAmountCents,
+      },
+      sectionKey: 'payroll',
+      supabase: supabaseAdmin,
+      targetProfileId: profileId,
+    });
+  }
+
+  redirect(`${returnTo}${returnTo.includes('?') ? '&' : '?'}${result.error ? 'error=save_error' : 'success=salary_paid'}`);
 }
 
 async function approveCompletedWeekEntries(formData: FormData) {
@@ -1459,12 +1581,14 @@ export default async function PayrollPage({
 }: {
   searchParams?: Record<string, string | string[] | undefined>;
 }) {
-  await requireAdminSectionView('payroll');
+  const current = await requireAdminSectionView('payroll');
+  const canEditPayroll = adminCanEdit(current.access, 'payroll');
   const activeTab = activeTabParam(searchParams?.tab);
   const success = stringParam(searchParams?.success);
   const error = stringParam(searchParams?.error);
   const todayInput = formatCentralDateInput();
   const currentPayrollWeek = getCurrentPayrollWeekWindow();
+  const monthlySalaryWindow = getCurrentMonthlySalaryPayrollWindow();
   const defaultFrom = activeTab === 'reports' ? `${todayInput.slice(0, 8)}01` : currentPayrollWeek.weekStartInput;
   const defaultTo = activeTab === 'reports' ? todayInput : currentPayrollWeek.weekEndInput;
   const fromInput = stringParam(searchParams?.from) || defaultFrom;
@@ -1488,6 +1612,7 @@ export default async function PayrollPage({
     commissionSettingsResult,
     tagAssignmentsResult,
     payrollLocksResult,
+    salaryPaymentsResult,
   ] = await Promise.all([
     supabaseAdmin
       .from('profiles')
@@ -1508,6 +1633,12 @@ export default async function PayrollPage({
       .select('id,lock_start_at,lock_end_at,locked_at,notes')
       .order('lock_start_at', { ascending: false })
       .limit(50),
+    supabaseAdmin
+      .from('admin_salary_payroll_payments')
+      .select('id,profile_id,payroll_month,period_start_date,period_end_date,salary_amount_cents,salary_frequency,salary_labor_work_type,salary_pay_cents,approved_at,paid_at,notes')
+      .order('payroll_month', { ascending: false })
+      .order('paid_at', { ascending: false })
+      .limit(500),
   ]);
 
   let entriesQuery = supabaseAdmin
@@ -1545,6 +1676,9 @@ export default async function PayrollPage({
       </div>
     );
   }
+  if (salaryPaymentsResult.error) {
+    console.error('[admin-payroll] salary payment records failed', { error: salaryPaymentsResult.error });
+  }
 
   const admins = ((adminsResult.data ?? []) as AdminProfileRow[]).sort((a, b) => profileLabel(a).localeCompare(profileLabel(b)));
   const adminById = new Map(admins.map((admin) => [admin.id, admin]));
@@ -1568,8 +1702,35 @@ export default async function PayrollPage({
     allocationsByEntry.set(allocation.time_entry_id, rows);
   }
   const payrollLocks = (payrollLocksResult.data ?? []) as PayrollLockRow[];
+  const salaryPayments = salaryPaymentsResult.error ? [] : (salaryPaymentsResult.data ?? []) as SalaryPaymentRow[];
+  const salaryPaymentsByProfileMonth = new Map(salaryPayments.map((payment) => [`${payment.profile_id}:${payment.payroll_month}`, payment]));
   const segments = buildSegments(entries, allocationsByEntry);
   const salaryRows = buildSalaryRows({ filterWorkType, fromDate, selectedAdmin, timeSettings, toDate });
+  const monthlySalaryRows = timeSettings
+    .filter((setting) => setting.active !== false)
+    .filter((setting) => normalizeCompensationType(setting.compensation_type) === 'salary')
+    .filter((setting) => normalizeSalaryPayFrequency(setting.salary_frequency) === 'monthly')
+    .filter((setting) => normalizeMoneyCents(setting.salary_amount_cents) > 0)
+    .filter((setting) => !selectedAdmin || setting.profile_id === selectedAdmin)
+    .map((setting) => ({
+      payment: salaryPaymentsByProfileMonth.get(`${setting.profile_id}:${monthlySalaryWindow.payrollMonthInput}`) ?? null,
+      profile: adminById.get(setting.profile_id),
+      profileId: setting.profile_id,
+      salaryAmountCents: normalizeMoneyCents(setting.salary_amount_cents),
+      salaryFrequency: normalizeSalaryPayFrequency(setting.salary_frequency),
+      workType: normalizeSalaryLaborWorkType(setting.salary_labor_work_type),
+    }))
+    .filter((row) => row.profile?.is_active !== false)
+    .filter((row) => !filterWorkType || row.workType === filterWorkType);
+  const monthlySalaryDueRows = monthlySalaryRows.filter((row) => !row.payment?.paid_at);
+  const monthlySalaryPaidRows = monthlySalaryRows.filter((row) => row.payment?.paid_at);
+  const monthlySalaryDueCents = monthlySalaryDueRows.reduce((sum, row) => sum + row.salaryAmountCents, 0);
+  const monthlySalaryTotalCents = monthlySalaryRows.reduce((sum, row) => sum + row.salaryAmountCents, 0);
+  const selectedSalaryPaymentRows = salaryPayments
+    .filter((payment) => payment.payroll_month >= fromInput && payment.payroll_month <= toInput)
+    .filter((payment) => !selectedAdmin || payment.profile_id === selectedAdmin)
+    .filter((payment) => !filterWorkType || normalizeSalaryLaborWorkType(payment.salary_labor_work_type) === filterWorkType);
+  const selectedSalaryPaidCents = selectedSalaryPaymentRows.reduce((sum, payment) => sum + normalizeMoneyCents(payment.salary_pay_cents), 0);
   const byEmployee = groupSegmentsByEmployee(segments);
   const byWorkType = groupSegmentsByWorkType(segments);
   applySalaryRowsToEmployeeGroups(byEmployee, salaryRows);
@@ -1619,6 +1780,7 @@ export default async function PayrollPage({
     <div className="space-y-6">
       {successMessage(success) ? <StatusToast message={successMessage(success)} tone="success" /> : null}
       {error ? <StatusToast message={errorMessage(error)} tone="error" /> : null}
+      {salaryPaymentsResult.error ? <section className="card text-sm text-red-700">Salary payment records are not available yet. Run the monthly salary payroll migration to approve and mark salary paid.</section> : null}
 
       <section className="panel">
         <span className="eyebrow">Payroll</span>
@@ -1678,10 +1840,11 @@ export default async function PayrollPage({
             <StatTile label="Paid Hours" value={hoursLabel(totalPaidMinutes)} detail="Completed, non-void time in range." />
             <StatTile label="Unpaid Lunch" value={hoursLabel(totalLunchMinutes)} detail="Completed, non-void lunch time." />
             <StatTile label="Hourly Wages" value={usd(totalHourlyWages)} detail="Uses each shift's rate snapshot." />
-            <StatTile label="Salary Pay" value={usd(totalSalaryPay)} detail="Prorated for salaried employees in range." />
+            <StatTile label="Estimated Salary" value={usd(totalSalaryPay)} detail="Prorated estimate for salaried employees in range." />
           </div>
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-            <StatTile label="Estimated Pay" value={usd(totalPay)} detail="Hourly wages plus salaried pay." />
+            <StatTile label="Estimated Pay" value={usd(totalPay)} detail="Hourly wages plus estimated salary." />
+            <StatTile label="Paid Salary Records" value={usd(selectedSalaryPaidCents)} detail={`${selectedSalaryPaymentRows.length} salary payment record${selectedSalaryPaymentRows.length === 1 ? '' : 's'} in range.`} />
             <StatTile label="Open Issues" value={String(longOpenEntries.length + longOpenBreaks.length + unapprovedEntries.length)} detail="Long open shifts/lunches and unapproved shifts." />
             <StatTile label="Payroll Production Labor" value={usd(productionPayrollWages)} detail="Production-tagged payroll wages." />
             <StatTile label="Production Hours" value={hoursLabel(productionPaidMinutes)} detail="Hours clocked or allocated to Production." />
@@ -1728,6 +1891,37 @@ export default async function PayrollPage({
                 </tbody>
               </table>
             </div>
+          </section>
+
+          <section className="card space-y-4">
+            <h2 className="text-xl font-semibold text-slate-950">Paid salary records</h2>
+            {!selectedSalaryPaymentRows.length ? <EmptyState message="No paid monthly salary records found for the selected filters." /> : null}
+            {selectedSalaryPaymentRows.length ? (
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[52rem] border-separate border-spacing-y-2 text-left text-sm">
+                  <thead>
+                    <tr className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+                      <th className="px-4 py-2">Employee</th>
+                      <th className="px-4 py-2">Paid month</th>
+                      <th className="px-4 py-2">Labor tag</th>
+                      <th className="px-4 py-2 text-right">Amount</th>
+                      <th className="px-4 py-2">Paid</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {selectedSalaryPaymentRows.map((payment) => (
+                      <tr key={payment.id} className="bg-white/70">
+                        <td className="rounded-l-xl px-4 py-3 font-semibold text-slate-950">{profileLabel(adminById.get(payment.profile_id))}</td>
+                        <td className="px-4 py-3 text-slate-700">{formatDateInputLabel(payment.period_start_date)} to {formatDateInputLabel(payment.period_end_date)}</td>
+                        <td className="px-4 py-3 text-slate-700">{workTypeLabel(payment.salary_labor_work_type)}</td>
+                        <td className="px-4 py-3 text-right font-semibold text-slate-950">{usd(normalizeMoneyCents(payment.salary_pay_cents))}</td>
+                        <td className="rounded-r-xl px-4 py-3 text-slate-700">{formatCentralDateTime(payment.paid_at, 'Not paid')}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : null}
           </section>
 
           <section className="card space-y-4">
@@ -1828,6 +2022,75 @@ export default async function PayrollPage({
 
       {activeTab === 'review' ? (
         <section className="space-y-5">
+          <section className={`card space-y-4 ${monthlySalaryDueRows.length ? 'border-rose-200 bg-rose-50/50' : 'border-emerald-100 bg-emerald-50/40'}`}>
+            <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-start">
+              <div>
+                <h2 className="text-xl font-semibold text-slate-950">Monthly salary payroll</h2>
+                <p className="mt-1 text-sm text-slate-600">
+                  {formatDateInputLabel(monthlySalaryWindow.periodStartInput)} to {formatDateInputLabel(monthlySalaryWindow.periodEndInput)}.
+                </p>
+              </div>
+              <span className={`w-fit rounded-full px-3 py-1 text-sm font-semibold ${monthlySalaryDueRows.length ? 'bg-white text-rose-800 ring-1 ring-rose-100' : 'bg-emerald-100 text-emerald-800'}`}>
+                {monthlySalaryDueRows.length ? 'Needs paid' : 'Complete'}
+              </span>
+            </div>
+            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+              <StatTile label="Monthly Employees" value={String(monthlySalaryRows.length)} detail="Active monthly salaried employees." />
+              <StatTile label="Need Paid" value={String(monthlySalaryDueRows.length)} detail="Missing paid records for the month." />
+              <StatTile label="Paid Records" value={String(monthlySalaryPaidRows.length)} detail="Approved and marked paid." />
+              <StatTile label="Amount Due" value={usd(monthlySalaryDueCents)} detail={`${usd(monthlySalaryTotalCents)} total monthly salary.`} />
+            </div>
+            {!monthlySalaryRows.length ? <EmptyState message="No active monthly salaried employees found." /> : null}
+            {monthlySalaryRows.length ? (
+              <div className="space-y-2">
+                {monthlySalaryRows.map((row) => (
+                  <div key={row.profileId} className="grid gap-3 rounded-2xl border border-slate-200 bg-white/70 p-4 lg:grid-cols-[minmax(0,1fr)_8rem_9rem_14rem] lg:items-center">
+                    <div>
+                      <p className="font-semibold text-slate-950">{profileLabel(row.profile)}</p>
+                      <p className="mt-1 text-sm text-slate-500">{workTypeLabel(row.workType)} salary for {formatDateInputLabel(monthlySalaryWindow.periodStartInput)} to {formatDateInputLabel(monthlySalaryWindow.periodEndInput)}</p>
+                    </div>
+                    <p className="text-sm font-semibold text-slate-950 lg:text-right">{usd(row.salaryAmountCents)}</p>
+                    <span className={`w-fit rounded-full px-3 py-1 text-xs font-semibold uppercase tracking-[0.12em] ${row.payment?.paid_at ? 'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-100' : 'bg-rose-50 text-rose-700 ring-1 ring-rose-100'}`}>
+                      {row.payment?.paid_at ? 'Paid' : 'Due'}
+                    </span>
+                    {row.payment?.paid_at ? (
+                      <p className="text-sm text-slate-500">Paid {formatCentralDateTime(row.payment.paid_at)}</p>
+                    ) : canEditPayroll ? (
+                      <form action={approveMonthlySalaryPayment} className="space-y-2">
+                        {returnToInput(currentUrl)}
+                        <input name="profile_id" type="hidden" value={row.profileId} />
+                        <input name="payroll_month" type="hidden" value={monthlySalaryWindow.payrollMonthInput} />
+                        <input name="period_start_date" type="hidden" value={monthlySalaryWindow.periodStartInput} />
+                        <input name="period_end_date" type="hidden" value={monthlySalaryWindow.periodEndInput} />
+                        <input className="input" name="notes" placeholder="Optional note" />
+                        <PendingSubmitButton className="btn-primary w-full" label="Approve & Mark Paid" pendingLabel="Saving..." />
+                      </form>
+                    ) : (
+                      <p className="text-sm text-slate-500">View only</p>
+                    )}
+                  </div>
+                ))}
+              </div>
+            ) : null}
+            {salaryPayments.length ? (
+              <details className="rounded-2xl border border-slate-200 bg-white/60 p-4">
+                <summary className="cursor-pointer text-sm font-semibold text-slate-700">Recent salary payment records</summary>
+                <div className="mt-3 space-y-2">
+                  {salaryPayments.slice(0, 10).map((payment) => (
+                    <div key={payment.id} className="grid gap-2 rounded-xl border border-slate-200 bg-white/70 p-3 text-sm sm:grid-cols-[minmax(0,1fr)_8rem_12rem] sm:items-center">
+                      <div>
+                        <p className="font-semibold text-slate-950">{profileLabel(adminById.get(payment.profile_id))}</p>
+                        <p className="mt-1 text-slate-500">{formatDateInputLabel(payment.period_start_date)} to {formatDateInputLabel(payment.period_end_date)}</p>
+                      </div>
+                      <p className="font-semibold text-slate-950 sm:text-right">{usd(normalizeMoneyCents(payment.salary_pay_cents))}</p>
+                      <p className="text-slate-500">Paid {formatCentralDateTime(payment.paid_at, 'Not paid')}</p>
+                    </div>
+                  ))}
+                </div>
+              </details>
+            ) : null}
+          </section>
+
           <section className={`card space-y-4 ${rangeHasCoveringLock ? 'border-emerald-200 bg-emerald-50/60' : 'border-amber-100 bg-amber-50/40'}`}>
             <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-start">
               <div>
