@@ -1311,6 +1311,7 @@ export default async function PayrollPage({
     commissionSettingsResult,
     tagAssignmentsResult,
     productionRunsResult,
+    productionRunLaborResult,
     shippedLaborResult,
     payrollLocksResult,
   ] = await Promise.all([
@@ -1333,6 +1334,12 @@ export default async function PayrollPage({
       .select('id,quantity_produced,labor_minutes,actual_labor_cost_cents,produced_at,products(name)')
       .order('produced_at', { ascending: false })
       .limit(500),
+    supabaseAdmin
+      .from('production_runs')
+      .select('actual_labor_cost_cents')
+      .gte('produced_at', fromDate.toISOString())
+      .lte('produced_at', toDate.toISOString())
+      .limit(50000),
     supabaseAdmin
       .from('order_items')
       .select('cogs_labor_cents,orders!inner(status,shipped_at)')
@@ -1416,9 +1423,20 @@ export default async function PayrollPage({
   const productionPayrollWages = segments.filter((segment) => segment.workType === 'production').reduce((sum, segment) => sum + segment.wageCents, 0);
   const linkedProductionWages = segments.filter((segment) => segment.workType === 'production' && segment.productionRunId).reduce((sum, segment) => sum + segment.wageCents, 0);
   const unlinkedProductionWages = Math.max(0, productionPayrollWages - linkedProductionWages);
+  const productionRunLaborCogs = ((productionRunLaborResult.data ?? []) as Array<{ actual_labor_cost_cents: number | string | null }>).reduce(
+    (sum, run) => sum + numericValue(run.actual_labor_cost_cents),
+    0
+  );
   const shippedLaborCogs = ((shippedLaborResult.data ?? []) as Array<{ cogs_labor_cents: number | string | null }>).reduce((sum, item) => sum + numericValue(item.cogs_labor_cents), 0);
+  const productionRunVariance = productionPayrollWages - productionRunLaborCogs;
   const shippedVariance = productionPayrollWages - shippedLaborCogs;
   const shippedVariancePercent = shippedLaborCogs ? (shippedVariance / shippedLaborCogs) * 100 : productionPayrollWages ? 100 : 0;
+  const productionRunCogsDetail = selectedAdmin || filterWorkType
+    ? 'Date range only; admin and tag filters do not apply to production runs.'
+    : 'Actual labor COGS recorded into finished production.';
+  const productionRunVarianceDetail = selectedAdmin || filterWorkType
+    ? 'Filtered payroll labor minus date-only production run labor COGS.'
+    : 'Payroll production labor minus production run labor COGS.';
 
   const now = new Date();
   const openEntries = entries.filter((entry) => !entry.clock_out_at && entry.status !== 'void');
@@ -1514,6 +1532,10 @@ export default async function PayrollPage({
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
             <StatTile label="Payroll Production Labor" value={usd(productionPayrollWages)} detail="Production-tagged payroll wages." />
             <StatTile label="Linked to Production Runs" value={usd(linkedProductionWages)} detail="Production payroll assigned to runs." />
+            <StatTile label="Production Run Labor COGS" value={usd(productionRunLaborCogs)} detail={productionRunCogsDetail} />
+            <StatTile label="Payroll vs Run COGS" value={usd(productionRunVariance)} detail={productionRunVarianceDetail} />
+          </div>
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
             <StatTile label="Shipped Labor COGS" value={usd(shippedLaborCogs)} detail="Labor COGS in shipped order lines." />
             <StatTile label="Labor COGS Variance" value={usd(shippedVariance)} detail={`${percent(shippedVariancePercent)} versus shipped labor COGS.`} />
           </div>

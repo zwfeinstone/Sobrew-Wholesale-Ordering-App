@@ -68,6 +68,11 @@ export type ReportingInventoryLotRow = {
   quantity_remaining: number | string | null;
 };
 
+export type ReportingInventoryMovementRow = {
+  inventory_item_id: string;
+  quantity_change: number | string | null;
+};
+
 export type ReportingReorderSettingRow = {
   inventory_item_id: string;
   reorder_point: number | string | null;
@@ -913,6 +918,7 @@ function buildInventoryPlanningRows({
   forecast,
   inventoryItems,
   inventoryLots,
+  shortageMovements,
   lines,
   now,
   products,
@@ -922,6 +928,7 @@ function buildInventoryPlanningRows({
   forecast: SalesForecast;
   inventoryItems: ReportingInventoryItemRow[];
   inventoryLots: ReportingInventoryLotRow[];
+  shortageMovements: ReportingInventoryMovementRow[];
   lines: NormalizedLine[];
   now: Date;
   products: ReportingProductRow[];
@@ -940,6 +947,12 @@ function buildInventoryPlanningRows({
 
   for (const lot of inventoryLots) {
     availableByItemId.set(lot.inventory_item_id, (availableByItemId.get(lot.inventory_item_id) ?? 0) + numericValue(lot.quantity_remaining));
+  }
+  for (const movement of shortageMovements) {
+    availableByItemId.set(
+      movement.inventory_item_id,
+      (availableByItemId.get(movement.inventory_item_id) ?? 0) + numericValue(movement.quantity_change)
+    );
   }
 
   const usageStart = addDays(startOfDay(now), -USAGE_LOOKBACK_DAYS);
@@ -1064,6 +1077,7 @@ export function buildReportingDashboard({
   filters,
   inventoryItems = [],
   inventoryLots = [],
+  shortageMovements = [],
   now,
   orderItems,
   orders,
@@ -1074,6 +1088,7 @@ export function buildReportingDashboard({
   filters: ReportingFilters;
   inventoryItems?: ReportingInventoryItemRow[];
   inventoryLots?: ReportingInventoryLotRow[];
+  shortageMovements?: ReportingInventoryMovementRow[];
   now: Date;
   orderItems: ReportingOrderItemRow[];
   orders: ReportingOrderRow[];
@@ -1218,6 +1233,7 @@ export function buildReportingDashboard({
     forecast,
     inventoryItems,
     inventoryLots,
+    shortageMovements,
     lines: normalizedLines,
     now,
     products,
