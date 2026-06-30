@@ -7,9 +7,12 @@ import {
   completedBreakMinutes,
   formatCentralDateTime,
   hoursFromMinutes,
+  isLaborWorkType,
   normalizeWorkType,
   paidMinutes,
   parseCentralDateInput,
+  salaryCentsForDateRange,
+  salaryPayFrequencyLabel,
   wageCentsForMinutes,
   workTypeLabel,
   type TimeClockBreakRow,
@@ -36,6 +39,21 @@ type ExportEntry = TimeClockEntryRow & {
   work_type: string | null;
 };
 
+type ExportAdminProfile = {
+  email: string | null;
+  full_name: string | null;
+  id: string;
+};
+
+type ExportTimeSetting = {
+  active: boolean | null;
+  compensation_type: string | null;
+  profile_id: string;
+  salary_amount_cents: number | string | null;
+  salary_frequency: string | null;
+  salary_labor_work_type: string | null;
+};
+
 function csvCell(value: unknown) {
   const raw = String(value ?? '');
   return `"${raw.replaceAll('"', '""')}"`;
@@ -44,6 +62,14 @@ function csvCell(value: unknown) {
 function profileLabel(entry: ExportEntry) {
   const profile = Array.isArray(entry.admin_profile) ? entry.admin_profile[0] : entry.admin_profile;
   return profile?.full_name || profile?.email || 'Unknown admin';
+}
+
+function adminProfileLabel(profile: ExportAdminProfile | null | undefined) {
+  return profile?.full_name || profile?.email || 'Unknown admin';
+}
+
+function normalizeSalaryLaborWorkType(value: string | null | undefined) {
+  return isLaborWorkType(String(value ?? '')) ? String(value) : 'admin';
 }
 
 export async function GET(request: NextRequest) {
@@ -87,11 +113,41 @@ export async function GET(request: NextRequest) {
 
   if (adminId) query = query.eq('profile_id', adminId);
   if (hasWorkTypeFilter) query = query.eq('work_type', workType);
-  const { data, error } = await query;
+  const [{ data, error }, settingsResult, adminsResult] = await Promise.all([
+    query,
+    supabaseAdmin
+      .from('admin_time_settings')
+      .select('profile_id,active,compensation_type,salary_amount_cents,salary_frequency,salary_labor_work_type'),
+    supabaseAdmin
+      .from('profiles')
+      .select('id,email,full_name')
+      .eq('is_admin', true),
+  ]);
   if (error) return new Response(error.message, { status: 500 });
+  if (settingsResult.error) return new Response(settingsResult.error.message, { status: 500 });
+  if (adminsResult.error) return new Response(adminsResult.error.message, { status: 500 });
+
+  const adminById = new Map(((adminsResult.data ?? []) as ExportAdminProfile[]).map((admin) => [admin.id, admin]));
+  const salaryRows = ((settingsResult.data ?? []) as ExportTimeSetting[])
+    .filter((setting) => setting.active !== false)
+    .filter((setting) => setting.compensation_type === 'salary')
+    .filter((setting) => !adminId || setting.profile_id === adminId)
+    .map((setting) => ({
+      ...setting,
+      salaryCents: salaryCentsForDateRange({
+        end: to,
+        salaryAmountCents: setting.salary_amount_cents,
+        salaryFrequency: setting.salary_frequency,
+        start: from,
+      }),
+      workType: normalizeSalaryLaborWorkType(setting.salary_labor_work_type),
+    }))
+    .filter((setting) => setting.salaryCents > 0)
+    .filter((setting) => !hasWorkTypeFilter || setting.workType === workType);
 
   const rows = [
     [
+      'row_type',
       'admin',
       'status',
       'work_type',
@@ -108,6 +164,8 @@ export async function GET(request: NextRequest) {
       'locked_at',
       'voided_at',
       'void_reason',
+      'compensation_type',
+      'salary_frequency',
     ],
     ...((data ?? []) as ExportEntry[]).map((entry) => {
       const breaks = (entry.admin_time_breaks ?? []).filter((entryBreak) => entryBreak.status !== 'void');
@@ -115,6 +173,7 @@ export async function GET(request: NextRequest) {
       const entryPaidMinutes = paidMinutes(entry, breaks);
       const rateCents = Number(entry.hourly_rate_cents_snapshot ?? 0);
       return [
+        'time_entry',
         profileLabel(entry),
         entry.status ?? '',
         workTypeLabel(entry.work_type),
@@ -131,8 +190,31 @@ export async function GET(request: NextRequest) {
         formatCentralDateTime(entry.locked_at, ''),
         formatCentralDateTime(entry.voided_at, ''),
         entry.void_reason ?? '',
+        'hourly',
+        '',
       ];
     }),
+    ...salaryRows.map((salary) => [
+      'salary',
+      adminProfileLabel(adminById.get(salary.profile_id)),
+      'salary',
+      workTypeLabel(salary.workType),
+      '',
+      '',
+      '0.00',
+      '0.00',
+      usd(Number(salary.salary_amount_cents ?? 0)),
+      usd(salary.salaryCents),
+      '',
+      '',
+      '',
+      '',
+      '',
+      '',
+      '',
+      'salary',
+      salaryPayFrequencyLabel(salary.salary_frequency),
+    ]),
   ];
 
   const csv = rows.map((row) => row.map(csvCell).join(',')).join('\n');

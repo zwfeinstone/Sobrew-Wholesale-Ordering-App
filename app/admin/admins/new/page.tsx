@@ -74,8 +74,12 @@ async function createAdminAccount(formData: FormData) {
   await supabaseAdmin.from('admin_time_settings').upsert(
     {
       active: true,
+      compensation_type: 'hourly',
       hourly_rate_cents: 0,
       profile_id: adminId,
+      salary_amount_cents: 0,
+      salary_frequency: 'annual',
+      salary_labor_work_type: 'admin',
       updated_by: current.profile.id,
     },
     { onConflict: 'profile_id' }
