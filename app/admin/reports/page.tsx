@@ -118,6 +118,13 @@ function simulatorPercentParam(value: string | string[] | undefined) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+function simulatorPricePerPoundParam(value: string | string[] | undefined) {
+  const rawValue = stringParam(value).trim();
+  if (!rawValue) return undefined;
+  const parsed = Number.parseFloat(rawValue);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed * 100 : undefined;
+}
+
 function simulatorUnitCostOverrides(searchParams: Record<string, string | string[] | undefined> | undefined) {
   const overrides = new Map<string, number>();
   for (const [key, value] of Object.entries(searchParams ?? {})) {
@@ -173,12 +180,20 @@ function laborRateInputValue(overrides: Map<string, number>, productId: string) 
   return typeof override === 'number' && Number.isFinite(override) ? String(Number((override / 100).toFixed(4))) : '';
 }
 
+function pricePerPoundInputValue(value: number | undefined) {
+  return typeof value === 'number' && Number.isFinite(value) ? String(Number((value / 100).toFixed(4))) : '';
+}
+
 function unitMoney(value: number) {
   return `$${(Math.max(0, value) / 100).toFixed(4)}`;
 }
 
 function quantity(value: number) {
   return number(value, value % 1 === 0 ? 0 : 1);
+}
+
+function pounds(value: number) {
+  return number(value, value % 1 === 0 ? 0 : 2);
 }
 
 function percent(value: number) {
@@ -988,17 +1003,20 @@ function SimulatorProductTable({ rows }: { rows: GrossProfitSimulatorProductRow[
 
   return (
     <div className="overflow-x-auto">
-      <table className="w-full min-w-[86rem] border-separate border-spacing-y-2 text-left text-sm">
+      <table className="w-full min-w-[104rem] border-separate border-spacing-y-2 text-left text-sm">
         <thead>
           <tr className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
             <th className="px-4 py-2">Product</th>
             <th className="px-4 py-2 text-right">Units</th>
+            <th className="px-4 py-2 text-right">Pounds</th>
             <th className="px-4 py-2 text-right">Revenue</th>
+            <th className="px-4 py-2 text-right">Scenario revenue</th>
             <th className="px-4 py-2 text-right">Actual GP</th>
             <th className="px-4 py-2 text-right">Scenario material</th>
             <th className="px-4 py-2 text-right">Scenario labor</th>
             <th className="px-4 py-2 text-right">Simulated GP</th>
             <th className="px-4 py-2 text-right">Profit impact</th>
+            <th className="px-4 py-2 text-right">Unweighted</th>
             <th className="px-4 py-2 text-right">Unpriced lines</th>
           </tr>
         </thead>
@@ -1007,12 +1025,15 @@ function SimulatorProductTable({ rows }: { rows: GrossProfitSimulatorProductRow[
             <tr key={row.id} className="bg-white/65">
               <td className="rounded-l-xl px-4 py-3 font-semibold text-slate-950">{row.name}</td>
               <td className="px-4 py-3 text-right text-slate-700">{quantity(row.unitsSold)}</td>
+              <td className="px-4 py-3 text-right text-slate-700">{pounds(row.coffeePoundsSold)} lb</td>
               <td className="px-4 py-3 text-right text-slate-700">{money(row.revenueCents)}</td>
+              <td className="px-4 py-3 text-right text-slate-700">{money(row.simulatedRevenueCents)}</td>
               <td className={`px-4 py-3 text-right font-semibold ${row.actualGrossProfitCents >= 0 ? 'text-teal-800' : 'text-rose-700'}`}>{money(row.actualGrossProfitCents)}</td>
               <td className="px-4 py-3 text-right text-slate-700">{money(row.simulatedMaterialCents)}</td>
               <td className="px-4 py-3 text-right text-slate-700">{money(row.simulatedLaborCents)}</td>
               <td className={`px-4 py-3 text-right font-semibold ${row.simulatedGrossProfitCents >= 0 ? 'text-teal-800' : 'text-rose-700'}`}>{money(row.simulatedGrossProfitCents)}</td>
               <td className={`px-4 py-3 text-right font-semibold ${row.grossProfitImpactCents >= 0 ? 'text-teal-800' : 'text-rose-700'}`}>{signedMoney(row.grossProfitImpactCents)}</td>
+              <td className="px-4 py-3 text-right text-slate-700">{number(row.unweightedLineCount)}</td>
               <td className="rounded-r-xl px-4 py-3 text-right text-slate-700">{number(row.unresolvedLineCount)}</td>
             </tr>
           ))}
@@ -1038,6 +1059,7 @@ function GrossProfitSimulatorReport({
   rawCoffeePercentDelta,
   resetHref,
   salesRepId,
+  scenarioPricePerPoundCents,
 }: {
   activeTab: SimulatorTab;
   centerId?: string;
@@ -1054,14 +1076,18 @@ function GrossProfitSimulatorReport({
   rawCoffeePercentDelta: number;
   resetHref: string;
   salesRepId?: string;
+  scenarioPricePerPoundCents?: number;
 }) {
   const rawCoffeeRows = dashboard.inputRows.filter((row) => row.itemType === 'raw_coffee');
   const materialSupplyRows = dashboard.inputRows.filter((row) => row.itemType === 'material_supply' || row.itemType === 'supply');
 
   return (
     <>
-      <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-        <StatTile label="Total Revenue" value={money(dashboard.revenueCents)} detail="Revenue stays fixed while scenario COGS move." />
+      <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
+        <StatTile label="Total Revenue" value={money(dashboard.revenueCents)} detail={`${signedMoney(dashboard.revenueImpactCents)} scenario revenue change.`} />
+        <StatTile label="Simulated Revenue" value={money(dashboard.simulatedRevenueCents)} detail="Weighted coffee lines use the scenario price per pound." />
+        <StatTile label="Pounds Sold" value={`${pounds(dashboard.coffeePoundsSold)} lb`} detail={`${money(dashboard.weightedRevenueCents)} weighted coffee revenue.`} />
+        <StatTile label="Avg Price / lb Sold" value={money(dashboard.actualPricePerPoundCents)} detail={`${number(dashboard.unweightedLineCount)} unweighted line${dashboard.unweightedLineCount === 1 ? '' : 's'}.`} />
         <StatTile label="Actual Gross Profit" value={money(dashboard.actualGrossProfitCents)} detail={`${percent(dashboard.actualMarginPercent).replace('+', '')} actual margin.`} />
         <StatTile label="Simulated Gross Profit" value={money(dashboard.simulatedGrossProfitCents)} detail={`${percent(dashboard.simulatedMarginPercent).replace('+', '')} simulated margin.`} />
         <StatTile label="Profit Change" value={signedMoney(dashboard.grossProfitChangeCents)} detail={`${number(dashboard.orderCount)} shipped order${dashboard.orderCount === 1 ? '' : 's'} in scenario.`} />
@@ -1074,7 +1100,7 @@ function GrossProfitSimulatorReport({
         <SectionHeading
           eyebrow="Gross profit simulator"
           title="Labor and material what-if"
-          subtitle="Revenue, fixed packaging, shipping, processing, and donation stay actual; the scenario changes recipe labor and material costs."
+          subtitle="Recipe labor, material costs, and weighted coffee-line revenue can move; fixed packaging, shipping, processing, donation, and unweighted revenue stay actual."
           action={dashboard.appliedOverrideCount ? <span className="rounded-full bg-teal-50 px-3 py-1 text-sm font-semibold text-teal-800">{dashboard.appliedOverrideCount} override{dashboard.appliedOverrideCount === 1 ? '' : 's'}</span> : null}
         />
         <form>
@@ -1087,6 +1113,27 @@ function GrossProfitSimulatorReport({
           {salesRepId ? <input type="hidden" name="sales_rep" value={salesRepId} /> : null}
 
           <div className="space-y-5 [&:has(#sim-tab-labor:checked)_.sim-tab-label-labor]:border-teal-200 [&:has(#sim-tab-labor:checked)_.sim-tab-label-labor]:bg-teal-50 [&:has(#sim-tab-labor:checked)_.sim-tab-label-labor]:text-teal-900 [&:has(#sim-tab-raw:checked)_.sim-tab-label-raw]:border-teal-200 [&:has(#sim-tab-raw:checked)_.sim-tab-label-raw]:bg-teal-50 [&:has(#sim-tab-raw:checked)_.sim-tab-label-raw]:text-teal-900 [&:has(#sim-tab-supplies:checked)_.sim-tab-label-supplies]:border-teal-200 [&:has(#sim-tab-supplies:checked)_.sim-tab-label-supplies]:bg-teal-50 [&:has(#sim-tab-supplies:checked)_.sim-tab-label-supplies]:text-teal-900">
+            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+              <label className="space-y-2 text-sm font-medium text-slate-700">
+                Scenario price / lb sold
+                <div className="relative">
+                  <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm text-slate-500">$</span>
+                  <input
+                    className="input pl-7 text-right"
+                    min="0"
+                    name="sim_price_per_lb"
+                    placeholder={dashboard.actualPricePerPoundCents > 0 ? String(Number((dashboard.actualPricePerPoundCents / 100).toFixed(2))) : ''}
+                    step="0.01"
+                    type="number"
+                    defaultValue={pricePerPoundInputValue(scenarioPricePerPoundCents)}
+                  />
+                </div>
+              </label>
+              <StatTile label="Weighted Revenue" value={money(dashboard.weightedRevenueCents)} detail={`${pounds(dashboard.coffeePoundsSold)} lb from raw coffee recipes.`} />
+              <StatTile label="Scenario Revenue Change" value={signedMoney(dashboard.revenueImpactCents)} detail={`${money(dashboard.simulatedRevenueCents)} simulated total revenue.`} />
+              <StatTile label="Unweighted Lines" value={number(dashboard.unweightedLineCount)} detail="No raw coffee recipe weight found for price-per-pound." />
+            </div>
+
             <input className="peer/labor sr-only" id="sim-tab-labor" name="sim_tab" type="radio" value="labor" defaultChecked={activeTab === 'labor'} />
             <input className="peer/raw sr-only" id="sim-tab-raw" name="sim_tab" type="radio" value="raw" defaultChecked={activeTab === 'raw'} />
             <input className="peer/supplies sr-only" id="sim-tab-supplies" name="sim_tab" type="radio" value="supplies" defaultChecked={activeTab === 'supplies'} />
@@ -1178,7 +1225,7 @@ function GrossProfitSimulatorReport({
         <SectionHeading
           eyebrow="Product impact"
           title="Which products move gross profit"
-          subtitle="Product rows keep actual revenue and non-simulated COGS, then apply labor and material scenarios from current recipes."
+          subtitle="Product rows apply price-per-pound revenue, labor, and material scenarios while non-simulated COGS stay actual."
         />
         <SimulatorProductTable rows={dashboard.productRows} />
       </section>
@@ -1353,6 +1400,7 @@ export default async function AdminReportsPage({
   const rawCoffeePercentDelta = simulatorPercentParam(searchParams?.sim_raw_delta);
   const materialSupplyPercentDelta = simulatorPercentParam(searchParams?.sim_material_delta);
   const laborPercentDelta = simulatorPercentParam(searchParams?.sim_labor_delta);
+  const scenarioPricePerPoundCents = simulatorPricePerPoundParam(searchParams?.sim_price_per_lb);
   const itemUnitCostOverrides = simulatorUnitCostOverrides(searchParams);
   const { laborMinutesOverrides, laborRateOverridesCents } = simulatorLaborOverrides(searchParams);
   const simulatorTab = simulatorTabParam(searchParams?.sim_tab);
@@ -1374,6 +1422,7 @@ export default async function AdminReportsPage({
       rangeEndExclusive,
       rangeStart,
       rawCoffeePercentDelta,
+      scenarioPricePerPoundCents,
     },
     products,
     recipes: recipeResult.error ? [] : ((recipeResult.data ?? []) as any[]),
@@ -1590,6 +1639,7 @@ export default async function AdminReportsPage({
           rawCoffeePercentDelta={rawCoffeePercentDelta}
           resetHref={simulatorResetHref}
           salesRepId={selectedSalesRepId}
+          scenarioPricePerPoundCents={scenarioPricePerPoundCents}
         />
       ) : null}
 

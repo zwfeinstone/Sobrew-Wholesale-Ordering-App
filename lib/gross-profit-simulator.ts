@@ -71,6 +71,7 @@ export type GrossProfitSimulatorProductRow = {
   actualGrossProfitCents: number;
   baselineLaborCents: number;
   baselineMaterialCents: number;
+  coffeePoundsSold: number;
   grossProfitImpactCents: number;
   id: string;
   name: string;
@@ -78,7 +79,9 @@ export type GrossProfitSimulatorProductRow = {
   simulatedGrossProfitCents: number;
   simulatedLaborCents: number;
   simulatedMaterialCents: number;
+  simulatedRevenueCents: number;
   unitsSold: number;
+  unweightedLineCount: number;
   unresolvedLineCount: number;
 };
 
@@ -104,10 +107,12 @@ export type GrossProfitSimulatorDashboard = {
   actualLaborCents: number;
   actualMarginPercent: number;
   actualMaterialCents: number;
+  actualPricePerPoundCents: number;
   actualTotalCogsCents: number;
   appliedOverrideCount: number;
   baselineRecipeLaborCents: number;
   baselineRecipeMaterialCents: number;
+  coffeePoundsSold: number;
   grossProfitChangeCents: number;
   inputRows: GrossProfitSimulatorInputRow[];
   laborImpactCents: number;
@@ -119,13 +124,17 @@ export type GrossProfitSimulatorDashboard = {
   productRows: GrossProfitSimulatorProductRow[];
   rawCoffeeImpactCents: number;
   rawCoffeeScenarioCents: number;
+  revenueImpactCents: number;
   revenueCents: number;
   simulatedGrossProfitCents: number;
   simulatedLaborCents: number;
   simulatedMarginPercent: number;
   simulatedMaterialCents: number;
+  simulatedRevenueCents: number;
   simulatedTotalCogsCents: number;
+  unweightedLineCount: number;
   unresolvedLineCount: number;
+  weightedRevenueCents: number;
 };
 
 export type GrossProfitSimulatorParams = {
@@ -139,6 +148,7 @@ export type GrossProfitSimulatorParams = {
   rangeEndExclusive: Date;
   rangeStart: Date;
   rawCoffeePercentDelta: number;
+  scenarioPricePerPoundCents?: number;
 };
 
 type NormalizedLine = {
@@ -317,6 +327,27 @@ function laborCostForLine({
   };
 }
 
+function rawCoffeePoundsPerUnit(recipe: RecipeRow | undefined) {
+  if (!recipe) return 0;
+  const outputQty = numericValue(recipe.output_qty) || 1;
+  let recipeRawCoffeePounds = 0;
+
+  for (const component of recipe.product_recipe_components ?? []) {
+    const inventoryItem = relatedOne(component.inventory_items);
+    const itemType = inventoryItem ? itemTypeForSimulation(inventoryItem.item_type) : '';
+    const isRawCoffee = component.component_role === 'raw_coffee' || itemType === 'raw_coffee';
+    if (!isRawCoffee) continue;
+
+    try {
+      recipeRawCoffeePounds += convertInventoryQuantity(numericValue(component.quantity), component.unit, 'lb');
+    } catch {
+      // Pounds sold is informational, so unit conversion gaps leave only this component unweighted.
+    }
+  }
+
+  return outputQty > 0 ? recipeRawCoffeePounds / outputQty : 0;
+}
+
 function normalizeLines({
   orderItems,
   orders,
@@ -426,10 +457,12 @@ function emptyDashboard(actual: ProfitabilityTotals): GrossProfitSimulatorDashbo
     actualLaborCents: actual.laborCents,
     actualMarginPercent: actual.marginPercent,
     actualMaterialCents: actual.materialCents,
+    actualPricePerPoundCents: 0,
     actualTotalCogsCents: actual.totalCogsCents,
     appliedOverrideCount: 0,
     baselineRecipeLaborCents: 0,
     baselineRecipeMaterialCents: 0,
+    coffeePoundsSold: 0,
     grossProfitChangeCents: 0,
     inputRows: [],
     laborImpactCents: 0,
@@ -441,13 +474,17 @@ function emptyDashboard(actual: ProfitabilityTotals): GrossProfitSimulatorDashbo
     productRows: [],
     rawCoffeeImpactCents: 0,
     rawCoffeeScenarioCents: 0,
+    revenueImpactCents: 0,
     revenueCents: actual.revenueCents,
     simulatedGrossProfitCents: actual.grossProfitCents,
     simulatedLaborCents: actual.laborCents,
     simulatedMarginPercent: actual.marginPercent,
     simulatedMaterialCents: actual.materialCents,
+    simulatedRevenueCents: actual.revenueCents,
     simulatedTotalCogsCents: actual.totalCogsCents,
+    unweightedLineCount: 0,
     unresolvedLineCount: 0,
+    weightedRevenueCents: 0,
   };
 }
 
@@ -499,7 +536,17 @@ export function buildGrossProfitSimulator({
   let rawCoffeeScenarioCents = 0;
   let materialSupplyImpactCents = 0;
   let materialSupplyScenarioCents = 0;
+  let coffeePoundsSold = 0;
+  let revenueDeltaCents = 0;
+  let unweightedLineCount = 0;
   let unresolvedLineCount = 0;
+  let weightedRevenueCents = 0;
+  const scenarioPricePerPoundCents =
+    typeof params.scenarioPricePerPoundCents === 'number' &&
+    Number.isFinite(params.scenarioPricePerPoundCents) &&
+    params.scenarioPricePerPoundCents >= 0
+      ? params.scenarioPricePerPoundCents
+      : undefined;
 
   for (const line of lines) {
     const recipe = line.productId ? recipeByProductId.get(line.productId) : undefined;
@@ -520,17 +567,32 @@ export function buildGrossProfitSimulator({
     const lineMaterialDeltaCents = lineScenarioMaterialCents - lineBaselineMaterialCents;
     const lineLaborDeltaCents = laborCost.scenarioCostCents - laborCost.baselineCostCents;
     const lineLaborImpactCents = laborCost.baselineCostCents - laborCost.scenarioCostCents;
+    const lineCoffeePoundsSold = rawCoffeePoundsPerUnit(recipe) * line.qty;
+    const isWeightedCoffeeLine = lineCoffeePoundsSold > 0;
+    const lineSimulatedRevenueCents =
+      isWeightedCoffeeLine && typeof scenarioPricePerPoundCents === 'number'
+        ? lineCoffeePoundsSold * scenarioPricePerPoundCents
+        : line.revenueCents;
+    const lineRevenueDeltaCents = lineSimulatedRevenueCents - line.revenueCents;
     baselineRecipeLaborCents += laborCost.baselineCostCents;
     baselineRecipeMaterialCents += lineBaselineMaterialCents;
     scenarioLaborCents += laborCost.scenarioCostCents;
     scenarioMaterialCents += lineScenarioMaterialCents;
     laborImpactCents += lineLaborImpactCents;
+    revenueDeltaCents += lineRevenueDeltaCents;
+    if (isWeightedCoffeeLine) {
+      coffeePoundsSold += lineCoffeePoundsSold;
+      weightedRevenueCents += line.revenueCents;
+    } else {
+      unweightedLineCount += 1;
+    }
 
     const productId = line.productId ?? line.productName;
     const productRow = productRowsById.get(productId) ?? {
       actualGrossProfitCents: 0,
       baselineLaborCents: 0,
       baselineMaterialCents: 0,
+      coffeePoundsSold: 0,
       grossProfitImpactCents: 0,
       id: productId,
       name: line.productName,
@@ -539,18 +601,23 @@ export function buildGrossProfitSimulator({
       simulatedGrossProfitCents: 0,
       simulatedLaborCents: 0,
       simulatedMaterialCents: 0,
+      simulatedRevenueCents: 0,
       unitsSold: 0,
+      unweightedLineCount: 0,
       unresolvedLineCount: 0,
     };
     productRow.actualGrossProfitCents += line.actualGrossProfitCents;
     productRow.baselineLaborCents += laborCost.baselineCostCents;
     productRow.baselineMaterialCents += lineBaselineMaterialCents;
-    productRow.grossProfitImpactCents -= lineMaterialDeltaCents + lineLaborDeltaCents;
+    productRow.coffeePoundsSold += lineCoffeePoundsSold;
+    productRow.grossProfitImpactCents += lineRevenueDeltaCents - lineMaterialDeltaCents - lineLaborDeltaCents;
     productRow.revenueCents += line.revenueCents;
-    productRow.simulatedGrossProfitCents += line.actualGrossProfitCents - lineMaterialDeltaCents - lineLaborDeltaCents;
+    productRow.simulatedGrossProfitCents += line.actualGrossProfitCents + lineRevenueDeltaCents - lineMaterialDeltaCents - lineLaborDeltaCents;
     productRow.simulatedLaborCents += laborCost.scenarioCostCents;
     productRow.simulatedMaterialCents += lineScenarioMaterialCents;
+    productRow.simulatedRevenueCents += lineSimulatedRevenueCents;
     productRow.unitsSold += line.qty;
+    if (!isWeightedCoffeeLine) productRow.unweightedLineCount += 1;
     productRow.orderItemIds.add(line.id);
     if (!componentCosts.length) productRow.unresolvedLineCount += 1;
     productRowsById.set(productId, productRow);
@@ -628,21 +695,25 @@ export function buildGrossProfitSimulator({
 
   const materialDeltaCents = scenarioMaterialCents - baselineRecipeMaterialCents;
   const laborDeltaCents = scenarioLaborCents - baselineRecipeLaborCents;
-  const simulatedGrossProfitCents = actual.grossProfitCents - materialDeltaCents - laborDeltaCents;
+  const simulatedRevenueCents = actual.revenueCents + revenueDeltaCents;
+  const simulatedGrossProfitCents = actual.grossProfitCents + revenueDeltaCents - materialDeltaCents - laborDeltaCents;
   const simulatedTotalCogsCents = actual.totalCogsCents + materialDeltaCents + laborDeltaCents;
   const validLaborMinuteOverrideCount = [...params.laborMinutesOverrides.values()].filter((value) => Number.isFinite(value) && value >= 0).length;
   const validLaborRateOverrideCount = [...params.laborRateOverridesCents.values()].filter((value) => Number.isFinite(value) && value >= 0).length;
   const hasLaborPercentOverride = Number.isFinite(params.laborPercentDelta) && params.laborPercentDelta !== 0;
+  const hasPricePerPoundOverride = typeof scenarioPricePerPoundCents === 'number';
 
   return {
     actualGrossProfitCents: actual.grossProfitCents,
     actualLaborCents: actual.laborCents,
     actualMarginPercent: actual.marginPercent,
     actualMaterialCents: actual.materialCents,
+    actualPricePerPoundCents: coffeePoundsSold > 0 ? weightedRevenueCents / coffeePoundsSold : 0,
     actualTotalCogsCents: actual.totalCogsCents,
-    appliedOverrideCount: [...params.itemUnitCostOverridesCents.values()].filter((value) => Number.isFinite(value) && value >= 0).length + validLaborMinuteOverrideCount + validLaborRateOverrideCount + (hasLaborPercentOverride ? 1 : 0),
+    appliedOverrideCount: [...params.itemUnitCostOverridesCents.values()].filter((value) => Number.isFinite(value) && value >= 0).length + validLaborMinuteOverrideCount + validLaborRateOverrideCount + (hasLaborPercentOverride ? 1 : 0) + (hasPricePerPoundOverride ? 1 : 0),
     baselineRecipeLaborCents,
     baselineRecipeMaterialCents,
+    coffeePoundsSold,
     grossProfitChangeCents: simulatedGrossProfitCents - actual.grossProfitCents,
     inputRows: [...inputRowsById.values()]
       .map(({ productIds, ...row }) => row)
@@ -659,13 +730,17 @@ export function buildGrossProfitSimulator({
       .sort((a, b) => Math.abs(b.grossProfitImpactCents) - Math.abs(a.grossProfitImpactCents) || b.revenueCents - a.revenueCents || a.name.localeCompare(b.name)),
     rawCoffeeImpactCents,
     rawCoffeeScenarioCents,
+    revenueImpactCents: revenueDeltaCents,
     revenueCents: actual.revenueCents,
     simulatedGrossProfitCents,
     simulatedLaborCents: actual.laborCents + laborDeltaCents,
-    simulatedMarginPercent: percent(simulatedGrossProfitCents, actual.revenueCents),
+    simulatedMarginPercent: percent(simulatedGrossProfitCents, simulatedRevenueCents),
     simulatedMaterialCents: actual.materialCents + materialDeltaCents,
+    simulatedRevenueCents,
     simulatedTotalCogsCents,
+    unweightedLineCount,
     unresolvedLineCount,
+    weightedRevenueCents,
   };
 }
 
