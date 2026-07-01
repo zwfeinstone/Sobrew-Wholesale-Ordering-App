@@ -132,6 +132,7 @@ export type GrossProfitSimulatorParams = {
   centerId?: string;
   itemUnitCostOverridesCents: Map<string, number>;
   laborMinutesOverrides: Map<string, number>;
+  laborPercentDelta: number;
   laborRateOverridesCents: Map<string, number>;
   materialSupplyPercentDelta: number;
   productId?: string;
@@ -301,7 +302,8 @@ function laborCostForLine({
   const productKey = line.productId ?? line.productName;
   const baselineMinutes = Math.max(0, numericValue(recipe.labor_minutes));
   const baselineRateCents = Math.max(0, numericValue(recipe.labor_rate_cents));
-  const scenarioMinutes = validNonNegativeOverride(params.laborMinutesOverrides, productKey) ?? baselineMinutes;
+  const laborPercentMultiplier = Math.max(0, 1 + params.laborPercentDelta / 100);
+  const scenarioMinutes = validNonNegativeOverride(params.laborMinutesOverrides, productKey) ?? baselineMinutes * laborPercentMultiplier;
   const scenarioRateCents = validNonNegativeOverride(params.laborRateOverridesCents, productKey) ?? baselineRateCents;
 
   return {
@@ -630,6 +632,7 @@ export function buildGrossProfitSimulator({
   const simulatedTotalCogsCents = actual.totalCogsCents + materialDeltaCents + laborDeltaCents;
   const validLaborMinuteOverrideCount = [...params.laborMinutesOverrides.values()].filter((value) => Number.isFinite(value) && value >= 0).length;
   const validLaborRateOverrideCount = [...params.laborRateOverridesCents.values()].filter((value) => Number.isFinite(value) && value >= 0).length;
+  const hasLaborPercentOverride = Number.isFinite(params.laborPercentDelta) && params.laborPercentDelta !== 0;
 
   return {
     actualGrossProfitCents: actual.grossProfitCents,
@@ -637,7 +640,7 @@ export function buildGrossProfitSimulator({
     actualMarginPercent: actual.marginPercent,
     actualMaterialCents: actual.materialCents,
     actualTotalCogsCents: actual.totalCogsCents,
-    appliedOverrideCount: [...params.itemUnitCostOverridesCents.values()].filter((value) => Number.isFinite(value) && value >= 0).length + validLaborMinuteOverrideCount + validLaborRateOverrideCount,
+    appliedOverrideCount: [...params.itemUnitCostOverridesCents.values()].filter((value) => Number.isFinite(value) && value >= 0).length + validLaborMinuteOverrideCount + validLaborRateOverrideCount + (hasLaborPercentOverride ? 1 : 0),
     baselineRecipeLaborCents,
     baselineRecipeMaterialCents,
     grossProfitChangeCents: simulatedGrossProfitCents - actual.grossProfitCents,

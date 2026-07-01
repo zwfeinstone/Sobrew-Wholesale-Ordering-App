@@ -953,7 +953,7 @@ function SimulatorLaborTable({
                   disabled={!row.hasRecipe}
                   min="0"
                   name={`sim_labor_minutes_${row.id}`}
-                  placeholder={row.hasRecipe ? String(Number(row.baselineLaborMinutes.toFixed(4))) : ''}
+                  placeholder={row.hasRecipe ? String(Number(row.simulatedLaborMinutes.toFixed(4))) : ''}
                   step="0.01"
                   type="number"
                   defaultValue={laborMinutesInputValue(laborMinutesOverrides, row.id)}
@@ -966,7 +966,7 @@ function SimulatorLaborTable({
                   disabled={!row.hasRecipe}
                   min="0"
                   name={`sim_labor_rate_${row.id}`}
-                  placeholder={row.hasRecipe ? String(Number((row.baselineLaborRateCents / 100).toFixed(4))) : ''}
+                  placeholder={row.hasRecipe ? String(Number((row.simulatedLaborRateCents / 100).toFixed(4))) : ''}
                   step="0.01"
                   type="number"
                   defaultValue={laborRateInputValue(laborRateOverrides, row.id)}
@@ -1026,6 +1026,7 @@ function GrossProfitSimulatorReport({
   activeTab,
   centerId,
   dashboard,
+  laborPercentDelta,
   laborMinutesOverrides,
   laborRateOverrides,
   materialSupplyPercentDelta,
@@ -1041,6 +1042,7 @@ function GrossProfitSimulatorReport({
   activeTab: SimulatorTab;
   centerId?: string;
   dashboard: GrossProfitSimulatorDashboard;
+  laborPercentDelta: number;
   laborMinutesOverrides: Map<string, number>;
   laborRateOverrides: Map<string, number>;
   materialSupplyPercentDelta: number;
@@ -1111,7 +1113,14 @@ function GrossProfitSimulatorReport({
             </div>
 
             <div className="hidden space-y-5 peer-checked/labor:block">
-              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                <label className="space-y-2 text-sm font-medium text-slate-700">
+                  All labor minutes change
+                  <div className="relative">
+                    <input className="input pr-9 text-right" name="sim_labor_delta" type="number" step="0.01" defaultValue={String(laborPercentDelta)} />
+                    <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-sm text-slate-500">%</span>
+                  </div>
+                </label>
                 <StatTile label="Labor Impact" value={signedMoney(dashboard.laborImpactCents)} detail={`${money(dashboard.laborScenarioCents)} scenario recipe labor COGS.`} />
                 <StatTile label="Scenario Labor COGS" value={money(dashboard.simulatedLaborCents)} detail={`${signedMoney(dashboard.simulatedLaborCents - dashboard.actualLaborCents)} versus actual labor COGS.`} />
                 <StatTile label="Labor Products" value={number(dashboard.laborRows.length)} detail="Products with shipped lines in this simulator scope." />
@@ -1343,6 +1352,7 @@ export default async function AdminReportsPage({
   });
   const rawCoffeePercentDelta = simulatorPercentParam(searchParams?.sim_raw_delta);
   const materialSupplyPercentDelta = simulatorPercentParam(searchParams?.sim_material_delta);
+  const laborPercentDelta = simulatorPercentParam(searchParams?.sim_labor_delta);
   const itemUnitCostOverrides = simulatorUnitCostOverrides(searchParams);
   const { laborMinutesOverrides, laborRateOverridesCents } = simulatorLaborOverrides(searchParams);
   const simulatorTab = simulatorTabParam(searchParams?.sim_tab);
@@ -1357,6 +1367,7 @@ export default async function AdminReportsPage({
       centerId,
       itemUnitCostOverridesCents: itemUnitCostOverrides,
       laborMinutesOverrides,
+      laborPercentDelta,
       laborRateOverridesCents,
       materialSupplyPercentDelta,
       productId,
@@ -1567,6 +1578,7 @@ export default async function AdminReportsPage({
           activeTab={simulatorTab}
           centerId={centerId}
           dashboard={simulatorDashboard}
+          laborPercentDelta={laborPercentDelta}
           laborMinutesOverrides={laborMinutesOverrides}
           laborRateOverrides={laborRateOverridesCents}
           materialSupplyPercentDelta={materialSupplyPercentDelta}
