@@ -54,6 +54,11 @@ type CommissionSettingRow = {
   profile_id: string;
 };
 
+type LaborTagAssignmentRow = {
+  profile_id: string;
+  work_type: string | null;
+};
+
 type PayoutRow = {
   commission_cents: number | string | null;
   commission_month: string;
@@ -404,7 +409,7 @@ export default async function SalesAdminPage({
   const requestedCenterStatus = stringParam(searchParams?.center_status);
   const centerSearch = stringParam(searchParams?.q).trim();
 
-  const [{ data: admins }, { data: centers }, { data: assignments }, { data: accessAssignments }, { data: commissionSettings }, { data: snapshots }, { data: payouts }] = await Promise.all([
+  const [{ data: admins }, { data: centers }, { data: assignments }, { data: accessAssignments }, { data: commissionSettings }, { data: salesLaborTags }, { data: snapshots }, { data: payouts }] = await Promise.all([
     supabaseAdmin
       .from('profiles')
       .select('id,email,full_name,is_active,is_superadmin')
@@ -424,6 +429,10 @@ export default async function SalesAdminPage({
       .from('admin_commission_settings')
       .select('profile_id,commission_percent,is_sales_rep'),
     supabaseAdmin
+      .from('admin_labor_tag_assignments')
+      .select('profile_id,work_type')
+      .eq('work_type', 'sales'),
+    supabaseAdmin
       .from('order_commission_snapshots')
       .select('id,order_id,center_id,sales_profile_id,shipped_at,commission_month,revenue_cents,product_cogs_cents,shipping_cogs_cents,processing_fee_cogs_cents,donation_cogs_cents,total_cogs_cents,gross_profit_cents,commission_percent,commission_cents,cogs_estimated')
       .in('commission_month', [commissionMonth, previousMonth, priorYearMonth]),
@@ -435,9 +444,11 @@ export default async function SalesAdminPage({
 
   const adminRows = ((admins ?? []) as AdminRow[]).sort((a, b) => profileLabel(a).localeCompare(profileLabel(b)));
   const commissionByProfile = new Map(((commissionSettings ?? []) as CommissionSettingRow[]).map((setting) => [setting.profile_id, setting]));
+  const payrollSalesProfileIds = new Set(((salesLaborTags ?? []) as LaborTagAssignmentRow[]).map((tag) => tag.profile_id));
   const salesRepRows = adminRows.filter((admin) => Boolean(commissionByProfile.get(admin.id)?.is_sales_rep));
-  const selectedSalesRepId = salesRepRows.some((admin) => admin.id === requestedSalesRepId) ? requestedSalesRepId : '';
-  const reportAdminRows = selectedSalesRepId ? salesRepRows.filter((admin) => admin.id === selectedSalesRepId) : salesRepRows;
+  const monthlyTotalSalesRows = salesRepRows.filter((admin) => payrollSalesProfileIds.has(admin.id));
+  const selectedSalesRepId = monthlyTotalSalesRows.some((admin) => admin.id === requestedSalesRepId) ? requestedSalesRepId : '';
+  const reportAdminRows = selectedSalesRepId ? monthlyTotalSalesRows.filter((admin) => admin.id === selectedSalesRepId) : monthlyTotalSalesRows;
   const assignableAdminRows = adminRows.filter((admin) => !hasSuperadminAccess(admin.email, admin.is_superadmin));
   const adminById = new Map(adminRows.map((admin) => [admin.id, admin]));
   const assignmentRows = (assignments ?? []) as AssignmentRow[];
@@ -547,7 +558,7 @@ export default async function SalesAdminPage({
           Sales rep
           <select className="input" name="sales_rep" defaultValue={selectedSalesRepId}>
             <option value="">All sales reps</option>
-            {salesRepRows.map((admin) => (
+            {monthlyTotalSalesRows.map((admin) => (
               <option key={admin.id} value={admin.id}>{profileLabel(admin)}</option>
             ))}
           </select>
@@ -567,8 +578,8 @@ export default async function SalesAdminPage({
           <h2 className="text-xl font-semibold text-slate-950">Sales admin monthly totals</h2>
           <p className="mt-1 text-sm text-slate-500">Totals use locked payout values when a month has been locked or paid; otherwise they use live shipment snapshots.</p>
         </div>
-        {!salesRepRows.length ? <div className="rounded-2xl border border-amber-200 bg-amber-50/70 p-4 text-sm text-amber-800">No admins are marked as Sales Rep yet. Set that in Payroll first.</div> : null}
-        {!reportRows.length && salesRepRows.length ? <div className="rounded-2xl border border-slate-200 bg-white/60 p-4 text-sm text-slate-600">No sales reps match this filter.</div> : null}
+        {!monthlyTotalSalesRows.length ? <div className="rounded-2xl border border-amber-200 bg-amber-50/70 p-4 text-sm text-amber-800">No admins are marked with the Sales labor tag and Sales Rep yet. Set that in Payroll first.</div> : null}
+        {!reportRows.length && monthlyTotalSalesRows.length ? <div className="rounded-2xl border border-slate-200 bg-white/60 p-4 text-sm text-slate-600">No sales reps match this filter.</div> : null}
         <div className="overflow-x-auto">
           <table className="w-full min-w-[72rem] border-separate border-spacing-y-2 text-left text-sm">
             <thead>
