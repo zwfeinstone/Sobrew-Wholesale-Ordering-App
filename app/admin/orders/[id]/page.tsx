@@ -471,7 +471,7 @@ async function quoteEasyPostRates(formData: FormData) {
   const id = String(formData.get('id') ?? '');
   await requireAdminWriteAccess(id ? `/admin/orders/${id}?toast=admin_write_denied` : '/admin/orders?toast=admin_write_denied', 'orders');
 
-  if (!env.easypostApiKey) redirect(`/admin/orders/${id}?toast=easypost_config_required`);
+  if (!env.easypostShippingEnabled || !env.easypostApiKey) redirect(orderToastHref(id, 'easypost_config_required'));
 
   const parsedPackages = parseEasyPostPackages(formData);
   if (parsedPackages.error || !parsedPackages.packages.length) redirect(`/admin/orders/${id}?toast=easypost_package_required`);
@@ -531,7 +531,7 @@ async function buyEasyPostLabelsAndShip(formData: FormData) {
   const id = String(formData.get('id') ?? '');
   await requireAdminWriteAccess(id ? `/admin/orders/${id}?toast=admin_write_denied` : '/admin/orders?toast=admin_write_denied', 'orders');
 
-  if (!env.easypostApiKey) redirect(`/admin/orders/${id}?toast=easypost_config_required`);
+  if (!env.easypostShippingEnabled || !env.easypostApiKey) redirect(orderToastHref(id, 'easypost_config_required'));
 
   const supabase = await createClient();
   const { data: order } = await supabase.from('orders').select('id,status,archived_at').eq('id', id).single();
@@ -630,7 +630,7 @@ async function voidEasyPostLabels(formData: FormData) {
   const id = String(formData.get('id') ?? '');
   await requireAdminWriteAccess(id ? `/admin/orders/${id}?toast=admin_write_denied` : '/admin/orders?toast=admin_write_denied', 'orders');
 
-  if (!env.easypostApiKey) redirect(`/admin/orders/${id}?toast=easypost_config_required`);
+  if (!env.easypostShippingEnabled || !env.easypostApiKey) redirect(orderToastHref(id, 'easypost_config_required'));
 
   const supabase = await createClient();
   const { data: order } = await supabase.from('orders').select('id,status,archived_at').eq('id', id).single();
@@ -735,11 +735,12 @@ export default async function AdminOrderDetail({
   const shippingBoxUsages = shippingBoxUsagesResult.error ? [] : (shippingBoxUsagesResult.data ?? []);
   const boxItems = boxItemsResult.error ? [] : (boxItemsResult.data ?? []);
   const shippingLabels = labelsResult.error ? [] : ((labelsResult.data ?? []) as ShippingLabelRow[]);
-  const activeShippingLabels = shippingLabels.filter((label) => label.status !== 'voided');
+  const easyPostShippingEnabled = env.easypostShippingEnabled;
+  const activeShippingLabels = easyPostShippingEnabled ? shippingLabels.filter((label) => label.status !== 'voided') : [];
   const purchasedShippingLabels = activeShippingLabels.filter((label) => label.status === 'purchased');
   const unpurchasedShippingLabels = activeShippingLabels.filter((label) => label.status !== 'purchased');
   const hasPurchasedEasyPostLabels = purchasedShippingLabels.length > 0;
-  const canQuoteEasyPost = Boolean(env.easypostApiKey && easyPostOriginFromSettings(settingsResult.data as ShippingSettingsRow | null));
+  const canQuoteEasyPost = Boolean(easyPostShippingEnabled && env.easypostApiKey && easyPostOriginFromSettings(settingsResult.data as ShippingSettingsRow | null));
   const { count: recurringCount } = await supabase
     .from('recurring_orders')
     .select('id', { count: 'exact', head: true })
@@ -816,7 +817,7 @@ export default async function AdminOrderDetail({
       {toast === 'box_inventory_required' ? <StatusToast message="Create or receive an active box material before shipping this order." tone="error" /> : null}
       {toast === 'order_shipped' ? <StatusToast message="Order shipped, COGS recorded, and customer email sent." tone="success" /> : null}
       {toast === 'ship_error' ? <StatusToast message="Unable to ship this order." tone="error" /> : null}
-      {toast === 'easypost_config_required' ? <StatusToast message="Add EASYPOST_API_KEY before using EasyPost labels." tone="error" /> : null}
+      {toast === 'easypost_config_required' ? <StatusToast message="EasyPost labels are not enabled in this environment." tone="error" /> : null}
       {toast === 'easypost_origin_required' ? <StatusToast message="Add the EasyPost ship-from address in Settings before buying labels." tone="error" /> : null}
       {toast === 'easypost_destination_required' ? <StatusToast message="This order is missing a complete shipping destination." tone="error" /> : null}
       {toast === 'easypost_package_required' ? <StatusToast message="Enter length, width, height, and weight for every package." tone="error" /> : null}
@@ -930,16 +931,16 @@ export default async function AdminOrderDetail({
           <div>
             <span className="eyebrow">Ship Order</span>
             <h2 className="mt-3 text-2xl font-semibold tracking-tight text-slate-950">Buy labels and record shipping COGS</h2>
-            <p className="mt-2 text-sm text-slate-500">Use EasyPost for carrier labels, or fall back to manual shipping COGS and local delivery.</p>
+            <p className="mt-2 text-sm text-slate-500">{easyPostShippingEnabled ? 'Use EasyPost for carrier labels, or fall back to manual shipping COGS and local delivery.' : 'Record carrier shipping COGS or local delivery.'}</p>
           </div>
 
-          {!canQuoteEasyPost ? (
+          {easyPostShippingEnabled && !canQuoteEasyPost ? (
             <div className="rounded-2xl border border-amber-200 bg-amber-50/70 px-4 py-3 text-sm text-amber-900">
               Add an EasyPost API key and shipping origin in Settings to quote and buy labels from this page.
             </div>
           ) : null}
 
-          {!hasPurchasedEasyPostLabels ? (
+          {easyPostShippingEnabled && !hasPurchasedEasyPostLabels ? (
             <form action={quoteEasyPostRates} className="space-y-4 rounded-2xl border border-slate-200 bg-white/55 p-4">
               <input type="hidden" name="id" value={order.id} />
               <div>
@@ -962,7 +963,7 @@ export default async function AdminOrderDetail({
             </div>
           )}
 
-          {activeShippingLabels.length ? (
+          {easyPostShippingEnabled && activeShippingLabels.length ? (
             <form action={buyEasyPostLabelsAndShip} className="space-y-4 rounded-2xl border border-slate-200 bg-white/55 p-4">
               <input type="hidden" name="id" value={order.id} />
               <input type="hidden" name="fulfillment_method" value="carrier" />
@@ -1030,7 +1031,7 @@ export default async function AdminOrderDetail({
             </form>
           ) : null}
 
-          {hasPurchasedEasyPostLabels ? (
+          {easyPostShippingEnabled && hasPurchasedEasyPostLabels ? (
             <form action={voidEasyPostLabels} className="rounded-2xl border border-rose-200 bg-rose-50/60 p-4">
               <input type="hidden" name="id" value={order.id} />
               <p className="text-sm font-semibold text-rose-800">Need to start over?</p>
