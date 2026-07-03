@@ -40,6 +40,7 @@ import {
   type ReportingReorderSettingRow,
 } from '@/lib/reporting';
 import { createClient } from '@/lib/supabase/server';
+import { convertInventoryQuantity } from '@/lib/inventory';
 import { usd } from '@/lib/utils';
 
 const ROW_LIMIT = 12;
@@ -66,6 +67,49 @@ type AdminRow = {
 
 type ProfitabilityCenterRows = ReturnType<typeof buildProfitabilityDashboard>['centerRows'];
 type ProfitabilityItemRows = ReturnType<typeof buildProfitabilityDashboard>['itemRows'];
+
+type CoffeeSoldInventoryItemRow = {
+  id: string;
+  name: string | null;
+  sku?: string | null;
+  item_type?: string | null;
+  base_unit?: string | null;
+};
+
+type CoffeeSoldRecipeComponentRow = {
+  component_role?: string | null;
+  inventory_item_id: string;
+  inventory_items?: CoffeeSoldInventoryItemRow | CoffeeSoldInventoryItemRow[] | null;
+  quantity: number | string | null;
+  unit: string | null;
+};
+
+type CoffeeSoldRecipeRow = {
+  output_qty: number | string | null;
+  product_id: string;
+  product_recipe_components?: CoffeeSoldRecipeComponentRow[] | null;
+};
+
+type CoffeeSoldByRawMaterialRow = {
+  id: string;
+  label: string;
+  lineCount: number;
+  poundsSold: number;
+  productCount: number;
+};
+
+type CoffeeSoldByRawMaterialSummary = {
+  rows: CoffeeSoldByRawMaterialRow[];
+  totalPoundsSold: number;
+  unweightedLineCount: number;
+  weightedLineCount: number;
+};
+
+const RAW_COFFEE_BUCKETS = [
+  { id: 'fourth_dimension_medium', label: '4th Dimension Medium' },
+  { id: 'meeting_coffee_medium', label: 'Meeting Coffee Medium' },
+  { id: 'meeting_coffee_dark', label: 'Meeting Coffee Dark' },
+] as const;
 
 function reportIsProfitability(reportId: ReportId) {
   return reportId !== 'sales';
@@ -198,6 +242,149 @@ function pounds(value: number) {
 
 function percent(value: number) {
   return `${value > 0 ? '+' : ''}${new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 }).format(value)}%`;
+}
+
+function relatedOne<T>(value: T | T[] | null | undefined): T | null {
+  if (Array.isArray(value)) return value[0] ?? null;
+  return value ?? null;
+}
+
+function reportDate(value: string | null | undefined) {
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function rawCoffeeBucketForItem(item: CoffeeSoldInventoryItemRow | null) {
+  const sku = item?.sku?.toUpperCase() ?? '';
+  const name = item?.name?.toLowerCase() ?? '';
+  if (sku === 'RAW-COF-FD-MED' || ((name.includes('fourth dimension') || name.includes('4th dimension')) && name.includes('medium'))) {
+    return RAW_COFFEE_BUCKETS[0];
+  }
+  if (sku === 'RAW-COF-MTC-MED' || (name.includes('meeting coffee') && name.includes('medium'))) {
+    return RAW_COFFEE_BUCKETS[1];
+  }
+  if (sku === 'RAW-COF-MTC-DRK' || (name.includes('meeting coffee') && name.includes('dark'))) {
+    return RAW_COFFEE_BUCKETS[2];
+  }
+  const fallbackLabel = item?.name?.replace(/^Raw Coffee\s*-\s*/i, '').trim() || 'Other Raw Coffee';
+  return { id: `other_${item?.id ?? fallbackLabel.toLowerCase().replace(/[^a-z0-9]+/g, '_')}`, label: fallbackLabel };
+}
+
+function recipeRawCoffeePoundsByBucket(recipe: CoffeeSoldRecipeRow | undefined) {
+  if (!recipe) return [];
+  const outputQty = normalizeReportNumber(recipe.output_qty) || 1;
+  const rows: Array<{ bucket: { id: string; label: string }; poundsPerUnit: number }> = [];
+
+  for (const component of recipe.product_recipe_components ?? []) {
+    const inventoryItem = relatedOne(component.inventory_items);
+    const itemType = inventoryItem?.item_type === 'supply' ? 'material_supply' : inventoryItem?.item_type;
+    const isRawCoffee = component.component_role === 'raw_coffee' || itemType === 'raw_coffee';
+    if (!isRawCoffee) continue;
+
+    try {
+      const rawCoffeePounds = convertInventoryQuantity(normalizeReportNumber(component.quantity), component.unit ?? 'lb', 'lb');
+      if (rawCoffeePounds > 0 && outputQty > 0) {
+        rows.push({
+          bucket: rawCoffeeBucketForItem(inventoryItem),
+          poundsPerUnit: rawCoffeePounds / outputQty,
+        });
+      }
+    } catch {
+      // Keep report rendering resilient if an old recipe has an unsupported unit.
+    }
+  }
+
+  return rows;
+}
+
+function buildCoffeeSoldByRawMaterialSummary({
+  centerId,
+  orderItems,
+  orders,
+  productId,
+  rangeEndExclusive,
+  rangeStart,
+  recipes,
+}: {
+  centerId?: string;
+  orderItems: ProfitabilityOrderItemRow[];
+  orders: ProfitabilityOrderRow[];
+  productId?: string;
+  rangeEndExclusive: Date;
+  rangeStart: Date;
+  recipes: CoffeeSoldRecipeRow[];
+}): CoffeeSoldByRawMaterialSummary {
+  const itemsByOrderId = new Map<string, ProfitabilityOrderItemRow[]>();
+  for (const item of orderItems) {
+    const rows = itemsByOrderId.get(item.order_id) ?? [];
+    rows.push(item);
+    itemsByOrderId.set(item.order_id, rows);
+  }
+
+  const recipeByProductId = new Map(recipes.map((recipe) => [recipe.product_id, recipe]));
+  const rowsByBucket = new Map<string, CoffeeSoldByRawMaterialRow & { productIds: Set<string> }>();
+  for (const bucket of RAW_COFFEE_BUCKETS) {
+    rowsByBucket.set(bucket.id, { ...bucket, lineCount: 0, poundsSold: 0, productCount: 0, productIds: new Set<string>() });
+  }
+
+  let unweightedLineCount = 0;
+  let weightedLineCount = 0;
+
+  for (const order of orders) {
+    if (order.status !== 'Shipped') continue;
+    const orderDate = reportDate(order.shipped_at) ?? reportDate(order.created_at);
+    if (!orderDate || orderDate < rangeStart || orderDate >= rangeEndExclusive) continue;
+    if (centerId && order.center_id !== centerId) continue;
+
+    for (const item of itemsByOrderId.get(order.id) ?? []) {
+      const qty = normalizeReportNumber(item.qty);
+      if (qty <= 0) continue;
+      if (productId && item.product_id !== productId) continue;
+
+      const rawCoffeeRows = item.product_id ? recipeRawCoffeePoundsByBucket(recipeByProductId.get(item.product_id)) : [];
+      if (!rawCoffeeRows.length) {
+        unweightedLineCount += 1;
+        continue;
+      }
+
+      weightedLineCount += 1;
+      for (const rawCoffeeRow of rawCoffeeRows) {
+        const row = rowsByBucket.get(rawCoffeeRow.bucket.id) ?? {
+          id: rawCoffeeRow.bucket.id,
+          label: rawCoffeeRow.bucket.label,
+          lineCount: 0,
+          poundsSold: 0,
+          productCount: 0,
+          productIds: new Set<string>(),
+        };
+        row.lineCount += 1;
+        row.poundsSold += rawCoffeeRow.poundsPerUnit * qty;
+        if (item.product_id) {
+          row.productIds.add(item.product_id);
+          row.productCount = row.productIds.size;
+        }
+        rowsByBucket.set(row.id, row);
+      }
+    }
+  }
+
+  const rows = [...rowsByBucket.values()]
+    .map(({ productIds, ...row }) => row)
+    .filter((row) => RAW_COFFEE_BUCKETS.some((bucket) => bucket.id === row.id) || row.poundsSold > 0)
+    .sort((a, b) => {
+      const aIndex = RAW_COFFEE_BUCKETS.findIndex((bucket) => bucket.id === a.id);
+      const bIndex = RAW_COFFEE_BUCKETS.findIndex((bucket) => bucket.id === b.id);
+      if (aIndex >= 0 || bIndex >= 0) return (aIndex >= 0 ? aIndex : 99) - (bIndex >= 0 ? bIndex : 99);
+      return b.poundsSold - a.poundsSold || a.label.localeCompare(b.label);
+    });
+
+  return {
+    rows,
+    totalPoundsSold: rows.reduce((sum, row) => sum + row.poundsSold, 0),
+    unweightedLineCount,
+    weightedLineCount,
+  };
 }
 
 function dateLabel(value: Date | null, fallback = 'Not enough history') {
@@ -800,6 +987,30 @@ function ProductionCogsTable({ rows }: { rows: ReturnType<typeof buildProfitabil
           ))}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+function CoffeeSoldByRawMaterialGrid({ summary }: { summary: CoffeeSoldByRawMaterialSummary }) {
+  if (!summary.weightedLineCount) {
+    return <EmptyState message="No shipped coffee pounds could be calculated for the selected range." />;
+  }
+
+  return (
+    <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+      <StatTile
+        label="Coffee Pounds Sold"
+        value={`${pounds(summary.totalPoundsSold)} lb`}
+        detail={`${number(summary.weightedLineCount)} weighted shipped line${summary.weightedLineCount === 1 ? '' : 's'}.`}
+      />
+      {summary.rows.map((row) => (
+        <StatTile
+          key={row.id}
+          label={row.label}
+          value={`${pounds(row.poundsSold)} lb`}
+          detail={`${number(row.lineCount)} shipped line${row.lineCount === 1 ? '' : 's'} from ${number(row.productCount)} product${row.productCount === 1 ? '' : 's'}.`}
+        />
+      ))}
     </div>
   );
 }
@@ -1427,6 +1638,15 @@ export default async function AdminReportsPage({
     products,
     recipes: recipeResult.error ? [] : ((recipeResult.data ?? []) as any[]),
   });
+  const coffeeSoldByRawMaterialSummary = buildCoffeeSoldByRawMaterialSummary({
+    centerId,
+    orderItems: (orderItemsResult.data ?? []) as ProfitabilityOrderItemRow[],
+    orders: (ordersResult.data ?? []) as ProfitabilityOrderRow[],
+    productId,
+    rangeEndExclusive,
+    rangeStart,
+    recipes: recipeResult.error ? [] : ((recipeResult.data ?? []) as CoffeeSoldRecipeRow[]),
+  });
   const sampleBoxRuns = (sampleBoxRunsResult.error ? [] : (sampleBoxRunsResult.data ?? []) as Array<{
     center_id: string | null;
     cogs_estimated: boolean | null;
@@ -1651,6 +1871,15 @@ export default async function AdminReportsPage({
             <StatTile label="Estimated COGS" value={money(profitabilityDashboard.productionSummary.estimatedCostCents)} detail="Expected recipe cost before actual usage." />
             <StatTile label="Variance" value={signedMoney(profitabilityDashboard.productionSummary.varianceCents)} detail="Actual production cost minus estimate." />
             <StatTile label="Labor" value={money(profitabilityDashboard.productionSummary.laborCostCents)} detail={`${money(profitabilityDashboard.productionSummary.fixedCostCents)} fixed packaging in runs.`} />
+          </section>
+          <section className="card space-y-5">
+            <SectionHeading
+              eyebrow="Coffee sold"
+              title="Pounds sold by raw material"
+              subtitle="Uses shipped order lines and each product recipe's raw coffee weight, without applying waste or shrinkage."
+              action={coffeeSoldByRawMaterialSummary.unweightedLineCount ? <span className="rounded-full bg-amber-50 px-3 py-1 text-sm font-semibold text-amber-800">{number(coffeeSoldByRawMaterialSummary.unweightedLineCount)} unweighted line{coffeeSoldByRawMaterialSummary.unweightedLineCount === 1 ? '' : 's'}</span> : null}
+            />
+            <CoffeeSoldByRawMaterialGrid summary={coffeeSoldByRawMaterialSummary} />
           </section>
           <section className="card space-y-5">
             <SectionHeading
