@@ -69,6 +69,18 @@ function laborCostCents(laborMinutes, laborRateCents) {
   return (Math.max(0, numericValue(laborMinutes)) / 60) * Math.max(0, numericValue(laborRateCents));
 }
 
+function isWholeCountPackagingComponentRole(role) {
+  return ['bag', 'box', 'filter_pack', 'fraction_bag'].includes(String(role ?? ''));
+}
+
+function roundWholeCountQuantity(value) {
+  return Math.max(0, Math.round(numericValue(value)));
+}
+
+function recipeComponentWasteMultiplier(componentRole, wastePercent) {
+  return componentRole === 'raw_coffee' ? 1 + numericValue(wastePercent) / 100 : 1;
+}
+
 function fixedRecipeCostBreakdownCents({ boxQty, shippingLabelQty, brandingLabelQty }) {
   const tapeCents = Math.max(0, numericValue(boxQty)) * FIXED_TAPE_COST_CENTS;
   const shippingLabelCents = Math.max(0, numericValue(shippingLabelQty)) * FIXED_SHIPPING_LABEL_COST_CENTS;
@@ -203,18 +215,20 @@ function emptyUnitBreakdown(source = 'missing_cost') {
 function recipeUnitCostBreakdown(recipe, avgCostByItemId) {
   const components = recipe.product_recipe_components ?? [];
   const outputQty = numericValue(recipe.output_qty) || 1;
-  const wasteMultiplier = 1 + numericValue(recipe.waste_percent) / 100;
   let materialCostForRecipeOutput = 0;
 
   for (const component of components) {
     const item = relatedOne(component.inventory_items);
     if (!item?.base_unit) continue;
     try {
-      const baseQuantity = convertInventoryQuantity(
-        numericValue(component.quantity) * wasteMultiplier,
+      const rawBaseQuantity = convertInventoryQuantity(
+        numericValue(component.quantity) * recipeComponentWasteMultiplier(component.component_role, recipe.waste_percent),
         component.unit,
         item.base_unit
       );
+      const baseQuantity = isWholeCountPackagingComponentRole(component.component_role) && item.base_unit === 'each'
+        ? roundWholeCountQuantity(rawBaseQuantity)
+        : rawBaseQuantity;
       materialCostForRecipeOutput += baseQuantity * (avgCostByItemId.get(component.inventory_item_id) ?? 0);
     } catch {
       // Keep the backfill moving; unresolved unit conversions make this product an estimate.

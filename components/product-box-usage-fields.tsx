@@ -102,7 +102,7 @@ export function ProductBoxUsageFields({
                   min="0"
                   name="box_quantity"
                   placeholder="0"
-                  step="0.0001"
+                  step="1"
                   type="number"
                 />
               </label>

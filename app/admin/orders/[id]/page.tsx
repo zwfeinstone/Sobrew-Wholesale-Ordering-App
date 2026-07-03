@@ -20,7 +20,7 @@ import {
 } from '@/lib/easypost';
 import { sendShippedEmail } from '@/lib/email';
 import { env } from '@/lib/env';
-import { centsFromDollars, normalizeInventoryNumber } from '@/lib/inventory';
+import { centsFromDollars, isWholeCountQuantity, normalizeInventoryNumber, roundWholeCountQuantity } from '@/lib/inventory';
 import { snapshotOrderCogsForShipment } from '@/lib/order-cogs';
 import { donationCogsCentsForRevenue, processingFeeCentsForRevenue } from '@/lib/order-fees';
 import { getOrderItemSummaries } from '@/lib/order-items';
@@ -317,7 +317,6 @@ async function shipOrder(formData: FormData) {
     const rawQuantities = formData.getAll('box_quantity').map((value) => String(value ?? '').trim());
     const quantities = rawQuantities.map((value) => Math.max(0, Number.parseFloat(value) || 0));
     const submittedUsageByBoxItem = new Map<string, number>();
-    const usageByOrderItem = new Map<string, Map<string, number>>();
 
     for (let index = 0; index < Math.max(boxItemIds.length, quantities.length); index += 1) {
       const boxItemId = boxItemIds[index];
@@ -330,13 +329,14 @@ async function shipOrder(formData: FormData) {
         if (fulfillmentMethod === 'local_delivery') continue;
         redirect(`/admin/orders/${id}?toast=zero_boxes_local_delivery_required`);
       }
+      if (!isWholeCountQuantity(quantity)) redirect(`/admin/orders/${id}?toast=box_count_required`);
 
       if (!validBoxItemIds.size) redirect(`/admin/orders/${id}?toast=box_inventory_required`);
       if (!validBoxItemIds.has(boxItemId)) {
         redirect(`/admin/orders/${id}?toast=box_count_required`);
       }
 
-      submittedUsageByBoxItem.set(boxItemId, (submittedUsageByBoxItem.get(boxItemId) ?? 0) + quantity);
+      submittedUsageByBoxItem.set(boxItemId, (submittedUsageByBoxItem.get(boxItemId) ?? 0) + roundWholeCountQuantity(quantity));
     }
 
     const totalSubmittedQuantity = [...submittedUsageByBoxItem.values()].reduce((sum, quantity) => sum + quantity, 0);
@@ -350,21 +350,6 @@ async function shipOrder(formData: FormData) {
     if (totalSubmittedQuantity <= 0) {
       if (fulfillmentMethod !== 'local_delivery') redirect(`/admin/orders/${id}?toast=zero_boxes_local_delivery_required`);
       if (!zeroBoxesConfirmed) redirect(`/admin/orders/${id}?toast=zero_boxes_confirm_required`);
-    } else {
-      for (const [boxItemId, totalQuantity] of submittedUsageByBoxItem.entries()) {
-        let allocatedQuantity = 0;
-        requiredLines.forEach((line, index) => {
-          const quantity = index === requiredLines.length - 1
-            ? Math.max(0, totalQuantity - allocatedQuantity)
-            : (totalQuantity * line.qty) / totalRequiredQty;
-          allocatedQuantity += quantity;
-          if (quantity <= 0) return;
-
-          const existing = usageByOrderItem.get(line.id) ?? new Map<string, number>();
-          existing.set(boxItemId, (existing.get(boxItemId) ?? 0) + quantity);
-          usageByOrderItem.set(line.id, existing);
-        });
-      }
     }
 
     const deleteResult = await supabase
@@ -374,14 +359,15 @@ async function shipOrder(formData: FormData) {
       .is('consumed_at', null);
     if (deleteResult.error) redirect(`/admin/orders/${id}?toast=ship_error`);
 
-    const usageRows = [...usageByOrderItem.entries()].flatMap(([orderItemId, boxMap]) =>
-      [...boxMap.entries()].map(([boxItemId, quantity]) => ({
+    const primaryOrderItemId = requiredLines[0]?.id;
+    const usageRows = primaryOrderItemId
+      ? [...submittedUsageByBoxItem.entries()].map(([boxItemId, quantity]) => ({
         inventory_item_id: boxItemId,
         order_id: id,
-        order_item_id: orderItemId,
+        order_item_id: primaryOrderItemId,
         quantity,
       }))
-    );
+      : [];
 
     if (usageRows.length) {
       const insertResult = await supabase.from('order_item_shipping_boxes').insert(usageRows);
@@ -389,8 +375,7 @@ async function shipOrder(formData: FormData) {
     }
 
     for (const line of requiredLines) {
-      const boxMap = usageByOrderItem.get(line.id);
-      const boxesUsed = boxMap ? [...boxMap.values()].reduce((sum, quantity) => sum + quantity, 0) : 0;
+      const boxesUsed = line.id === primaryOrderItemId ? totalSubmittedQuantity : 0;
       const { error: itemError } = await supabase
         .from('order_items')
         .update({ shipping_boxes_used: boxesUsed })

@@ -1,4 +1,10 @@
-import { convertInventoryQuantity, laborCostCents } from '@/lib/inventory';
+import {
+  convertInventoryQuantity,
+  isWholeCountPackagingComponentRole,
+  laborCostCents,
+  recipeComponentWasteMultiplier,
+  roundWholeCountQuantity,
+} from '@/lib/inventory';
 import type {
   ProfitabilityOrderItemRow,
   ProfitabilityOrderRow,
@@ -413,7 +419,6 @@ function recipeComponentCostsForLine({
 }): ComponentCost[] {
   if (!recipe) return [];
   const outputQty = numericValue(recipe.output_qty) || 1;
-  const wasteMultiplier = 1 + numericValue(recipe.waste_percent) / 100;
   const costs: ComponentCost[] = [];
 
   for (const component of recipe.product_recipe_components ?? []) {
@@ -421,11 +426,14 @@ function recipeComponentCostsForLine({
     if (!inventoryItem?.base_unit) continue;
 
     try {
-      const recipeOutputQuantity = convertInventoryQuantity(
-        numericValue(component.quantity) * wasteMultiplier,
+      const rawRecipeOutputQuantity = convertInventoryQuantity(
+        numericValue(component.quantity) * recipeComponentWasteMultiplier(component.component_role, recipe.waste_percent),
         component.unit,
         inventoryItem.base_unit
       );
+      const recipeOutputQuantity = isWholeCountPackagingComponentRole(component.component_role) && inventoryItem.base_unit === 'each'
+        ? roundWholeCountQuantity(rawRecipeOutputQuantity)
+        : rawRecipeOutputQuantity;
       const quantityForLine = (recipeOutputQuantity / outputQty) * line.qty;
       const baselineUnitCost = avgCostByItemId.get(component.inventory_item_id) ?? 0;
       const scenarioUnitCost = simulatedUnitCostCents({

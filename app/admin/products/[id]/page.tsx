@@ -9,9 +9,12 @@ import {
   dollarsInputValueFromCents,
   fixedRecipeCostCents,
   formatInventoryQuantity,
+  isWholeCountPackagingComponentRole,
+  isWholeCountQuantity,
   laborCostCents,
   normalizeInventoryNumber,
   numericInputValue,
+  roundWholeCountQuantity,
   type InventoryUnit,
 } from '@/lib/inventory';
 import { PRODUCT_CATEGORY_OPTIONS, isProductCategory } from '@/lib/product-categories';
@@ -66,6 +69,13 @@ function itemDisplayName(item: InventoryItemRow | undefined | null) {
 function parsePositiveNumber(value: FormDataEntryValue | null, fallback = 0) {
   const parsed = Number.parseFloat(String(value ?? ''));
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function parseWholeCountNumber(value: FormDataEntryValue | null) {
+  const quantity = parsePositiveNumber(value);
+  if (quantity <= 0) return 0;
+  if (!isWholeCountQuantity(quantity)) throw new Error('Packaging quantities must be whole numbers.');
+  return roundWholeCountQuantity(quantity);
 }
 
 async function updateProduct(formData: FormData) {
@@ -141,10 +151,14 @@ async function saveRecipe(formData: FormData) {
     0,
     'Raw coffee'
   );
-  addComponent(String(formData.get('fraction_bag_item_id') ?? ''), parsePositiveNumber(formData.get('fraction_bag_qty')), 'each', 'fraction_bag', 10, 'Fraction bag');
-  addComponent(String(formData.get('box_item_id') ?? ''), parsePositiveNumber(formData.get('box_qty')), 'each', 'box', 20, 'Box');
-  addComponent(String(formData.get('filter_pack_item_id') ?? ''), parsePositiveNumber(formData.get('filter_pack_qty')), 'each', 'filter_pack', 30, 'Filter pack');
-  addComponent(String(formData.get('bag_item_id') ?? ''), parsePositiveNumber(formData.get('bag_qty')), 'each', 'bag', 40, 'Bag');
+  try {
+    addComponent(String(formData.get('fraction_bag_item_id') ?? ''), parseWholeCountNumber(formData.get('fraction_bag_qty')), 'each', 'fraction_bag', 10, 'Fraction bag');
+    addComponent(String(formData.get('box_item_id') ?? ''), parseWholeCountNumber(formData.get('box_qty')), 'each', 'box', 20, 'Box');
+    addComponent(String(formData.get('filter_pack_item_id') ?? ''), parseWholeCountNumber(formData.get('filter_pack_qty')), 'each', 'filter_pack', 30, 'Filter pack');
+    addComponent(String(formData.get('bag_item_id') ?? ''), parseWholeCountNumber(formData.get('bag_qty')), 'each', 'bag', 40, 'Bag');
+  } catch {
+    redirect(`/admin/products/${productId}?toast=recipe_error`);
+  }
 
   for (let index = 0; index < EXTRA_COMPONENT_ROWS; index += 1) {
     addComponent(
@@ -236,7 +250,10 @@ export default async function ProductPage({
     const item = relatedOne(component.inventory_items);
     if (!item) return sum;
     try {
-      const baseQty = convertInventoryQuantity(normalizeInventoryNumber(component.quantity), component.unit, item.base_unit);
+      const rawBaseQty = convertInventoryQuantity(normalizeInventoryNumber(component.quantity), component.unit, item.base_unit);
+      const baseQty = isWholeCountPackagingComponentRole(component.component_role) && item.base_unit === 'each'
+        ? roundWholeCountQuantity(rawBaseQty)
+        : rawBaseQty;
       return sum + baseQty * (lotSummaryByItem.get(component.inventory_item_id)?.avgCostCents ?? 0);
     } catch {
       return sum;
@@ -347,7 +364,7 @@ export default async function ProductPage({
                     </label>
                     <label className="space-y-2 text-sm font-medium text-slate-700">
                       Qty
-                      <input className="input" name={`${role}_qty`} min="0" step="0.0001" type="number" defaultValue={numericInputValue(existing?.quantity)} />
+                      <input className="input" name={`${role}_qty`} min="0" step="1" type="number" defaultValue={numericInputValue(existing?.quantity)} />
                     </label>
                   </div>
                 );

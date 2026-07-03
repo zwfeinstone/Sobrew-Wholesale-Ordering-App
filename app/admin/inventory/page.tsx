@@ -5,8 +5,11 @@ import {
   fixedRecipeCostCents,
   formatInventoryQuantity,
   inventoryItemTypeLabel,
+  isWholeCountPackagingComponentRole,
   laborCostCents,
   normalizeInventoryNumber,
+  recipeComponentWasteMultiplier,
+  roundWholeCountQuantity,
   type InventoryUnit,
 } from '@/lib/inventory';
 import { createClient } from '@/lib/supabase/server';
@@ -214,12 +217,18 @@ export default async function InventoryPage({
   function estimateRecipeUnitCost(recipe: RecipeRow | undefined) {
     if (!recipe) return 0;
     const outputQty = normalizeInventoryNumber(recipe.output_qty) || 1;
-    const wasteMultiplier = 1 + normalizeInventoryNumber(recipe.waste_percent) / 100;
     const materialCost = (recipe.product_recipe_components ?? []).reduce((sum, component) => {
       const item = relatedOne(component.inventory_items) ?? itemsById.get(component.inventory_item_id);
       if (!item) return sum;
       try {
-        const baseQuantity = convertInventoryQuantity(normalizeInventoryNumber(component.quantity) * wasteMultiplier, component.unit, item.base_unit);
+        const rawBaseQuantity = convertInventoryQuantity(
+          normalizeInventoryNumber(component.quantity) * recipeComponentWasteMultiplier(component.component_role, recipe.waste_percent),
+          component.unit,
+          item.base_unit
+        );
+        const baseQuantity = isWholeCountPackagingComponentRole(component.component_role) && item.base_unit === 'each'
+          ? roundWholeCountQuantity(rawBaseQuantity)
+          : rawBaseQuantity;
         return sum + baseQuantity * (lotSummaryByItem.get(component.inventory_item_id)?.avgCostCents ?? 0);
       } catch {
         return sum;

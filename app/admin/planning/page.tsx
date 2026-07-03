@@ -6,7 +6,10 @@ import { requireAdminWriteAccess } from '@/lib/admin-write-access';
 import {
   convertInventoryQuantity,
   formatInventoryQuantity,
+  isWholeCountPackagingComponentRole,
   normalizeInventoryNumber,
+  recipeComponentWasteMultiplier,
+  roundWholeCountQuantity,
   type InventoryUnit,
 } from '@/lib/inventory';
 import { recordRecipeProductionRun } from '@/lib/inventory-production';
@@ -490,13 +493,17 @@ export default async function PlanningPage({
     const recipe = recipeByProductId.get(row.product.id);
     if (!recipe) continue;
     const outputQty = normalizeInventoryNumber(recipe.output_qty) || 1;
-    const wasteMultiplier = 1 + normalizeInventoryNumber(recipe.waste_percent) / 100;
     for (const component of recipe.product_recipe_components ?? []) {
       const item = relatedOne(component.inventory_items) ?? itemsById.get(component.inventory_item_id);
       if (!item) continue;
       try {
-        const recipeUnitQty = (normalizeInventoryNumber(component.quantity) / outputQty) * row.suggestedProductionQty * wasteMultiplier;
-        const baseQty = convertInventoryQuantity(recipeUnitQty, component.unit, item.base_unit);
+        const recipeUnitQty = (
+          normalizeInventoryNumber(component.quantity) / outputQty
+        ) * row.suggestedProductionQty * recipeComponentWasteMultiplier(component.component_role, recipe.waste_percent);
+        const rawBaseQty = convertInventoryQuantity(recipeUnitQty, component.unit, item.base_unit);
+        const baseQty = isWholeCountPackagingComponentRole(component.component_role) && item.base_unit === 'each'
+          ? roundWholeCountQuantity(rawBaseQty)
+          : rawBaseQty;
         const existing = materialDemandByItemId.get(item.id) ?? { item, requiredQty: 0, sourceProducts: new Set<string>() };
         existing.requiredQty += baseQty;
         existing.sourceProducts.add(row.product.id);

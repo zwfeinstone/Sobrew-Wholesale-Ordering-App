@@ -1,8 +1,11 @@
 import {
   convertInventoryQuantity,
   fixedRecipeCostBreakdownCents,
+  isWholeCountPackagingComponentRole,
   laborCostCents,
   normalizeInventoryNumber,
+  recipeComponentWasteMultiplier,
+  roundWholeCountQuantity,
   type InventoryUnit,
 } from '@/lib/inventory';
 import { processingFeeCentsForRevenue } from '@/lib/order-fees';
@@ -284,18 +287,20 @@ async function ensureFinishedItemsForProducts({
 function recipeUnitCostBreakdown(recipe: RecipeRow, avgCostByItemId: Map<string, number>): UnitCostBreakdown {
   const components = recipe.product_recipe_components ?? [];
   const outputQty = normalizeInventoryNumber(recipe.output_qty) || 1;
-  const wasteMultiplier = 1 + normalizeInventoryNumber(recipe.waste_percent) / 100;
   let materialCostForRecipeOutput = 0;
 
   for (const component of components) {
     const item = relatedOne(component.inventory_items);
     if (!item?.base_unit) continue;
     try {
-      const baseQuantity = convertInventoryQuantity(
-        normalizeInventoryNumber(component.quantity) * wasteMultiplier,
+      const rawBaseQuantity = convertInventoryQuantity(
+        normalizeInventoryNumber(component.quantity) * recipeComponentWasteMultiplier(component.component_role, recipe.waste_percent),
         component.unit,
         item.base_unit
       );
+      const baseQuantity = isWholeCountPackagingComponentRole(component.component_role) && item.base_unit === 'each'
+        ? roundWholeCountQuantity(rawBaseQuantity)
+        : rawBaseQuantity;
       materialCostForRecipeOutput += baseQuantity * (avgCostByItemId.get(component.inventory_item_id) ?? 0);
     } catch {
       // Unit conversion gaps should not block shipment; they make this line an estimate.
@@ -404,10 +409,12 @@ async function insertShipmentMovement({
 
 async function consumeShippingBoxUsages({
   orderId,
+  orderItems,
   snapshotAt,
   supabase,
 }: {
   orderId: string;
+  orderItems: OrderItemRow[];
   snapshotAt: string;
   supabase: SupabaseLike;
 }) {
@@ -429,7 +436,23 @@ async function consumeShippingBoxUsages({
     costByOrderItemId.set(orderItemId, current);
   }
 
-  const boxItemIds = [...new Set(usageRows.map((usage) => usage.inventory_item_id).filter(Boolean))];
+  for (const usage of usageRows) {
+    if (!usage.consumed_at) continue;
+    addUsageCost(usage.order_item_id, normalizeInventoryNumber(usage.total_cost_cents), Boolean(usage.cogs_estimated));
+  }
+
+  const unconsumedRows = usageRows.filter((usage) => !usage.consumed_at);
+  if (!unconsumedRows.length) return { costByOrderItemId, error: null };
+
+  const rowsByBoxItemId = new Map<string, ShippingBoxUsageRow[]>();
+  for (const usage of unconsumedRows) {
+    if (!usage.inventory_item_id) continue;
+    const rows = rowsByBoxItemId.get(usage.inventory_item_id) ?? [];
+    rows.push(usage);
+    rowsByBoxItemId.set(usage.inventory_item_id, rows);
+  }
+
+  const boxItemIds = [...rowsByBoxItemId.keys()];
   const [{ data: availableLots, error: availableLotsError }, { data: costLots, error: costLotsError }] = await Promise.all([
     boxItemIds.length
       ? supabase
@@ -467,16 +490,19 @@ async function consumeShippingBoxUsages({
     }
   }
 
-  for (const usage of usageRows) {
-    const quantity = Math.max(0, normalizeInventoryNumber(usage.quantity));
+  function addOrderLevelUsageCost(costCents: number, estimated: boolean) {
+    const allocations = allocateByRevenue(orderItems, costCents);
+    for (const item of orderItems) {
+      addUsageCost(item.id, allocations.get(item.id) ?? 0, estimated);
+    }
+  }
+
+  for (const [inventoryItemId, rows] of rowsByBoxItemId.entries()) {
+    const rawQuantity = rows.reduce((sum, usage) => sum + Math.max(0, normalizeInventoryNumber(usage.quantity)), 0);
+    const quantity = roundWholeCountQuantity(rawQuantity);
     if (quantity <= 0) continue;
 
-    if (usage.consumed_at) {
-      addUsageCost(usage.order_item_id, normalizeInventoryNumber(usage.total_cost_cents), Boolean(usage.cogs_estimated));
-      continue;
-    }
-
-    const lotQueue = lotsByItemId.get(usage.inventory_item_id) ?? [];
+    const lotQueue = lotsByItemId.get(inventoryItemId) ?? [];
     let remaining = quantity;
     let totalCostCents = 0;
     let estimated = false;
@@ -499,11 +525,11 @@ async function consumeShippingBoxUsages({
       totalCostCents += take * unitCost;
 
       const movementResult = await insertShipmentMovement({
-        inventoryItemId: usage.inventory_item_id,
+        inventoryItemId,
         lotId: lot.id,
         notes: 'Shipping product box used',
         orderId,
-        orderItemId: usage.order_item_id,
+        orderItemId: rows[0]?.order_item_id ?? orderItems[0]?.id ?? '',
         quantity: take,
         supabase,
         unitCostCents: unitCost,
@@ -514,15 +540,15 @@ async function consumeShippingBoxUsages({
     }
 
     if (remaining > 0) {
-      const fallbackUnitCost = latestCostByItemId.get(usage.inventory_item_id) ?? 0;
+      const fallbackUnitCost = latestCostByItemId.get(inventoryItemId) ?? 0;
       estimated = true;
       totalCostCents += remaining * fallbackUnitCost;
       const movementResult = await insertShipmentMovement({
-        inventoryItemId: usage.inventory_item_id,
+        inventoryItemId,
         lotId: null,
         notes: 'Shipping product box used below available stock',
         orderId,
-        orderItemId: usage.order_item_id,
+        orderItemId: rows[0]?.order_item_id ?? orderItems[0]?.id ?? '',
         quantity: remaining,
         supabase,
         unitCostCents: fallbackUnitCost,
@@ -530,19 +556,31 @@ async function consumeShippingBoxUsages({
       if (movementResult.error) return { error: 'shipping_box_movement_error' as const };
     }
 
-    const updateResult = await supabase
-      .from('order_item_shipping_boxes')
-      .update({
-        cogs_estimated: estimated,
-        consumed_at: snapshotAt,
-        total_cost_cents: totalCostCents,
-        unit_cost_cents: quantity > 0 ? totalCostCents / quantity : 0,
-        updated_at: snapshotAt,
-      })
-      .eq('id', usage.id);
+    let allocatedCostCents = 0;
+    let allocatedQuantity = 0;
+    for (const [index, usage] of rows.entries()) {
+      const rowWeight = rawQuantity > 0 ? Math.max(0, normalizeInventoryNumber(usage.quantity)) / rawQuantity : 1 / rows.length;
+      const rowQuantity = index === rows.length - 1 ? Math.max(0, quantity - allocatedQuantity) : quantity * rowWeight;
+      const rowCostCents = index === rows.length - 1 ? Math.max(0, totalCostCents - allocatedCostCents) : totalCostCents * rowWeight;
+      allocatedQuantity += rowQuantity;
+      allocatedCostCents += rowCostCents;
 
-    if (updateResult.error) return { error: 'shipping_box_usage_update_error' as const };
-    addUsageCost(usage.order_item_id, totalCostCents, estimated);
+      const updateResult = await supabase
+        .from('order_item_shipping_boxes')
+        .update({
+          cogs_estimated: estimated,
+          consumed_at: snapshotAt,
+          quantity: rowQuantity,
+          total_cost_cents: rowCostCents,
+          unit_cost_cents: rowQuantity > 0 ? rowCostCents / rowQuantity : 0,
+          updated_at: snapshotAt,
+        })
+        .eq('id', usage.id);
+
+      if (updateResult.error) return { error: 'shipping_box_usage_update_error' as const };
+    }
+
+    addOrderLevelUsageCost(totalCostCents, estimated);
   }
 
   return { costByOrderItemId, error: null };
@@ -664,7 +702,7 @@ export async function snapshotOrderCogsForShipment({
   const processingFeeAllocationByItemId = allocateByRevenue(orderItems, safeProcessingFeeCents);
   const donationAllocationByItemId = allocateByRevenue(orderItems, safeDonationCogsCents);
   const snapshotAt = new Date().toISOString();
-  const shippingBoxUsageResult = await consumeShippingBoxUsages({ orderId, snapshotAt, supabase });
+  const shippingBoxUsageResult = await consumeShippingBoxUsages({ orderId, orderItems, snapshotAt, supabase });
   if (shippingBoxUsageResult.error) return { error: shippingBoxUsageResult.error };
   const shippingBoxCostByOrderItemId = shippingBoxUsageResult.costByOrderItemId;
 

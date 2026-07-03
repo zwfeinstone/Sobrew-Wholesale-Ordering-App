@@ -2,8 +2,11 @@ import {
   convertInventoryQuantity,
   fixedRecipeCostBreakdownCents,
   fixedRecipeCostCents,
+  isWholeCountPackagingComponentRole,
   laborCostCents,
   normalizeInventoryNumber,
+  recipeComponentWasteMultiplier,
+  roundWholeCountQuantity,
   scaledRecipeCostForQuantity,
   type InventoryUnit,
 } from '@/lib/inventory';
@@ -104,7 +107,6 @@ export async function recordRecipeProductionRun({
   }
 
   const outputQty = normalizeInventoryNumber(typedRecipe.output_qty) || 1;
-  const wasteMultiplier = 1 + normalizeInventoryNumber(typedRecipe.waste_percent) / 100;
   const payload = [];
   let estimatedMaterialCost = 0;
 
@@ -113,12 +115,16 @@ export async function recordRecipeProductionRun({
       const item = relatedOne(component.inventory_items);
       const baseUnit = item?.base_unit;
       if (!baseUnit) throw new Error('Missing component base unit.');
-      const expectedInRecipeUnit = (normalizeInventoryNumber(component.quantity) / outputQty) * quantityProduced * wasteMultiplier;
+      const componentWasteMultiplier = recipeComponentWasteMultiplier(component.component_role, typedRecipe.waste_percent);
+      const expectedInRecipeUnit = (normalizeInventoryNumber(component.quantity) / outputQty) * quantityProduced * componentWasteMultiplier;
       const actualInRecipeUnit = actualQuantityByComponentId.has(component.id)
         ? Math.max(0, actualQuantityByComponentId.get(component.id) ?? expectedInRecipeUnit)
         : expectedInRecipeUnit;
-      const expectedBaseQty = convertInventoryQuantity(expectedInRecipeUnit, component.unit, baseUnit);
-      const usedBaseQty = convertInventoryQuantity(actualInRecipeUnit, component.unit, baseUnit);
+      const expectedBaseQtyRaw = convertInventoryQuantity(expectedInRecipeUnit, component.unit, baseUnit);
+      const usedBaseQtyRaw = convertInventoryQuantity(actualInRecipeUnit, component.unit, baseUnit);
+      const shouldRoundPackaging = isWholeCountPackagingComponentRole(component.component_role) && baseUnit === 'each';
+      const expectedBaseQty = shouldRoundPackaging ? roundWholeCountQuantity(expectedBaseQtyRaw) : expectedBaseQtyRaw;
+      const usedBaseQty = shouldRoundPackaging ? roundWholeCountQuantity(usedBaseQtyRaw) : usedBaseQtyRaw;
       estimatedMaterialCost += expectedBaseQty * (avgCostByItem.get(component.inventory_item_id) ?? 0);
       payload.push({
         inventory_item_id: component.inventory_item_id,

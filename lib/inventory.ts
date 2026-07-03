@@ -50,6 +50,8 @@ export const RECIPE_COMPONENT_ROLES = [
   { value: 'material_supply', label: 'Extra Material or Supply' },
 ] as const;
 
+export const WHOLE_COUNT_PACKAGING_COMPONENT_ROLES = ['bag', 'box', 'filter_pack', 'fraction_bag'] as const;
+
 export const FIXED_TAPE_COST_CENTS = 5;
 export const FIXED_SHIPPING_LABEL_COST_CENTS = 2;
 export const FIXED_BRANDING_LABEL_COST_CENTS = 4;
@@ -59,6 +61,7 @@ export type InventoryUnit = (typeof INVENTORY_UNITS)[number]['value'];
 export type NonStockExpenseType = (typeof NON_STOCK_EXPENSE_TYPES)[number]['value'];
 export type InventoryAdjustmentType = (typeof INVENTORY_ADJUSTMENT_TYPES)[number]['value'];
 export type RecipeComponentRole = (typeof RECIPE_COMPONENT_ROLES)[number]['value'];
+export type WholeCountPackagingComponentRole = (typeof WHOLE_COUNT_PACKAGING_COMPONENT_ROLES)[number];
 
 export function isInventoryItemType(value: string): value is InventoryItemType {
   return INVENTORY_ITEM_TYPES.some((type) => type.value === value);
@@ -83,6 +86,23 @@ export function isInventoryAdjustmentType(value: string): value is InventoryAdju
 
 export function isRecipeComponentRole(value: string): value is RecipeComponentRole {
   return RECIPE_COMPONENT_ROLES.some((role) => role.value === value);
+}
+
+export function isWholeCountPackagingComponentRole(value: string | null | undefined): value is WholeCountPackagingComponentRole {
+  return WHOLE_COUNT_PACKAGING_COMPONENT_ROLES.some((role) => role === value);
+}
+
+export function roundWholeCountQuantity(value: unknown) {
+  return Math.max(0, Math.round(normalizeInventoryNumber(value)));
+}
+
+export function isWholeCountQuantity(value: unknown) {
+  const normalized = normalizeInventoryNumber(value);
+  return Math.abs(normalized - Math.round(normalized)) < 0.000001;
+}
+
+export function recipeComponentWasteMultiplier(componentRole: string | null | undefined, wastePercent: unknown) {
+  return componentRole === 'raw_coffee' ? 1 + normalizeInventoryNumber(wastePercent) / 100 : 1;
 }
 
 export function normalizeInventoryNumber(value: unknown) {

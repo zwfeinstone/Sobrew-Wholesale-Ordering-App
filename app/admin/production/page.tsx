@@ -7,9 +7,12 @@ import {
   dollarsInputValueFromCents,
   fixedRecipeCostCents,
   formatInventoryQuantity,
+  isWholeCountPackagingComponentRole,
   laborCostCents,
   normalizeInventoryNumber,
   numericInputValue,
+  recipeComponentWasteMultiplier,
+  roundWholeCountQuantity,
   scaledRecipeCostForQuantity,
   type InventoryUnit,
 } from '@/lib/inventory';
@@ -227,8 +230,13 @@ export default async function ProductionPage({
             <div className="space-y-3">
               {components.map((component) => {
                 const item = relatedOne(component.inventory_items);
-                const wasteMultiplier = 1 + normalizeInventoryNumber(productionRecipe.waste_percent) / 100;
-                const expected = (normalizeInventoryNumber(component.quantity) / outputQty) * productionQty * wasteMultiplier;
+                const rawExpected = (
+                  normalizeInventoryNumber(component.quantity) / outputQty
+                ) * productionQty * recipeComponentWasteMultiplier(component.component_role, productionRecipe.waste_percent);
+                const expected = isWholeCountPackagingComponentRole(component.component_role) && item?.base_unit === 'each'
+                  ? roundWholeCountQuantity(rawExpected)
+                  : rawExpected;
+                const quantityStep = isWholeCountPackagingComponentRole(component.component_role) && item?.base_unit === 'each' ? '1' : '0.0001';
                 const summary = lotSummaryByItem.get(component.inventory_item_id);
                 return (
                   <div key={component.id} className="grid gap-3 rounded-2xl border border-slate-200 bg-white/70 p-4 md:grid-cols-[minmax(0,1fr)_10rem_7rem] md:items-center">
@@ -240,7 +248,7 @@ export default async function ProductionPage({
                     </div>
                     <label className="space-y-1 text-sm font-medium text-slate-700">
                       Actual used
-                      <input className="input" name={`actual_${component.id}`} min="0" step="0.0001" type="number" defaultValue={numericInputValue(expected)} />
+                      <input className="input" name={`actual_${component.id}`} min="0" step={quantityStep} type="number" defaultValue={numericInputValue(expected)} />
                     </label>
                     <p className="text-sm text-slate-500 md:self-end">in {component.unit}</p>
                   </div>
