@@ -38,6 +38,14 @@ type ProductRow = {
   sku: string | null;
 };
 
+type ProductionRunCostRow = {
+  actual_unit_cost_cents: number | string | null;
+  product_id: string;
+  quantity_produced?: number | string | null;
+  quantity_voided?: number | string | null;
+  status?: string | null;
+};
+
 type TemplateItemRow = {
   id: string;
   inventory_item_id: string | null;
@@ -98,6 +106,11 @@ function relatedOne<T>(value: Related<T>): T | null {
 function itemLabel(item: InventoryItemRow | null | undefined) {
   if (!item) return 'Unknown item';
   return item.sku ? `${item.name || 'Inventory item'} (${item.sku})` : item.name || 'Inventory item';
+}
+
+function activeProductionQuantity(run: ProductionRunCostRow) {
+  if (run.status === 'void') return 0;
+  return Math.max(0, normalizeInventoryNumber(run.quantity_produced) - normalizeInventoryNumber(run.quantity_voided));
 }
 
 function productLabel(product: ProductRow | null | undefined) {
@@ -340,7 +353,7 @@ export async function recordSampleBoxRun({
     productIds.size
       ? supabase
           .from('production_runs')
-          .select('product_id,actual_unit_cost_cents,produced_at')
+          .select('product_id,quantity_produced,quantity_voided,status,actual_unit_cost_cents,produced_at')
           .in('product_id', [...productIds])
           .order('produced_at', { ascending: false })
       : { data: [], error: null },
@@ -372,9 +385,9 @@ export async function recordSampleBoxRun({
 
   const latestLotCostByItemId = latestCostByItemId((latestLotsResult.data ?? []) as InventoryLotRow[]);
   const latestProductionCostByProductId = new Map<string, number>();
-  for (const run of (productionRunsResult.data ?? []) as Array<{ actual_unit_cost_cents: number | string | null; product_id: string }>) {
+  for (const run of (productionRunsResult.data ?? []) as ProductionRunCostRow[]) {
     const cost = normalizeInventoryNumber(run.actual_unit_cost_cents);
-    if (cost > 0 && !latestProductionCostByProductId.has(run.product_id)) {
+    if (cost > 0 && activeProductionQuantity(run) > 0 && !latestProductionCostByProductId.has(run.product_id)) {
       latestProductionCostByProductId.set(run.product_id, cost);
     }
   }

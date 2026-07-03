@@ -65,6 +65,8 @@ type ProductionRunRow = {
   id: string;
   product_id: string;
   quantity_produced: number | string;
+  quantity_voided?: number | string | null;
+  status?: string | null;
   actual_unit_cost_cents: number | string | null;
   actual_labor_cost_cents: number | string | null;
   fixed_cost_cents: number | string | null;
@@ -125,6 +127,11 @@ function lineRevenueCents(item: Pick<OrderItemRow, 'line_total_cents' | 'qty' | 
   const explicit = normalizeInventoryNumber(item.line_total_cents);
   if (explicit > 0) return explicit;
   return normalizeInventoryNumber(item.qty) * normalizeInventoryNumber(item.unit_price_cents);
+}
+
+function activeProductionQuantity(run: ProductionRunRow) {
+  if (run.status === 'void') return 0;
+  return Math.max(0, normalizeInventoryNumber(run.quantity_produced) - normalizeInventoryNumber(run.quantity_voided));
 }
 
 function emptyLineBreakdown(source: CogsSource = 'missing_cost'): LineCostBreakdown {
@@ -619,7 +626,7 @@ export async function snapshotOrderCogsForShipment({
     productIds.length
       ? supabase
           .from('production_runs')
-          .select('id,product_id,quantity_produced,actual_unit_cost_cents,actual_labor_cost_cents,fixed_cost_cents,fixed_tape_cost_cents,fixed_shipping_label_cost_cents,fixed_branding_label_cost_cents,fixed_other_cost_cents,produced_at')
+          .select('id,product_id,quantity_produced,quantity_voided,status,actual_unit_cost_cents,actual_labor_cost_cents,fixed_cost_cents,fixed_tape_cost_cents,fixed_shipping_label_cost_cents,fixed_branding_label_cost_cents,fixed_other_cost_cents,produced_at')
           .in('product_id', productIds)
           .order('produced_at', { ascending: false })
       : { data: [] },
@@ -658,7 +665,7 @@ export async function snapshotOrderCogsForShipment({
   const productionRunById = new Map(productionRunRows.map((run) => [run.id, run]));
   const latestRunByProductId = new Map<string, ProductionRunRow>();
   for (const run of productionRunRows) {
-    if (!latestRunByProductId.has(run.product_id) && normalizeInventoryNumber(run.actual_unit_cost_cents) > 0) {
+    if (!latestRunByProductId.has(run.product_id) && activeProductionQuantity(run) > 0 && normalizeInventoryNumber(run.actual_unit_cost_cents) > 0) {
       latestRunByProductId.set(run.product_id, run);
     }
   }

@@ -2,6 +2,8 @@ import { redirect } from 'next/navigation';
 import PendingSubmitButton from '@/components/pending-submit-button';
 import StatusToast from '@/components/status-toast';
 import { requireAdminWriteAccess } from '@/lib/admin-write-access';
+import { hasSuperadminAccess } from '@/lib/admin-permission-definitions';
+import { requireAdmin } from '@/lib/auth';
 import {
   centsFromDollars,
   dollarsInputValueFromCents,
@@ -35,6 +37,13 @@ type InventoryItemRow = {
   base_unit: InventoryUnit;
 };
 
+type InventoryLotRow = {
+  id: string;
+  inventory_item_id: string;
+  quantity_remaining: number | string;
+  unit_cost_cents: number | string;
+};
+
 type RecipeComponentRow = {
   id: string;
   inventory_item_id: string;
@@ -54,6 +63,33 @@ type RecipeRow = {
   shipping_label_qty: number | string;
   branding_label_qty: number | string;
   product_recipe_components?: RecipeComponentRow[] | null;
+};
+
+type ProductionRunRow = {
+  id: string;
+  product_id: string;
+  finished_lot_id: string | null;
+  quantity_produced: number | string;
+  quantity_voided?: number | string | null;
+  status?: string | null;
+  actual_unit_cost_cents: number | string | null;
+  actual_labor_cost_cents: number | string | null;
+  fixed_cost_cents: number | string | null;
+  fixed_tape_cost_cents: number | string | null;
+  fixed_shipping_label_cost_cents: number | string | null;
+  fixed_branding_label_cost_cents: number | string | null;
+  fixed_other_cost_cents: number | string | null;
+  produced_at: string | null;
+  void_reason?: string | null;
+  voided_at?: string | null;
+  products?: { name: string | null } | Array<{ name: string | null }> | null;
+};
+
+type ProductionRunVoidRow = {
+  production_run_id: string;
+  quantity_voided: number | string;
+  reason: string;
+  voided_at: string | null;
 };
 
 function productionHref(params: Record<string, string | undefined>) {
@@ -82,6 +118,30 @@ function relatedOne<T>(value: T | T[] | null | undefined): T | null {
 function parsePositiveNumber(value: FormDataEntryValue | null, fallback = 0) {
   const parsed = Number.parseFloat(String(value ?? ''));
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function formatRunDate(value: string | null | undefined) {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  return new Intl.DateTimeFormat('en-US', {
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    month: 'short',
+  }).format(date);
+}
+
+function productionStatusLabel(status: string | null | undefined) {
+  if (status === 'void') return 'Voided';
+  if (status === 'partially_voided') return 'Partially voided';
+  return 'Active';
+}
+
+function productionStatusClass(status: string | null | undefined) {
+  if (status === 'void') return 'bg-rose-50 text-rose-700 ring-rose-100';
+  if (status === 'partially_voided') return 'bg-amber-50 text-amber-700 ring-amber-100';
+  return 'bg-emerald-50 text-emerald-700 ring-emerald-100';
 }
 
 function isBoxComponent(component: RecipeComponentRow) {
@@ -127,11 +187,48 @@ async function recordProductionRun(formData: FormData) {
   redirect(productionHref({ toast: result.error ? 'production_error' : 'production_recorded' }));
 }
 
+async function voidProductionRun(formData: FormData) {
+  'use server';
+  const { user, profile } = await requireAdmin();
+  const isSuperadmin = hasSuperadminAccess(user.email || profile?.email, profile?.is_superadmin);
+  if (!isSuperadmin) {
+    redirect(productionHref({ toast: 'production_void_denied' }));
+  }
+
+  const runId = String(formData.get('production_run_id') ?? '').trim();
+  const quantityToVoid = parsePositiveNumber(formData.get('quantity_to_void'));
+  const reason = String(formData.get('reason') ?? '').trim();
+
+  if (!runId || quantityToVoid <= 0 || !reason) {
+    redirect(productionHref({ toast: 'production_void_missing' }));
+  }
+
+  const supabase = await createClient();
+  const { error } = await supabase.rpc('void_inventory_production_run', {
+    p_production_run_id: runId,
+    p_quantity_to_void: quantityToVoid,
+    p_reason: reason,
+  });
+
+  if (error) {
+    const message = String(error.message ?? '').toLowerCase();
+    if (message.includes('superadmin')) redirect(productionHref({ toast: 'production_void_denied' }));
+    if (message.includes('exceeds')) redirect(productionHref({ toast: 'production_void_exceeds' }));
+    if (message.includes('finished lot')) redirect(productionHref({ toast: 'production_void_lot_error' }));
+    if (message.includes('required') || message.includes('greater than zero')) redirect(productionHref({ toast: 'production_void_missing' }));
+    redirect(productionHref({ toast: 'production_void_error' }));
+  }
+
+  redirect(productionHref({ toast: 'production_voided' }));
+}
+
 export default async function ProductionPage({
   searchParams,
 }: {
   searchParams?: Record<string, string | string[] | undefined>;
 }) {
+  const { user, profile } = await requireAdmin();
+  const canVoidProductionRuns = hasSuperadminAccess(user.email || profile?.email, profile?.is_superadmin);
   const supabase = await createClient();
   const toast = typeof searchParams?.toast === 'string' ? searchParams.toast : '';
   const produceProductId = typeof searchParams?.produce_product === 'string' ? searchParams.produce_product : '';
@@ -139,12 +236,29 @@ export default async function ProductionPage({
   const [{ data: products }, { data: recipes }, { data: lots }, { data: runs }] = await Promise.all([
     supabase.from('products').select('id,name,sku,active').eq('active', true).order('name', { ascending: true }),
     supabase.from('product_recipes').select('id,product_id,output_qty,waste_percent,labor_minutes,labor_rate_cents,shipping_label_qty,branding_label_qty,product_recipe_components(id,inventory_item_id,quantity,unit,component_role,inventory_items(id,name,sku,item_type,base_unit))'),
-    supabase.from('inventory_lots').select('inventory_item_id,quantity_remaining,unit_cost_cents').limit(50000),
-    supabase.from('production_runs').select('id,product_id,quantity_produced,actual_unit_cost_cents,actual_labor_cost_cents,fixed_cost_cents,fixed_tape_cost_cents,fixed_shipping_label_cost_cents,fixed_branding_label_cost_cents,fixed_other_cost_cents,produced_at,products(name)').order('produced_at', { ascending: false }).limit(10),
+    supabase.from('inventory_lots').select('id,inventory_item_id,quantity_remaining,unit_cost_cents').limit(50000),
+    supabase.from('production_runs').select('id,product_id,finished_lot_id,quantity_produced,quantity_voided,status,actual_unit_cost_cents,actual_labor_cost_cents,fixed_cost_cents,fixed_tape_cost_cents,fixed_shipping_label_cost_cents,fixed_branding_label_cost_cents,fixed_other_cost_cents,produced_at,voided_at,void_reason,products(name)').order('produced_at', { ascending: false }).limit(10),
   ]);
 
   const productRows = (products ?? []) as ProductRow[];
   const recipeRows = (recipes ?? []) as RecipeRow[];
+  const lotRows = (lots ?? []) as InventoryLotRow[];
+  const runRows = (runs ?? []) as ProductionRunRow[];
+  const runIds = runRows.map((run) => run.id);
+  const { data: voidEvents } = runIds.length
+    ? await supabase
+        .from('production_run_voids')
+        .select('production_run_id,quantity_voided,reason,voided_at')
+        .in('production_run_id', runIds)
+        .order('voided_at', { ascending: false })
+    : { data: [] as ProductionRunVoidRow[] };
+  const voidEventsByRunId = new Map<string, ProductionRunVoidRow[]>();
+  for (const event of (voidEvents ?? []) as ProductionRunVoidRow[]) {
+    const rows = voidEventsByRunId.get(event.production_run_id) ?? [];
+    rows.push(event);
+    voidEventsByRunId.set(event.production_run_id, rows);
+  }
+  const lotById = new Map(lotRows.map((lot) => [lot.id, lot]));
   const productById = new Map(productRows.map((product) => [product.id, product]));
   const productionProductId = produceProductId || recipeRows[0]?.product_id || '';
   const productionRecipe = recipeRows.find((recipe) => recipe.product_id === productionProductId);
@@ -152,14 +266,14 @@ export default async function ProductionPage({
   const components = (productionRecipe?.product_recipe_components ?? []).sort((a, b) => (a.component_role ?? '').localeCompare(b.component_role ?? ''));
 
   const lotSummaryByItem = new Map<string, { remaining: number; avgCostCents: number }>();
-  for (const lot of lots ?? []) {
-    const existing = lotSummaryByItem.get((lot as any).inventory_item_id) ?? { remaining: 0, avgCostCents: 0 };
-    existing.remaining += normalizeInventoryNumber((lot as any).quantity_remaining);
-    lotSummaryByItem.set((lot as any).inventory_item_id, existing);
+  for (const lot of lotRows) {
+    const existing = lotSummaryByItem.get(lot.inventory_item_id) ?? { remaining: 0, avgCostCents: 0 };
+    existing.remaining += normalizeInventoryNumber(lot.quantity_remaining);
+    lotSummaryByItem.set(lot.inventory_item_id, existing);
   }
   for (const [itemId, summary] of lotSummaryByItem.entries()) {
-    const itemLots = (lots ?? []).filter((lot: any) => lot.inventory_item_id === itemId);
-    const value = itemLots.reduce((sum: number, lot: any) => sum + normalizeInventoryNumber(lot.quantity_remaining) * normalizeInventoryNumber(lot.unit_cost_cents), 0);
+    const itemLots = lotRows.filter((lot) => lot.inventory_item_id === itemId);
+    const value = itemLots.reduce((sum, lot) => sum + normalizeInventoryNumber(lot.quantity_remaining) * normalizeInventoryNumber(lot.unit_cost_cents), 0);
     summary.avgCostCents = summary.remaining > 0 ? value / summary.remaining : 0;
   }
 
@@ -183,6 +297,12 @@ export default async function ProductionPage({
       {toast === 'production_inventory_error' ? <StatusToast message="Unable to record production because one or more recipe materials do not have enough inventory." tone="error" /> : null}
       {toast === 'production_unit_error' ? <StatusToast message="A recipe component uses units that cannot be converted." tone="error" /> : null}
       {toast === 'admin_write_denied' ? <StatusToast message="You do not have permission to edit production." tone="error" /> : null}
+      {toast === 'production_voided' ? <StatusToast message="Production run voided and inventory reversed." tone="success" /> : null}
+      {toast === 'production_void_denied' ? <StatusToast message="Only superadmins can void production runs." tone="error" /> : null}
+      {toast === 'production_void_missing' ? <StatusToast message="Enter a void quantity and reason before voiding a production run." tone="error" /> : null}
+      {toast === 'production_void_exceeds' ? <StatusToast message="Unable to void more than the unused finished goods from this run." tone="error" /> : null}
+      {toast === 'production_void_lot_error' ? <StatusToast message="Unable to void because the finished production lot could not be verified." tone="error" /> : null}
+      {toast === 'production_void_error' ? <StatusToast message="Unable to void production run. No inventory was changed." tone="error" /> : null}
 
       <section className="panel">
         <span className="eyebrow">Production</span>
@@ -289,34 +409,78 @@ export default async function ProductionPage({
           <p className="mt-2 text-sm text-slate-500">These costs remain tied to each run even if recipe labor or material costs change later.</p>
         </div>
         <div className="space-y-3">
-          {(runs ?? []).map((run: any) => (
-            <div key={run.id} className="rounded-2xl border border-slate-200 bg-white/70 p-4">
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                <div>
-                  <p className="font-semibold text-slate-950">{run.products?.name ?? 'Finished product'}</p>
-                  <p className="mt-1 text-sm text-slate-500">Produced {formatInventoryQuantity(run.quantity_produced, 'each')}</p>
-                </div>
-                <div className="grid grid-cols-3 gap-3 text-sm sm:min-w-[24rem]">
+          {runRows.map((run) => {
+            const runProduct = relatedOne(run.products);
+            const finishedLot = run.finished_lot_id ? lotById.get(run.finished_lot_id) : undefined;
+            const quantityProduced = normalizeInventoryNumber(run.quantity_produced);
+            const quantityVoided = normalizeInventoryNumber(run.quantity_voided);
+            const unvoidedQuantity = Math.max(0, quantityProduced - quantityVoided);
+            const lotRemaining = normalizeInventoryNumber(finishedLot?.quantity_remaining);
+            const maxVoidable = Math.max(0, Math.min(lotRemaining, unvoidedQuantity));
+            const runVoidEvents = voidEventsByRunId.get(run.id) ?? [];
+            return (
+              <div key={run.id} className="rounded-2xl border border-slate-200 bg-white/70 p-4">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                   <div>
-                    <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Unit COGS</p>
-                    <p className="mt-1 font-semibold text-slate-950">{usd(Math.round(normalizeInventoryNumber(run.actual_unit_cost_cents)))}</p>
-                  </div>
-                  <div>
-                    <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Labor</p>
-                    <p className="mt-1 font-semibold text-slate-950">{usd(Math.round(normalizeInventoryNumber(run.actual_labor_cost_cents)))}</p>
-                  </div>
-                  <div>
-                    <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Fixed</p>
-                    <p className="mt-1 font-semibold text-slate-950">{usd(Math.round(normalizeInventoryNumber(run.fixed_cost_cents)))}</p>
-                    <p className="mt-1 text-xs text-slate-500">
-                      Tape {usd(Math.round(normalizeInventoryNumber(run.fixed_tape_cost_cents)))} / Labels {usd(Math.round(normalizeInventoryNumber(run.fixed_shipping_label_cost_cents) + normalizeInventoryNumber(run.fixed_branding_label_cost_cents)))}
+                    <div className="flex flex-wrap items-center gap-2">
+                      <p className="font-semibold text-slate-950">{runProduct?.name ?? 'Finished product'}</p>
+                      <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ring-1 ${productionStatusClass(run.status)}`}>
+                        {productionStatusLabel(run.status)}
+                      </span>
+                    </div>
+                    <p className="mt-1 text-sm text-slate-500">
+                      Produced {formatInventoryQuantity(quantityProduced, 'each')}
+                      {quantityVoided > 0 ? ` - Voided ${formatInventoryQuantity(quantityVoided, 'each')}` : ''}
+                      {unvoidedQuantity !== quantityProduced ? ` - Active ${formatInventoryQuantity(unvoidedQuantity, 'each')}` : ''}
                     </p>
+                    <p className="mt-1 text-xs text-slate-500">Max voidable now: {formatInventoryQuantity(maxVoidable, 'each')}</p>
+                    {runVoidEvents.length ? (
+                      <div className="mt-2 space-y-1 text-xs text-slate-500">
+                        {runVoidEvents.slice(0, 2).map((event) => (
+                          <p key={`${event.production_run_id}-${event.voided_at}-${event.quantity_voided}`}>
+                            Voided {formatInventoryQuantity(event.quantity_voided, 'each')}
+                            {event.voided_at ? ` on ${formatRunDate(event.voided_at)}` : ''}: {event.reason}
+                          </p>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+                  <div className="grid grid-cols-3 gap-3 text-sm sm:min-w-[24rem]">
+                    <div>
+                      <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Unit COGS</p>
+                      <p className="mt-1 font-semibold text-slate-950">{usd(Math.round(normalizeInventoryNumber(run.actual_unit_cost_cents)))}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Labor</p>
+                      <p className="mt-1 font-semibold text-slate-950">{usd(Math.round(normalizeInventoryNumber(run.actual_labor_cost_cents)))}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Fixed</p>
+                      <p className="mt-1 font-semibold text-slate-950">{usd(Math.round(normalizeInventoryNumber(run.fixed_cost_cents)))}</p>
+                      <p className="mt-1 text-xs text-slate-500">
+                        Tape {usd(Math.round(normalizeInventoryNumber(run.fixed_tape_cost_cents)))} / Labels {usd(Math.round(normalizeInventoryNumber(run.fixed_shipping_label_cost_cents) + normalizeInventoryNumber(run.fixed_branding_label_cost_cents)))}
+                      </p>
+                    </div>
                   </div>
                 </div>
+                {canVoidProductionRuns && maxVoidable > 0 && run.status !== 'void' ? (
+                  <form action={voidProductionRun} className="mt-4 grid gap-3 border-t border-slate-100 pt-4 md:grid-cols-[8rem_minmax(0,1fr)_auto] md:items-end">
+                    <input name="production_run_id" type="hidden" value={run.id} />
+                    <label className="space-y-1 text-sm font-medium text-slate-700">
+                      Qty to void
+                      <input className="input" name="quantity_to_void" min="0.0001" max={numericInputValue(maxVoidable)} required step="0.0001" type="number" defaultValue={numericInputValue(maxVoidable)} />
+                    </label>
+                    <label className="space-y-1 text-sm font-medium text-slate-700">
+                      Reason
+                      <input className="input" name="reason" required placeholder="Why this run is being voided" />
+                    </label>
+                    <PendingSubmitButton className="btn-secondary" label="Void Run" pendingLabel="Voiding..." />
+                  </form>
+                ) : null}
               </div>
-            </div>
-          ))}
-          {!runs?.length ? <p className="rounded-2xl border border-slate-200 bg-white/70 p-4 text-sm text-slate-500">No production runs have been recorded yet.</p> : null}
+            );
+          })}
+          {!runRows.length ? <p className="rounded-2xl border border-slate-200 bg-white/70 p-4 text-sm text-slate-500">No production runs have been recorded yet.</p> : null}
         </div>
       </section>
     </div>

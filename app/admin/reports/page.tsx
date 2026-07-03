@@ -1543,7 +1543,7 @@ export default async function AdminReportsPage({
     supabase.from('inventory_items').select('id,name,sku,item_type,base_unit,product_id,active').order('name', { ascending: true }),
     supabase.from('inventory_lots').select('inventory_item_id,quantity_remaining,unit_cost_cents,received_at,created_at').limit(50000),
     supabase.from('inventory_reorder_settings').select('inventory_item_id,reorder_point,target_stock,lead_time_days'),
-    supabase.from('production_runs').select('id,product_id,quantity_produced,estimated_unit_cost_cents,actual_unit_cost_cents,actual_labor_cost_cents,fixed_cost_cents,fixed_tape_cost_cents,fixed_shipping_label_cost_cents,fixed_branding_label_cost_cents,fixed_other_cost_cents,produced_at').order('produced_at', { ascending: false }).limit(50000),
+    supabase.from('production_runs').select('id,product_id,quantity_produced,quantity_voided,status,estimated_unit_cost_cents,actual_unit_cost_cents,actual_labor_cost_cents,fixed_cost_cents,fixed_tape_cost_cents,fixed_shipping_label_cost_cents,fixed_branding_label_cost_cents,fixed_other_cost_cents,produced_at').order('produced_at', { ascending: false }).limit(50000),
     supabase.from('production_run_inputs').select('production_run_id,quantity_expected,quantity_used,cost_cents').limit(50000),
     supabase.from('inventory_movements').select('inventory_item_id,quantity_change,unit_cost_cents').in('movement_type', ['shipment_consume', 'sample_box_consume']).is('lot_id', null).limit(50000),
     supabase.from('non_inventory_expenses').select('expense_type,amount_cents,spent_at').limit(50000),

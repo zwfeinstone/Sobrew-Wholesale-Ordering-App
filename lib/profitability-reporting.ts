@@ -188,6 +188,8 @@ type ProductionRunRow = {
   id: string;
   product_id: string;
   quantity_produced: number | string | null;
+  quantity_voided?: number | string | null;
+  status?: string | null;
   estimated_unit_cost_cents: number | string | null;
   actual_unit_cost_cents: number | string | null;
   actual_labor_cost_cents?: number | string | null;
@@ -311,6 +313,11 @@ function lineRevenue(item: ProfitabilityOrderItemRow) {
   return numericValue(item.qty) * numericValue(item.unit_price_cents);
 }
 
+function activeProductionQuantity(run: ProductionRunRow) {
+  if (run.status === 'void') return 0;
+  return Math.max(0, numericValue(run.quantity_produced) - numericValue(run.quantity_voided));
+}
+
 function allocateShipping(items: ProfitabilityOrderItemRow[], orderShippingCents: number) {
   const allocations = new Map<string, number>();
   const totalBoxes = items.reduce((sum, item) => sum + Math.max(0, numericValue(item.shipping_boxes_used)), 0);
@@ -392,7 +399,7 @@ function normalizeLines({
   const latestRunByProductId = new Map<string, ProductionRunRow>();
 
   for (const run of productionRuns) {
-    if (!latestRunByProductId.has(run.product_id) && numericValue(run.actual_unit_cost_cents) > 0) {
+    if (!latestRunByProductId.has(run.product_id) && activeProductionQuantity(run) > 0 && numericValue(run.actual_unit_cost_cents) > 0) {
       latestRunByProductId.set(run.product_id, run);
     }
   }
@@ -620,16 +627,18 @@ function buildProductionRows({
 
   return productionRuns
     .map((run) => ({ run, producedAt: validDate(run.produced_at) }))
-    .filter(({ producedAt }) => producedAt && producedAt >= rangeStart && producedAt < rangeEndExclusive)
+    .filter(({ run, producedAt }) => producedAt && producedAt >= rangeStart && producedAt < rangeEndExclusive && activeProductionQuantity(run) > 0)
     .map(({ run, producedAt }) => {
-      const quantityProduced = numericValue(run.quantity_produced);
+      const originalQuantityProduced = numericValue(run.quantity_produced);
+      const quantityProduced = activeProductionQuantity(run);
+      const activeRatio = originalQuantityProduced > 0 ? quantityProduced / originalQuantityProduced : 0;
       const actualCostCents = quantityProduced * numericValue(run.actual_unit_cost_cents);
       const estimatedCostCents = quantityProduced * numericValue(run.estimated_unit_cost_cents);
-      const laborCostCents = numericValue(run.actual_labor_cost_cents);
-      const fixedCostCents = numericValue(run.fixed_cost_cents);
+      const laborCostCents = numericValue(run.actual_labor_cost_cents) * activeRatio;
+      const fixedCostCents = numericValue(run.fixed_cost_cents) * activeRatio;
       const runInputs = inputsByRunId.get(run.id) ?? [];
-      const materialCostCents = runInputs.reduce((sum, input) => sum + numericValue(input.cost_cents), 0);
-      const materialUsageVarianceQty = runInputs.reduce((sum, input) => sum + numericValue(input.quantity_used) - numericValue(input.quantity_expected), 0);
+      const materialCostCents = runInputs.reduce((sum, input) => sum + numericValue(input.cost_cents), 0) * activeRatio;
+      const materialUsageVarianceQty = runInputs.reduce((sum, input) => sum + numericValue(input.quantity_used) - numericValue(input.quantity_expected), 0) * activeRatio;
       const product = productById.get(run.product_id);
 
       return {

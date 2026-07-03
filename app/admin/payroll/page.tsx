@@ -49,6 +49,13 @@ type AdminProfileRow = {
   is_active: boolean | null;
 };
 
+type ProductionRunLaborRow = {
+  actual_labor_cost_cents: number | string | null;
+  quantity_produced: number | string | null;
+  quantity_voided?: number | string | null;
+  status?: string | null;
+};
+
 type TimeBreak = {
   break_end_at: string | null;
   break_start_at: string;
@@ -225,6 +232,11 @@ function entryBreaks(entry: TimeEntry) {
 function numericValue(value: unknown) {
   const parsed = Number(value ?? 0);
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function activeProductionQuantity(run: ProductionRunLaborRow) {
+  if (run.status === 'void') return 0;
+  return Math.max(0, numericValue(run.quantity_produced) - numericValue(run.quantity_voided));
 }
 
 function percentInputValue(value: number | string | null | undefined) {
@@ -1631,7 +1643,7 @@ export default async function PayrollPage({
       .select('profile_id,work_type'),
     supabaseAdmin
       .from('production_runs')
-      .select('actual_labor_cost_cents')
+      .select('quantity_produced,quantity_voided,status,actual_labor_cost_cents')
       .gte('produced_at', fromDate.toISOString())
       .lte('produced_at', toDate.toISOString())
       .limit(50000),
@@ -1758,10 +1770,11 @@ export default async function PayrollPage({
   const productionPayrollWages = productionHourlyWages + productionSalaryPay;
   const productionSegments = segments.filter((segment) => segment.workType === 'production');
   const productionPaidMinutes = productionSegments.reduce((sum, segment) => sum + segment.minutes, 0);
-  const productionRunLaborCogs = productionRunLaborResult.error ? 0 : ((productionRunLaborResult.data ?? []) as Array<{ actual_labor_cost_cents: number | string | null }>).reduce(
-    (sum, run) => sum + numericValue(run.actual_labor_cost_cents),
-    0
-  );
+  const productionRunLaborCogs = productionRunLaborResult.error ? 0 : ((productionRunLaborResult.data ?? []) as ProductionRunLaborRow[]).reduce((sum, run) => {
+    const originalQuantity = numericValue(run.quantity_produced);
+    const activeRatio = originalQuantity > 0 ? activeProductionQuantity(run) / originalQuantity : 0;
+    return sum + numericValue(run.actual_labor_cost_cents) * activeRatio;
+  }, 0);
   const laborDifference = productionPayrollWages - productionRunLaborCogs;
   const productionRunCogsDetail = selectedAdmin || filterWorkType
     ? 'Date range only; admin and tag filters do not apply to production runs.'

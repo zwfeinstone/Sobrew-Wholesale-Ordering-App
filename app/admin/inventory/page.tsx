@@ -66,6 +66,9 @@ type RecipeRow = {
 
 type ProductionRunRow = {
   product_id: string;
+  quantity_produced?: number | string | null;
+  quantity_voided?: number | string | null;
+  status?: string | null;
   actual_unit_cost_cents: number | string | null;
 };
 
@@ -86,6 +89,11 @@ function relatedOne<T>(value: T | T[] | null | undefined): T | null {
 function isBoxComponent(component: RecipeComponentRow) {
   const item = relatedOne(component.inventory_items);
   return component.component_role === 'box' || Boolean(item?.sku?.startsWith('BOX-'));
+}
+
+function activeProductionQuantity(run: ProductionRunRow) {
+  if (run.status === 'void') return 0;
+  return Math.max(0, normalizeInventoryNumber(run.quantity_produced) - normalizeInventoryNumber(run.quantity_voided));
 }
 
 function SectionHeading({ eyebrow, title, subtitle }: { eyebrow: string; title: string; subtitle: string }) {
@@ -151,7 +159,7 @@ export default async function InventoryPage({
     supabase.from('inventory_items').select('id,name,sku,item_type,base_unit,product_id,active').order('name', { ascending: true }),
     supabase.from('inventory_lots').select('inventory_item_id,quantity_remaining,unit_cost_cents').limit(50000),
     supabase.from('product_recipes').select('product_id,output_qty,waste_percent,labor_minutes,labor_rate_cents,shipping_label_qty,branding_label_qty,product_recipe_components(id,inventory_item_id,quantity,unit,component_role,inventory_items(id,name,sku,item_type,base_unit,product_id,active))'),
-    supabase.from('production_runs').select('product_id,actual_unit_cost_cents').order('produced_at', { ascending: false }).limit(500),
+    supabase.from('production_runs').select('product_id,quantity_produced,quantity_voided,status,actual_unit_cost_cents').order('produced_at', { ascending: false }).limit(500),
     supabase.from('orders').select('id,status,order_items(product_id,qty)').in('status', ['New', 'Processing']).is('archived_at', null),
     supabase.from('inventory_movements').select('inventory_item_id,quantity_change,unit_cost_cents').in('movement_type', ['shipment_consume', 'sample_box_consume']).is('lot_id', null).limit(50000),
   ]);
@@ -209,7 +217,7 @@ export default async function InventoryPage({
   const latestActualCostByProductId = new Map<string, number>();
   for (const run of runs) {
     const actual = normalizeInventoryNumber(run.actual_unit_cost_cents);
-    if (actual > 0 && !latestActualCostByProductId.has(run.product_id)) {
+    if (actual > 0 && activeProductionQuantity(run) > 0 && !latestActualCostByProductId.has(run.product_id)) {
       latestActualCostByProductId.set(run.product_id, actual);
     }
   }
