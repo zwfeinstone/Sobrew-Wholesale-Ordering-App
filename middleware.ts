@@ -4,7 +4,7 @@ import {
   adminSectionForPath,
   canViewAdminSection,
   enforceOwnerOnlyPermissions,
-  isOwnerEmail,
+  hasSuperadminAccess,
   legacyReadOnlyAccessMap,
   normalizeAccessMap,
   type AdminPermissionKey,
@@ -55,7 +55,7 @@ export async function middleware(request: NextRequest) {
   if (user && request.nextUrl.pathname.startsWith('/admin')) {
     const { data: profile, error: profileError } = await supabase
       .from('profiles')
-      .select('id,email,is_admin,is_active')
+      .select('id,email,is_admin,is_superadmin,is_active')
       .eq('id', user.id)
       .maybeSingle();
     if (profileError || !profile) {
@@ -64,7 +64,7 @@ export async function middleware(request: NextRequest) {
       return NextResponse.redirect(new URL('/login?error=profile', request.url));
     }
 
-    const ownerAdmin = isOwnerEmail(user.email || profile.email);
+    const ownerAdmin = hasSuperadminAccess(user.email || profile.email, profile.is_superadmin);
     if (profile.is_active !== true && !ownerAdmin) {
       await supabase.auth.signOut();
       return NextResponse.redirect(new URL('/login?inactive=1', request.url));

@@ -2,7 +2,7 @@ import { notFound, redirect } from 'next/navigation';
 import { AdminPermissionEditor } from '@/components/admin-permission-editor';
 import PendingSubmitButton from '@/components/pending-submit-button';
 import { recordAdminAuditLog } from '@/lib/admin-audit';
-import { requireCenterAccess } from '@/lib/admin-center-scope';
+import { requireCenterAccess, requireCenterViewAccess } from '@/lib/admin-center-scope';
 import { isOwnerEmail } from '@/lib/admin-permission-definitions';
 import { loadSavedAdminPermissions, parseAdminPermissionsForm, saveAdminPermissions, serializePermissionSnapshot } from '@/lib/admin-permission-save';
 import { getCurrentAdminAccess, requireManageAdmins } from '@/lib/admin-permissions';
@@ -420,7 +420,7 @@ export default async function UserDetailPage({
   const { data: center } = await supabase.from('centers').select('*').eq('id', params.id).maybeSingle();
 
   if (center) {
-    await requireCenterAccess(center.id);
+    await requireCenterViewAccess();
 
     const [{ data: products }, { data: assigned }, { data: prices }, { data: members }, { data: locations }] = await Promise.all([
       supabase.from('products').select('id,name,category').eq('active', true).order('name', { ascending: true }),

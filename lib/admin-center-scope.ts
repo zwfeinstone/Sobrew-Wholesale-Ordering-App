@@ -1,5 +1,5 @@
 import { redirect } from 'next/navigation';
-import { getCurrentAdminAccess, type CurrentAdminAccess } from '@/lib/admin-permissions';
+import { adminCanView, getCurrentAdminAccess, type CurrentAdminAccess } from '@/lib/admin-permissions';
 import { createClient } from '@/lib/supabase/server';
 
 type SupabaseLike = {
@@ -128,5 +128,11 @@ export async function requireCenterAccess(centerId: string, redirectTo = '/admin
     .maybeSingle();
 
   if (error || !data) redirect(redirectTo);
+  return current;
+}
+
+export async function requireCenterViewAccess(redirectTo = '/admin/access-denied?section=centers') {
+  const current = await getCurrentAdminAccess();
+  if (!adminCanView(current.access, 'centers')) redirect(redirectTo);
   return current;
 }
