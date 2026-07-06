@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { usePathname } from 'next/navigation';
 import { ADMIN_SECTION_LABELS, adminSectionForPath, type AdminPermissionKey } from '@/lib/admin-permission-definitions';
 
@@ -21,19 +21,25 @@ function isMutatingAdminForm(form: HTMLFormElement) {
 }
 
 function disableSubmitControls(form: HTMLFormElement, message: string) {
-  if (form.dataset.adminReadonly === 'true') return;
+  const controls = Array.from(
+    form.querySelectorAll<HTMLButtonElement | HTMLInputElement>('button[type="submit"], button:not([type]), input[type="submit"]'),
+  );
+  if (!controls.length) return false;
+  if (form.dataset.adminReadonly === 'true') return true;
+
   form.dataset.adminReadonly = 'true';
-  form
-    .querySelectorAll<HTMLButtonElement | HTMLInputElement>('button[type="submit"], button:not([type]), input[type="submit"]')
-    .forEach((control) => {
-      control.disabled = true;
-      control.setAttribute('aria-disabled', 'true');
-      control.title = message;
-    });
+  controls.forEach((control) => {
+    control.disabled = true;
+    control.setAttribute('aria-disabled', 'true');
+    control.title = message;
+  });
+  return true;
 }
 
 function disableCreateLinks(message: string) {
+  let foundReadOnlyLink = false;
   document.querySelectorAll<HTMLAnchorElement>('main a[href="/admin/users/new"], main a[href="/admin/admins/new"], main a[href="/admin/products/new"]').forEach((link) => {
+    foundReadOnlyLink = true;
     if (link.dataset.adminReadonly === 'true') return;
     link.dataset.adminReadonly = 'true';
     link.classList.add('admin-readonly-disabled');
@@ -41,6 +47,7 @@ function disableCreateLinks(message: string) {
     link.title = message;
     link.addEventListener('click', preventReadOnlyNavigation);
   });
+  return foundReadOnlyLink;
 }
 
 function preventReadOnlyNavigation(event: MouseEvent) {
@@ -55,19 +62,27 @@ export function AdminReadOnlyGuard({
   editableSections: Record<string, boolean>;
   isOwner: boolean;
 }) {
+  const [hasReadOnlySurface, setHasReadOnlySurface] = useState(false);
   const pathname = usePathname();
   const sectionKey = adminSectionForPath(pathname);
   const canEditSection = isOwner || (sectionKey ? Boolean(editableSections[sectionKey]) : true);
   const message = readOnlyMessage(sectionKey);
 
   useEffect(() => {
-    if (canEditSection) return;
+    if (canEditSection) {
+      setHasReadOnlySurface(false);
+      return;
+    }
 
     const applyReadOnlyState = () => {
+      let foundReadOnlySurface = false;
       document.querySelectorAll<HTMLFormElement>('main form').forEach((form) => {
-        if (isMutatingAdminForm(form)) disableSubmitControls(form, message);
+        if (isMutatingAdminForm(form)) {
+          foundReadOnlySurface = disableSubmitControls(form, message) || foundReadOnlySurface;
+        }
       });
-      disableCreateLinks(message);
+      foundReadOnlySurface = disableCreateLinks(message) || foundReadOnlySurface;
+      setHasReadOnlySurface(foundReadOnlySurface);
     };
 
     applyReadOnlyState();
@@ -85,7 +100,7 @@ export function AdminReadOnlyGuard({
     };
   }, [canEditSection, message, pathname]);
 
-  if (canEditSection) return null;
+  if (canEditSection || !hasReadOnlySurface) return null;
 
   return (
     <div className="fixed inset-x-3 bottom-4 z-50 mx-auto max-w-xl rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-900 shadow-lg shadow-slate-900/10">
