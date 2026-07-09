@@ -125,6 +125,19 @@ function prospectingBackHref(stateKey: '' | ProspectingStateFilter = '') {
   return `/admin/sales/prospecting${qs ? `?${qs}` : ''}`;
 }
 
+function prospectingListHref(toast: string, stateKey: '' | ProspectingStateFilter = '') {
+  const query = new URLSearchParams();
+  if (toast) query.set('toast', toast);
+  if (stateKey) query.set('state', stateKey);
+  const qs = query.toString();
+  return `/admin/sales/prospecting${qs ? `?${qs}` : ''}`;
+}
+
+function cleanRecordId(value: FormDataEntryValue | null) {
+  const text = String(value ?? '').trim();
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(text) ? text : '';
+}
+
 async function loadLeadForMutation(supabase: Awaited<ReturnType<typeof createClient>>, leadId: string, current: Awaited<ReturnType<typeof requireAdminSectionEdit>>) {
   let query = supabase
     .from('prospecting_leads')
@@ -160,11 +173,47 @@ async function syncHubspotQueue({
   }
 }
 
+async function shuckedRepRedirectHref({
+  current,
+  nextRecordId,
+  previousRecordId,
+  stateFilter,
+  toast,
+}: {
+  current: Awaited<ReturnType<typeof requireAdminSectionEdit>>;
+  nextRecordId: string;
+  previousRecordId: string;
+  stateFilter: '' | ProspectingStateFilter;
+  toast: string;
+}) {
+  const candidateIds = [nextRecordId, previousRecordId].filter(Boolean);
+  if (!candidateIds.length) return prospectingListHref(toast, stateFilter);
+
+  const supabase = await createClient();
+  let query = supabase
+    .from('prospecting_leads')
+    .select('id')
+    .in('id', candidateIds)
+    .eq('assigned_profile_id', current.profile.id)
+    .in('stage', ACTIVE_PROSPECTING_STAGES)
+    .is('archived_at', null);
+
+  if (stateFilter === MISSING_STATE_FILTER) query = query.is('state_key', null);
+  else if (stateFilter) query = query.eq('state_key', stateFilter);
+
+  const { data } = await query;
+  const validIds = new Set(((data ?? []) as Array<{ id: string | null }>).map((row) => row.id).filter(Boolean));
+  const destinationId = candidateIds.find((id) => validIds.has(id));
+  return destinationId ? leadHref(destinationId, toast, stateFilter) : prospectingListHref(toast, stateFilter);
+}
+
 async function saveLeadDetails(formData: FormData) {
   'use server';
 
   const leadId = String(formData.get('lead_id') ?? '').trim();
   const stateFilter = normalizeStateFilter(String(formData.get('state_filter') ?? ''));
+  const nextRecordId = cleanRecordId(formData.get('next_record_id'));
+  const previousRecordId = cleanRecordId(formData.get('previous_record_id'));
   const current = await requireAdminSectionEdit('prospecting', leadHref(leadId, 'admin_write_denied', stateFilter));
   const supabase = await createClient();
   const before = await loadLeadForMutation(supabase, leadId, current);
@@ -246,8 +295,15 @@ async function saveLeadDetails(formData: FormData) {
   const { error: activityError } = await supabaseAdmin.from('prospecting_activities').insert(activityRows);
   if (activityError) redirect(leadHref(leadId, 'save_error', stateFilter));
 
-  if (shouldRecycle && !current.isOwner) redirect(`/admin/sales/prospecting?toast=lead_recycled${stateFilter ? `&state=${stateFilter}` : ''}`);
-  if (shouldMoveToMaintenance && !current.isOwner) redirect(`/admin/sales/prospecting?toast=lead_reviewed${stateFilter ? `&state=${stateFilter}` : ''}`);
+  if ((shouldRecycle || shouldMoveToMaintenance) && !current.isOwner) {
+    redirect(await shuckedRepRedirectHref({
+      current,
+      nextRecordId,
+      previousRecordId,
+      stateFilter,
+      toast: shouldRecycle ? 'lead_recycled' : 'lead_reviewed',
+    }));
+  }
   redirect(leadHref(leadId, 'lead_saved', stateFilter));
 }
 
@@ -352,6 +408,8 @@ async function logLeadActivity(formData: FormData) {
 
   const leadId = String(formData.get('lead_id') ?? '').trim();
   const stateFilter = normalizeStateFilter(String(formData.get('state_filter') ?? ''));
+  const nextRecordId = cleanRecordId(formData.get('next_record_id'));
+  const previousRecordId = cleanRecordId(formData.get('previous_record_id'));
   const current = await requireAdminSectionEdit('prospecting', leadHref(leadId, 'admin_write_denied', stateFilter));
   const supabase = await createClient();
   const before = await loadLeadForMutation(supabase, leadId, current);
@@ -419,7 +477,6 @@ async function logLeadActivity(formData: FormData) {
       result: 'Unassigned',
     });
     if (assignmentError) redirect(leadHref(leadId, 'activity_error', stateFilter));
-    if (!current.isOwner) redirect(`/admin/sales/prospecting?toast=lead_recycled${stateFilter ? `&state=${stateFilter}` : ''}`);
   }
 
   if (shouldMoveToMaintenance) {
@@ -436,7 +493,15 @@ async function logLeadActivity(formData: FormData) {
     if (assignmentError) redirect(leadHref(leadId, 'activity_error', stateFilter));
   }
 
-  if (shouldMoveToMaintenance && !current.isOwner) redirect(`/admin/sales/prospecting?toast=lead_reviewed${stateFilter ? `&state=${stateFilter}` : ''}`);
+  if ((shouldRecycle || shouldMoveToMaintenance) && !current.isOwner) {
+    redirect(await shuckedRepRedirectHref({
+      current,
+      nextRecordId,
+      previousRecordId,
+      stateFilter,
+      toast: shouldRecycle ? 'lead_recycled' : 'lead_reviewed',
+    }));
+  }
 
   redirect(leadHref(leadId, 'activity_saved', stateFilter));
 }
@@ -451,6 +516,8 @@ function Toasts({ toast }: { toast: string }) {
     contact_deleted: { message: 'Contact removed.', tone: 'success' },
     contact_error: { message: 'Unable to save that contact.', tone: 'error' },
     contact_saved: { message: 'Contact saved.', tone: 'success' },
+    lead_recycled: { message: 'Lead recycled. Moved to the next record.', tone: 'success' },
+    lead_reviewed: { message: 'Lead moved to review. Moved to the next record.', tone: 'success' },
     lead_saved: { message: 'Lead saved.', tone: 'success' },
     save_error: { message: 'Unable to save this lead. Check for duplicate company and phone values.', tone: 'error' },
   };
@@ -596,6 +663,8 @@ export default async function LeadDetailPage({
         <form action={saveLeadDetails} className="card space-y-5">
           <input type="hidden" name="lead_id" value={lead.id} />
           <input type="hidden" name="state_filter" value={selectedStateKey} />
+          <input type="hidden" name="next_record_id" value={nextLeadId ?? ''} />
+          <input type="hidden" name="previous_record_id" value={previousLeadId ?? ''} />
           <div>
             <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Company Profile</p>
             <h2 className="mt-2 text-xl font-semibold tracking-tight text-slate-950">Enrich lead details</h2>
@@ -642,6 +711,8 @@ export default async function LeadDetailPage({
         <form action={logLeadActivity} className="card space-y-4">
           <input type="hidden" name="lead_id" value={lead.id} />
           <input type="hidden" name="state_filter" value={selectedStateKey} />
+          <input type="hidden" name="next_record_id" value={nextLeadId ?? ''} />
+          <input type="hidden" name="previous_record_id" value={previousLeadId ?? ''} />
           <div>
             <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Activity Log</p>
             <h2 className="mt-2 text-xl font-semibold tracking-tight text-slate-950">Record call, email, or note</h2>
