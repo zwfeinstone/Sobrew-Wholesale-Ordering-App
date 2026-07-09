@@ -1,6 +1,8 @@
 import { redirect } from 'next/navigation';
 import PendingSubmitButton from '@/components/pending-submit-button';
 import { requireAdminWriteAccess } from '@/lib/admin-write-access';
+import { listEasyPostCarrierAccounts, type EasyPostCarrierAccount } from '@/lib/easypost';
+import { env } from '@/lib/env';
 import { createClient } from '@/lib/supabase/server';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 
@@ -77,10 +79,36 @@ async function updatePassword(formData: FormData) {
   redirect('/admin/settings?password_success=password_updated');
 }
 
+async function testEasyPostConnection() {
+  'use server';
+  await requireAdminWriteAccess('/admin/settings?easypost_status=admin_write_denied', 'settings');
+
+  if (!env.easypostApiKey) {
+    redirect('/admin/settings?easypost_status=missing');
+  }
+
+  const result = await listEasyPostCarrierAccounts();
+  if (result.error) {
+    console.error('[settings] EasyPost connection test failed', { error: result.error });
+    redirect('/admin/settings?easypost_status=failed');
+  }
+
+  const carrierAccounts = Array.isArray(result.data)
+    ? result.data
+    : ((result.data?.carrier_accounts ?? []) as EasyPostCarrierAccount[]);
+  redirect(`/admin/settings?easypost_status=connected&easypost_count=${carrierAccounts.length}`);
+}
+
 export default async function SettingsPage({
   searchParams,
 }: {
-  searchParams?: { error?: string; password_success?: string; password_error?: string };
+  searchParams?: {
+    easypost_count?: string;
+    easypost_status?: string;
+    error?: string;
+    password_error?: string;
+    password_success?: string;
+  };
 }) {
   const supabase = await createClient();
   const { data: settings } = await supabase.from('app_settings').select('*').single();
@@ -91,6 +119,9 @@ export default async function SettingsPage({
   const error = searchParams?.error;
   const passwordSuccess = searchParams?.password_success;
   const passwordError = searchParams?.password_error;
+  const easyPostConfigured = Boolean(env.easypostApiKey);
+  const easyPostStatus = searchParams?.easypost_status;
+  const easyPostCount = Number.parseInt(searchParams?.easypost_count ?? '', 10);
 
   return (
     <div className="space-y-6">
@@ -119,6 +150,62 @@ export default async function SettingsPage({
         </label>
         <PendingSubmitButton className="btn-primary w-full sm:w-auto" label="Save" pendingLabel="Saving..." />
       </form>
+
+      <section className="card space-y-5">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+          <div>
+            <p className="text-xs uppercase tracking-[0.18em] text-slate-500">Shipping API</p>
+            <h2 className="mt-2 text-2xl font-semibold tracking-tight text-slate-950">EasyPost connection</h2>
+            <p className="mt-2 text-sm leading-6 text-slate-500">EasyPost labels use the server environment key and the ship-from address below.</p>
+          </div>
+          <span className={`w-fit rounded-full px-3 py-1 text-xs font-semibold uppercase tracking-[0.14em] ${
+            easyPostConfigured
+              ? 'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-100'
+              : 'bg-amber-50 text-amber-800 ring-1 ring-amber-100'
+          }`}>
+            {easyPostConfigured ? 'Configured' : 'Not connected'}
+          </span>
+        </div>
+
+        {easyPostStatus === 'connected' ? (
+          <div className="rounded-[1.5rem] border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-700">
+            EasyPost connection test passed. {Number.isFinite(easyPostCount) ? easyPostCount : 0} carrier account{easyPostCount === 1 ? '' : 's'} available.
+          </div>
+        ) : null}
+        {easyPostStatus === 'failed' ? (
+          <div className="rounded-[1.5rem] border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">
+            EasyPost connection test failed. Check the server API key and try again.
+          </div>
+        ) : null}
+        {easyPostStatus === 'missing' ? (
+          <div className="rounded-[1.5rem] border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+            EasyPost is not connected. Add EASYPOST_API_KEY in the deployment environment, then restart or redeploy.
+          </div>
+        ) : null}
+        {easyPostStatus === 'admin_write_denied' ? (
+          <div className="rounded-[1.5rem] border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">
+            You do not have permission to test EasyPost settings.
+          </div>
+        ) : null}
+
+        <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
+          <p className="text-sm text-slate-500">
+            The API key is not saved in app settings or shown in the browser.
+          </p>
+          <div className="flex flex-col gap-3 sm:flex-row sm:justify-end">
+            <a className="btn-secondary w-full sm:w-auto" href="https://app.easypost.com/account/api-keys" target="_blank" rel="noreferrer">EasyPost API keys</a>
+            <form action={testEasyPostConnection}>
+              <PendingSubmitButton
+                className="btn-primary w-full sm:w-auto"
+                disabled={!easyPostConfigured}
+                disabledLabel="Add API key first"
+                label="Test connection"
+                pendingLabel="Testing..."
+              />
+            </form>
+          </div>
+        </div>
+      </section>
 
       <section className="card space-y-5">
         <div>

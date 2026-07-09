@@ -921,7 +921,8 @@ export default async function AdminOrderDetail({
 
           {easyPostShippingEnabled && !canQuoteEasyPost ? (
             <div className="rounded-2xl border border-amber-200 bg-amber-50/70 px-4 py-3 text-sm text-amber-900">
-              Add an EasyPost API key and shipping origin in Settings to quote and buy labels from this page.
+              <p>Add an EasyPost API key and shipping origin in Settings to quote and buy labels from this page.</p>
+              <a className="mt-3 inline-flex font-semibold text-amber-950 underline decoration-amber-300 underline-offset-4" href="/admin/settings">Open Settings</a>
             </div>
           ) : null}
 

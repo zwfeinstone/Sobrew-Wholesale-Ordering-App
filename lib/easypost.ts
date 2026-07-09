@@ -56,6 +56,13 @@ export type EasyPostRefund = {
   tracking_code?: string;
 };
 
+export type EasyPostCarrierAccount = {
+  description?: string | null;
+  id: string;
+  readable?: string | null;
+  type?: string | null;
+};
+
 type EasyPostError = {
   error?: {
     code?: string;
@@ -110,6 +117,33 @@ async function easyPostRequest<T>(path: string, body: unknown): Promise<{ data: 
   return { data: json as T, error: null };
 }
 
+async function easyPostGet<T>(path: string): Promise<{ data: T | null; error: string | null }> {
+  if (!env.easypostApiKey) {
+    return { data: null, error: 'EasyPost API key is not configured.' };
+  }
+
+  let response: Response;
+  try {
+    response = await fetch(`${EASYPOST_API_BASE}${path}`, {
+      headers: {
+        Authorization: easyPostAuthHeader(),
+        'Content-Type': 'application/json',
+      },
+      method: 'GET',
+    });
+  } catch (error) {
+    return { data: null, error: error instanceof Error ? error.message : 'Unable to reach EasyPost.' };
+  }
+
+  const json = await response.json().catch(() => null) as T | EasyPostError | null;
+  if (!response.ok) {
+    const message = (json as EasyPostError | null)?.error?.message;
+    return { data: null, error: message || `EasyPost request failed with status ${response.status}.` };
+  }
+
+  return { data: json as T, error: null };
+}
+
 export function easyPostRateCents(rate: EasyPostRate | null | undefined) {
   const parsed = Number.parseFloat(String(rate?.rate ?? '0'));
   return Number.isFinite(parsed) ? Math.round(parsed * 100) : 0;
@@ -117,6 +151,10 @@ export function easyPostRateCents(rate: EasyPostRate | null | undefined) {
 
 export function sortEasyPostRates(rates: EasyPostRate[] | null | undefined) {
   return [...(rates ?? [])].sort((a, b) => easyPostRateCents(a) - easyPostRateCents(b) || String(a.carrier ?? '').localeCompare(String(b.carrier ?? '')));
+}
+
+export async function listEasyPostCarrierAccounts() {
+  return easyPostGet<EasyPostCarrierAccount[] | { carrier_accounts?: EasyPostCarrierAccount[] }>('/carrier_accounts');
 }
 
 export async function createEasyPostShipment({
