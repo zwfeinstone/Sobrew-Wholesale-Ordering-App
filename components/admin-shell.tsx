@@ -1,11 +1,20 @@
 import Image from 'next/image';
+import Link from 'next/link';
 import { ReactNode } from 'react';
 import { ActiveNavLink } from '@/components/active-nav-link';
 import { AdminMobileSectionSelect } from '@/components/admin-mobile-section-select';
 import { AdminReadOnlyGuard } from '@/components/admin-read-only-guard';
 import { AdminRealtimeSync } from '@/components/admin-realtime-sync';
 import { LogoutButton } from '@/components/logout-button';
-import { ADMIN_NAV_LINKS, canViewAdminSection, type AdminAccessMap } from '@/lib/admin-permission-definitions';
+import { ADMIN_NAV_LINKS, canViewAdminSection, type AdminAccessMap, type AdminPermissionKey } from '@/lib/admin-permission-definitions';
+
+const ADMIN_NAV_GROUPS: Array<{ label: string; sections: AdminPermissionKey[] }> = [
+  { label: 'Overview', sections: ['dashboard'] },
+  { label: 'Commerce', sections: ['orders', 'recurring_orders', 'canceled_recurring_orders', 'archived_orders', 'order_form', 'centers', 'products'] },
+  { label: 'Operations', sections: ['inventory', 'receiving', 'planning', 'production'] },
+  { label: 'Growth', sections: ['sales', 'sales_admin', 'prospecting', 'marketing', 'commission'] },
+  { label: 'Finance & team', sections: ['reports', 'payroll', 'time_clock', 'week_hours', 'settings'] },
+];
 
 export function AdminShell({
   access,
@@ -47,23 +56,37 @@ export function AdminShell({
           <LogoutButton className="admin-logout btn-secondary w-full" />
         </div>
         <AdminMobileSectionSelect links={links} />
-        <nav className="admin-nav mt-4 grid gap-2 sm:grid-cols-2 md:block md:space-y-2">
-          {links.map(({ name, href, exact, child }) => (
-            <ActiveNavLink
-              key={href}
-              className={`sidebar-link ${child ? 'md:ml-4 md:min-h-[2.65rem] md:text-sm' : ''}`}
-              exact={exact}
-              href={href}
-            >
-              <span>{name}</span>
-              {name === 'Orders' && newOrders > 0 ? <span className="rounded-full bg-rose-500 px-2.5 py-1 text-xs font-semibold text-white">{newOrders}</span> : null}
-              {name === 'Payroll' && payrollBadgeCount > 0 ? <span className="rounded-full bg-rose-500 px-2.5 py-1 text-xs font-semibold text-white">{payrollBadgeCount}</span> : null}
-            </ActiveNavLink>
-          ))}
+        <nav className="admin-nav mt-5" aria-label="Admin navigation">
+          {ADMIN_NAV_GROUPS.map((group) => {
+            const groupLinks = links.filter((link) => group.sections.includes(link.sectionKey));
+            if (!groupLinks.length) return null;
+
+            return (
+              <section key={group.label} className="admin-nav-group">
+                <p className="admin-nav-group-label">{group.label}</p>
+                {groupLinks.map(({ name, href, exact, child }) => (
+                  <ActiveNavLink
+                    key={href}
+                    className={`sidebar-link ${child ? 'md:ml-3 md:min-h-[2.5rem] md:text-sm' : ''}`}
+                    exact={exact}
+                    href={href}
+                  >
+                    <span>{name}</span>
+                    {name === 'Orders' && newOrders > 0 ? <span className="rounded-full bg-rose-400 px-2.5 py-1 text-xs font-semibold text-white">{newOrders}</span> : null}
+                    {name === 'Payroll' && payrollBadgeCount > 0 ? <span className="rounded-full bg-rose-400 px-2.5 py-1 text-xs font-semibold text-white">{payrollBadgeCount}</span> : null}
+                  </ActiveNavLink>
+                ))}
+              </section>
+            );
+          })}
         </nav>
       </aside>
       <main className="admin-main min-w-0 flex-1 px-3 py-5 sm:px-4 md:px-8 md:py-8">
         <div className="mx-auto max-w-6xl">
+          <div className="admin-topbar">
+            <p>Live operations workspace</p>
+            <Link href="/portal">Open customer portal</Link>
+          </div>
           {children}
         </div>
       </main>

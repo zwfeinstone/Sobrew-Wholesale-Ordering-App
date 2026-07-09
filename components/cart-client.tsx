@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
+import { trackProductEvent } from '@/lib/analytics';
 import StatusToast from '@/components/status-toast';
 import { LEGACY_CART_STORAGE_KEY } from '@/lib/cart';
 
@@ -141,6 +142,7 @@ export function AddToCartButton({ product, storageKey }: { product: Omit<Item, '
         onClick={() => {
           const cart = readCartItems(storageKey);
           saveCartItems(storageKey, mergeCartItems(cart, [{ ...product, qty: 1 }]));
+          trackProductEvent('portal_item_added', { quantity: 1, source: 'catalog' });
           setShowToast(false);
           window.setTimeout(() => setShowToast(true), 0);
         }}
@@ -197,6 +199,7 @@ export function AddToCartQuantityControls({ product, storageKey }: { product: Om
           onClick={() => {
             const cart = readCartItems(storageKey);
             saveCartItems(storageKey, mergeCartItems(cart, [{ ...product, qty: normalizedQty }]));
+            trackProductEvent('portal_item_added', { quantity: normalizedQty, source: 'catalog' });
             setShowToast(false);
             window.setTimeout(() => setShowToast(true), 0);
           }}
@@ -233,6 +236,10 @@ export function ReorderButton({
         onClick={() => {
           const cart = readCartItems(storageKey);
           saveCartItems(storageKey, mergeCartItems(cart, items));
+          trackProductEvent('portal_reorder_added', {
+            item_count: items.length,
+            quantity: items.reduce((sum, item) => sum + item.qty, 0),
+          });
           setShowToast(false);
           window.setTimeout(() => setShowToast(true), 0);
         }}

@@ -15,9 +15,9 @@ export default async function CartPage() {
     <div className="space-y-6">
       <CartCatalogSync products={cartProducts} storageKey={cartStorageKey} />
       <section className="panel">
-        <span className="eyebrow">Review Order</span>
-        <h1 className="page-title mt-4">Your cart</h1>
-        <p className="page-subtitle mt-3">Adjust quantities, remove products, and confirm your subtotal before heading to checkout.</p>
+        <span className="eyebrow">Your order draft</span>
+        <h1 className="page-title mt-4">Review your restock.</h1>
+        <p className="page-subtitle mt-3">Fine-tune quantities, confirm the subtotal, and continue when your order is ready.</p>
       </section>
       <CartTable storageKey={cartStorageKey} />
     </div>

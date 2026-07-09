@@ -6,7 +6,7 @@ import { useEffect, useState } from 'react';
 import { CART_UPDATED_EVENT, readCartItemCount } from '@/components/cart-client';
 
 const MOBILE_NAV_LINKS = [
-  { href: '/portal', label: 'Catalog', exact: true },
+  { href: '/portal', label: 'Restock', exact: true },
   { href: '/portal/cart', label: 'Cart', exact: false },
   { href: '/portal/orders', label: 'Orders', exact: false },
   { href: '/portal/recurring-orders', label: 'Recurring', exact: false },

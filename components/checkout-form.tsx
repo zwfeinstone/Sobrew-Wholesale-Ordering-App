@@ -11,6 +11,7 @@ import {
 } from '@/components/cart-client';
 import CheckoutSubmitButton from '@/components/checkout-submit-button';
 import StatusToast from '@/components/status-toast';
+import { trackProductEvent } from '@/lib/analytics';
 import { RECURRING_FREQUENCY_OPTIONS } from '@/lib/recurring';
 
 type CheckoutFormProps = {
@@ -59,6 +60,10 @@ export default function CheckoutForm({ actionUrl, cartStorageKey, initialToast, 
     };
   }, [cartStorageKey]);
 
+  useEffect(() => {
+    trackProductEvent('portal_checkout_started', { available_locations: locations.length });
+  }, [locations.length]);
+
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     if (isCartEmpty || submittingRef.current) {
       event.preventDefault();
@@ -92,7 +97,12 @@ export default function CheckoutForm({ actionUrl, cartStorageKey, initialToast, 
       <section className="panel checkout-hero">
         <span className="eyebrow">Checkout</span>
         <h1 className="page-title checkout-title mt-4">Place your order</h1>
-        <p className="page-subtitle checkout-subtitle mt-3">Review, add notes, set recurring if needed, and submit.</p>
+        <p className="page-subtitle checkout-subtitle mt-3">A clear final review before your team receives the order.</p>
+        <div className="checkout-progress mt-5" aria-label="Checkout progress">
+          <div className="checkout-progress-step is-current"><span>1</span> Review</div>
+          <div className="checkout-progress-step"><span>2</span> Delivery</div>
+          <div className="checkout-progress-step"><span>3</span> Confirm</div>
+        </div>
       </section>
       <section className="card checkout-card space-y-5">
         <CheckoutCartField storageKey={cartStorageKey} />
@@ -101,7 +111,8 @@ export default function CheckoutForm({ actionUrl, cartStorageKey, initialToast, 
         <CheckoutCartSummary storageKey={cartStorageKey} />
         {shouldSelectLocation ? (
           <div className="subtle-panel checkout-location-panel space-y-2">
-            <label className="text-sm font-medium text-slate-700" htmlFor="checkout-delivery-location">Delivery location</label>
+            <p className="text-xs font-bold uppercase tracking-[0.14em] text-slate-500">Delivery</p>
+            <label className="text-sm font-medium text-slate-700" htmlFor="checkout-delivery-location">Choose a delivery location</label>
             <select id="checkout-delivery-location" className="input checkout-location-select" name="center_location_id" required defaultValue="">
               <option value="" disabled>Choose a location</option>
               {locations.map((location) => (
@@ -134,6 +145,7 @@ export default function CheckoutForm({ actionUrl, cartStorageKey, initialToast, 
           ) : null}
         </div>
         <div className="checkout-field space-y-2">
+          <p className="text-xs font-bold uppercase tracking-[0.14em] text-slate-500">Anything we should know?</p>
           <label className="text-sm font-medium text-slate-700" htmlFor="checkout-notes">Notes</label>
           <textarea id="checkout-notes" className="input checkout-notes min-h-28" name="notes" placeholder="Delivery notes, special handling, or anything your team should know." />
         </div>

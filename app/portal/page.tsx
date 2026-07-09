@@ -203,11 +203,12 @@ export default async function PortalPage({
       <section className="panel portal-hero overflow-hidden">
         <div className="portal-hero-grid grid gap-6 xl:grid-cols-[minmax(0,1fr)_minmax(20rem,0.92fr)] xl:items-center">
           <div className="portal-hero-intro max-w-2xl space-y-4">
-            <span className="eyebrow">Sobrew Catalog</span>
+            <span className="eyebrow">Wholesale restock desk</span>
             <div>
-              <h1 className="page-title portal-hero-title">Welcome</h1>
+              <h1 className="page-title portal-hero-title">Your next restock, made simple.</h1>
               {centerName ? <p className="portal-center-name mt-2 text-lg font-semibold text-slate-800">{centerName}</p> : null}
-              <p className="page-subtitle portal-hero-description mt-3">Build your next wholesale order, review recurring shipments, and keep your center stocked with coffee that supports recovery.</p>
+              <p className="page-subtitle portal-hero-description mt-3">Reorder what you know, build a fresh delivery, or keep recurring shipments on track—all in one calm workspace.</p>
+              <Link href="#catalog" className="btn-primary mt-5 inline-flex">Start a fresh order</Link>
             </div>
           </div>
           <div className="portal-stats-grid grid gap-3 sm:grid-cols-2">
@@ -234,8 +235,8 @@ export default async function PortalPage({
         <section className="premium-section quick-reorder-section space-y-4">
           <div className="quick-reorder-header flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
             <div className="quick-reorder-copy">
-              <span className="eyebrow">Quick Reorder</span>
-              <h2 className="quick-reorder-title mt-3 text-2xl font-semibold tracking-tight text-slate-950">Start from your last order</h2>
+              <span className="eyebrow">Your usual order</span>
+              <h2 className="quick-reorder-title mt-3 text-2xl font-semibold tracking-tight text-slate-950">Restock in one step</h2>
             </div>
             <Link href="/portal/orders" className="btn-secondary quick-reorder-view inline-flex w-full sm:w-auto">View all orders</Link>
           </div>
@@ -268,7 +269,7 @@ export default async function PortalPage({
         </section>
       ) : null}
 
-      <section className="catalog-toolbar space-y-3">
+      <section id="catalog" className="catalog-toolbar scroll-mt-28 space-y-3">
         <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(18rem,24rem)] lg:items-end">
           <div>
             <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Browse by product type</p>

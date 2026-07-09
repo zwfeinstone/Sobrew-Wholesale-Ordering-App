@@ -6,6 +6,7 @@ import { OrderStatusBadge } from '@/components/order-status';
 import PendingSubmitButton from '@/components/pending-submit-button';
 import StatusToast from '@/components/status-toast';
 import { requireAdminWriteAccess } from '@/lib/admin-write-access';
+import { trackServerProductEvent } from '@/lib/analytics-server';
 import { createClient } from '@/lib/supabase/server';
 import { usd } from '@/lib/utils';
 
@@ -73,7 +74,11 @@ async function updateStatus(formData: FormData) {
       requestedStatus: status,
     });
   }
-  redirect(ordersToastHref(statusFilter, orderUpdateResult.error || !orderUpdateResult.data?.length ? 'status_error' : 'status_updated', qFilter));
+  const updateSucceeded = !orderUpdateResult.error && Boolean(orderUpdateResult.data?.length);
+  if (updateSucceeded) {
+    trackServerProductEvent('admin_operational_action_completed', { action: 'order_status_update', next_status: status });
+  }
+  redirect(ordersToastHref(statusFilter, updateSucceeded ? 'status_updated' : 'status_error', qFilter));
 }
 
 async function archiveOrder(formData: FormData) {

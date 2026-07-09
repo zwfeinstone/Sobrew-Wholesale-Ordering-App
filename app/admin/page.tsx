@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { OrderStatusBadge } from '@/components/order-status';
+import { TrackedLink } from '@/components/tracked-link';
 import { getAssignedCenterIdsForAdmin, scopeCenterRelatedQueryForAdmin } from '@/lib/admin-center-scope';
 import { canViewAdminSection } from '@/lib/admin-permission-definitions';
 import { getCurrentAdminAccess } from '@/lib/admin-permissions';
@@ -413,19 +414,30 @@ export default async function AdminDashboard({
   const totalRevenueCents = ((revenueMetricRows ?? []) as MetricRow[]).reduce((sum, row) => sum + (row.subtotal_cents ?? 0), 0);
   const activeOrderCount = (newOrders ?? 0) + (processingOrders ?? 0);
   const queueOrders = (workQueue?.length ? workQueue : recent ?? []) as any[];
+  const operationsLinks = [
+    canViewAdminSection(currentAccess.access, 'inventory')
+      ? { href: '/admin/inventory', label: 'Inventory health', copy: 'Review stock, shortages, and reserved product.' }
+      : null,
+    canViewAdminSection(currentAccess.access, 'receiving')
+      ? { href: '/admin/receiving', label: 'Receive stock', copy: 'Record new coffee, supplies, and expenses.' }
+      : null,
+    canViewAdminSection(currentAccess.access, 'planning')
+      ? { href: '/admin/planning', label: 'Plan production', copy: 'Turn order demand into the next production run.' }
+      : null,
+  ].filter((link): link is { href: string; label: string; copy: string } => Boolean(link));
 
   return (
     <div className="space-y-6">
       <section className="panel space-y-5">
         <div className="grid gap-5 lg:grid-cols-[1fr_auto] lg:items-end">
           <div>
-            <span className="eyebrow">Admin Queue</span>
+            <span className="eyebrow">Daily command center</span>
             <div>
-              <h1 className="page-title mt-4">Start with what needs attention.</h1>
-              <p className="page-subtitle mt-3">New and processing orders are surfaced first so daily work starts from the next action.</p>
+              <h1 className="page-title mt-4">Today at Sobrew.</h1>
+              <p className="page-subtitle mt-3">A focused view of today’s orders, priorities, and the operations work that needs your team next.</p>
             </div>
           </div>
-          <Link href="/admin/orders" className="btn-primary w-full sm:w-auto">Open order queue</Link>
+          <TrackedLink event="admin_attention_opened" href="/admin/orders" properties={{ target: 'order_queue' }} className="btn-primary w-full sm:w-auto">Open order queue</TrackedLink>
         </div>
         <div className="grid gap-3 md:grid-cols-4">
           <Link href="/admin/orders?status=New" className="rounded-xl border border-sky-100 bg-sky-50/80 px-4 py-3 transition-all duration-200 hover:-translate-y-0.5 hover:bg-sky-50">
@@ -437,7 +449,7 @@ export default async function AdminDashboard({
             <p className="mt-2 text-3xl font-semibold text-slate-950">{processingOrders ?? 0}</p>
           </Link>
           <Link href="/admin/orders" className="rounded-xl border border-teal-100 bg-teal-50/80 px-4 py-3 transition-all duration-200 hover:-translate-y-0.5 hover:bg-teal-50">
-            <p className="text-xs font-semibold uppercase tracking-[0.14em] text-teal-700">Active Queue</p>
+            <p className="text-xs font-semibold uppercase tracking-[0.14em] text-teal-700">Ready to move</p>
             <p className="mt-2 text-3xl font-semibold text-slate-950">{activeOrderCount}</p>
           </Link>
           <Link href={`/admin/orders?status=Shipped`} className="rounded-xl border border-emerald-100 bg-emerald-50/80 px-4 py-3 transition-all duration-200 hover:-translate-y-0.5 hover:bg-emerald-50">
@@ -447,6 +459,25 @@ export default async function AdminDashboard({
           </Link>
         </div>
       </section>
+
+      {operationsLinks.length ? (
+        <section className="grid gap-3 md:grid-cols-3">
+          {operationsLinks.map((item) => (
+            <TrackedLink
+              key={item.href}
+              className="admin-operations-link"
+              event="admin_attention_opened"
+              href={item.href}
+              properties={{ target: item.label.toLowerCase().replaceAll(' ', '_') }}
+            >
+              <span className="admin-operations-link-kicker">Operations</span>
+              <strong>{item.label}</strong>
+              <span>{item.copy}</span>
+              <b aria-hidden="true">→</b>
+            </TrackedLink>
+          ))}
+        </section>
+      ) : null}
 
       {payrollStatus?.weekly.needsApproval ? (
         <section className="rounded-xl border border-rose-200 bg-rose-50/80 p-5 shadow-sm">
@@ -485,8 +516,8 @@ export default async function AdminDashboard({
       <section className="card space-y-4">
         <div className="flex flex-col items-start gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <h2 className="text-xl font-semibold tracking-tight text-slate-950">Needs attention</h2>
-            <p className="mt-1 text-sm text-slate-500">Oldest open work appears first; completed work falls back to recent activity.</p>
+            <h2 className="text-xl font-semibold tracking-tight text-slate-950">Priority queue</h2>
+            <p className="mt-1 text-sm text-slate-500">The oldest open work comes first, so the next action stays obvious.</p>
           </div>
           <Link href="/admin/orders" className="btn-secondary w-full sm:w-auto">View all orders</Link>
         </div>
@@ -502,9 +533,11 @@ export default async function AdminDashboard({
             {queueOrders.map((order: any) => {
               const action = nextActionForStatus(order.status);
               return (
-                <Link
+                <TrackedLink
                   key={order.id}
                   href={`/admin/orders/${order.id}`}
+                  event="admin_attention_opened"
+                  properties={{ target: 'order_detail', status: order.status ?? 'unknown' }}
                   className="grid gap-3 border-b border-slate-100 px-4 py-4 transition-all duration-200 last:border-b-0 hover:bg-white lg:grid-cols-[1.2fr_0.9fr_0.75fr_0.8fr_auto] lg:items-center"
                 >
                   <div className="min-w-0">
@@ -523,7 +556,7 @@ export default async function AdminDashboard({
                     <span className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">{action.tone}</span>
                     <span className="rounded-full bg-slate-950 px-3 py-1.5 text-sm font-semibold text-white">{action.label}</span>
                   </div>
-                </Link>
+                </TrackedLink>
               );
             })}
           </div>

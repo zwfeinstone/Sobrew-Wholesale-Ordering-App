@@ -1,4 +1,5 @@
 import { sendOrderEmails } from '@/lib/email';
+import { trackServerProductEvent } from '@/lib/analytics-server';
 import { isRecurringFrequency } from '@/lib/recurring';
 
 export type PortalCheckoutSubmitResult =
@@ -269,6 +270,15 @@ export async function submitPortalOrderWithContext({
       : recurringResult === 'error'
         ? 'order_placed_recurring_error'
         : 'order_placed';
+
+  trackServerProductEvent('portal_order_submitted', {
+    has_recurring_schedule: recurringResult === 'created',
+    item_count: cartWithNames.length,
+    item_quantity: cartWithNames.reduce((sum, item) => sum + item.qty, 0),
+  });
+  if (recurringResult === 'created') {
+    trackServerProductEvent('portal_recurring_enabled', { item_count: cartWithNames.length });
+  }
 
   return { type: 'redirect', location: `/portal/orders/${order.id}?toast=${toast}` };
 }
