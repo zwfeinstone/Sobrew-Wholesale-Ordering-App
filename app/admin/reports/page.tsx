@@ -39,6 +39,7 @@ import {
   type ReportingProductRow,
   type ReportingReorderSettingRow,
 } from '@/lib/reporting';
+import { PROSPECTING_STAGES, stageLabel, type ProspectingStage } from '@/lib/prospecting';
 import { createClient } from '@/lib/supabase/server';
 import { convertInventoryQuantity } from '@/lib/inventory';
 import { usd } from '@/lib/utils';
@@ -53,6 +54,7 @@ const REPORTS = [
   { id: 'production', label: 'Production & COGS' },
   { id: 'inventory', label: 'Inventory Value & Expenses' },
   { id: 'sales', label: 'Sales & Customers' },
+  { id: 'prospecting', label: 'Prospecting' },
 ] as const;
 
 type ReportId = (typeof REPORTS)[number]['id'];
@@ -63,6 +65,104 @@ type AdminRow = {
   full_name: string | null;
   id: string;
   is_active: boolean | null;
+};
+
+type ProspectingActivityReportRow = {
+  activity_type: string | null;
+  created_at: string | null;
+  created_by: string | null;
+  id: string;
+  lead_id: string | null;
+  next_follow_up_at?: string | null;
+  next_stage: string | null;
+  previous_stage: string | null;
+  result: string | null;
+};
+
+type ProspectingLeadReportRow = {
+  assigned_profile_id: string | null;
+  archived_at?: string | null;
+  created_at: string | null;
+  do_not_contact: boolean | null;
+  hubspot_status: string | null;
+  id: string;
+  next_follow_up_at: string | null;
+  stage: string | null;
+};
+
+type ProspectingBlockReportRow = {
+  activity_date: string | null;
+  calls_contact: number | string | null;
+  calls_email: number | string | null;
+  calls_no_contact: number | string | null;
+  calls_text: number | string | null;
+  calls_voicemail: number | string | null;
+  created_by: string | null;
+  id: string;
+  samples_from_contact: number | string | null;
+  samples_from_email_reply: number | string | null;
+  samples_from_text_reply: number | string | null;
+  samples_from_voicemail_callback: number | string | null;
+  samples_other: number | string | null;
+};
+
+type ProspectingFollowupBlockReportRow = {
+  activity_date: string | null;
+  created_by: string | null;
+  deals_closed_email: number | string | null;
+  deals_closed_phone: number | string | null;
+  deals_closed_text: number | string | null;
+  deals_lost_email: number | string | null;
+  deals_lost_phone: number | string | null;
+  deals_lost_text: number | string | null;
+  followups_email: number | string | null;
+  followups_phone: number | string | null;
+  followups_text: number | string | null;
+  id: string;
+};
+
+type ProspectingRepSummaryRow = {
+  blockTouches: number;
+  calls: number;
+  dealsClosed: number;
+  dealsLost: number;
+  emails: number;
+  followups: number;
+  newLeads: number;
+  notes: number;
+  repId: string;
+  sampleBoxes: number;
+  sampleCogsCents: number;
+  samples: number;
+  texts: number;
+  touches: number;
+};
+
+type ProspectingSampleBoxReportRow = {
+  quantity_boxes: number | string | null;
+  sales_profile_id: string | null;
+  total_cogs_cents: number | string | null;
+};
+
+type ProspectingSummary = {
+  activityRows: ProspectingActivityReportRow[];
+  blockRows: ProspectingBlockReportRow[];
+  calls: number;
+  currentLeads: ProspectingLeadReportRow[];
+  dealsClosed: number;
+  dealsLost: number;
+  emails: number;
+  followupRows: ProspectingFollowupBlockReportRow[];
+  followups: number;
+  newLeads: number;
+  notes: number;
+  pipelineRows: Array<{ count: number; stage: ProspectingStage }>;
+  repRows: ProspectingRepSummaryRow[];
+  sampleBoxes: number;
+  sampleCogsCents: number;
+  samples: number;
+  texts: number;
+  touches: number;
 };
 
 type ProfitabilityCenterRows = ReturnType<typeof buildProfitabilityDashboard>['centerRows'];
@@ -112,7 +212,7 @@ const RAW_COFFEE_BUCKETS = [
 ] as const;
 
 function reportIsProfitability(reportId: ReportId) {
-  return reportId !== 'sales';
+  return reportId !== 'sales' && reportId !== 'prospecting';
 }
 
 function paramsFromRecord(searchParams: Record<string, string | string[] | undefined> | undefined) {
@@ -150,6 +250,10 @@ function signedMoney(value: number) {
 
 function number(value: number, maximumFractionDigits = 0) {
   return new Intl.NumberFormat('en-US', { maximumFractionDigits }).format(value);
+}
+
+function compactNumber(value: number) {
+  return number(value, value % 1 === 0 ? 0 : 1);
 }
 
 function normalizeReportNumber(value: unknown) {
@@ -244,9 +348,228 @@ function percent(value: number) {
   return `${value > 0 ? '+' : ''}${new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 }).format(value)}%`;
 }
 
+function normalizedText(value: string | null | undefined) {
+  return String(value ?? '').trim().toLowerCase();
+}
+
+function isSampleResult(value: string | null | undefined) {
+  return ['sample requested', 'requested sample'].includes(normalizedText(value));
+}
+
+function safeStage(value: string | null | undefined): ProspectingStage | null {
+  return PROSPECTING_STAGES.some((stage) => stage.id === value) ? value as ProspectingStage : null;
+}
+
+function prospectingStageTone(stage: ProspectingStage) {
+  const classes: Record<ProspectingStage, string> = {
+    converted: 'bg-emerald-50 text-emerald-800 ring-emerald-100',
+    follow_up: 'bg-amber-50 text-amber-800 ring-amber-100',
+    interested: 'bg-teal-50 text-teal-800 ring-teal-100',
+    lost: 'bg-rose-50 text-rose-800 ring-rose-100',
+    new: 'bg-slate-100 text-slate-700 ring-slate-200',
+    not_a_fit: 'bg-zinc-100 text-zinc-700 ring-zinc-200',
+    recycle_try_later: 'bg-sky-50 text-sky-800 ring-sky-100',
+    sample_requested: 'bg-indigo-50 text-indigo-800 ring-indigo-100',
+    working: 'bg-blue-50 text-blue-800 ring-blue-100',
+  };
+  return classes[stage];
+}
+
 function relatedOne<T>(value: T | T[] | null | undefined): T | null {
   if (Array.isArray(value)) return value[0] ?? null;
   return value ?? null;
+}
+
+const UNKNOWN_REP_ID = '__unknown_rep__';
+const UNASSIGNED_REP_ID = '__unassigned_rep__';
+
+function prospectingRepId(value: string | null | undefined, fallback = UNKNOWN_REP_ID) {
+  return value || fallback;
+}
+
+function createProspectingRepSummaryRow(repId: string): ProspectingRepSummaryRow {
+  return {
+    blockTouches: 0,
+    calls: 0,
+    dealsClosed: 0,
+    dealsLost: 0,
+    emails: 0,
+    followups: 0,
+    newLeads: 0,
+    notes: 0,
+    repId,
+    sampleBoxes: 0,
+    sampleCogsCents: 0,
+    samples: 0,
+    texts: 0,
+    touches: 0,
+  };
+}
+
+function ensureProspectingRepRow(rows: Map<string, ProspectingRepSummaryRow>, repId: string) {
+  const existing = rows.get(repId);
+  if (existing) return existing;
+  const next = createProspectingRepSummaryRow(repId);
+  rows.set(repId, next);
+  return next;
+}
+
+function sumProspectingNumbers<T extends Record<string, unknown>>(row: T, keys: Array<keyof T>) {
+  return keys.reduce((sum, key) => sum + normalizeReportNumber(row[key]), 0);
+}
+
+function buildProspectingSummary({
+  activityRows,
+  blockRows,
+  currentLeads,
+  followupRows,
+  leadsCreatedRows,
+  sampleBoxRows,
+}: {
+  activityRows: ProspectingActivityReportRow[];
+  blockRows: ProspectingBlockReportRow[];
+  currentLeads: ProspectingLeadReportRow[];
+  followupRows: ProspectingFollowupBlockReportRow[];
+  leadsCreatedRows: ProspectingLeadReportRow[];
+  sampleBoxRows: ProspectingSampleBoxReportRow[];
+}): ProspectingSummary {
+  const repRowsById = new Map<string, ProspectingRepSummaryRow>();
+  const summary = {
+    calls: 0,
+    dealsClosed: 0,
+    dealsLost: 0,
+    emails: 0,
+    followups: 0,
+    newLeads: leadsCreatedRows.length,
+    notes: 0,
+    sampleBoxes: 0,
+    sampleCogsCents: 0,
+    samples: 0,
+    texts: 0,
+    touches: 0,
+  };
+
+  for (const lead of leadsCreatedRows) {
+    const repRow = ensureProspectingRepRow(repRowsById, prospectingRepId(lead.assigned_profile_id, UNASSIGNED_REP_ID));
+    repRow.newLeads += 1;
+  }
+
+  for (const activity of activityRows) {
+    const repRow = ensureProspectingRepRow(repRowsById, prospectingRepId(activity.created_by));
+    const nextStage = safeStage(activity.next_stage);
+    const type = normalizedText(activity.activity_type);
+    const countsAsTouch = type === 'call' || type === 'email' || type === 'note';
+
+    if (countsAsTouch) {
+      summary.touches += 1;
+      repRow.touches += 1;
+    }
+    if (type === 'call') {
+      summary.calls += 1;
+      repRow.calls += 1;
+    }
+    if (type === 'email') {
+      summary.emails += 1;
+      repRow.emails += 1;
+    }
+    if (type === 'note') {
+      summary.notes += 1;
+      repRow.notes += 1;
+    }
+    if (nextStage === 'sample_requested' || isSampleResult(activity.result)) {
+      summary.samples += 1;
+      repRow.samples += 1;
+    }
+    if (nextStage === 'converted') {
+      summary.dealsClosed += 1;
+      repRow.dealsClosed += 1;
+    }
+    if (nextStage === 'lost') {
+      summary.dealsLost += 1;
+      repRow.dealsLost += 1;
+    }
+  }
+
+  for (const block of blockRows) {
+    const repRow = ensureProspectingRepRow(repRowsById, prospectingRepId(block.created_by));
+    const phoneCalls = sumProspectingNumbers(block, ['calls_no_contact', 'calls_voicemail', 'calls_contact']);
+    const emails = normalizeReportNumber(block.calls_email);
+    const texts = normalizeReportNumber(block.calls_text);
+    const samples = sumProspectingNumbers(block, [
+      'samples_from_contact',
+      'samples_from_voicemail_callback',
+      'samples_from_email_reply',
+      'samples_from_text_reply',
+      'samples_other',
+    ]);
+    const blockTouches = phoneCalls + emails + texts;
+
+    summary.calls += phoneCalls;
+    summary.emails += emails;
+    summary.samples += samples;
+    summary.texts += texts;
+    summary.touches += blockTouches;
+    repRow.blockTouches += blockTouches;
+    repRow.calls += phoneCalls;
+    repRow.emails += emails;
+    repRow.samples += samples;
+    repRow.texts += texts;
+    repRow.touches += blockTouches;
+  }
+
+  for (const followup of followupRows) {
+    const repRow = ensureProspectingRepRow(repRowsById, prospectingRepId(followup.created_by));
+    const followups = sumProspectingNumbers(followup, ['followups_email', 'followups_phone', 'followups_text']);
+    const dealsClosed = sumProspectingNumbers(followup, ['deals_closed_email', 'deals_closed_phone', 'deals_closed_text']);
+    const dealsLost = sumProspectingNumbers(followup, ['deals_lost_email', 'deals_lost_phone', 'deals_lost_text']);
+    const emails = normalizeReportNumber(followup.followups_email);
+    const calls = normalizeReportNumber(followup.followups_phone);
+    const texts = normalizeReportNumber(followup.followups_text);
+
+    summary.calls += calls;
+    summary.dealsClosed += dealsClosed;
+    summary.dealsLost += dealsLost;
+    summary.emails += emails;
+    summary.followups += followups;
+    summary.texts += texts;
+    summary.touches += followups;
+    repRow.calls += calls;
+    repRow.dealsClosed += dealsClosed;
+    repRow.dealsLost += dealsLost;
+    repRow.emails += emails;
+    repRow.followups += followups;
+    repRow.texts += texts;
+    repRow.touches += followups;
+  }
+
+  for (const sampleBox of sampleBoxRows) {
+    const repRow = ensureProspectingRepRow(repRowsById, prospectingRepId(sampleBox.sales_profile_id, UNASSIGNED_REP_ID));
+    const boxes = normalizeReportNumber(sampleBox.quantity_boxes);
+    const cogs = normalizeReportNumber(sampleBox.total_cogs_cents);
+    summary.sampleBoxes += boxes;
+    summary.sampleCogsCents += cogs;
+    repRow.sampleBoxes += boxes;
+    repRow.sampleCogsCents += cogs;
+  }
+
+  const pipelineRows = PROSPECTING_STAGES.map((stage) => ({
+    stage: stage.id,
+    count: currentLeads.filter((lead) => lead.stage === stage.id).length,
+  }));
+
+  const repRows = [...repRowsById.values()]
+    .filter((row) => row.newLeads || row.touches || row.samples || row.dealsClosed || row.dealsLost || row.sampleBoxes)
+    .sort((a, b) => b.touches - a.touches || b.newLeads - a.newLeads || a.repId.localeCompare(b.repId));
+
+  return {
+    activityRows,
+    blockRows,
+    currentLeads,
+    followupRows,
+    pipelineRows,
+    repRows,
+    ...summary,
+  };
 }
 
 function reportDate(value: string | null | undefined) {
@@ -1444,6 +1767,220 @@ function GrossProfitSimulatorReport({
   );
 }
 
+function prospectingRepLabel(repId: string, profilesById: Map<string, AdminRow>) {
+  if (repId === UNASSIGNED_REP_ID) return 'Unassigned';
+  if (repId === UNKNOWN_REP_ID) return 'Unknown rep';
+  return adminLabel(profilesById.get(repId));
+}
+
+function ProspectingRepTable({
+  profilesById,
+  rows,
+}: {
+  profilesById: Map<string, AdminRow>;
+  rows: ProspectingRepSummaryRow[];
+}) {
+  if (!rows.length) return <EmptyState message="No prospecting activity found for the selected period and rep filter." />;
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full min-w-[78rem] border-separate border-spacing-y-2 text-left text-sm">
+        <thead>
+          <tr className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+            <th className="px-4 py-2">Rep</th>
+            <th className="px-4 py-2 text-right">New Leads</th>
+            <th className="px-4 py-2 text-right">Touches</th>
+            <th className="px-4 py-2 text-right">Calls</th>
+            <th className="px-4 py-2 text-right">Emails</th>
+            <th className="px-4 py-2 text-right">Texts</th>
+            <th className="px-4 py-2 text-right">Samples</th>
+            <th className="px-4 py-2 text-right">Closed</th>
+            <th className="px-4 py-2 text-right">Lost</th>
+            <th className="px-4 py-2 text-right">Boxes</th>
+            <th className="px-4 py-2 text-right">Sample COGS</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <tr key={row.repId} className="bg-white/65">
+              <td className="rounded-l-xl px-4 py-3 font-semibold text-slate-950">{prospectingRepLabel(row.repId, profilesById)}</td>
+              <td className="px-4 py-3 text-right text-slate-700">{number(row.newLeads)}</td>
+              <td className="px-4 py-3 text-right font-semibold text-slate-950">{number(row.touches)}</td>
+              <td className="px-4 py-3 text-right text-slate-700">{number(row.calls)}</td>
+              <td className="px-4 py-3 text-right text-slate-700">{number(row.emails)}</td>
+              <td className="px-4 py-3 text-right text-slate-700">{number(row.texts)}</td>
+              <td className="px-4 py-3 text-right text-slate-700">{number(row.samples)}</td>
+              <td className="px-4 py-3 text-right text-slate-700">{number(row.dealsClosed)}</td>
+              <td className="px-4 py-3 text-right text-slate-700">{number(row.dealsLost)}</td>
+              <td className="px-4 py-3 text-right text-slate-700">{compactNumber(row.sampleBoxes)}</td>
+              <td className="rounded-r-xl px-4 py-3 text-right font-semibold text-slate-950">{money(row.sampleCogsCents)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function ProspectingPipelineTable({ rows, total }: { rows: ProspectingSummary['pipelineRows']; total: number }) {
+  if (!total) return <EmptyState message="No current prospecting leads match the selected rep filter." />;
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full min-w-[42rem] border-separate border-spacing-y-2 text-left text-sm">
+        <thead>
+          <tr className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+            <th className="px-4 py-2">Stage</th>
+            <th className="px-4 py-2 text-right">Leads</th>
+            <th className="px-4 py-2 text-right">Share</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.filter((row) => row.count > 0).map((row) => (
+            <tr key={row.stage} className="bg-white/65">
+              <td className="rounded-l-xl px-4 py-3">
+                <span className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ring-1 ${prospectingStageTone(row.stage)}`}>{stageLabel(row.stage)}</span>
+              </td>
+              <td className="px-4 py-3 text-right font-semibold text-slate-950">{number(row.count)}</td>
+              <td className="rounded-r-xl px-4 py-3 text-right text-slate-700">{percent((row.count / total) * 100).replace('+', '')}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function ProspectingSourceTable({ summary }: { summary: ProspectingSummary }) {
+  const activityCalls = summary.activityRows.filter((row) => normalizedText(row.activity_type) === 'call').length;
+  const activityEmails = summary.activityRows.filter((row) => normalizedText(row.activity_type) === 'email').length;
+  const activityNotes = summary.activityRows.filter((row) => normalizedText(row.activity_type) === 'note').length;
+  const activitySamples = summary.activityRows.filter((row) => safeStage(row.next_stage) === 'sample_requested' || isSampleResult(row.result)).length;
+  const activityClosed = summary.activityRows.filter((row) => safeStage(row.next_stage) === 'converted').length;
+  const activityLost = summary.activityRows.filter((row) => safeStage(row.next_stage) === 'lost').length;
+  const blockCalls = summary.blockRows.reduce((sum, row) => sum + sumProspectingNumbers(row, ['calls_no_contact', 'calls_voicemail', 'calls_contact']), 0);
+  const blockEmails = summary.blockRows.reduce((sum, row) => sum + normalizeReportNumber(row.calls_email), 0);
+  const blockTexts = summary.blockRows.reduce((sum, row) => sum + normalizeReportNumber(row.calls_text), 0);
+  const blockSamples = summary.blockRows.reduce((sum, row) => sum + sumProspectingNumbers(row, [
+    'samples_from_contact',
+    'samples_from_voicemail_callback',
+    'samples_from_email_reply',
+    'samples_from_text_reply',
+    'samples_other',
+  ]), 0);
+  const followupCalls = summary.followupRows.reduce((sum, row) => sum + normalizeReportNumber(row.followups_phone), 0);
+  const followupEmails = summary.followupRows.reduce((sum, row) => sum + normalizeReportNumber(row.followups_email), 0);
+  const followupTexts = summary.followupRows.reduce((sum, row) => sum + normalizeReportNumber(row.followups_text), 0);
+  const followupClosed = summary.followupRows.reduce((sum, row) => sum + sumProspectingNumbers(row, ['deals_closed_email', 'deals_closed_phone', 'deals_closed_text']), 0);
+  const followupLost = summary.followupRows.reduce((sum, row) => sum + sumProspectingNumbers(row, ['deals_lost_email', 'deals_lost_phone', 'deals_lost_text']), 0);
+  const rows = [
+    { id: 'activity', label: 'Lead activity log', calls: activityCalls, emails: activityEmails, texts: 0, notes: activityNotes, samples: activitySamples, closed: activityClosed, lost: activityLost },
+    { id: 'blocks', label: 'Prospecting blocks', calls: blockCalls, emails: blockEmails, texts: blockTexts, notes: 0, samples: blockSamples, closed: 0, lost: 0 },
+    { id: 'followups', label: 'Follow-up blocks', calls: followupCalls, emails: followupEmails, texts: followupTexts, notes: 0, samples: 0, closed: followupClosed, lost: followupLost },
+  ].filter((row) => row.calls || row.emails || row.texts || row.notes || row.samples || row.closed || row.lost);
+
+  if (!rows.length) return <EmptyState message="No prospecting source rows found for the selected period." />;
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full min-w-[58rem] border-separate border-spacing-y-2 text-left text-sm">
+        <thead>
+          <tr className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+            <th className="px-4 py-2">Source</th>
+            <th className="px-4 py-2 text-right">Calls</th>
+            <th className="px-4 py-2 text-right">Emails</th>
+            <th className="px-4 py-2 text-right">Texts</th>
+            <th className="px-4 py-2 text-right">Notes</th>
+            <th className="px-4 py-2 text-right">Samples</th>
+            <th className="px-4 py-2 text-right">Closed</th>
+            <th className="px-4 py-2 text-right">Lost</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <tr key={row.id} className="bg-white/65">
+              <td className="rounded-l-xl px-4 py-3 font-semibold text-slate-950">{row.label}</td>
+              <td className="px-4 py-3 text-right text-slate-700">{number(row.calls)}</td>
+              <td className="px-4 py-3 text-right text-slate-700">{number(row.emails)}</td>
+              <td className="px-4 py-3 text-right text-slate-700">{number(row.texts)}</td>
+              <td className="px-4 py-3 text-right text-slate-700">{number(row.notes)}</td>
+              <td className="px-4 py-3 text-right text-slate-700">{number(row.samples)}</td>
+              <td className="px-4 py-3 text-right text-slate-700">{number(row.closed)}</td>
+              <td className="rounded-r-xl px-4 py-3 text-right text-slate-700">{number(row.lost)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function ProspectingReport({
+  profilesById,
+  rangeEndExclusive,
+  rangeStart,
+  selectedSalesRepId,
+  summary,
+}: {
+  profilesById: Map<string, AdminRow>;
+  rangeEndExclusive: Date;
+  rangeStart: Date;
+  selectedSalesRepId: string;
+  summary: ProspectingSummary;
+}) {
+  const currentPipelineTotal = summary.currentLeads.length;
+  const activeQueueCount = summary.currentLeads.filter((lead) => ['new', 'working', 'follow_up', 'recycle_try_later'].includes(String(lead.stage))).length;
+  const followUpsInRange = summary.currentLeads.filter((lead) => {
+    const dueAt = reportDate(lead.next_follow_up_at);
+    return dueAt && dueAt >= rangeStart && dueAt < rangeEndExclusive;
+  }).length;
+  const hubspotReadyCount = summary.currentLeads.filter((lead) => lead.stage === 'interested' || lead.stage === 'sample_requested' || lead.hubspot_status === 'queued').length;
+  const unassignedCount = summary.currentLeads.filter((lead) => !lead.assigned_profile_id).length;
+  const selectedRepName = selectedSalesRepId ? prospectingRepLabel(selectedSalesRepId, profilesById) : 'all reps';
+
+  return (
+    <>
+      <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-6">
+        <StatTile label="New Leads" value={number(summary.newLeads)} detail={`Created in range for ${selectedRepName}.`} />
+        <StatTile label="Touches" value={number(summary.touches)} detail={`${number(summary.calls)} calls, ${number(summary.emails)} emails, ${number(summary.texts)} texts.`} />
+        <StatTile label="Samples" value={number(summary.samples)} detail={`${compactNumber(summary.sampleBoxes)} sample box${summary.sampleBoxes === 1 ? '' : 'es'} sent.`} />
+        <StatTile label="Deals Closed" value={number(summary.dealsClosed)} detail={`${number(summary.dealsLost)} lost outcomes logged in range.`} />
+        <StatTile label="Current Pipeline" value={number(currentPipelineTotal)} detail={`${number(activeQueueCount)} active leads, ${number(hubspotReadyCount)} HubSpot-ready.`} />
+        <StatTile label="Sample COGS" value={money(summary.sampleCogsCents)} detail={`${number(followUpsInRange)} follow-up${followUpsInRange === 1 ? '' : 's'} due in range.`} />
+      </section>
+
+      <section className="card space-y-5">
+        <SectionHeading
+          eyebrow="Rep performance"
+          title="Prospecting by sales rep"
+          subtitle="Uses the selected report period and the sales rep filter. Lead activity is grouped by who logged the activity; lead creation and samples are grouped by assigned sales profile."
+          action={unassignedCount ? <span className="rounded-full bg-amber-50 px-3 py-1 text-sm font-semibold text-amber-800">{number(unassignedCount)} unassigned current lead{unassignedCount === 1 ? '' : 's'}</span> : null}
+        />
+        <ProspectingRepTable rows={summary.repRows} profilesById={profilesById} />
+      </section>
+
+      <section className="grid gap-5 xl:grid-cols-[0.9fr_1.1fr]">
+        <div className="card space-y-5">
+          <SectionHeading
+            eyebrow="Current pipeline"
+            title="Lead count by stage"
+            subtitle="Current open prospecting leads for the selected sales rep filter."
+          />
+          <ProspectingPipelineTable rows={summary.pipelineRows} total={currentPipelineTotal} />
+        </div>
+        <div className="card space-y-5">
+          <SectionHeading
+            eyebrow="Activity sources"
+            title="Where the selected-period totals came from"
+            subtitle="Combines detailed lead activity, prospecting blocks, follow-up blocks, and sample box runs."
+          />
+          <ProspectingSourceTable summary={summary} />
+        </div>
+      </section>
+    </>
+  );
+}
+
 function CriticalReportError({ message }: { message: string }) {
   return (
     <div className="space-y-6">
@@ -1520,6 +2057,44 @@ export default async function AdminReportsPage({
     supabase.from('centers').select('id,name,is_active,created_at').order('name', { ascending: true }),
     centerScope
   );
+  const prospectingReportProfileId = currentAccess.isOwner ? selectedSalesRepId : currentAccess.profile.id;
+  let prospectingActivitiesQuery = supabase
+    .from('prospecting_activities')
+    .select('id,lead_id,activity_type,result,previous_stage,next_stage,next_follow_up_at,created_by,created_at')
+    .gte('created_at', rangeStart.toISOString())
+    .lt('created_at', rangeEndExclusive.toISOString())
+    .order('created_at', { ascending: false })
+    .limit(50000);
+  let prospectingLeadsCreatedQuery = supabase
+    .from('prospecting_leads')
+    .select('id,assigned_profile_id,stage,created_at,next_follow_up_at,do_not_contact,hubspot_status,archived_at')
+    .gte('created_at', rangeStart.toISOString())
+    .lt('created_at', rangeEndExclusive.toISOString())
+    .limit(50000);
+  let prospectingCurrentLeadsQuery = supabase
+    .from('prospecting_leads')
+    .select('id,assigned_profile_id,stage,created_at,next_follow_up_at,do_not_contact,hubspot_status,archived_at')
+    .is('archived_at', null)
+    .limit(50000);
+  let prospectingBlocksQuery = supabase
+    .from('sales_prospecting_blocks')
+    .select('id,activity_date,created_by,calls_no_contact,calls_voicemail,calls_email,calls_contact,calls_text,samples_from_contact,samples_from_voicemail_callback,samples_from_email_reply,samples_from_text_reply,samples_other')
+    .gte('activity_date', formatDateInput(rangeStart))
+    .lt('activity_date', formatDateInput(rangeEndExclusive))
+    .limit(50000);
+  let prospectingFollowupBlocksQuery = supabase
+    .from('sales_prospecting_followup_blocks')
+    .select('id,activity_date,created_by,followups_email,followups_phone,followups_text,deals_closed_email,deals_closed_phone,deals_closed_text,deals_lost_email,deals_lost_phone,deals_lost_text')
+    .gte('activity_date', formatDateInput(rangeStart))
+    .lt('activity_date', formatDateInput(rangeEndExclusive))
+    .limit(50000);
+  if (prospectingReportProfileId) {
+    prospectingActivitiesQuery = prospectingActivitiesQuery.eq('created_by', prospectingReportProfileId);
+    prospectingLeadsCreatedQuery = prospectingLeadsCreatedQuery.eq('assigned_profile_id', prospectingReportProfileId);
+    prospectingCurrentLeadsQuery = prospectingCurrentLeadsQuery.eq('assigned_profile_id', prospectingReportProfileId);
+    prospectingBlocksQuery = prospectingBlocksQuery.eq('created_by', prospectingReportProfileId);
+    prospectingFollowupBlocksQuery = prospectingFollowupBlocksQuery.eq('created_by', prospectingReportProfileId);
+  }
 
   const [
     ordersResult,
@@ -1535,6 +2110,11 @@ export default async function AdminReportsPage({
     nonInventoryExpensesResult,
     sampleBoxRunsResult,
     recipeResult,
+    prospectingActivitiesResult,
+    prospectingLeadsCreatedResult,
+    prospectingCurrentLeadsResult,
+    prospectingBlocksResult,
+    prospectingFollowupBlocksResult,
   ] = await Promise.all([
     ordersQuery,
     supabase.from('order_items').select('id,order_id,product_id,product_name_snapshot,qty,unit_price_cents,line_total_cents,shipping_boxes_used,cogs_material_cents,cogs_labor_cents,cogs_fixed_cents,cogs_tape_cents,cogs_shipping_label_cents,cogs_branding_label_cents,cogs_fixed_other_cents,cogs_product_cents,cogs_shipping_cents,cogs_processing_fee_cents,cogs_donation_cents,cogs_total_cents,cogs_unit_cents,cogs_source,cogs_estimated,cogs_snapshot_at').limit(50000),
@@ -1557,6 +2137,11 @@ export default async function AdminReportsPage({
       .from('product_recipes')
       .select('product_id,output_qty,waste_percent,labor_minutes,labor_rate_cents,product_recipe_components(inventory_item_id,quantity,unit,component_role,inventory_items(id,name,sku,item_type,base_unit))')
       .limit(50000),
+    prospectingActivitiesQuery,
+    prospectingLeadsCreatedQuery,
+    prospectingCurrentLeadsQuery,
+    prospectingBlocksQuery,
+    prospectingFollowupBlocksQuery,
   ]);
 
   if (ordersResult.error || orderItemsResult.error || centersResult.error || productsResult.error) {
@@ -1675,8 +2260,23 @@ export default async function AdminReportsPage({
     },
     { boxes: 0, estimatedCount: 0, fixedCents: 0, inventoryCents: 0, productCents: 0, totalCents: 0 }
   );
+  const prospectingProfileRows = [
+    ...salesReps,
+    currentAccess.profile as AdminRow,
+  ].filter((profile): profile is AdminRow => Boolean(profile?.id));
+  const prospectingProfilesById = new Map(prospectingProfileRows.map((profile) => [profile.id, profile]));
+  const prospectingSummary = buildProspectingSummary({
+    activityRows: prospectingActivitiesResult.error ? [] : ((prospectingActivitiesResult.data ?? []) as ProspectingActivityReportRow[]),
+    blockRows: prospectingBlocksResult.error ? [] : ((prospectingBlocksResult.data ?? []) as ProspectingBlockReportRow[]),
+    currentLeads: prospectingCurrentLeadsResult.error ? [] : ((prospectingCurrentLeadsResult.data ?? []) as ProspectingLeadReportRow[]),
+    followupRows: prospectingFollowupBlocksResult.error ? [] : ((prospectingFollowupBlocksResult.data ?? []) as ProspectingFollowupBlockReportRow[]),
+    leadsCreatedRows: prospectingLeadsCreatedResult.error ? [] : ((prospectingLeadsCreatedResult.data ?? []) as ProspectingLeadReportRow[]),
+    sampleBoxRows: sampleBoxRuns,
+  });
   const rangeEndInput = formatDateInput(addDays(rangeEndExclusive, -1));
-  const activeFilterCount = [productId, centerId, selectedSalesRepId, parsedRangeStart, parsedRangeEnd].filter(Boolean).length;
+  const activeFilterCount = activeReport === 'prospecting'
+    ? [selectedSalesRepId, parsedRangeStart, parsedRangeEnd].filter(Boolean).length
+    : [productId, centerId, selectedSalesRepId, parsedRangeStart, parsedRangeEnd].filter(Boolean).length;
   const navParams = new URLSearchParams();
   navParams.set('report', activeReport);
   navParams.set('month', formatMonthInput(selectedMonth));
@@ -1719,24 +2319,28 @@ export default async function AdminReportsPage({
                 Range end
                 <input className="input" name="rangeEnd" type="date" defaultValue={rangeEndInput} />
               </label>
-              <label className="space-y-2 text-sm font-medium text-slate-700">
-                Product
-                <select className="input" name="product" defaultValue={productId ?? ''}>
-                  <option value="">All products</option>
-                  {products.map((product) => (
-                    <option key={product.id} value={product.id}>{product.name || product.sku || 'Unnamed product'}</option>
-                  ))}
-                </select>
-              </label>
-              <label className="space-y-2 text-sm font-medium text-slate-700 sm:col-span-2">
-                Customer
-                <select className="input" name="center" defaultValue={centerId ?? ''}>
-                  <option value="">All customers</option>
-                  {centers.map((center) => (
-                    <option key={center.id} value={center.id}>{center.name || 'Unnamed center'}</option>
-                  ))}
-                </select>
-              </label>
+              {activeReport !== 'prospecting' ? (
+                <>
+                  <label className="space-y-2 text-sm font-medium text-slate-700">
+                    Product
+                    <select className="input" name="product" defaultValue={productId ?? ''}>
+                      <option value="">All products</option>
+                      {products.map((product) => (
+                        <option key={product.id} value={product.id}>{product.name || product.sku || 'Unnamed product'}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="space-y-2 text-sm font-medium text-slate-700 sm:col-span-2">
+                    Customer
+                    <select className="input" name="center" defaultValue={centerId ?? ''}>
+                      <option value="">All customers</option>
+                      {centers.map((center) => (
+                        <option key={center.id} value={center.id}>{center.name || 'Unnamed center'}</option>
+                      ))}
+                    </select>
+                  </label>
+                </>
+              ) : null}
               {currentAccess.isOwner ? (
                 <label className="space-y-2 text-sm font-medium text-slate-700 sm:col-span-2">
                   Sales rep
@@ -1754,7 +2358,9 @@ export default async function AdminReportsPage({
               <Link href={`/admin/reports?report=${activeReport}`} className="btn-secondary w-full sm:w-auto">Reset</Link>
             </div>
             <p className="mt-3 text-sm leading-6 text-slate-500">
-              {REPORTS.find((report) => report.id === activeReport)?.label}. Using {dateLabel(rangeStart)} through {dateLabel(addDays(rangeEndExclusive, -1))}; sales comparisons still compare {monthLabel(selectedMonth)} with {monthLabel(dashboard.previousMonthStart)}.
+              {activeReport === 'prospecting'
+                ? `${REPORTS.find((report) => report.id === activeReport)?.label}. Using ${dateLabel(rangeStart)} through ${dateLabel(addDays(rangeEndExclusive, -1))}.`
+                : `${REPORTS.find((report) => report.id === activeReport)?.label}. Using ${dateLabel(rangeStart)} through ${dateLabel(addDays(rangeEndExclusive, -1))}; sales comparisons still compare ${monthLabel(selectedMonth)} with ${monthLabel(dashboard.previousMonthStart)}.`}
             </p>
           </form>
         </div>
@@ -1762,7 +2368,7 @@ export default async function AdminReportsPage({
 
       <ReportNav activeReport={activeReport} reports={allowedReports} searchParams={navParams} />
 
-      {!dashboard.hasOrders ? (
+      {activeReport !== 'prospecting' && !dashboard.hasOrders ? (
         <section className="card">
           <EmptyState message="No orders found yet. Reports will populate as wholesale orders are placed." />
         </section>
@@ -2063,6 +2669,16 @@ export default async function AdminReportsPage({
         <InventoryTable rows={dashboard.inventoryPlanningRows} unavailable={inventoryUnavailable} />
       </section>
         </>
+      ) : null}
+
+      {activeReport === 'prospecting' ? (
+        <ProspectingReport
+          profilesById={prospectingProfilesById}
+          rangeEndExclusive={rangeEndExclusive}
+          rangeStart={rangeStart}
+          selectedSalesRepId={selectedSalesRepId}
+          summary={prospectingSummary}
+        />
       ) : null}
     </div>
   );
