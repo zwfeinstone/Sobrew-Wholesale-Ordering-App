@@ -2174,19 +2174,26 @@ export default async function PayrollPage({
             </div>
             {!unapprovedEntries.length ? <EmptyState message="No unapproved completed shifts found for this range." /> : null}
             <div className="space-y-2">
-              {unapprovedEntries.map((entry) => (
-                <div key={entry.id} className="grid gap-3 rounded-2xl border border-slate-200 bg-white/65 p-4 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
-                  <div>
-                    <p className="font-semibold text-slate-950">{profileLabel(profileForEntry(entry))}</p>
-                    <p className="mt-1 text-sm text-slate-500">{formatCentralDateTime(entry.clock_in_at)} to {formatCentralDateTime(entry.clock_out_at)} - {hoursLabel(paidMinutes(entry, entryBreaks(entry)))} paid hours</p>
+              {unapprovedEntries.map((entry) => {
+                const breaks = entryBreaks(entry);
+                const lunchMinutes = completedBreakMinutes(breaks);
+                const entryPaidMinutes = paidMinutes(entry, breaks);
+                return (
+                  <div key={entry.id} className="grid gap-3 rounded-2xl border border-slate-200 bg-white/65 p-4 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
+                    <div>
+                      <p className="font-semibold text-slate-950">{profileLabel(profileForEntry(entry))}</p>
+                      <p className="mt-1 text-sm text-slate-500">
+                        {formatCentralDateTime(entry.clock_in_at)} to {formatCentralDateTime(entry.clock_out_at)} - {hoursLabel(lunchMinutes)} lunch hours - {hoursLabel(entryPaidMinutes)} paid hours
+                      </p>
+                    </div>
+                    <form action={approveEntry}>
+                      {returnToInput(currentUrl)}
+                      <input name="entry_id" type="hidden" value={entry.id} />
+                      <PendingSubmitButton className="btn-primary w-full md:w-auto" label="Approve" pendingLabel="Approving..." />
+                    </form>
                   </div>
-                  <form action={approveEntry}>
-                    {returnToInput(currentUrl)}
-                    <input name="entry_id" type="hidden" value={entry.id} />
-                    <PendingSubmitButton className="btn-primary w-full md:w-auto" label="Approve" pendingLabel="Approving..." />
-                  </form>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </section>
 
