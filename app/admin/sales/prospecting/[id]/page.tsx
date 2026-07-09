@@ -4,6 +4,7 @@ import ConfirmSubmitButton from '@/components/confirm-submit-button';
 import PendingSubmitButton from '@/components/pending-submit-button';
 import StatusToast from '@/components/status-toast';
 import { getCurrentAdminAccess, requireAdminSectionEdit } from '@/lib/admin-permissions';
+import { supabaseAdmin } from '@/lib/supabase/admin';
 import { createClient } from '@/lib/supabase/server';
 import {
   ACTIVE_PROSPECTING_STAGES,
@@ -138,24 +139,24 @@ async function syncHubspotQueue({
   actorId,
   leadId,
   stage,
-  supabase,
 }: {
   actorId: string;
   leadId: string;
   stage: ProspectingStage;
-  supabase: Awaited<ReturnType<typeof createClient>>;
 }) {
   if (isHubspotQueueStage(stage)) {
-    await supabase.from('prospecting_hubspot_queue').upsert({
+    const { error: queueError } = await supabaseAdmin.from('prospecting_hubspot_queue').upsert({
       lead_id: leadId,
       queued_by: actorId,
       queued_stage: stage,
       status: 'queued',
     }, { onConflict: 'lead_id' });
-    await supabase.from('prospecting_leads').update({ hubspot_status: 'queued' }).eq('id', leadId);
+    const { error: leadError } = await supabaseAdmin.from('prospecting_leads').update({ hubspot_status: 'queued' }).eq('id', leadId);
+    return queueError ?? leadError;
   } else {
-    await supabase.from('prospecting_hubspot_queue').delete().eq('lead_id', leadId).eq('status', 'queued');
-    await supabase.from('prospecting_leads').update({ hubspot_status: 'not_queued' }).eq('id', leadId).eq('hubspot_status', 'queued');
+    const { error: queueError } = await supabaseAdmin.from('prospecting_hubspot_queue').delete().eq('lead_id', leadId).eq('status', 'queued');
+    const { error: leadError } = await supabaseAdmin.from('prospecting_leads').update({ hubspot_status: 'not_queued' }).eq('id', leadId).eq('hubspot_status', 'queued');
+    return queueError ?? leadError;
   }
 }
 
@@ -170,7 +171,7 @@ async function saveLeadDetails(formData: FormData) {
   if (!before) redirect('/admin/sales/prospecting?toast=missing_lead');
 
   const companyName = cleanText(formData.get('company_name'));
-  if (!companyName) redirect(leadHref(leadId, 'company_required'));
+  if (!companyName) redirect(leadHref(leadId, 'company_required', stateFilter));
   const phone = cleanText(formData.get('phone'));
   const nextStage = normalizeStage(String(formData.get('stage') ?? before.stage ?? 'new'));
   const priority = normalizePriority(String(formData.get('priority') ?? 'normal'));
@@ -184,7 +185,7 @@ async function saveLeadDetails(formData: FormData) {
   const nextFollowUp = shouldUnassign ? null : safeDateInput(formData.get('next_follow_up_at'));
   const state = cleanText(formData.get('state'));
 
-  const { error, data } = await supabase
+  const { error, data } = await supabaseAdmin
     .from('prospecting_leads')
     .update({
       address_line_1: cleanText(formData.get('address_line_1')),
@@ -213,9 +214,10 @@ async function saveLeadDetails(formData: FormData) {
     .select('id')
     .maybeSingle();
 
-  if (error || !data) redirect(leadHref(leadId, 'save_error'));
+  if (error || !data) redirect(leadHref(leadId, 'save_error', stateFilter));
 
-  await syncHubspotQueue({ actorId: current.profile.id, leadId, stage: savedStage, supabase });
+  const hubspotError = await syncHubspotQueue({ actorId: current.profile.id, leadId, stage: savedStage });
+  if (hubspotError) redirect(leadHref(leadId, 'save_error', stateFilter));
 
   const activityRows: Array<Record<string, unknown>> = [
     {
@@ -241,7 +243,8 @@ async function saveLeadDetails(formData: FormData) {
       result: assignedProfileId ? 'Assigned' : 'Unassigned',
     });
   }
-  await supabase.from('prospecting_activities').insert(activityRows);
+  const { error: activityError } = await supabaseAdmin.from('prospecting_activities').insert(activityRows);
+  if (activityError) redirect(leadHref(leadId, 'save_error', stateFilter));
 
   if (shouldRecycle && !current.isOwner) redirect(`/admin/sales/prospecting?toast=lead_recycled${stateFilter ? `&state=${stateFilter}` : ''}`);
   if (shouldMoveToMaintenance && !current.isOwner) redirect(`/admin/sales/prospecting?toast=lead_reviewed${stateFilter ? `&state=${stateFilter}` : ''}`);
@@ -368,7 +371,7 @@ async function logLeadActivity(formData: FormData) {
   const shouldUnassign = shouldRecycle || shouldMoveToMaintenance;
   const now = new Date().toISOString();
 
-  const { error } = await supabase.from('prospecting_activities').insert({
+  const { error } = await supabaseAdmin.from('prospecting_activities').insert({
     activity_type: activityType,
     body,
     contact_id: cleanText(formData.get('contact_id')),
@@ -381,9 +384,9 @@ async function logLeadActivity(formData: FormData) {
     result,
   });
 
-  if (error) redirect(leadHref(leadId, 'activity_error'));
+  if (error) redirect(leadHref(leadId, 'activity_error', stateFilter));
 
-  await supabase
+  const { error: leadUpdateError, data: updatedLead } = await supabaseAdmin
     .from('prospecting_leads')
     .update({
       do_not_contact: doNotContact || undefined,
@@ -395,12 +398,17 @@ async function logLeadActivity(formData: FormData) {
       updated_at: now,
       updated_by: current.profile.id,
     })
-    .eq('id', leadId);
+    .eq('id', leadId)
+    .select('id')
+    .maybeSingle();
 
-  await syncHubspotQueue({ actorId: current.profile.id, leadId, stage: savedStage, supabase });
+  if (leadUpdateError || !updatedLead) redirect(leadHref(leadId, 'activity_error', stateFilter));
+
+  const hubspotError = await syncHubspotQueue({ actorId: current.profile.id, leadId, stage: savedStage });
+  if (hubspotError) redirect(leadHref(leadId, 'activity_error', stateFilter));
 
   if (shouldRecycle) {
-    await supabase.from('prospecting_activities').insert({
+    const { error: assignmentError } = await supabaseAdmin.from('prospecting_activities').insert({
       activity_type: 'assignment',
       body: 'Lead recycled to the unassigned pool.',
       created_by: current.profile.id,
@@ -410,11 +418,12 @@ async function logLeadActivity(formData: FormData) {
       previous_stage: before.stage,
       result: 'Unassigned',
     });
+    if (assignmentError) redirect(leadHref(leadId, 'activity_error', stateFilter));
     if (!current.isOwner) redirect(`/admin/sales/prospecting?toast=lead_recycled${stateFilter ? `&state=${stateFilter}` : ''}`);
   }
 
   if (shouldMoveToMaintenance) {
-    await supabase.from('prospecting_activities').insert({
+    const { error: assignmentError } = await supabaseAdmin.from('prospecting_activities').insert({
       activity_type: 'assignment',
       body: `Lead moved to ${stageLabel(savedStage)} review.`,
       created_by: current.profile.id,
@@ -424,6 +433,7 @@ async function logLeadActivity(formData: FormData) {
       previous_stage: before.stage,
       result: 'Unassigned',
     });
+    if (assignmentError) redirect(leadHref(leadId, 'activity_error', stateFilter));
   }
 
   if (shouldMoveToMaintenance && !current.isOwner) redirect(`/admin/sales/prospecting?toast=lead_reviewed${stateFilter ? `&state=${stateFilter}` : ''}`);
