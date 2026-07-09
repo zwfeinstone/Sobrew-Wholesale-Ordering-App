@@ -29,6 +29,66 @@ export const PROSPECTING_PAGE_SIZES = [25, 50] as const;
 export const DEFAULT_PROSPECTING_PAGE_SIZE = 50;
 export const PROSPECTING_IMPORT_MAX_BYTES = 10 * 1024 * 1024;
 export const PROSPECTING_IMPORT_MAX_ROWS = 5000;
+export const MISSING_STATE_FILTER = 'missing';
+
+export const US_STATE_OPTIONS = [
+  { id: 'AL', label: 'Alabama' },
+  { id: 'AK', label: 'Alaska' },
+  { id: 'AZ', label: 'Arizona' },
+  { id: 'AR', label: 'Arkansas' },
+  { id: 'CA', label: 'California' },
+  { id: 'CO', label: 'Colorado' },
+  { id: 'CT', label: 'Connecticut' },
+  { id: 'DE', label: 'Delaware' },
+  { id: 'FL', label: 'Florida' },
+  { id: 'GA', label: 'Georgia' },
+  { id: 'HI', label: 'Hawaii' },
+  { id: 'ID', label: 'Idaho' },
+  { id: 'IL', label: 'Illinois' },
+  { id: 'IN', label: 'Indiana' },
+  { id: 'IA', label: 'Iowa' },
+  { id: 'KS', label: 'Kansas' },
+  { id: 'KY', label: 'Kentucky' },
+  { id: 'LA', label: 'Louisiana' },
+  { id: 'ME', label: 'Maine' },
+  { id: 'MD', label: 'Maryland' },
+  { id: 'MA', label: 'Massachusetts' },
+  { id: 'MI', label: 'Michigan' },
+  { id: 'MN', label: 'Minnesota' },
+  { id: 'MS', label: 'Mississippi' },
+  { id: 'MO', label: 'Missouri' },
+  { id: 'MT', label: 'Montana' },
+  { id: 'NE', label: 'Nebraska' },
+  { id: 'NV', label: 'Nevada' },
+  { id: 'NH', label: 'New Hampshire' },
+  { id: 'NJ', label: 'New Jersey' },
+  { id: 'NM', label: 'New Mexico' },
+  { id: 'NY', label: 'New York' },
+  { id: 'NC', label: 'North Carolina' },
+  { id: 'ND', label: 'North Dakota' },
+  { id: 'OH', label: 'Ohio' },
+  { id: 'OK', label: 'Oklahoma' },
+  { id: 'OR', label: 'Oregon' },
+  { id: 'PA', label: 'Pennsylvania' },
+  { id: 'RI', label: 'Rhode Island' },
+  { id: 'SC', label: 'South Carolina' },
+  { id: 'SD', label: 'South Dakota' },
+  { id: 'TN', label: 'Tennessee' },
+  { id: 'TX', label: 'Texas' },
+  { id: 'UT', label: 'Utah' },
+  { id: 'VT', label: 'Vermont' },
+  { id: 'VA', label: 'Virginia' },
+  { id: 'WA', label: 'Washington' },
+  { id: 'WV', label: 'West Virginia' },
+  { id: 'WI', label: 'Wisconsin' },
+  { id: 'WY', label: 'Wyoming' },
+  { id: 'DC', label: 'District of Columbia' },
+] as const;
+
+export type ProspectingStateCode = (typeof US_STATE_OPTIONS)[number]['id'];
+export type ProspectingStateFilter = typeof MISSING_STATE_FILTER | ProspectingStateCode;
+
+const US_STATE_IDS = new Set(US_STATE_OPTIONS.map((state) => state.id));
 
 export const CALL_RESULTS = [
   'No answer',
@@ -186,6 +246,31 @@ export function normalizeTextKey(value: string | null | undefined) {
     .replace(/[^a-z0-9]+/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+const US_STATE_NAME_TO_ID = new Map<string, ProspectingStateCode>(
+  US_STATE_OPTIONS.flatMap((state) => [
+    [normalizeTextKey(state.label), state.id],
+    [normalizeTextKey(state.id), state.id],
+  ]),
+);
+
+US_STATE_NAME_TO_ID.set('washington dc', 'DC');
+US_STATE_NAME_TO_ID.set('dc', 'DC');
+
+export function normalizeStateKey(value: string | null | undefined): ProspectingStateCode | null {
+  const text = String(value ?? '').trim();
+  if (!text) return null;
+  const compact = text.replace(/[^a-z]/gi, '').toUpperCase();
+  if (US_STATE_IDS.has(compact as ProspectingStateCode)) return compact as ProspectingStateCode;
+  return US_STATE_NAME_TO_ID.get(normalizeTextKey(text)) ?? null;
+}
+
+export function normalizeStateFilter(value: string | string[] | null | undefined): '' | ProspectingStateFilter {
+  const text = typeof value === 'string' ? value.trim() : '';
+  if (!text) return '';
+  if (text.toLowerCase() === MISSING_STATE_FILTER) return MISSING_STATE_FILTER;
+  return normalizeStateKey(text) ?? '';
 }
 
 export function normalizePhoneKey(value: string | null | undefined) {

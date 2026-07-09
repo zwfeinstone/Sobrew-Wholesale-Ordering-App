@@ -11,12 +11,14 @@ import {
   DEFAULT_PROSPECTING_PAGE_SIZE,
   HUBSPOT_QUEUE_STAGES,
   MAINTENANCE_PROSPECTING_STAGES,
+  MISSING_STATE_FILTER,
   PROSPECTING_CSV_HEADERS,
   PROSPECTING_IMPORT_MAX_BYTES,
   PROSPECTING_IMPORT_MAX_ROWS,
   PROSPECTING_PAGE_SIZES,
   PROSPECTING_PRIORITIES,
   PROSPECTING_STAGES,
+  US_STATE_OPTIONS,
   chunkArray,
   cleanText,
   csvLine,
@@ -29,6 +31,8 @@ import {
   normalizePageSize,
   normalizePhoneKey,
   normalizePriority,
+  normalizeStateFilter,
+  normalizeStateKey,
   normalizeStage,
   normalizeTextKey,
   paginationRange,
@@ -38,6 +42,7 @@ import {
   stageLabel,
   totalPageCount,
   type ProspectingPriority,
+  type ProspectingStateFilter,
   type ProspectingStage,
 } from '@/lib/prospecting';
 
@@ -70,6 +75,7 @@ type LeadRow = {
   priority: ProspectingPriority | string | null;
   stage: ProspectingStage | string | null;
   state: string | null;
+  state_key: string | null;
   updated_at: string | null;
 };
 
@@ -162,6 +168,7 @@ type LeadFilterState = {
   q: string;
   repId: string;
   stage: string;
+  stateKey: '' | ProspectingStateFilter;
 };
 
 const PROSPECTING_ADMIN_PATH = '/admin/sales/prospecting/admin';
@@ -208,6 +215,7 @@ function prospectingHref(params: {
   recyclePage?: number | string;
   recyclePageSize?: number | string;
   stage?: string;
+  state?: string;
   toast?: string;
 }) {
   const query = new URLSearchParams();
@@ -232,6 +240,7 @@ function adminFilterHref(filters: LeadFilterState, params: { page?: number; page
     q: filters.q,
     rep: filters.repId,
     stage: filters.stage,
+    state: filters.stateKey,
     toast: params.toast,
   });
 }
@@ -246,8 +255,16 @@ function assignmentRedirectFromForm(formData: FormData, toast: string) {
     q: String(formData.get('q') ?? '').trim(),
     rep: String(formData.get('rep') ?? '').trim(),
     stage: String(formData.get('stage') ?? '').trim(),
+    state: normalizeStateFilter(String(formData.get('state') ?? '')),
     toast,
   });
+}
+
+function leadDetailHref(leadId: string, stateKey: '' | ProspectingStateFilter = '') {
+  const query = new URLSearchParams();
+  if (stateKey) query.set('state', stateKey);
+  const qs = query.toString();
+  return `/admin/sales/prospecting/${leadId}${qs ? `?${qs}` : ''}`;
 }
 
 function relatedOne<T>(value: T | T[] | null | undefined): T | null {
@@ -286,6 +303,7 @@ function leadPayloadFromCsv(row: Record<string, string>, createdBy: string, sale
   const companyName = cleanText(row.company_name);
   if (!companyName) return null;
   const phone = cleanText(row.company_phone);
+  const state = cleanText(row.state);
   return {
     address_line_1: cleanText(row.address_line_1),
     address_line_2: cleanText(row.address_line_2),
@@ -304,7 +322,8 @@ function leadPayloadFromCsv(row: Record<string, string>, createdBy: string, sale
     priority: 'normal' as ProspectingPriority,
     source: cleanText(row.list_name),
     stage: 'new' as ProspectingStage,
-    state: cleanText(row.state),
+    state,
+    state_key: normalizeStateKey(state),
     updated_by: createdBy,
   };
 }
@@ -343,7 +362,6 @@ function mergeMissingFields(existing: LeadRow, incoming: ReturnType<typeof leadP
     'notes',
     'phone',
     'postal_code',
-    'state',
   ] as const;
 
   for (const field of fields) {
@@ -352,6 +370,8 @@ function mergeMissingFields(existing: LeadRow, incoming: ReturnType<typeof leadP
     if (!current && incomingValue) next[field] = incomingValue;
   }
 
+  if (!existing.state && incoming.state) next.state = incoming.state;
+  if (!existing.state_key && incoming.state_key) next.state_key = incoming.state_key;
   if (!existing.phone_key && incoming.phone_key) next.phone_key = incoming.phone_key;
   if (Object.keys(next).length) {
     next.updated_by = actorId;
@@ -405,6 +425,8 @@ function filteredLeadQuery(
   if (filters.bucket === 'sample_requested') query = query.eq('stage', 'sample_requested');
   if (filters.bucket === 'hubspot') query = query.eq('hubspot_status', 'queued').in('stage', HUBSPOT_QUEUE_STAGES);
   if (filters.listId) query = query.eq('prospecting_list_leads.list_id', filters.listId);
+  if (filters.stateKey === MISSING_STATE_FILTER) query = query.is('state_key', null);
+  else if (filters.stateKey) query = query.eq('state_key', filters.stateKey);
   if (filters.q) {
     const search = postgrestIlikePattern(filters.q);
     query = query.or([
@@ -707,6 +729,7 @@ async function bulkAssignLeads(formData: FormData) {
       q: String(formData.get('q') ?? '').trim(),
       repId: String(formData.get('rep') ?? '').trim(),
       stage: PROSPECTING_STAGES.some((stage) => stage.id === requestedStage) ? requestedStage : '',
+      stateKey: normalizeStateFilter(String(formData.get('state') ?? '')),
     };
     const { error, ids } = await fetchFilteredLeadIds(supabase, filters);
     if (error) redirect(assignmentRedirectFromForm(formData, 'bulk_error'));
@@ -947,6 +970,7 @@ export default async function ProspectingAdminPage({ searchParams }: { searchPar
   const requestedRepId = stringParam(searchParams?.rep);
   const requestedStage = stringParam(searchParams?.stage);
   const requestedPriority = stringParam(searchParams?.priority);
+  const selectedStateKey = normalizeStateFilter(searchParams?.state);
   const page = normalizePageNumber(searchParams?.page);
   const pageSize = normalizePageSize(searchParams?.page_size);
   const recyclePage = normalizePageNumber(searchParams?.recycle_page);
@@ -976,6 +1000,7 @@ export default async function ProspectingAdminPage({ searchParams }: { searchPar
     q,
     repId: selectedRepId || (!isOwner ? current.profile.id : ''),
     stage: selectedStage,
+    stateKey: selectedStateKey,
   };
 
   const { data: leadsData, error: leadsError, count: leadCount } = await filteredLeadQuery(supabase, filters, '*', { count: 'exact' })
@@ -1236,6 +1261,7 @@ export default async function ProspectingAdminPage({ searchParams }: { searchPar
                   priority: selectedPriority,
                   q,
                   rep: selectedRepId,
+                  state: selectedStateKey,
                   stage: 'recycle_try_later',
                 })}
               >
@@ -1247,6 +1273,7 @@ export default async function ProspectingAdminPage({ searchParams }: { searchPar
                 <input type="hidden" name="rep" value={selectedRepId} />
                 <input type="hidden" name="priority" value={selectedPriority} />
                 <input type="hidden" name="stage" value={selectedStage} />
+                <input type="hidden" name="state" value={selectedStateKey} />
                 <input type="hidden" name="q" value={q} />
                 <input type="hidden" name="page" value={page} />
                 <input type="hidden" name="page_size" value={pageSize} />
@@ -1284,6 +1311,7 @@ export default async function ProspectingAdminPage({ searchParams }: { searchPar
                   recyclePage: Math.max(1, recyclePage - 1),
                   recyclePageSize,
                   stage: selectedStage,
+                  state: selectedStateKey,
                 })}
               >
                 Previous
@@ -1301,6 +1329,7 @@ export default async function ProspectingAdminPage({ searchParams }: { searchPar
                   recyclePage: Math.min(recycleTotalPages, recyclePage + 1),
                   recyclePageSize,
                   stage: selectedStage,
+                  state: selectedStateKey,
                 })}
               >
                 Next
@@ -1345,7 +1374,7 @@ export default async function ProspectingAdminPage({ searchParams }: { searchPar
                       </td>
                       <td className="px-3 py-3 text-slate-700">{formatDateTime(row.activity.created_at)}</td>
                       <td className="rounded-r-lg px-3 py-3">
-                        {lead ? <Link className="font-semibold text-teal-800" href={`/admin/sales/prospecting/${lead.id}`}>Open Lead</Link> : <span className="text-slate-400">Unavailable</span>}
+                        {lead ? <Link className="font-semibold text-teal-800" href={leadDetailHref(lead.id, selectedStateKey)}>Open Lead</Link> : <span className="text-slate-400">Unavailable</span>}
                       </td>
                     </tr>
                   );
@@ -1437,7 +1466,7 @@ export default async function ProspectingAdminPage({ searchParams }: { searchPar
           </nav>
         </div>
 
-        <form className="grid gap-3 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_9rem_auto] lg:items-end">
+        <form className="grid gap-3 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,0.8fr)_minmax(0,1fr)_minmax(0,1fr)_9rem_auto] lg:items-end">
           <input type="hidden" name="bucket" value={bucket} />
           <label className="text-sm font-semibold text-slate-700">
             Search
@@ -1474,6 +1503,14 @@ export default async function ProspectingAdminPage({ searchParams }: { searchPar
             <select className="input mt-2" name="priority" defaultValue={selectedPriority}>
               <option value="">All priorities</option>
               {PROSPECTING_PRIORITIES.map((priority) => <option key={priority.id} value={priority.id}>{priority.label}</option>)}
+            </select>
+          </label>
+          <label className="text-sm font-semibold text-slate-700">
+            State
+            <select className="input mt-2" name="state" defaultValue={selectedStateKey}>
+              <option value="">All states</option>
+              <option value={MISSING_STATE_FILTER}>Missing state</option>
+              {US_STATE_OPTIONS.map((state) => <option key={state.id} value={state.id}>{state.id} - {state.label}</option>)}
             </select>
           </label>
           {isMaintenanceBucket(bucket) ? (
@@ -1555,7 +1592,7 @@ export default async function ProspectingAdminPage({ searchParams }: { searchPar
                       <span className="rounded-full bg-white px-2.5 py-1 text-xs font-semibold text-slate-700">{priorityLabel(lead.priority)}</span>
                       {lead.do_not_contact ? <span className="rounded-full bg-rose-50 px-2.5 py-1 text-xs font-semibold text-rose-800">Do Not Contact</span> : null}
                     </div>
-                    <Link href={`/admin/sales/prospecting/${lead.id}`} className="mt-3 block text-2xl font-semibold tracking-tight text-slate-950 hover:text-teal-800">
+                    <Link href={leadDetailHref(lead.id, selectedStateKey)} className="mt-3 block text-2xl font-semibold tracking-tight text-slate-950 hover:text-teal-800">
                       {lead.company_name}
                     </Link>
                     <div className="mt-2 grid gap-2 text-sm text-slate-600 md:grid-cols-2 xl:grid-cols-4">
@@ -1580,7 +1617,7 @@ export default async function ProspectingAdminPage({ searchParams }: { searchPar
                       <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Last Result</p>
                       <p className="mt-1 font-semibold text-slate-950">{lead.last_result || 'No activity yet'}</p>
                     </div>
-                    <Link className="btn-secondary w-full" href={`/admin/sales/prospecting/${lead.id}`}>Open Lead</Link>
+                    <Link className="btn-secondary w-full" href={leadDetailHref(lead.id, selectedStateKey)}>Open Lead</Link>
                     <form action={recycleMaintenanceLead}>
                       <input type="hidden" name="lead_id" value={lead.id} />
                       <input type="hidden" name="bucket" value={bucket} />
@@ -1588,6 +1625,7 @@ export default async function ProspectingAdminPage({ searchParams }: { searchPar
                       <input type="hidden" name="rep" value="" />
                       <input type="hidden" name="priority" value={selectedPriority} />
                       <input type="hidden" name="stage" value="" />
+                      <input type="hidden" name="state" value={selectedStateKey} />
                       <input type="hidden" name="q" value={q} />
                       <input type="hidden" name="page" value={page} />
                       <input type="hidden" name="page_size" value={pageSize} />
@@ -1600,6 +1638,7 @@ export default async function ProspectingAdminPage({ searchParams }: { searchPar
                       <input type="hidden" name="rep" value="" />
                       <input type="hidden" name="priority" value={selectedPriority} />
                       <input type="hidden" name="stage" value="" />
+                      <input type="hidden" name="state" value={selectedStateKey} />
                       <input type="hidden" name="q" value={q} />
                       <input type="hidden" name="page" value={page} />
                       <input type="hidden" name="page_size" value={pageSize} />
@@ -1618,6 +1657,7 @@ export default async function ProspectingAdminPage({ searchParams }: { searchPar
           <input type="hidden" name="rep" value={selectedRepId} />
           <input type="hidden" name="priority" value={selectedPriority} />
           <input type="hidden" name="stage" value={selectedStage} />
+          <input type="hidden" name="state" value={selectedStateKey} />
           <input type="hidden" name="q" value={q} />
           <input type="hidden" name="page" value={page} />
           <input type="hidden" name="page_size" value={pageSize} />
@@ -1672,7 +1712,7 @@ export default async function ProspectingAdminPage({ searchParams }: { searchPar
                         {lead.do_not_contact ? <span className="rounded-full bg-rose-50 px-2.5 py-1 text-xs font-semibold text-rose-800">Do Not Contact</span> : null}
                         {isHubspotQueueStage(lead.stage) ? <span className="rounded-full bg-teal-50 px-2.5 py-1 text-xs font-semibold text-teal-800">HubSpot: {lead.hubspot_status}</span> : null}
                       </div>
-                      <Link href={`/admin/sales/prospecting/${lead.id}`} className="mt-3 block text-2xl font-semibold tracking-tight text-slate-950 hover:text-teal-800">
+                    <Link href={leadDetailHref(lead.id, selectedStateKey)} className="mt-3 block text-2xl font-semibold tracking-tight text-slate-950 hover:text-teal-800">
                         {lead.company_name}
                       </Link>
                       <div className="mt-2 grid gap-2 text-sm text-slate-600 md:grid-cols-2 xl:grid-cols-4">
@@ -1696,7 +1736,7 @@ export default async function ProspectingAdminPage({ searchParams }: { searchPar
                         <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Last Result</p>
                         <p className="mt-1 font-semibold text-slate-950">{lead.last_result || 'No activity yet'}</p>
                       </div>
-                      <Link className="btn-primary w-full" href={`/admin/sales/prospecting/${lead.id}`}>Open Lead</Link>
+                      <Link className="btn-primary w-full" href={leadDetailHref(lead.id, selectedStateKey)}>Open Lead</Link>
                     </div>
                   </div>
                 </article>

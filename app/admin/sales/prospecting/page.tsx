@@ -7,11 +7,14 @@ import {
   PROSPECTING_PAGE_SIZES,
   PROSPECTING_PRIORITIES,
   REP_PIPELINE_STAGES,
+  MISSING_STATE_FILTER,
+  US_STATE_OPTIONS,
   formatDate,
   missingLeadFields,
   normalizePageNumber,
   normalizePageSize,
   normalizePriority,
+  normalizeStateFilter,
   normalizeStage,
   paginationRange,
   postgrestIlikePattern,
@@ -19,6 +22,7 @@ import {
   stageLabel,
   totalPageCount,
   type ProspectingPriority,
+  type ProspectingStateFilter,
   type ProspectingStage,
 } from '@/lib/prospecting';
 
@@ -42,6 +46,7 @@ type LeadRow = {
   priority: string | null;
   stage: string | null;
   state: string | null;
+  state_key: string | null;
   updated_at: string | null;
 };
 
@@ -74,6 +79,7 @@ function prospectingHref(params: {
   priority?: string;
   q?: string;
   stage?: string;
+  state?: string;
   tab?: RepTab;
   toast?: string;
 }) {
@@ -82,6 +88,7 @@ function prospectingHref(params: {
   if (params.q) query.set('q', params.q);
   if (params.priority) query.set('priority', params.priority);
   if (params.stage) query.set('stage', params.stage);
+  if (params.state) query.set('state', params.state);
   if (params.page) query.set('page', String(params.page));
   if (params.pageSize) query.set('page_size', String(params.pageSize));
   if (params.toast) query.set('toast', params.toast);
@@ -89,8 +96,11 @@ function prospectingHref(params: {
   return `/admin/sales/prospecting${qs ? `?${qs}` : ''}`;
 }
 
-function leadDetailHref(leadId: string) {
-  return `/admin/sales/prospecting/${leadId}`;
+function leadDetailHref(leadId: string, stateKey: '' | ProspectingStateFilter = '') {
+  const query = new URLSearchParams();
+  if (stateKey) query.set('state', stateKey);
+  const qs = query.toString();
+  return `/admin/sales/prospecting/${leadId}${qs ? `?${qs}` : ''}`;
 }
 
 function StageBadge({ stage }: { stage: string | null | undefined }) {
@@ -142,11 +152,13 @@ function LeadListTable({
   contactsByLead,
   emptyLabel,
   leads,
+  stateKey,
   showDue = false,
 }: {
   contactsByLead: Map<string, ContactSummary[]>;
   emptyLabel: string;
   leads: LeadRow[];
+  stateKey: '' | ProspectingStateFilter;
   showDue?: boolean;
 }) {
   if (!leads.length) {
@@ -182,7 +194,7 @@ function LeadListTable({
               return (
                 <tr key={lead.id} className="bg-white/80 shadow-sm">
                   <td className="rounded-l-lg px-3 py-3">
-                    <Link className="font-semibold text-slate-950 hover:text-teal-800" href={leadDetailHref(lead.id)}>
+                    <Link className="font-semibold text-slate-950 hover:text-teal-800" href={leadDetailHref(lead.id, stateKey)}>
                       {lead.company_name}
                     </Link>
                     <div className="mt-1 flex flex-wrap gap-1.5">
@@ -210,7 +222,7 @@ function LeadListTable({
                     ) : <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[0.7rem] font-semibold text-emerald-800">Ready</span>}
                   </td>
                   <td className="rounded-r-lg px-3 py-3 text-right">
-                    <Link className="btn-primary inline-flex" href={leadDetailHref(lead.id)}>Open</Link>
+                    <Link className="btn-primary inline-flex" href={leadDetailHref(lead.id, stateKey)}>Open</Link>
                   </td>
                 </tr>
               );
@@ -227,6 +239,7 @@ function assignedLeadQuery(
   profileId: string,
   q: string,
   priority: string,
+  stateKey: '' | ProspectingStateFilter,
   columns: string,
   options?: { count?: 'exact'; head?: boolean },
 ) {
@@ -238,6 +251,8 @@ function assignedLeadQuery(
     .in('stage', REP_PIPELINE_STAGES);
 
   if (priority) query = query.eq('priority', priority);
+  if (stateKey === MISSING_STATE_FILTER) query = query.is('state_key', null);
+  else if (stateKey) query = query.eq('state_key', stateKey);
   if (q) {
     const search = postgrestIlikePattern(q);
     query = query.or([
@@ -265,10 +280,11 @@ export default async function ProspectingPage({ searchParams }: { searchParams?:
   const selectedPriority = PROSPECTING_PRIORITIES.some((priority) => priority.id === requestedPriority) ? requestedPriority as ProspectingPriority : '';
   const requestedStage = stringParam(searchParams?.stage);
   const selectedStage = tab === 'pipeline' && REP_PIPELINE_STAGES.includes(requestedStage as ProspectingStage) ? requestedStage as ProspectingStage : '';
+  const selectedStateKey = normalizeStateFilter(searchParams?.state);
   const toast = stringParam(searchParams?.toast);
   const today = new Date().toISOString().slice(0, 10);
 
-  let leadsQuery = assignedLeadQuery(supabase, current.profile.id, q, selectedPriority, '*', { count: 'exact' });
+  let leadsQuery = assignedLeadQuery(supabase, current.profile.id, q, selectedPriority, selectedStateKey, '*', { count: 'exact' });
   if (tab === 'list') leadsQuery = leadsQuery.in('stage', ACTIVE_PROSPECTING_STAGES);
   if (tab === 'tasks') leadsQuery = leadsQuery.not('next_follow_up_at', 'is', null);
   if (selectedStage) leadsQuery = leadsQuery.eq('stage', selectedStage);
@@ -290,12 +306,12 @@ export default async function ProspectingPage({ searchParams }: { searchParams?:
     { count: samplesRequested },
     ...stageCountResults
   ] = await Promise.all([
-    assignedLeadQuery(supabase, current.profile.id, q, selectedPriority, 'id', { count: 'exact', head: true }),
-    assignedLeadQuery(supabase, current.profile.id, q, selectedPriority, 'id', { count: 'exact', head: true }).in('stage', ACTIVE_PROSPECTING_STAGES),
-    assignedLeadQuery(supabase, current.profile.id, q, selectedPriority, 'id', { count: 'exact', head: true }).not('next_follow_up_at', 'is', null).lte('next_follow_up_at', today),
-    assignedLeadQuery(supabase, current.profile.id, q, selectedPriority, 'id', { count: 'exact', head: true }).eq('stage', 'sample_requested'),
+    assignedLeadQuery(supabase, current.profile.id, q, selectedPriority, selectedStateKey, 'id', { count: 'exact', head: true }),
+    assignedLeadQuery(supabase, current.profile.id, q, selectedPriority, selectedStateKey, 'id', { count: 'exact', head: true }).in('stage', ACTIVE_PROSPECTING_STAGES),
+    assignedLeadQuery(supabase, current.profile.id, q, selectedPriority, selectedStateKey, 'id', { count: 'exact', head: true }).not('next_follow_up_at', 'is', null).lte('next_follow_up_at', today),
+    assignedLeadQuery(supabase, current.profile.id, q, selectedPriority, selectedStateKey, 'id', { count: 'exact', head: true }).eq('stage', 'sample_requested'),
     ...REP_PIPELINE_STAGES.map((stage) => (
-      assignedLeadQuery(supabase, current.profile.id, q, selectedPriority, 'id', { count: 'exact', head: true }).eq('stage', stage)
+      assignedLeadQuery(supabase, current.profile.id, q, selectedPriority, selectedStateKey, 'id', { count: 'exact', head: true }).eq('stage', stage)
     )),
   ]);
 
@@ -338,7 +354,7 @@ export default async function ProspectingPage({ searchParams }: { searchParams?:
             </p>
           </div>
           <div className="flex flex-col gap-2 sm:flex-row lg:justify-end">
-            {firstLead ? <Link className="btn-primary inline-flex" href={leadDetailHref(firstLead.id)}>Start Calling</Link> : null}
+            {firstLead ? <Link className="btn-primary inline-flex" href={leadDetailHref(firstLead.id, selectedStateKey)}>Start Calling</Link> : null}
             {current.isOwner ? (
               <Link className="btn-secondary inline-flex" href="/admin/sales/prospecting/admin">Prospecting Admin</Link>
             ) : null}
@@ -371,14 +387,14 @@ export default async function ProspectingPage({ searchParams }: { searchParams?:
             <Link
               key={item.id}
               className={`rounded-lg border px-3 py-2 text-center text-sm font-semibold ${tab === item.id ? 'border-teal-200 bg-teal-50 text-teal-900' : 'border-slate-200 bg-white/70 text-slate-700'}`}
-              href={prospectingHref({ page: 1, pageSize, priority: selectedPriority, q, tab: item.id })}
+              href={prospectingHref({ page: 1, pageSize, priority: selectedPriority, q, state: selectedStateKey, tab: item.id })}
             >
               {item.label}
             </Link>
           ))}
         </nav>
 
-        <form className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_16rem_9rem_auto] lg:items-end">
+        <form className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_14rem_16rem_9rem_auto] lg:items-end">
           <input type="hidden" name="tab" value={tab} />
           {selectedStage ? <input type="hidden" name="stage" value={selectedStage} /> : null}
           <label className="text-sm font-semibold text-slate-700">
@@ -393,6 +409,14 @@ export default async function ProspectingPage({ searchParams }: { searchParams?:
             </select>
           </label>
           <label className="text-sm font-semibold text-slate-700">
+            State
+            <select className="input mt-2" name="state" defaultValue={selectedStateKey}>
+              <option value="">All states</option>
+              <option value={MISSING_STATE_FILTER}>Missing state</option>
+              {US_STATE_OPTIONS.map((state) => <option key={state.id} value={state.id}>{state.id} - {state.label}</option>)}
+            </select>
+          </label>
+          <label className="text-sm font-semibold text-slate-700">
             Per page
             <select className="input mt-2" name="page_size" defaultValue={pageSize}>
               {PROSPECTING_PAGE_SIZES.map((size) => <option key={size} value={size}>{size}</option>)}
@@ -400,7 +424,7 @@ export default async function ProspectingPage({ searchParams }: { searchParams?:
           </label>
           <div className="flex gap-2">
             <button className="btn-primary w-full md:w-auto" type="submit">Filter</button>
-            {q || selectedPriority || selectedStage ? <Link className="btn-secondary inline-flex" href={prospectingHref({ pageSize, tab })}>Clear</Link> : null}
+            {q || selectedPriority || selectedStage || selectedStateKey ? <Link className="btn-secondary inline-flex" href={prospectingHref({ pageSize, tab })}>Clear</Link> : null}
           </div>
         </form>
 
@@ -409,13 +433,13 @@ export default async function ProspectingPage({ searchParams }: { searchParams?:
           <div className="flex gap-2">
             <Link
               className={`btn-secondary inline-flex ${page <= 1 ? 'pointer-events-none opacity-50' : ''}`}
-              href={prospectingHref({ page: Math.max(1, page - 1), pageSize, priority: selectedPriority, q, stage: selectedStage, tab })}
+              href={prospectingHref({ page: Math.max(1, page - 1), pageSize, priority: selectedPriority, q, stage: selectedStage, state: selectedStateKey, tab })}
             >
               Previous
             </Link>
             <Link
               className={`btn-secondary inline-flex ${page >= totalPages ? 'pointer-events-none opacity-50' : ''}`}
-              href={prospectingHref({ page: Math.min(totalPages, page + 1), pageSize, priority: selectedPriority, q, stage: selectedStage, tab })}
+              href={prospectingHref({ page: Math.min(totalPages, page + 1), pageSize, priority: selectedPriority, q, stage: selectedStage, state: selectedStateKey, tab })}
             >
               Next
             </Link>
@@ -434,6 +458,7 @@ export default async function ProspectingPage({ searchParams }: { searchParams?:
                 priority: selectedPriority,
                 q,
                 stage: isSelected ? '' : stage,
+                state: selectedStateKey,
                 tab: 'pipeline',
               });
               return (
@@ -450,12 +475,12 @@ export default async function ProspectingPage({ searchParams }: { searchParams?:
               );
             })}
           </section>
-          <LeadListTable contactsByLead={contactsByLead} emptyLabel="No leads in this pipeline view" leads={leads} />
+          <LeadListTable contactsByLead={contactsByLead} emptyLabel="No leads in this pipeline view" leads={leads} stateKey={selectedStateKey} />
         </>
       ) : tab === 'tasks' ? (
-        <LeadListTable contactsByLead={contactsByLead} emptyLabel="No follow-ups due" leads={leads} showDue />
+        <LeadListTable contactsByLead={contactsByLead} emptyLabel="No follow-ups due" leads={leads} showDue stateKey={selectedStateKey} />
       ) : (
-        <LeadListTable contactsByLead={contactsByLead} emptyLabel="No active leads in your queue" leads={leads} />
+        <LeadListTable contactsByLead={contactsByLead} emptyLabel="No active leads in your queue" leads={leads} stateKey={selectedStateKey} />
       )}
 
     </div>

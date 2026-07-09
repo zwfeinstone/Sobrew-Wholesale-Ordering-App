@@ -9,6 +9,7 @@ import {
   ACTIVE_PROSPECTING_STAGES,
   CALL_RESULTS,
   EMAIL_RESULTS,
+  MISSING_STATE_FILTER,
   PROSPECTING_ACTIVITY_TYPES,
   PROSPECTING_PRIORITIES,
   PROSPECTING_STAGES,
@@ -20,12 +21,15 @@ import {
   missingLeadFields,
   normalizePhoneKey,
   normalizePriority,
+  normalizeStateFilter,
+  normalizeStateKey,
   normalizeStage,
   normalizeTextKey,
   priorityLabel,
   stageFromResult,
   stageLabel,
   type ProspectingActivityType,
+  type ProspectingStateFilter,
   type ProspectingStage,
 } from '@/lib/prospecting';
 
@@ -52,6 +56,7 @@ type LeadRow = {
   priority: string | null;
   stage: string | null;
   state: string | null;
+  state_key: string | null;
   updated_at: string | null;
 };
 
@@ -104,8 +109,19 @@ function safeDateInput(value: FormDataEntryValue | null) {
   return /^\d{4}-\d{2}-\d{2}$/.test(text) ? text : null;
 }
 
-function leadHref(leadId: string, toast?: string) {
-  return `/admin/sales/prospecting/${leadId}${toast ? `?toast=${toast}` : ''}`;
+function leadHref(leadId: string, toast?: string, stateKey: '' | ProspectingStateFilter = '') {
+  const query = new URLSearchParams();
+  if (toast) query.set('toast', toast);
+  if (stateKey) query.set('state', stateKey);
+  const qs = query.toString();
+  return `/admin/sales/prospecting/${leadId}${qs ? `?${qs}` : ''}`;
+}
+
+function prospectingBackHref(stateKey: '' | ProspectingStateFilter = '') {
+  const query = new URLSearchParams();
+  if (stateKey) query.set('state', stateKey);
+  const qs = query.toString();
+  return `/admin/sales/prospecting${qs ? `?${qs}` : ''}`;
 }
 
 async function loadLeadForMutation(supabase: Awaited<ReturnType<typeof createClient>>, leadId: string, current: Awaited<ReturnType<typeof requireAdminSectionEdit>>) {
@@ -147,7 +163,8 @@ async function saveLeadDetails(formData: FormData) {
   'use server';
 
   const leadId = String(formData.get('lead_id') ?? '').trim();
-  const current = await requireAdminSectionEdit('prospecting', leadHref(leadId, 'admin_write_denied'));
+  const stateFilter = normalizeStateFilter(String(formData.get('state_filter') ?? ''));
+  const current = await requireAdminSectionEdit('prospecting', leadHref(leadId, 'admin_write_denied', stateFilter));
   const supabase = await createClient();
   const before = await loadLeadForMutation(supabase, leadId, current);
   if (!before) redirect('/admin/sales/prospecting?toast=missing_lead');
@@ -165,6 +182,7 @@ async function saveLeadDetails(formData: FormData) {
   const shouldUnassign = shouldRecycle || shouldMoveToMaintenance;
   const assignedProfileId = shouldUnassign ? null : current.isOwner ? selectedRepId || null : before.assigned_profile_id;
   const nextFollowUp = shouldUnassign ? null : safeDateInput(formData.get('next_follow_up_at'));
+  const state = cleanText(formData.get('state'));
 
   const { error, data } = await supabase
     .from('prospecting_leads')
@@ -186,7 +204,8 @@ async function saveLeadDetails(formData: FormData) {
       postal_code: cleanText(formData.get('postal_code')),
       priority,
       stage: savedStage,
-      state: cleanText(formData.get('state')),
+      state,
+      state_key: normalizeStateKey(state),
       updated_at: new Date().toISOString(),
       updated_by: current.profile.id,
     })
@@ -224,9 +243,9 @@ async function saveLeadDetails(formData: FormData) {
   }
   await supabase.from('prospecting_activities').insert(activityRows);
 
-  if (shouldRecycle && !current.isOwner) redirect('/admin/sales/prospecting?toast=lead_recycled');
-  if (shouldMoveToMaintenance && !current.isOwner) redirect('/admin/sales/prospecting?toast=lead_reviewed');
-  redirect(leadHref(leadId, 'lead_saved'));
+  if (shouldRecycle && !current.isOwner) redirect(`/admin/sales/prospecting?toast=lead_recycled${stateFilter ? `&state=${stateFilter}` : ''}`);
+  if (shouldMoveToMaintenance && !current.isOwner) redirect(`/admin/sales/prospecting?toast=lead_reviewed${stateFilter ? `&state=${stateFilter}` : ''}`);
+  redirect(leadHref(leadId, 'lead_saved', stateFilter));
 }
 
 async function addContact(formData: FormData) {
@@ -329,7 +348,8 @@ async function logLeadActivity(formData: FormData) {
   'use server';
 
   const leadId = String(formData.get('lead_id') ?? '').trim();
-  const current = await requireAdminSectionEdit('prospecting', leadHref(leadId, 'admin_write_denied'));
+  const stateFilter = normalizeStateFilter(String(formData.get('state_filter') ?? ''));
+  const current = await requireAdminSectionEdit('prospecting', leadHref(leadId, 'admin_write_denied', stateFilter));
   const supabase = await createClient();
   const before = await loadLeadForMutation(supabase, leadId, current);
   if (!before) redirect('/admin/sales/prospecting?toast=missing_lead');
@@ -390,7 +410,7 @@ async function logLeadActivity(formData: FormData) {
       previous_stage: before.stage,
       result: 'Unassigned',
     });
-    if (!current.isOwner) redirect('/admin/sales/prospecting?toast=lead_recycled');
+    if (!current.isOwner) redirect(`/admin/sales/prospecting?toast=lead_recycled${stateFilter ? `&state=${stateFilter}` : ''}`);
   }
 
   if (shouldMoveToMaintenance) {
@@ -406,9 +426,9 @@ async function logLeadActivity(formData: FormData) {
     });
   }
 
-  if (shouldMoveToMaintenance && !current.isOwner) redirect('/admin/sales/prospecting?toast=lead_reviewed');
+  if (shouldMoveToMaintenance && !current.isOwner) redirect(`/admin/sales/prospecting?toast=lead_reviewed${stateFilter ? `&state=${stateFilter}` : ''}`);
 
-  redirect(leadHref(leadId, 'activity_saved'));
+  redirect(leadHref(leadId, 'activity_saved', stateFilter));
 }
 
 function Toasts({ toast }: { toast: string }) {
@@ -452,6 +472,7 @@ export default async function LeadDetailPage({
   const current = await getCurrentAdminAccess();
   const supabase = await createClient();
   const toast = typeof searchParams?.toast === 'string' ? searchParams.toast : '';
+  const selectedStateKey = normalizeStateFilter(searchParams?.state);
 
   const [{ data: leadData }, { data: contactsData }, { data: activitiesData }, { data: listLinksData }] = await Promise.all([
     supabase.from('prospecting_leads').select('*').eq('id', params.id).maybeSingle(),
@@ -500,6 +521,8 @@ export default async function LeadDetailPage({
     ? nextQueueQuery.eq('assigned_profile_id', queueProfileId)
     : nextQueueQuery.is('assigned_profile_id', null);
   if (!isOwner) nextQueueQuery = nextQueueQuery.eq('assigned_profile_id', current.profile.id);
+  if (selectedStateKey === MISSING_STATE_FILTER) nextQueueQuery = nextQueueQuery.is('state_key', null);
+  else if (selectedStateKey) nextQueueQuery = nextQueueQuery.eq('state_key', selectedStateKey);
   const { data: nextQueueData } = await nextQueueQuery;
   const queueIds = ((nextQueueData ?? []) as Array<{ id: string | null }>).map((row) => row.id).filter(Boolean) as string[];
   const currentQueueIndex = queueIds.indexOf(lead.id);
@@ -513,10 +536,10 @@ export default async function LeadDetailPage({
       <Toasts toast={toast} />
       <section className="panel">
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-          <Link className="text-sm font-semibold text-teal-800" href="/admin/sales/prospecting">Back to prospecting</Link>
+          <Link className="text-sm font-semibold text-teal-800" href={prospectingBackHref(selectedStateKey)}>Back to prospecting</Link>
           <div className="flex flex-col gap-2 sm:flex-row">
-            {previousLeadId ? <Link className="btn-secondary inline-flex" href={leadHref(previousLeadId)}>Previous Record</Link> : null}
-            {nextLeadId ? <Link className="btn-primary inline-flex" href={leadHref(nextLeadId)}>Next Record</Link> : null}
+            {previousLeadId ? <Link className="btn-secondary inline-flex" href={leadHref(previousLeadId, undefined, selectedStateKey)}>Previous Record</Link> : null}
+            {nextLeadId ? <Link className="btn-primary inline-flex" href={leadHref(nextLeadId, undefined, selectedStateKey)}>Next Record</Link> : null}
           </div>
         </div>
         <div className="mt-4 grid gap-5 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
@@ -562,6 +585,7 @@ export default async function LeadDetailPage({
       <section className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_minmax(22rem,0.7fr)]">
         <form action={saveLeadDetails} className="card space-y-5">
           <input type="hidden" name="lead_id" value={lead.id} />
+          <input type="hidden" name="state_filter" value={selectedStateKey} />
           <div>
             <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Company Profile</p>
             <h2 className="mt-2 text-xl font-semibold tracking-tight text-slate-950">Enrich lead details</h2>
@@ -607,6 +631,7 @@ export default async function LeadDetailPage({
 
         <form action={logLeadActivity} className="card space-y-4">
           <input type="hidden" name="lead_id" value={lead.id} />
+          <input type="hidden" name="state_filter" value={selectedStateKey} />
           <div>
             <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Activity Log</p>
             <h2 className="mt-2 text-xl font-semibold tracking-tight text-slate-950">Record call, email, or note</h2>
@@ -639,8 +664,8 @@ export default async function LeadDetailPage({
           <Field label="Notes after this activity"><textarea className="input min-h-32" name="body" placeholder="What happened, who you spoke with, and what should happen next." /></Field>
           <PendingSubmitButton className="btn-primary w-full" disabled={Boolean(lead.do_not_contact)} disabledLabel="Do Not Contact" label="Save Activity" pendingLabel="Saving..." />
           <div className="grid gap-2 sm:grid-cols-2">
-            {previousLeadId ? <Link className="btn-secondary inline-flex justify-center" href={leadHref(previousLeadId)}>Previous Record</Link> : null}
-            {nextLeadId ? <Link className="btn-secondary inline-flex justify-center" href={leadHref(nextLeadId)}>Next Record</Link> : null}
+            {previousLeadId ? <Link className="btn-secondary inline-flex justify-center" href={leadHref(previousLeadId, undefined, selectedStateKey)}>Previous Record</Link> : null}
+            {nextLeadId ? <Link className="btn-secondary inline-flex justify-center" href={leadHref(nextLeadId, undefined, selectedStateKey)}>Next Record</Link> : null}
           </div>
         </form>
       </section>

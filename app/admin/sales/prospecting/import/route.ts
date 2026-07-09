@@ -7,6 +7,7 @@ import {
   chunkArray,
   cleanText,
   normalizePhoneKey,
+  normalizeStateKey,
   normalizeTextKey,
   parseCsv,
   type ProspectingPriority,
@@ -37,6 +38,7 @@ type LeadRow = {
   priority: ProspectingPriority | string | null;
   stage: ProspectingStage | string | null;
   state: string | null;
+  state_key: string | null;
   updated_at: string | null;
 };
 
@@ -62,6 +64,7 @@ function leadPayloadFromCsv(row: Record<string, string>, createdBy: string, sale
   const companyName = cleanText(row.company_name);
   if (!companyName) return null;
   const phone = cleanText(row.company_phone);
+  const state = cleanText(row.state);
   return {
     address_line_1: cleanText(row.address_line_1),
     address_line_2: cleanText(row.address_line_2),
@@ -80,7 +83,8 @@ function leadPayloadFromCsv(row: Record<string, string>, createdBy: string, sale
     priority: 'normal' as ProspectingPriority,
     source: cleanText(row.list_name),
     stage: 'new' as ProspectingStage,
-    state: cleanText(row.state),
+    state,
+    state_key: normalizeStateKey(state),
     updated_by: createdBy,
   };
 }
@@ -119,7 +123,6 @@ function mergeMissingFields(existing: LeadRow, incoming: ReturnType<typeof leadP
     'notes',
     'phone',
     'postal_code',
-    'state',
   ] as const;
 
   for (const field of fields) {
@@ -128,6 +131,8 @@ function mergeMissingFields(existing: LeadRow, incoming: ReturnType<typeof leadP
     if (!current && incomingValue) next[field] = incomingValue;
   }
 
+  if (!existing.state && incoming.state) next.state = incoming.state;
+  if (!existing.state_key && incoming.state_key) next.state_key = incoming.state_key;
   if (!existing.phone_key && incoming.phone_key) next.phone_key = incoming.phone_key;
   if (Object.keys(next).length) next.updated_by = actorId;
   return next;
