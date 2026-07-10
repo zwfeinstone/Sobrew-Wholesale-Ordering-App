@@ -25,6 +25,7 @@ type ProductRow = {
 };
 
 type InventoryItemRow = {
+  active?: boolean | null;
   id: string;
   name: string;
   sku?: string | null;
@@ -55,6 +56,15 @@ type RecipeRow = {
   labor_rate_cents?: number | string | null;
   waste_percent?: number | string | null;
   product_recipe_components?: RecipeComponentRow[] | null;
+};
+
+type ShippingBoxUsageRow = {
+  inventory_item_id: string;
+  inventory_items?: InventoryItemRow | InventoryItemRow[] | null;
+  order_item_id: string;
+  quantity?: number | string | null;
+  total_cost_cents?: number | string | null;
+  unit_cost_cents?: number | string | null;
 };
 
 export type GrossProfitSimulatorInputRow = {
@@ -113,6 +123,7 @@ export type GrossProfitSimulatorDashboard = {
   actualLaborCents: number;
   actualMarginPercent: number;
   actualMaterialCents: number;
+  actualMaterialSupplyCents: number;
   actualPricePerPoundCents: number;
   actualTotalCogsCents: number;
   appliedOverrideCount: number;
@@ -136,6 +147,7 @@ export type GrossProfitSimulatorDashboard = {
   simulatedLaborCents: number;
   simulatedMarginPercent: number;
   simulatedMaterialCents: number;
+  simulatedMaterialSupplyCents: number;
   simulatedRevenueCents: number;
   simulatedTotalCogsCents: number;
   unweightedLineCount: number;
@@ -173,10 +185,12 @@ type NormalizedLine = {
 };
 
 type ComponentCost = {
+  actualCostCents: number;
   baselineCostCents: number;
   inventoryItem: InventoryItemRow;
   productId: string;
   quantity: number;
+  scenarioActualCostCents: number;
   scenarioCostCents: number;
 };
 
@@ -238,6 +252,11 @@ function itemTypeForSimulation(itemType: string) {
   return itemType;
 }
 
+function itemIsSimulatedInput(item: InventoryItemRow) {
+  const itemType = itemTypeForSimulation(item.item_type);
+  return itemType === 'raw_coffee' || itemType === 'material_supply';
+}
+
 function buildAverageCostByItemId(lots: InventoryLotRow[]) {
   const lotsByItemId = new Map<string, InventoryLotRow[]>();
   for (const lot of lots) {
@@ -294,6 +313,10 @@ function simulatedUnitCostCents({
 function validNonNegativeOverride(overrides: Map<string, number>, key: string) {
   const override = overrides.get(key);
   return typeof override === 'number' && Number.isFinite(override) && override >= 0 ? override : undefined;
+}
+
+function materialSupplyPercentMultiplier(params: GrossProfitSimulatorParams) {
+  return Math.max(0, 1 + params.materialSupplyPercentDelta / 100);
 }
 
 function laborCostForLine({
@@ -462,10 +485,12 @@ function recipeComponentCostsForLine({
       });
 
       costs.push({
+        actualCostCents: 0,
         baselineCostCents: quantityForLine * baselineUnitCost,
         inventoryItem,
         productId: line.productId ?? line.productName,
         quantity: quantityForLine,
+        scenarioActualCostCents: 0,
         scenarioCostCents: quantityForLine * scenarioUnitCost,
       });
     } catch {
@@ -476,12 +501,110 @@ function recipeComponentCostsForLine({
   return costs;
 }
 
+function allocateActualMaterialCosts(componentCosts: ComponentCost[], actualMaterialCents: number) {
+  const baselineMaterialCents = componentCosts.reduce((sum, cost) => sum + Math.max(0, cost.baselineCostCents), 0);
+  const actualCostCents = Math.max(0, actualMaterialCents);
+
+  return componentCosts.map((cost) => {
+    if (baselineMaterialCents <= 0) {
+      return {
+        ...cost,
+        actualCostCents: 0,
+        scenarioActualCostCents: Math.max(0, cost.scenarioCostCents),
+      };
+    }
+
+    return {
+      ...cost,
+      actualCostCents: actualCostCents * (Math.max(0, cost.baselineCostCents) / baselineMaterialCents),
+      scenarioActualCostCents: actualCostCents * (Math.max(0, cost.scenarioCostCents) / baselineMaterialCents),
+    };
+  });
+}
+
+function shippingBoxCostsForLine({
+  avgCostByItemId,
+  inventoryItemById,
+  line,
+  params,
+  usages,
+}: {
+  avgCostByItemId: Map<string, number>;
+  inventoryItemById: Map<string, InventoryItemRow>;
+  line: NormalizedLine;
+  params: GrossProfitSimulatorParams;
+  usages: ShippingBoxUsageRow[];
+}): ComponentCost[] {
+  const costs: ComponentCost[] = [];
+
+  for (const usage of usages) {
+    const inventoryItem = relatedOne(usage.inventory_items) ?? inventoryItemById.get(usage.inventory_item_id);
+    if (!inventoryItem?.base_unit || !itemIsSimulatedInput(inventoryItem)) continue;
+
+    const quantity = Math.max(0, numericValue(usage.quantity));
+    const actualCostCents =
+      Math.max(0, numericValue(usage.total_cost_cents)) ||
+      quantity * Math.max(0, numericValue(usage.unit_cost_cents)) ||
+      quantity * (avgCostByItemId.get(usage.inventory_item_id) ?? 0);
+    const unitOverrideCents = validNonNegativeOverride(params.itemUnitCostOverridesCents, usage.inventory_item_id);
+    const scenarioActualCostCents = typeof unitOverrideCents === 'number'
+      ? quantity * unitOverrideCents
+      : actualCostCents * materialSupplyPercentMultiplier(params);
+
+    costs.push({
+      actualCostCents,
+      baselineCostCents: actualCostCents,
+      inventoryItem,
+      productId: line.productId ?? line.productName,
+      quantity,
+      scenarioActualCostCents,
+      scenarioCostCents: scenarioActualCostCents,
+    });
+  }
+
+  return costs;
+}
+
+function simulatorInputRowForItem({
+  avgCostByItemId,
+  item,
+  params,
+}: {
+  avgCostByItemId: Map<string, number>;
+  item: InventoryItemRow;
+  params: GrossProfitSimulatorParams;
+}): GrossProfitSimulatorInputRow & { productIds: Set<string> } {
+  return {
+    actualUnitCostCents: avgCostByItemId.get(item.id) ?? 0,
+    baseUnit: item.base_unit,
+    baselineCostCents: 0,
+    grossProfitImpactCents: 0,
+    id: item.id,
+    itemType: itemTypeForSimulation(item.item_type),
+    lineCount: 0,
+    name: item.name,
+    productCount: 0,
+    productIds: new Set<string>(),
+    quantityUsed: 0,
+    simulatedCostCents: 0,
+    simulatedUnitCostCents: simulatedUnitCostCents({
+      avgCostByItemId,
+      inventoryItem: item,
+      itemUnitCostOverridesCents: params.itemUnitCostOverridesCents,
+      materialSupplyPercentDelta: params.materialSupplyPercentDelta,
+      rawCoffeePercentDelta: params.rawCoffeePercentDelta,
+    }),
+    sku: item.sku ?? null,
+  };
+}
+
 function emptyDashboard(actual: ProfitabilityTotals): GrossProfitSimulatorDashboard {
   return {
     actualGrossProfitCents: actual.grossProfitCents,
     actualLaborCents: actual.laborCents,
     actualMarginPercent: actual.marginPercent,
     actualMaterialCents: actual.materialCents,
+    actualMaterialSupplyCents: actual.materialCents,
     actualPricePerPoundCents: 0,
     actualTotalCogsCents: actual.totalCogsCents,
     appliedOverrideCount: 0,
@@ -505,6 +628,7 @@ function emptyDashboard(actual: ProfitabilityTotals): GrossProfitSimulatorDashbo
     simulatedLaborCents: actual.laborCents,
     simulatedMarginPercent: actual.marginPercent,
     simulatedMaterialCents: actual.materialCents,
+    simulatedMaterialSupplyCents: actual.materialCents,
     simulatedRevenueCents: actual.revenueCents,
     simulatedTotalCogsCents: actual.totalCogsCents,
     unweightedLineCount: 0,
@@ -523,6 +647,7 @@ export function buildGrossProfitSimulator({
   params,
   products,
   recipes,
+  shippingBoxUsages = [],
 }: {
   actual: ProfitabilityTotals;
   centers: CenterRow[];
@@ -533,6 +658,7 @@ export function buildGrossProfitSimulator({
   params: GrossProfitSimulatorParams;
   products: ProductRow[];
   recipes: RecipeRow[];
+  shippingBoxUsages?: ShippingBoxUsageRow[];
 }): GrossProfitSimulatorDashboard {
   if (!orders.length || !orderItems.length) return emptyDashboard(actual);
 
@@ -540,6 +666,12 @@ export function buildGrossProfitSimulator({
   const avgCostByItemId = buildAverageCostByItemId(inventoryLots);
   const recipeByProductId = new Map(recipes.map((recipe) => [recipe.product_id, recipe]));
   const inventoryItemById = new Map(inventoryItems.map((item) => [item.id, item]));
+  const shippingBoxUsagesByOrderItemId = new Map<string, ShippingBoxUsageRow[]>();
+  for (const usage of shippingBoxUsages) {
+    const rows = shippingBoxUsagesByOrderItemId.get(usage.order_item_id) ?? [];
+    rows.push(usage);
+    shippingBoxUsagesByOrderItemId.set(usage.order_item_id, rows);
+  }
   const lines = normalizeLines({ orderItems, orders, products }).filter((line) => {
     if (line.date < params.rangeStart || line.date >= params.rangeEndExclusive) return false;
     if (params.productId && line.productId !== params.productId) return false;
@@ -557,6 +689,9 @@ export function buildGrossProfitSimulator({
   let scenarioLaborCents = 0;
   let scenarioMaterialCents = 0;
   let laborDeltaCents = 0;
+  let recipeMaterialDeltaCents = 0;
+  let shippingBoxActualCents = 0;
+  let shippingBoxDeltaCents = 0;
   let rawCoffeeImpactCents = 0;
   let rawCoffeeScenarioCents = 0;
   let materialSupplyImpactCents = 0;
@@ -575,21 +710,33 @@ export function buildGrossProfitSimulator({
 
   for (const line of lines) {
     const recipe = line.productId ? recipeByProductId.get(line.productId) : undefined;
-    const componentCosts = recipeComponentCostsForLine({
+    const recipeComponentCosts = allocateActualMaterialCosts(recipeComponentCostsForLine({
       avgCostByItemId,
       itemUnitCostOverridesCents: params.itemUnitCostOverridesCents,
       line,
       materialSupplyPercentDelta: params.materialSupplyPercentDelta,
       rawCoffeePercentDelta: params.rawCoffeePercentDelta,
       recipe,
-    }).filter((cost) => inventoryItemById.has(cost.inventoryItem.id));
+    }).filter((cost) => inventoryItemById.has(cost.inventoryItem.id)), line.actualMaterialCents);
+    const shippingBoxCosts = shippingBoxCostsForLine({
+      avgCostByItemId,
+      inventoryItemById,
+      line,
+      params,
+      usages: shippingBoxUsagesByOrderItemId.get(line.id) ?? [],
+    });
+    const componentCosts = [...recipeComponentCosts, ...shippingBoxCosts];
     const laborCost = laborCostForLine({ line, params, recipe });
 
     if (!componentCosts.length) unresolvedLineCount += 1;
 
-    const lineBaselineMaterialCents = componentCosts.reduce((sum, cost) => sum + cost.baselineCostCents, 0);
-    const lineScenarioMaterialCents = componentCosts.reduce((sum, cost) => sum + cost.scenarioCostCents, 0);
-    const lineMaterialDeltaCents = lineScenarioMaterialCents - lineBaselineMaterialCents;
+    const lineBaselineMaterialCents = recipeComponentCosts.reduce((sum, cost) => sum + cost.baselineCostCents, 0);
+    const lineScenarioMaterialCents = recipeComponentCosts.reduce((sum, cost) => sum + cost.scenarioCostCents, 0);
+    const lineActualMaterialCents = recipeComponentCosts.reduce((sum, cost) => sum + cost.actualCostCents, 0);
+    const lineScenarioActualMaterialCents = recipeComponentCosts.reduce((sum, cost) => sum + cost.scenarioActualCostCents, 0);
+    const lineShippingBoxActualCents = shippingBoxCosts.reduce((sum, cost) => sum + cost.actualCostCents, 0);
+    const lineShippingBoxScenarioCents = shippingBoxCosts.reduce((sum, cost) => sum + cost.scenarioActualCostCents, 0);
+    const lineMaterialDeltaCents = (lineScenarioActualMaterialCents - lineActualMaterialCents) + (lineShippingBoxScenarioCents - lineShippingBoxActualCents);
     const lineLaborDeltaCents = laborCost.scenarioActualCostCents - laborCost.actualCostCents;
     const lineLaborImpactCents = laborCost.actualCostCents - laborCost.scenarioActualCostCents;
     const lineCoffeePoundsSold = rawCoffeePoundsPerUnit(recipe) * line.qty;
@@ -604,6 +751,9 @@ export function buildGrossProfitSimulator({
     scenarioLaborCents += laborCost.scenarioCostCents;
     scenarioMaterialCents += lineScenarioMaterialCents;
     laborDeltaCents += lineLaborDeltaCents;
+    recipeMaterialDeltaCents += lineScenarioActualMaterialCents - lineActualMaterialCents;
+    shippingBoxActualCents += lineShippingBoxActualCents;
+    shippingBoxDeltaCents += lineShippingBoxScenarioCents - lineShippingBoxActualCents;
     revenueDeltaCents += lineRevenueDeltaCents;
     if (isWeightedCoffeeLine) {
       coffeePoundsSold += lineCoffeePoundsSold;
@@ -633,13 +783,13 @@ export function buildGrossProfitSimulator({
     };
     productRow.actualGrossProfitCents += line.actualGrossProfitCents;
     productRow.baselineLaborCents += laborCost.actualCostCents;
-    productRow.baselineMaterialCents += lineBaselineMaterialCents;
+    productRow.baselineMaterialCents += lineActualMaterialCents + lineShippingBoxActualCents;
     productRow.coffeePoundsSold += lineCoffeePoundsSold;
     productRow.grossProfitImpactCents += lineRevenueDeltaCents - lineMaterialDeltaCents - lineLaborDeltaCents;
     productRow.revenueCents += line.revenueCents;
     productRow.simulatedGrossProfitCents += line.actualGrossProfitCents + lineRevenueDeltaCents - lineMaterialDeltaCents - lineLaborDeltaCents;
     productRow.simulatedLaborCents += laborCost.scenarioActualCostCents;
-    productRow.simulatedMaterialCents += lineScenarioMaterialCents;
+    productRow.simulatedMaterialCents += lineScenarioActualMaterialCents + lineShippingBoxScenarioCents;
     productRow.simulatedRevenueCents += lineSimulatedRevenueCents;
     productRow.unitsSold += line.qty;
     if (!isWeightedCoffeeLine) productRow.unweightedLineCount += 1;
@@ -675,56 +825,45 @@ export function buildGrossProfitSimulator({
 
     for (const cost of componentCosts) {
       const itemType = itemTypeForSimulation(cost.inventoryItem.item_type);
-      const impactCents = cost.baselineCostCents - cost.scenarioCostCents;
+      const impactCents = cost.actualCostCents - cost.scenarioActualCostCents;
       if (itemType === 'raw_coffee') {
         rawCoffeeImpactCents += impactCents;
-        rawCoffeeScenarioCents += cost.scenarioCostCents;
+        rawCoffeeScenarioCents += cost.scenarioActualCostCents;
       }
       if (itemType === 'material_supply') {
         materialSupplyImpactCents += impactCents;
-        materialSupplyScenarioCents += cost.scenarioCostCents;
+        materialSupplyScenarioCents += cost.scenarioActualCostCents;
       }
 
-      const row = inputRowsById.get(cost.inventoryItem.id) ?? {
-        actualUnitCostCents: avgCostByItemId.get(cost.inventoryItem.id) ?? 0,
-        baseUnit: cost.inventoryItem.base_unit,
-        baselineCostCents: 0,
-        grossProfitImpactCents: 0,
-        id: cost.inventoryItem.id,
-        itemType,
-        lineCount: 0,
-        name: cost.inventoryItem.name,
-        productCount: 0,
-        productIds: new Set<string>(),
-        quantityUsed: 0,
-        simulatedCostCents: 0,
-        simulatedUnitCostCents: simulatedUnitCostCents({
-          avgCostByItemId,
-          inventoryItem: cost.inventoryItem,
-          itemUnitCostOverridesCents: params.itemUnitCostOverridesCents,
-          materialSupplyPercentDelta: params.materialSupplyPercentDelta,
-          rawCoffeePercentDelta: params.rawCoffeePercentDelta,
-        }),
-        sku: cost.inventoryItem.sku ?? null,
-      };
-      row.baselineCostCents += cost.baselineCostCents;
+      const row = inputRowsById.get(cost.inventoryItem.id) ?? simulatorInputRowForItem({
+        avgCostByItemId,
+        item: cost.inventoryItem,
+        params,
+      });
+      row.baselineCostCents += cost.actualCostCents;
       row.grossProfitImpactCents += impactCents;
       row.lineCount += 1;
       row.productIds.add(cost.productId);
       row.productCount = row.productIds.size;
       row.quantityUsed += cost.quantity;
-      row.simulatedCostCents += cost.scenarioCostCents;
+      row.simulatedCostCents += cost.scenarioActualCostCents;
       inputRowsById.set(cost.inventoryItem.id, row);
     }
   }
 
-  const materialDeltaCents = scenarioMaterialCents - baselineRecipeMaterialCents;
+  for (const item of inventoryItems) {
+    if (inputRowsById.has(item.id) || !itemIsSimulatedInput(item) || item.active === false) continue;
+    inputRowsById.set(item.id, simulatorInputRowForItem({ avgCostByItemId, item, params }));
+  }
+
+  const materialSupplyDeltaCents = recipeMaterialDeltaCents + shippingBoxDeltaCents;
   const simulatedLaborCents = Math.max(0, actual.laborCents + laborDeltaCents);
   const boundedLaborDeltaCents = simulatedLaborCents - actual.laborCents;
   const boundedLaborImpactCents = -boundedLaborDeltaCents;
+  const actualMaterialSupplyCents = actual.materialCents + shippingBoxActualCents;
   const simulatedRevenueCents = actual.revenueCents + revenueDeltaCents;
-  const simulatedGrossProfitCents = actual.grossProfitCents + revenueDeltaCents - materialDeltaCents - boundedLaborDeltaCents;
-  const simulatedTotalCogsCents = actual.totalCogsCents + materialDeltaCents + boundedLaborDeltaCents;
+  const simulatedGrossProfitCents = actual.grossProfitCents + revenueDeltaCents - materialSupplyDeltaCents - boundedLaborDeltaCents;
+  const simulatedTotalCogsCents = actual.totalCogsCents + materialSupplyDeltaCents + boundedLaborDeltaCents;
   const validLaborMinuteOverrideCount = [...params.laborMinutesOverrides.values()].filter((value) => Number.isFinite(value) && value >= 0).length;
   const validLaborRateOverrideCount = [...params.laborRateOverridesCents.values()].filter((value) => Number.isFinite(value) && value >= 0).length;
   const hasLaborPercentOverride = Number.isFinite(params.laborPercentDelta) && params.laborPercentDelta !== 0;
@@ -735,6 +874,7 @@ export function buildGrossProfitSimulator({
     actualLaborCents: actual.laborCents,
     actualMarginPercent: actual.marginPercent,
     actualMaterialCents: actual.materialCents,
+    actualMaterialSupplyCents,
     actualPricePerPoundCents: coffeePoundsSold > 0 ? weightedRevenueCents / coffeePoundsSold : 0,
     actualTotalCogsCents: actual.totalCogsCents,
     appliedOverrideCount: [...params.itemUnitCostOverridesCents.values()].filter((value) => Number.isFinite(value) && value >= 0).length + validLaborMinuteOverrideCount + validLaborRateOverrideCount + (hasLaborPercentOverride ? 1 : 0) + (hasPricePerPoundOverride ? 1 : 0),
@@ -762,7 +902,8 @@ export function buildGrossProfitSimulator({
     simulatedGrossProfitCents,
     simulatedLaborCents,
     simulatedMarginPercent: percent(simulatedGrossProfitCents, simulatedRevenueCents),
-    simulatedMaterialCents: actual.materialCents + materialDeltaCents,
+    simulatedMaterialCents: actual.materialCents + recipeMaterialDeltaCents,
+    simulatedMaterialSupplyCents: actualMaterialSupplyCents + materialSupplyDeltaCents,
     simulatedRevenueCents,
     simulatedTotalCogsCents,
     unweightedLineCount,

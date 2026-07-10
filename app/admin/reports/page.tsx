@@ -257,6 +257,21 @@ function pricePerPoundInputValue(value: number | undefined) {
   return typeof value === 'number' && Number.isFinite(value) ? String(Number((value / 100).toFixed(4))) : '';
 }
 
+function PercentInput({ defaultValue, name }: { defaultValue: number; name: string }) {
+  return (
+    <div className="relative">
+      <input
+        className="input pr-12 text-right [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+        name={name}
+        type="number"
+        step="0.01"
+        defaultValue={String(defaultValue)}
+      />
+      <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-sm text-slate-500">%</span>
+    </div>
+  );
+}
+
 function unitMoney(value: number) {
   return `$${(Math.max(0, value) / 100).toFixed(4)}`;
 }
@@ -1177,7 +1192,9 @@ function SimulatorInputTable({
             <tr key={row.id} className="bg-white/65">
               <td className="rounded-l-xl px-4 py-3">
                 <p className="font-semibold text-slate-950">{row.name}</p>
-                <p className="mt-1 text-xs text-slate-500">{row.sku || `${number(row.productCount)} product${row.productCount === 1 ? '' : 's'}`}</p>
+                <p className="mt-1 text-xs text-slate-500">
+                  {row.sku ? `${row.sku} - ` : ''}{number(row.productCount)} product{row.productCount === 1 ? '' : 's'}
+                </p>
               </td>
               <td className="px-4 py-3 text-slate-700">{simulatorItemTypeLabel(row.itemType)}</td>
               <td className="px-4 py-3 text-right text-slate-700">{quantity(row.quantityUsed)} {row.baseUnit}</td>
@@ -1290,7 +1307,7 @@ function SimulatorProductTable({ rows }: { rows: GrossProfitSimulatorProductRow[
             <th className="px-4 py-2 text-right">Revenue</th>
             <th className="px-4 py-2 text-right">Scenario revenue</th>
             <th className="px-4 py-2 text-right">Actual GP</th>
-            <th className="px-4 py-2 text-right">Scenario material</th>
+            <th className="px-4 py-2 text-right">Scenario material/supply</th>
             <th className="px-4 py-2 text-right">Scenario labor</th>
             <th className="px-4 py-2 text-right">Simulated GP</th>
             <th className="px-4 py-2 text-right">Profit impact</th>
@@ -1369,7 +1386,7 @@ function GrossProfitSimulatorReport({
         <StatTile label="Actual Gross Profit" value={money(dashboard.actualGrossProfitCents)} detail={`${percent(dashboard.actualMarginPercent).replace('+', '')} actual margin.`} />
         <StatTile label="Simulated Gross Profit" value={money(dashboard.simulatedGrossProfitCents)} detail={`${percent(dashboard.simulatedMarginPercent).replace('+', '')} simulated margin.`} />
         <StatTile label="Profit Change" value={signedMoney(dashboard.grossProfitChangeCents)} detail={`${number(dashboard.orderCount)} shipped order${dashboard.orderCount === 1 ? '' : 's'} in scenario.`} />
-        <StatTile label="Material COGS" value={money(dashboard.simulatedMaterialCents)} detail={`${signedMoney(dashboard.simulatedMaterialCents - dashboard.actualMaterialCents)} versus actual material COGS.`} />
+        <StatTile label="Material/Supply COGS" value={money(dashboard.simulatedMaterialSupplyCents)} detail={`${signedMoney(dashboard.simulatedMaterialSupplyCents - dashboard.actualMaterialSupplyCents)} versus actual material and box-supply COGS.`} />
         <StatTile label="Labor COGS" value={money(dashboard.simulatedLaborCents)} detail={`${signedMoney(dashboard.simulatedLaborCents - dashboard.actualLaborCents)} versus actual labor COGS.`} />
         <StatTile label="Unpriced Lines" value={number(dashboard.unresolvedLineCount)} detail="Lines without a usable recipe remain unchanged." />
       </section>
@@ -1378,7 +1395,7 @@ function GrossProfitSimulatorReport({
         <SectionHeading
           eyebrow="Gross profit simulator"
           title="Labor and material what-if"
-          subtitle="Recipe labor, material costs, and weighted coffee-line revenue can move; fixed packaging, shipping, processing, donation, and unweighted revenue stay actual."
+          subtitle="Recipe labor minutes, material costs, shipping box supplies, and weighted coffee-line revenue can move; tape, labels, shipping, processing, donation, and unweighted revenue stay actual."
           action={dashboard.appliedOverrideCount ? <span className="rounded-full bg-teal-50 px-3 py-1 text-sm font-semibold text-teal-800">{dashboard.appliedOverrideCount} override{dashboard.appliedOverrideCount === 1 ? '' : 's'}</span> : null}
         />
         <form>
@@ -1441,10 +1458,7 @@ function GrossProfitSimulatorReport({
               <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
                 <label className="space-y-2 text-sm font-medium text-slate-700">
                   All labor minutes change
-                  <div className="relative">
-                    <input className="input pr-9 text-right" name="sim_labor_delta" type="number" step="0.01" defaultValue={String(laborPercentDelta)} />
-                    <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-sm text-slate-500">%</span>
-                  </div>
+                  <PercentInput name="sim_labor_delta" defaultValue={laborPercentDelta} />
                 </label>
                 <StatTile label="Labor Impact" value={signedMoney(dashboard.laborImpactCents)} detail={`${money(dashboard.laborScenarioCents)} scenario recipe labor COGS.`} />
                 <StatTile label="Scenario Labor COGS" value={money(dashboard.simulatedLaborCents)} detail={`${signedMoney(dashboard.simulatedLaborCents - dashboard.actualLaborCents)} versus actual labor COGS.`} />
@@ -1458,40 +1472,32 @@ function GrossProfitSimulatorReport({
               <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
                 <label className="space-y-2 text-sm font-medium text-slate-700">
                   Raw coffee change
-                  <div className="relative">
-                    <input className="input pr-9 text-right" name="sim_raw_delta" type="number" step="0.01" defaultValue={String(rawCoffeePercentDelta)} />
-                    <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-sm text-slate-500">%</span>
-                  </div>
+                  <PercentInput name="sim_raw_delta" defaultValue={rawCoffeePercentDelta} />
                 </label>
                 <StatTile label="Raw Coffee Impact" value={signedMoney(dashboard.rawCoffeeImpactCents)} detail={`${money(dashboard.rawCoffeeScenarioCents)} scenario raw coffee COGS.`} />
-                <StatTile label="Raw Inputs" value={number(rawCoffeeRows.length)} detail="Raw coffee inputs used by selected shipped products." />
+                <StatTile label="Raw Inputs" value={number(rawCoffeeRows.length)} detail="Active raw inputs; shipped usage is shown in the table." />
               </div>
               <SimulatorInputTable
-                emptyMessage="No raw coffee inputs were found for the selected shipped orders."
-                rows={limitReportDetailRows(rawCoffeeRows)}
+                emptyMessage="No active raw coffee inputs were found."
+                rows={rawCoffeeRows}
                 overrides={overrides}
               />
-              <DetailRowLimitNotice total={rawCoffeeRows.length} />
             </div>
 
             <div className="hidden space-y-5 peer-checked/supplies:block">
               <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
                 <label className="space-y-2 text-sm font-medium text-slate-700">
                   Materials & supplies change
-                  <div className="relative">
-                    <input className="input pr-9 text-right" name="sim_material_delta" type="number" step="0.01" defaultValue={String(materialSupplyPercentDelta)} />
-                    <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-sm text-slate-500">%</span>
-                  </div>
+                  <PercentInput name="sim_material_delta" defaultValue={materialSupplyPercentDelta} />
                 </label>
-                <StatTile label="Supply Impact" value={signedMoney(dashboard.materialSupplyImpactCents)} detail={`${money(dashboard.materialSupplyScenarioCents)} scenario material COGS.`} />
-                <StatTile label="Supply Inputs" value={number(materialSupplyRows.length)} detail="Materials and supplies used by selected shipped products." />
+                <StatTile label="Supply Impact" value={signedMoney(dashboard.materialSupplyImpactCents)} detail={`${money(dashboard.materialSupplyScenarioCents)} scenario material and box-supply COGS.`} />
+                <StatTile label="Supply Inputs" value={number(materialSupplyRows.length)} detail="Active materials and supplies; shipped usage is shown in the table." />
               </div>
               <SimulatorInputTable
-                emptyMessage="No materials or supplies were found for the selected shipped orders."
-                rows={limitReportDetailRows(materialSupplyRows)}
+                emptyMessage="No active materials or supplies were found."
+                rows={materialSupplyRows}
                 overrides={overrides}
               />
-              <DetailRowLimitNotice total={materialSupplyRows.length} />
             </div>
           </div>
 
@@ -1506,7 +1512,7 @@ function GrossProfitSimulatorReport({
         <SectionHeading
           eyebrow="Product impact"
           title="Which products move gross profit"
-          subtitle="Product rows apply price-per-pound revenue, labor, and material scenarios while non-simulated COGS stay actual."
+          subtitle="Product rows apply price-per-pound revenue, recipe-minute labor, material, and shipping-box supply scenarios while non-simulated COGS stay actual."
         />
         <SimulatorProductTable rows={limitReportDetailRows(dashboard.productRows)} />
         <DetailRowLimitNotice total={dashboard.productRows.length} />
@@ -1938,6 +1944,7 @@ export default async function AdminReportsPage({
     nonInventoryExpensesResult,
     sampleBoxRunsResult,
     recipeResult,
+    shippingBoxUsagesResult,
     prospectingReportResult,
   ] = await Promise.all([
     dataNeeds.coreCommerce ? ordersQuery : skippedReportQuery(),
@@ -1955,7 +1962,7 @@ export default async function AdminReportsPage({
       ? supabase
         .from('inventory_lots')
         .select('inventory_item_id,quantity_remaining,unit_cost_cents,received_at,created_at')
-        .neq('quantity_remaining', 0)
+        .or('quantity_remaining.neq.0,unit_cost_cents.gt.0')
         .order('created_at', { ascending: false })
         .limit(ADMIN_QUERY_ROW_LIMIT)
       : skippedReportQuery(),
@@ -1993,6 +2000,14 @@ export default async function AdminReportsPage({
         .select('product_id,output_qty,waste_percent,labor_minutes,labor_rate_cents,product_recipe_components(inventory_item_id,quantity,unit,component_role,inventory_items(id,name,sku,item_type,base_unit))')
         .limit(ADMIN_QUERY_ROW_LIMIT)
       : skippedReportQuery(),
+    activeReport === 'simulator'
+      ? supabase
+        .from('order_item_shipping_boxes')
+        .select('order_item_id,inventory_item_id,quantity,unit_cost_cents,total_cost_cents,inventory_items(id,name,sku,item_type,base_unit,active)')
+        .gte('consumed_at', rangeStart.toISOString())
+        .lt('consumed_at', rangeEndExclusive.toISOString())
+        .limit(ADMIN_QUERY_ROW_LIMIT)
+      : skippedReportQuery(),
     prospectingReportQuery,
   ]);
 
@@ -2005,6 +2020,9 @@ export default async function AdminReportsPage({
   }
   if (dataNeeds.prospecting && prospectingReportResult.error) {
     return <CriticalReportError message={prospectingReportResult.error.message || 'The Prospecting aggregate could not be loaded.'} />;
+  }
+  if (activeReport === 'simulator' && shippingBoxUsagesResult.error) {
+    return <CriticalReportError message={shippingBoxUsagesResult.error.message || 'The simulator shipping box usage could not be loaded.'} />;
   }
 
   const centers = (centersResult.data ?? []) as ReportingCenterRow[];
@@ -2077,6 +2095,7 @@ export default async function AdminReportsPage({
     },
     products: activeReport === 'simulator' ? products : [],
     recipes: activeReport !== 'simulator' || recipeResult.error ? [] : ((recipeResult.data ?? []) as any[]),
+    shippingBoxUsages: activeReport !== 'simulator' || shippingBoxUsagesResult.error ? [] : ((shippingBoxUsagesResult.data ?? []) as any[]),
   });
   const coffeeSoldByRawMaterialSummary = buildCoffeeSoldByRawMaterialSummary({
     centerId,
@@ -2143,6 +2162,7 @@ export default async function AdminReportsPage({
     ['expenses', nonInventoryExpensesResult.data],
     ['sample boxes', sampleBoxRunsResult.data],
     ['recipes', recipeResult.data],
+    ['shipping box usages', shippingBoxUsagesResult.data],
   ]
     .filter((entry): entry is [string, unknown[]] => Array.isArray(entry[1]) && queryReachedAdminRowLimit(entry[1]))
     .map(([label]) => label);
