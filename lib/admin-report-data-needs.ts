@@ -40,7 +40,7 @@ export function dataNeedsForReport(report: AdminReportId): ReportDataNeeds {
     productRecipes: production || simulator,
     prospecting,
     reorderSettings: salesDashboard,
-    sampleBoxes: inventory || prospecting,
+    sampleBoxes: inventory,
     salesDashboard,
     shortageMovements: inventory || salesDashboard,
   };

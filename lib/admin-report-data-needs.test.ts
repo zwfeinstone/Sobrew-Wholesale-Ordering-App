@@ -12,7 +12,7 @@ describe('dataNeedsForReport', () => {
       productRecipes: false,
       prospecting: true,
       reorderSettings: false,
-      sampleBoxes: true,
+      sampleBoxes: false,
       salesDashboard: false,
       shortageMovements: false,
     });

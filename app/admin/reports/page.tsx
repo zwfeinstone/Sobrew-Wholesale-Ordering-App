@@ -23,6 +23,16 @@ import {
   type ProfitabilityOrderRow,
 } from '@/lib/profitability-reporting';
 import {
+  centralDateInput,
+  emptyProspectingReportAggregate,
+  formatRatePercent,
+  formatRateWithRatio,
+  normalizeProspectingReportAggregate,
+  rate,
+  type AuthorizedProspectingReportScope,
+  type ProspectingReportAggregate,
+} from '@/lib/prospecting-reporting';
+import {
   addDays,
   buildReportingDashboard,
   defaultRangeForMonth,
@@ -46,7 +56,8 @@ import {
   type ReportingProductRow,
   type ReportingReorderSettingRow,
 } from '@/lib/reporting';
-import { PROSPECTING_STAGES, stageLabel, type ProspectingStage } from '@/lib/prospecting';
+import { stageLabel, type ProspectingStage } from '@/lib/prospecting';
+import { getSupabaseAdmin } from '@/lib/supabase/admin';
 import { createClient } from '@/lib/supabase/server';
 import { logServerTiming } from '@/lib/server-performance';
 import { convertInventoryQuantity } from '@/lib/inventory';
@@ -77,104 +88,6 @@ type AdminRow = {
   full_name: string | null;
   id: string;
   is_active: boolean | null;
-};
-
-type ProspectingActivityReportRow = {
-  activity_type: string | null;
-  created_at: string | null;
-  created_by: string | null;
-  id: string;
-  lead_id: string | null;
-  next_follow_up_at?: string | null;
-  next_stage: string | null;
-  previous_stage: string | null;
-  result: string | null;
-};
-
-type ProspectingLeadReportRow = {
-  assigned_profile_id: string | null;
-  archived_at?: string | null;
-  created_at: string | null;
-  do_not_contact: boolean | null;
-  hubspot_status: string | null;
-  id: string;
-  next_follow_up_at: string | null;
-  stage: string | null;
-};
-
-type ProspectingBlockReportRow = {
-  activity_date: string | null;
-  calls_contact: number | string | null;
-  calls_email: number | string | null;
-  calls_no_contact: number | string | null;
-  calls_text: number | string | null;
-  calls_voicemail: number | string | null;
-  created_by: string | null;
-  id: string;
-  samples_from_contact: number | string | null;
-  samples_from_email_reply: number | string | null;
-  samples_from_text_reply: number | string | null;
-  samples_from_voicemail_callback: number | string | null;
-  samples_other: number | string | null;
-};
-
-type ProspectingFollowupBlockReportRow = {
-  activity_date: string | null;
-  created_by: string | null;
-  deals_closed_email: number | string | null;
-  deals_closed_phone: number | string | null;
-  deals_closed_text: number | string | null;
-  deals_lost_email: number | string | null;
-  deals_lost_phone: number | string | null;
-  deals_lost_text: number | string | null;
-  followups_email: number | string | null;
-  followups_phone: number | string | null;
-  followups_text: number | string | null;
-  id: string;
-};
-
-type ProspectingRepSummaryRow = {
-  blockTouches: number;
-  calls: number;
-  dealsClosed: number;
-  dealsLost: number;
-  emails: number;
-  followups: number;
-  newLeads: number;
-  notes: number;
-  repId: string;
-  sampleBoxes: number;
-  sampleCogsCents: number;
-  samples: number;
-  texts: number;
-  touches: number;
-};
-
-type ProspectingSampleBoxReportRow = {
-  quantity_boxes: number | string | null;
-  sales_profile_id: string | null;
-  total_cogs_cents: number | string | null;
-};
-
-type ProspectingSummary = {
-  activityRows: ProspectingActivityReportRow[];
-  blockRows: ProspectingBlockReportRow[];
-  calls: number;
-  currentLeads: ProspectingLeadReportRow[];
-  dealsClosed: number;
-  dealsLost: number;
-  emails: number;
-  followupRows: ProspectingFollowupBlockReportRow[];
-  followups: number;
-  newLeads: number;
-  notes: number;
-  pipelineRows: Array<{ count: number; stage: ProspectingStage }>;
-  repRows: ProspectingRepSummaryRow[];
-  sampleBoxes: number;
-  sampleCogsCents: number;
-  samples: number;
-  texts: number;
-  touches: number;
 };
 
 type ProfitabilityCenterRows = ReturnType<typeof buildProfitabilityDashboard>['centerRows'];
@@ -360,18 +273,6 @@ function percent(value: number) {
   return `${value > 0 ? '+' : ''}${new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 }).format(value)}%`;
 }
 
-function normalizedText(value: string | null | undefined) {
-  return String(value ?? '').trim().toLowerCase();
-}
-
-function isSampleResult(value: string | null | undefined) {
-  return ['sample requested', 'requested sample'].includes(normalizedText(value));
-}
-
-function safeStage(value: string | null | undefined): ProspectingStage | null {
-  return PROSPECTING_STAGES.some((stage) => stage.id === value) ? value as ProspectingStage : null;
-}
-
 function prospectingStageTone(stage: ProspectingStage) {
   const classes: Record<ProspectingStage, string> = {
     converted: 'bg-emerald-50 text-emerald-800 ring-emerald-100',
@@ -394,195 +295,6 @@ function relatedOne<T>(value: T | T[] | null | undefined): T | null {
 
 const UNKNOWN_REP_ID = '__unknown_rep__';
 const UNASSIGNED_REP_ID = '__unassigned_rep__';
-
-function prospectingRepId(value: string | null | undefined, fallback = UNKNOWN_REP_ID) {
-  return value || fallback;
-}
-
-function createProspectingRepSummaryRow(repId: string): ProspectingRepSummaryRow {
-  return {
-    blockTouches: 0,
-    calls: 0,
-    dealsClosed: 0,
-    dealsLost: 0,
-    emails: 0,
-    followups: 0,
-    newLeads: 0,
-    notes: 0,
-    repId,
-    sampleBoxes: 0,
-    sampleCogsCents: 0,
-    samples: 0,
-    texts: 0,
-    touches: 0,
-  };
-}
-
-function ensureProspectingRepRow(rows: Map<string, ProspectingRepSummaryRow>, repId: string) {
-  const existing = rows.get(repId);
-  if (existing) return existing;
-  const next = createProspectingRepSummaryRow(repId);
-  rows.set(repId, next);
-  return next;
-}
-
-function sumProspectingNumbers<T extends Record<string, unknown>>(row: T, keys: Array<keyof T>) {
-  return keys.reduce((sum, key) => sum + normalizeReportNumber(row[key]), 0);
-}
-
-function buildProspectingSummary({
-  activityRows,
-  blockRows,
-  currentLeads,
-  followupRows,
-  leadsCreatedRows,
-  sampleBoxRows,
-}: {
-  activityRows: ProspectingActivityReportRow[];
-  blockRows: ProspectingBlockReportRow[];
-  currentLeads: ProspectingLeadReportRow[];
-  followupRows: ProspectingFollowupBlockReportRow[];
-  leadsCreatedRows: ProspectingLeadReportRow[];
-  sampleBoxRows: ProspectingSampleBoxReportRow[];
-}): ProspectingSummary {
-  const repRowsById = new Map<string, ProspectingRepSummaryRow>();
-  const summary = {
-    calls: 0,
-    dealsClosed: 0,
-    dealsLost: 0,
-    emails: 0,
-    followups: 0,
-    newLeads: leadsCreatedRows.length,
-    notes: 0,
-    sampleBoxes: 0,
-    sampleCogsCents: 0,
-    samples: 0,
-    texts: 0,
-    touches: 0,
-  };
-
-  for (const lead of leadsCreatedRows) {
-    const repRow = ensureProspectingRepRow(repRowsById, prospectingRepId(lead.assigned_profile_id, UNASSIGNED_REP_ID));
-    repRow.newLeads += 1;
-  }
-
-  for (const activity of activityRows) {
-    const repRow = ensureProspectingRepRow(repRowsById, prospectingRepId(activity.created_by));
-    const nextStage = safeStage(activity.next_stage);
-    const type = normalizedText(activity.activity_type);
-    const countsAsTouch = type === 'call' || type === 'email' || type === 'note';
-
-    if (countsAsTouch) {
-      summary.touches += 1;
-      repRow.touches += 1;
-    }
-    if (type === 'call') {
-      summary.calls += 1;
-      repRow.calls += 1;
-    }
-    if (type === 'email') {
-      summary.emails += 1;
-      repRow.emails += 1;
-    }
-    if (type === 'note') {
-      summary.notes += 1;
-      repRow.notes += 1;
-    }
-    if (nextStage === 'sample_requested' || isSampleResult(activity.result)) {
-      summary.samples += 1;
-      repRow.samples += 1;
-    }
-    if (nextStage === 'converted') {
-      summary.dealsClosed += 1;
-      repRow.dealsClosed += 1;
-    }
-    if (nextStage === 'lost') {
-      summary.dealsLost += 1;
-      repRow.dealsLost += 1;
-    }
-  }
-
-  for (const block of blockRows) {
-    const repRow = ensureProspectingRepRow(repRowsById, prospectingRepId(block.created_by));
-    const phoneCalls = sumProspectingNumbers(block, ['calls_no_contact', 'calls_voicemail', 'calls_contact']);
-    const emails = normalizeReportNumber(block.calls_email);
-    const texts = normalizeReportNumber(block.calls_text);
-    const samples = sumProspectingNumbers(block, [
-      'samples_from_contact',
-      'samples_from_voicemail_callback',
-      'samples_from_email_reply',
-      'samples_from_text_reply',
-      'samples_other',
-    ]);
-    const blockTouches = phoneCalls + emails + texts;
-
-    summary.calls += phoneCalls;
-    summary.emails += emails;
-    summary.samples += samples;
-    summary.texts += texts;
-    summary.touches += blockTouches;
-    repRow.blockTouches += blockTouches;
-    repRow.calls += phoneCalls;
-    repRow.emails += emails;
-    repRow.samples += samples;
-    repRow.texts += texts;
-    repRow.touches += blockTouches;
-  }
-
-  for (const followup of followupRows) {
-    const repRow = ensureProspectingRepRow(repRowsById, prospectingRepId(followup.created_by));
-    const followups = sumProspectingNumbers(followup, ['followups_email', 'followups_phone', 'followups_text']);
-    const dealsClosed = sumProspectingNumbers(followup, ['deals_closed_email', 'deals_closed_phone', 'deals_closed_text']);
-    const dealsLost = sumProspectingNumbers(followup, ['deals_lost_email', 'deals_lost_phone', 'deals_lost_text']);
-    const emails = normalizeReportNumber(followup.followups_email);
-    const calls = normalizeReportNumber(followup.followups_phone);
-    const texts = normalizeReportNumber(followup.followups_text);
-
-    summary.calls += calls;
-    summary.dealsClosed += dealsClosed;
-    summary.dealsLost += dealsLost;
-    summary.emails += emails;
-    summary.followups += followups;
-    summary.texts += texts;
-    summary.touches += followups;
-    repRow.calls += calls;
-    repRow.dealsClosed += dealsClosed;
-    repRow.dealsLost += dealsLost;
-    repRow.emails += emails;
-    repRow.followups += followups;
-    repRow.texts += texts;
-    repRow.touches += followups;
-  }
-
-  for (const sampleBox of sampleBoxRows) {
-    const repRow = ensureProspectingRepRow(repRowsById, prospectingRepId(sampleBox.sales_profile_id, UNASSIGNED_REP_ID));
-    const boxes = normalizeReportNumber(sampleBox.quantity_boxes);
-    const cogs = normalizeReportNumber(sampleBox.total_cogs_cents);
-    summary.sampleBoxes += boxes;
-    summary.sampleCogsCents += cogs;
-    repRow.sampleBoxes += boxes;
-    repRow.sampleCogsCents += cogs;
-  }
-
-  const pipelineRows = PROSPECTING_STAGES.map((stage) => ({
-    stage: stage.id,
-    count: currentLeads.filter((lead) => lead.stage === stage.id).length,
-  }));
-
-  const repRows = [...repRowsById.values()]
-    .filter((row) => row.newLeads || row.touches || row.samples || row.dealsClosed || row.dealsLost || row.sampleBoxes)
-    .sort((a, b) => b.touches - a.touches || b.newLeads - a.newLeads || a.repId.localeCompare(b.repId));
-
-  return {
-    activityRows,
-    blockRows,
-    currentLeads,
-    followupRows,
-    pipelineRows,
-    repRows,
-    ...summary,
-  };
-}
 
 function reportDate(value: string | null | undefined) {
   if (!value) return null;
@@ -1809,47 +1521,50 @@ function prospectingRepLabel(repId: string, profilesById: Map<string, AdminRow>)
   return adminLabel(profilesById.get(repId));
 }
 
+function prospectingRate(numerator: number, denominator: number) {
+  return formatRateWithRatio(rate(numerator, denominator));
+}
+
 function ProspectingRepTable({
   profilesById,
   rows,
 }: {
   profilesById: Map<string, AdminRow>;
-  rows: ProspectingRepSummaryRow[];
+  rows: ProspectingReportAggregate['reps'];
 }) {
   if (!rows.length) return <EmptyState message="No prospecting activity found for the selected period and rep filter." />;
 
   return (
     <div className="overflow-x-auto">
-      <table className="w-full min-w-[78rem] border-separate border-spacing-y-2 text-left text-sm">
+      <table className="w-full min-w-[74rem] border-separate border-spacing-y-2 text-left text-sm">
+        <caption className="sr-only">Prospecting activity and conversion rates by sales rep.</caption>
         <thead>
           <tr className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
             <th className="px-4 py-2">Rep</th>
             <th className="px-4 py-2 text-right">New Leads</th>
-            <th className="px-4 py-2 text-right">Touches</th>
             <th className="px-4 py-2 text-right">Calls</th>
-            <th className="px-4 py-2 text-right">Emails</th>
-            <th className="px-4 py-2 text-right">Texts</th>
+            <th className="px-4 py-2 text-right">Live %</th>
             <th className="px-4 py-2 text-right">Samples</th>
-            <th className="px-4 py-2 text-right">Closed</th>
-            <th className="px-4 py-2 text-right">Lost</th>
+            <th className="px-4 py-2 text-right">Calls → Sample</th>
+            <th className="px-4 py-2 text-right">Won</th>
+            <th className="px-4 py-2 text-right">Win %</th>
             <th className="px-4 py-2 text-right">Boxes</th>
             <th className="px-4 py-2 text-right">Sample COGS</th>
           </tr>
         </thead>
         <tbody>
           {rows.map((row) => (
-            <tr key={row.repId} className="bg-white/65">
-              <td className="rounded-l-xl px-4 py-3 font-semibold text-slate-950">{prospectingRepLabel(row.repId, profilesById)}</td>
-              <td className="px-4 py-3 text-right text-slate-700">{number(row.newLeads)}</td>
-              <td className="px-4 py-3 text-right font-semibold text-slate-950">{number(row.touches)}</td>
+            <tr key={row.rep_key} className="bg-white/65">
+              <td className="rounded-l-xl px-4 py-3 font-semibold text-slate-950">{prospectingRepLabel(row.rep_key, profilesById)}</td>
+              <td className="px-4 py-3 text-right text-slate-700">{number(row.new_leads)}</td>
               <td className="px-4 py-3 text-right text-slate-700">{number(row.calls)}</td>
-              <td className="px-4 py-3 text-right text-slate-700">{number(row.emails)}</td>
-              <td className="px-4 py-3 text-right text-slate-700">{number(row.texts)}</td>
-              <td className="px-4 py-3 text-right text-slate-700">{number(row.samples)}</td>
-              <td className="px-4 py-3 text-right text-slate-700">{number(row.dealsClosed)}</td>
-              <td className="px-4 py-3 text-right text-slate-700">{number(row.dealsLost)}</td>
-              <td className="px-4 py-3 text-right text-slate-700">{compactNumber(row.sampleBoxes)}</td>
-              <td className="rounded-r-xl px-4 py-3 text-right font-semibold text-slate-950">{money(row.sampleCogsCents)}</td>
+              <td className="px-4 py-3 text-right text-slate-700">{formatRatePercent(rate(row.live_contacts, row.calls).percent)}</td>
+              <td className="px-4 py-3 text-right text-slate-700">{number(row.sample_requests)}</td>
+              <td className="px-4 py-3 text-right font-semibold text-slate-950">{formatRatePercent(rate(row.phone_sample_requests, row.calls).percent)}</td>
+              <td className="px-4 py-3 text-right text-slate-700">{number(row.deals_won)}</td>
+              <td className="px-4 py-3 text-right text-slate-700">{formatRatePercent(rate(row.deals_won, row.deals_won + row.deals_lost).percent)}</td>
+              <td className="px-4 py-3 text-right text-slate-700">{compactNumber(row.sample_boxes)}</td>
+              <td className="rounded-r-xl px-4 py-3 text-right font-semibold text-slate-950">{money(row.sample_cogs_cents)}</td>
             </tr>
           ))}
         </tbody>
@@ -1858,12 +1573,13 @@ function ProspectingRepTable({
   );
 }
 
-function ProspectingPipelineTable({ rows, total }: { rows: ProspectingSummary['pipelineRows']; total: number }) {
+function ProspectingPipelineTable({ rows, total }: { rows: ProspectingReportAggregate['stages']; total: number }) {
   if (!total) return <EmptyState message="No current prospecting leads match the selected rep filter." />;
 
   return (
     <div className="overflow-x-auto">
       <table className="w-full min-w-[42rem] border-separate border-spacing-y-2 text-left text-sm">
+        <caption className="sr-only">Current prospecting lead count and share by stage.</caption>
         <thead>
           <tr className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
             <th className="px-4 py-2">Stage</th>
@@ -1878,7 +1594,7 @@ function ProspectingPipelineTable({ rows, total }: { rows: ProspectingSummary['p
                 <span className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ring-1 ${prospectingStageTone(row.stage)}`}>{stageLabel(row.stage)}</span>
               </td>
               <td className="px-4 py-3 text-right font-semibold text-slate-950">{number(row.count)}</td>
-              <td className="rounded-r-xl px-4 py-3 text-right text-slate-700">{percent((row.count / total) * 100).replace('+', '')}</td>
+              <td className="rounded-r-xl px-4 py-3 text-right text-slate-700">{formatRatePercent(rate(row.count, total).percent)}</td>
             </tr>
           ))}
         </tbody>
@@ -1887,133 +1603,226 @@ function ProspectingPipelineTable({ rows, total }: { rows: ProspectingSummary['p
   );
 }
 
-function ProspectingSourceTable({ summary }: { summary: ProspectingSummary }) {
-  const activityCalls = summary.activityRows.filter((row) => normalizedText(row.activity_type) === 'call').length;
-  const activityEmails = summary.activityRows.filter((row) => normalizedText(row.activity_type) === 'email').length;
-  const activityNotes = summary.activityRows.filter((row) => normalizedText(row.activity_type) === 'note').length;
-  const activitySamples = summary.activityRows.filter((row) => safeStage(row.next_stage) === 'sample_requested' || isSampleResult(row.result)).length;
-  const activityClosed = summary.activityRows.filter((row) => safeStage(row.next_stage) === 'converted').length;
-  const activityLost = summary.activityRows.filter((row) => safeStage(row.next_stage) === 'lost').length;
-  const blockCalls = summary.blockRows.reduce((sum, row) => sum + sumProspectingNumbers(row, ['calls_no_contact', 'calls_voicemail', 'calls_contact']), 0);
-  const blockEmails = summary.blockRows.reduce((sum, row) => sum + normalizeReportNumber(row.calls_email), 0);
-  const blockTexts = summary.blockRows.reduce((sum, row) => sum + normalizeReportNumber(row.calls_text), 0);
-  const blockSamples = summary.blockRows.reduce((sum, row) => sum + sumProspectingNumbers(row, [
-    'samples_from_contact',
-    'samples_from_voicemail_callback',
-    'samples_from_email_reply',
-    'samples_from_text_reply',
-    'samples_other',
-  ]), 0);
-  const followupCalls = summary.followupRows.reduce((sum, row) => sum + normalizeReportNumber(row.followups_phone), 0);
-  const followupEmails = summary.followupRows.reduce((sum, row) => sum + normalizeReportNumber(row.followups_email), 0);
-  const followupTexts = summary.followupRows.reduce((sum, row) => sum + normalizeReportNumber(row.followups_text), 0);
-  const followupClosed = summary.followupRows.reduce((sum, row) => sum + sumProspectingNumbers(row, ['deals_closed_email', 'deals_closed_phone', 'deals_closed_text']), 0);
-  const followupLost = summary.followupRows.reduce((sum, row) => sum + sumProspectingNumbers(row, ['deals_lost_email', 'deals_lost_phone', 'deals_lost_text']), 0);
-  const rows = [
-    { id: 'activity', label: 'Lead activity log', calls: activityCalls, emails: activityEmails, texts: 0, notes: activityNotes, samples: activitySamples, closed: activityClosed, lost: activityLost },
-    { id: 'blocks', label: 'Prospecting blocks', calls: blockCalls, emails: blockEmails, texts: blockTexts, notes: 0, samples: blockSamples, closed: 0, lost: 0 },
-    { id: 'followups', label: 'Follow-up blocks', calls: followupCalls, emails: followupEmails, texts: followupTexts, notes: 0, samples: 0, closed: followupClosed, lost: followupLost },
-  ].filter((row) => row.calls || row.emails || row.texts || row.notes || row.samples || row.closed || row.lost);
-
+function ProspectingSourceTable({ rows }: { rows: ProspectingReportAggregate['sources'] }) {
   if (!rows.length) return <EmptyState message="No prospecting source rows found for the selected period." />;
+
+  const labels: Record<string, string> = {
+    lead_activity: 'Lead activity log',
+    leads_created: 'Leads created',
+    followup_blocks: 'Legacy follow-up blocks',
+    prospecting_blocks: 'Legacy prospecting blocks',
+    sample_box_runs: 'Sample box runs',
+  };
 
   return (
     <div className="overflow-x-auto">
-      <table className="w-full min-w-[58rem] border-separate border-spacing-y-2 text-left text-sm">
+      <table className="w-full min-w-[70rem] border-separate border-spacing-y-2 text-left text-sm">
+        <caption className="sr-only">Aggregated source rows used to build this Prospecting report.</caption>
         <thead>
           <tr className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
             <th className="px-4 py-2">Source</th>
+            <th className="px-4 py-2 text-right">Rows</th>
             <th className="px-4 py-2 text-right">Calls</th>
             <th className="px-4 py-2 text-right">Emails</th>
             <th className="px-4 py-2 text-right">Texts</th>
             <th className="px-4 py-2 text-right">Notes</th>
+            <th className="px-4 py-2 text-right">Follow-ups</th>
             <th className="px-4 py-2 text-right">Samples</th>
-            <th className="px-4 py-2 text-right">Closed</th>
+            <th className="px-4 py-2 text-right">Won</th>
             <th className="px-4 py-2 text-right">Lost</th>
           </tr>
         </thead>
         <tbody>
           {rows.map((row) => (
-            <tr key={row.id} className="bg-white/65">
-              <td className="rounded-l-xl px-4 py-3 font-semibold text-slate-950">{row.label}</td>
+            <tr key={row.source} className="bg-white/65">
+              <td className="rounded-l-xl px-4 py-3 font-semibold text-slate-950">{labels[row.source] ?? row.source}</td>
+              <td className="px-4 py-3 text-right text-slate-700">{number(row.source_rows)}</td>
               <td className="px-4 py-3 text-right text-slate-700">{number(row.calls)}</td>
               <td className="px-4 py-3 text-right text-slate-700">{number(row.emails)}</td>
               <td className="px-4 py-3 text-right text-slate-700">{number(row.texts)}</td>
               <td className="px-4 py-3 text-right text-slate-700">{number(row.notes)}</td>
-              <td className="px-4 py-3 text-right text-slate-700">{number(row.samples)}</td>
-              <td className="px-4 py-3 text-right text-slate-700">{number(row.closed)}</td>
-              <td className="rounded-r-xl px-4 py-3 text-right text-slate-700">{number(row.lost)}</td>
+              <td className="px-4 py-3 text-right text-slate-700">{number(row.followups)}</td>
+              <td className="px-4 py-3 text-right text-slate-700">{number(row.sample_requests)}</td>
+              <td className="px-4 py-3 text-right text-slate-700">{number(row.deals_won)}</td>
+              <td className="rounded-r-xl px-4 py-3 text-right text-slate-700">{number(row.deals_lost)}</td>
             </tr>
           ))}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+function ProspectingChannelTable({ rows }: { rows: ProspectingReportAggregate['channels'] }) {
+  if (!rows.length) return <EmptyState message="No channel activity was logged for the selected period." />;
+  const labels: Record<string, string> = { phone: 'Call', email: 'Email', text: 'Text' };
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full min-w-[68rem] border-separate border-spacing-y-2 text-left text-sm">
+        <caption className="sr-only">Initial outreach, samples, follow-ups, and outcomes by channel.</caption>
+        <thead>
+          <tr className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+            <th className="px-4 py-2">Channel</th>
+            <th className="px-4 py-2 text-right">Attempts</th>
+            <th className="px-4 py-2 text-right">Live contacts</th>
+            <th className="px-4 py-2 text-right">Samples</th>
+            <th className="px-4 py-2 text-right">Sample rate</th>
+            <th className="px-4 py-2 text-right">Follow-ups</th>
+            <th className="px-4 py-2 text-right">Won</th>
+            <th className="px-4 py-2 text-right">Lost</th>
+            <th className="px-4 py-2 text-right">Win rate</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.filter((row) => ['phone', 'email', 'text'].includes(row.channel)).map((row) => (
+            <tr key={row.channel} className="bg-white/65">
+              <td className="rounded-l-xl px-4 py-3 font-semibold text-slate-950">{labels[row.channel] ?? row.channel}</td>
+              <td className="px-4 py-3 text-right text-slate-700">{number(row.attempts)}</td>
+              <td className="px-4 py-3 text-right text-slate-700">{row.channel === 'phone' ? number(row.live_contacts) : '—'}</td>
+              <td className="px-4 py-3 text-right text-slate-700">{number(row.sample_requests)}</td>
+              <td className="px-4 py-3 text-right font-semibold text-slate-950">{formatRatePercent(rate(row.sample_requests, row.attempts).percent)}</td>
+              <td className="px-4 py-3 text-right text-slate-700">{number(row.followups)}</td>
+              <td className="px-4 py-3 text-right text-slate-700">{number(row.deals_won)}</td>
+              <td className="px-4 py-3 text-right text-slate-700">{number(row.deals_lost)}</td>
+              <td className="rounded-r-xl px-4 py-3 text-right text-slate-700">{formatRatePercent(rate(row.deals_won, row.deals_won + row.deals_lost).percent)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function ProspectingPhoneFunnel({ period }: { period: ProspectingReportAggregate['period'] }) {
+  const steps = [
+    { label: 'Call attempts', value: period.call_attempts, detail: 'Initial phone outreach logged in the selected period.' },
+    { label: 'Live contacts', value: period.live_contacts, detail: prospectingRate(period.live_contacts, period.call_attempts) },
+    { label: 'Contact-sourced samples', value: period.live_contact_sample_requests, detail: prospectingRate(period.live_contact_sample_requests, period.live_contacts) },
+  ];
+
+  return (
+    <div className="grid gap-3 sm:grid-cols-3" aria-label="Phone conversion funnel">
+      {steps.map((step, index) => (
+        <div key={step.label} className="relative rounded-xl border border-slate-200/80 bg-white/65 p-4">
+          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">Step {index + 1}</p>
+          <p className="mt-2 font-semibold text-slate-950">{step.label}</p>
+          <p className="mt-3 text-2xl font-semibold tracking-tight text-slate-950">{number(step.value)}</p>
+          <p className="mt-1 text-sm text-slate-500">{step.detail}</p>
+        </div>
+      ))}
     </div>
   );
 }
 
 function ProspectingReport({
   profilesById,
-  rangeEndExclusive,
-  rangeStart,
-  selectedSalesRepId,
+  salesProfileId,
   summary,
 }: {
   profilesById: Map<string, AdminRow>;
-  rangeEndExclusive: Date;
-  rangeStart: Date;
-  selectedSalesRepId: string;
-  summary: ProspectingSummary;
+  salesProfileId: string | null;
+  summary: ProspectingReportAggregate;
 }) {
-  const currentPipelineTotal = summary.currentLeads.length;
-  const activeQueueCount = summary.currentLeads.filter((lead) => ['new', 'working', 'follow_up', 'recycle_try_later'].includes(String(lead.stage))).length;
-  const followUpsInRange = summary.currentLeads.filter((lead) => {
-    const dueAt = reportDate(lead.next_follow_up_at);
-    return dueAt && dueAt >= rangeStart && dueAt < rangeEndExclusive;
-  }).length;
-  const hubspotReadyCount = summary.currentLeads.filter((lead) => lead.stage === 'interested' || lead.stage === 'sample_requested' || lead.hubspot_status === 'queued').length;
-  const unassignedCount = summary.currentLeads.filter((lead) => !lead.assigned_profile_id).length;
-  const selectedRepName = selectedSalesRepId ? prospectingRepLabel(selectedSalesRepId, profilesById) : 'all reps';
+  const period = summary.period;
+  const pipeline = summary.pipeline_snapshot;
+  const selectedRepName = salesProfileId ? prospectingRepLabel(salesProfileId, profilesById) : 'all reps';
+  const averageSampleCost = period.sample_boxes > 0 ? money(period.sample_cogs_cents / period.sample_boxes) : '—';
 
   return (
     <>
-      <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-6">
-        <StatTile label="New Leads" value={number(summary.newLeads)} detail={`Created in range for ${selectedRepName}.`} />
-        <StatTile label="Touches" value={number(summary.touches)} detail={`${number(summary.calls)} calls, ${number(summary.emails)} emails, ${number(summary.texts)} texts.`} />
-        <StatTile label="Samples" value={number(summary.samples)} detail={`${compactNumber(summary.sampleBoxes)} sample box${summary.sampleBoxes === 1 ? '' : 'es'} sent.`} />
-        <StatTile label="Deals Closed" value={number(summary.dealsClosed)} detail={`${number(summary.dealsLost)} lost outcomes logged in range.`} />
-        <StatTile label="Current Pipeline" value={number(currentPipelineTotal)} detail={`${number(activeQueueCount)} active leads, ${number(hubspotReadyCount)} HubSpot-ready.`} />
-        <StatTile label="Sample COGS" value={money(summary.sampleCogsCents)} detail={`${number(followUpsInRange)} follow-up${followUpsInRange === 1 ? '' : 's'} due in range.`} />
+      <section className="space-y-5">
+        <SectionHeading
+          eyebrow="Selected period"
+          title="Selected-period performance"
+          subtitle={`Exact activity and outcomes recorded for ${selectedRepName}. Percentages include their raw numerator and denominator.`}
+        />
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-6">
+          <StatTile label="New Leads" value={number(period.new_leads)} detail={`Created in range; grouped by current assignee.`} />
+          <StatTile label="Call Attempts" value={number(period.call_attempts)} detail={`${number(period.calls_voicemail)} voicemail, ${number(period.calls_no_answer)} no answer.`} />
+          <StatTile label="Live Contact Rate" value={prospectingRate(period.live_contacts, period.call_attempts)} detail="Live conversations divided by initial call attempts." />
+          <StatTile label="Sample Requests" value={number(period.sample_requests)} detail={`${number(period.phone_sample_requests)} phone, ${number(period.email_sample_requests)} email, ${number(period.text_sample_requests)} text.`} />
+          <StatTile label="Calls → Sample" value={prospectingRate(period.phone_sample_requests, period.call_attempts)} detail="Phone-attributed sample requests divided by call attempts." />
+          <StatTile label="Deals Won" value={number(period.deals_won)} detail={`${prospectingRate(period.deals_won, period.deals_won + period.deals_lost)} decided outcomes; ${number(period.deals_lost)} lost.`} />
+        </div>
+      </section>
+
+      <section className="grid gap-5 xl:grid-cols-[1.2fr_0.8fr]">
+        <div className="card space-y-5">
+          <SectionHeading
+            eyebrow="Phone funnel"
+            title="From call attempts to samples"
+            subtitle="Follow-up phone calls are excluded because the legacy follow-up source does not record sample outcomes."
+          />
+          <ProspectingPhoneFunnel period={period} />
+        </div>
+        <div className="card space-y-5">
+          <SectionHeading
+            eyebrow="Sample operations"
+            title="Boxes sent and cost"
+            subtitle="Operational totals only; sample runs are not yet linked to individual lead requests."
+          />
+          <div className="grid gap-3 sm:grid-cols-3 xl:grid-cols-1">
+            <StatTile label="Boxes Sent" value={compactNumber(period.sample_boxes)} detail={`${number(period.sample_runs)} recorded run${period.sample_runs === 1 ? '' : 's'}.`} />
+            <StatTile label="Sample COGS" value={money(period.sample_cogs_cents)} detail="Total recorded sample-box cost in range." />
+            <StatTile label="Average Cost / Box" value={averageSampleCost} detail="Shown only when at least one box was recorded." />
+          </div>
+        </div>
+      </section>
+
+      <section className="card space-y-5">
+        <SectionHeading
+          eyebrow="Channel efficiency"
+          title="Outreach, samples, and follow-up outcomes"
+          subtitle="Initial sample conversion and follow-up win rates use separate denominators so the percentages stay meaningful."
+        />
+        <ProspectingChannelTable rows={summary.channels} />
+      </section>
+
+      <section className="space-y-5">
+        <SectionHeading
+          eyebrow="Current snapshot"
+          title="Current pipeline snapshot"
+          subtitle={`Exact current lead health for ${selectedRepName}; these values are not limited by the selected activity period.`}
+          action={pipeline.unassigned_open ? <span className="rounded-full bg-amber-50 px-3 py-1 text-sm font-semibold text-amber-800">{number(pipeline.unassigned_open)} unassigned open lead{pipeline.unassigned_open === 1 ? '' : 's'}</span> : null}
+        />
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-6">
+          <StatTile label="Total Leads" value={number(pipeline.total_leads)} detail="Every current unarchived lead, including terminal stages." />
+          <StatTile label="Open Pipeline" value={number(pipeline.open_pipeline)} detail={`${number(pipeline.active_queue)} leads remain in the active calling queue.`} />
+          <StatTile label="Untouched Open" value={number(pipeline.untouched_open)} detail={`${formatRatePercent(rate(pipeline.untouched_open, pipeline.open_pipeline).percent)} have no call or email activity.`} />
+          <StatTile label="Unassigned Open" value={number(pipeline.unassigned_open)} detail={`${formatRatePercent(rate(pipeline.unassigned_open, pipeline.open_pipeline).percent)} of the open pipeline.`} />
+          <StatTile label="Leads Beyond New" value={number(pipeline.leads_beyond_new)} detail={`${formatRatePercent(rate(pipeline.leads_beyond_new, pipeline.open_pipeline).percent)} activation; ${number(pipeline.hubspot_ready)} HubSpot-ready.`} />
+          <StatTile label="Follow-ups Due" value={number(pipeline.due_today)} detail={`${number(pipeline.overdue_followups)} overdue as of today.`} />
+        </div>
+        <div className="card space-y-5">
+          <SectionHeading
+            eyebrow="Stage distribution"
+            title="Current lead database by stage"
+            subtitle="Stage shares use the exact current lead total, including terminal maintenance stages."
+          />
+          <ProspectingPipelineTable rows={summary.stages} total={pipeline.total_leads} />
+        </div>
       </section>
 
       <section className="card space-y-5">
         <SectionHeading
           eyebrow="Rep performance"
           title="Prospecting by sales rep"
-          subtitle="Uses the selected report period and the sales rep filter. Lead activity is grouped by who logged the activity; lead creation and samples are grouped by assigned sales profile."
-          action={unassignedCount ? <span className="rounded-full bg-amber-50 px-3 py-1 text-sm font-semibold text-amber-800">{number(unassignedCount)} unassigned current lead{unassignedCount === 1 ? '' : 's'}</span> : null}
+          subtitle="Activity is credited to its creator; new leads use the current assignee; sample boxes use their saved sales profile."
         />
-        <ProspectingRepTable rows={limitReportDetailRows(summary.repRows)} profilesById={profilesById} />
-        <DetailRowLimitNotice total={summary.repRows.length} />
+        <ProspectingRepTable rows={summary.reps} profilesById={profilesById} />
       </section>
 
-      <section className="grid gap-5 xl:grid-cols-[0.9fr_1.1fr]">
-        <div className="card space-y-5">
-          <SectionHeading
-            eyebrow="Current pipeline"
-            title="Lead count by stage"
-            subtitle="Current open prospecting leads for the selected sales rep filter."
-          />
-          <ProspectingPipelineTable rows={summary.pipelineRows} total={currentPipelineTotal} />
-        </div>
-        <div className="card space-y-5">
-          <SectionHeading
-            eyebrow="Activity sources"
-            title="Where the selected-period totals came from"
-            subtitle="Combines detailed lead activity, prospecting blocks, follow-up blocks, and sample box runs."
-          />
-          <ProspectingSourceTable summary={summary} />
-        </div>
-      </section>
+      <details className="card group space-y-5">
+        <summary className="cursor-pointer list-none font-semibold text-slate-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600 focus-visible:ring-offset-4">
+          How totals are calculated
+          <span className="ml-2 text-sm font-normal text-slate-500">Aggregated source audit</span>
+        </summary>
+        <p className="text-sm leading-6 text-slate-500">
+          Legacy daily blocks and newer lead-level activity remain separate and are added once. They cannot be deduplicated across systems because legacy rows do not identify individual leads.
+        </p>
+        <ProspectingSourceTable rows={summary.sources} />
+      </details>
     </>
   );
 }
@@ -2087,6 +1896,13 @@ export default async function AdminReportsPage({
     parsedRangeEnd && parsedRangeEnd >= rangeStart
       ? addDays(parsedRangeEnd, 1)
       : defaultRange.rangeEndExclusive;
+  const prospectingReportProfileId = currentAccess.isOwner
+    ? selectedSalesRepId || null
+    : currentAccess.profile.id;
+  const prospectingReportScope: AuthorizedProspectingReportScope = {
+    salesProfileId: prospectingReportProfileId,
+    centerIds: centerScope,
+  };
 
   const ordersQuery = scopeCenterRelatedQueryForAdmin(
     supabase.from('orders').select('id,center_id,status,subtotal_cents,shipping_cost_cents,processing_fee_cents,donation_cogs_cents,created_at,shipped_at').order('created_at', { ascending: false }).limit(ADMIN_QUERY_ROW_LIMIT),
@@ -2097,44 +1913,16 @@ export default async function AdminReportsPage({
     supabase.from('centers').select('id,name,is_active,created_at').order('name', { ascending: true }).limit(ADMIN_QUERY_ROW_LIMIT),
     centerScope
   );
-  const prospectingReportProfileId = currentAccess.isOwner ? selectedSalesRepId : currentAccess.profile.id;
-  let prospectingActivitiesQuery = supabase
-    .from('prospecting_activities')
-    .select('id,lead_id,activity_type,result,previous_stage,next_stage,next_follow_up_at,created_by,created_at')
-    .gte('created_at', rangeStart.toISOString())
-    .lt('created_at', rangeEndExclusive.toISOString())
-    .order('created_at', { ascending: false })
-    .limit(ADMIN_QUERY_ROW_LIMIT);
-  let prospectingLeadsCreatedQuery = supabase
-    .from('prospecting_leads')
-    .select('id,assigned_profile_id,stage,created_at,next_follow_up_at,do_not_contact,hubspot_status,archived_at')
-    .gte('created_at', rangeStart.toISOString())
-    .lt('created_at', rangeEndExclusive.toISOString())
-    .limit(ADMIN_QUERY_ROW_LIMIT);
-  let prospectingCurrentLeadsQuery = supabase
-    .from('prospecting_leads')
-    .select('id,assigned_profile_id,stage,created_at,next_follow_up_at,do_not_contact,hubspot_status,archived_at')
-    .is('archived_at', null)
-    .limit(ADMIN_QUERY_ROW_LIMIT);
-  let prospectingBlocksQuery = supabase
-    .from('sales_prospecting_blocks')
-    .select('id,activity_date,created_by,calls_no_contact,calls_voicemail,calls_email,calls_contact,calls_text,samples_from_contact,samples_from_voicemail_callback,samples_from_email_reply,samples_from_text_reply,samples_other')
-    .gte('activity_date', formatDateInput(rangeStart))
-    .lt('activity_date', formatDateInput(rangeEndExclusive))
-    .limit(ADMIN_QUERY_ROW_LIMIT);
-  let prospectingFollowupBlocksQuery = supabase
-    .from('sales_prospecting_followup_blocks')
-    .select('id,activity_date,created_by,followups_email,followups_phone,followups_text,deals_closed_email,deals_closed_phone,deals_closed_text,deals_lost_email,deals_lost_phone,deals_lost_text')
-    .gte('activity_date', formatDateInput(rangeStart))
-    .lt('activity_date', formatDateInput(rangeEndExclusive))
-    .limit(ADMIN_QUERY_ROW_LIMIT);
-  if (prospectingReportProfileId) {
-    prospectingActivitiesQuery = prospectingActivitiesQuery.eq('created_by', prospectingReportProfileId);
-    prospectingLeadsCreatedQuery = prospectingLeadsCreatedQuery.eq('assigned_profile_id', prospectingReportProfileId);
-    prospectingCurrentLeadsQuery = prospectingCurrentLeadsQuery.eq('assigned_profile_id', prospectingReportProfileId);
-    prospectingBlocksQuery = prospectingBlocksQuery.eq('created_by', prospectingReportProfileId);
-    prospectingFollowupBlocksQuery = prospectingFollowupBlocksQuery.eq('created_by', prospectingReportProfileId);
-  }
+  const prospectingReportStartedAt = performance.now();
+  const prospectingReportQuery = dataNeeds.prospecting
+    ? getSupabaseAdmin().rpc('admin_prospecting_report_v1', {
+      p_range_start: formatDateInput(rangeStart),
+      p_range_end_exclusive: formatDateInput(rangeEndExclusive),
+      p_as_of_date: centralDateInput(now),
+      p_sales_profile_id: prospectingReportScope.salesProfileId,
+      p_center_ids: prospectingReportScope.centerIds,
+    })
+    : skippedReportQuery();
 
   const [
     ordersResult,
@@ -2150,11 +1938,7 @@ export default async function AdminReportsPage({
     nonInventoryExpensesResult,
     sampleBoxRunsResult,
     recipeResult,
-    prospectingActivitiesResult,
-    prospectingLeadsCreatedResult,
-    prospectingCurrentLeadsResult,
-    prospectingBlocksResult,
-    prospectingFollowupBlocksResult,
+    prospectingReportResult,
   ] = await Promise.all([
     dataNeeds.coreCommerce ? ordersQuery : skippedReportQuery(),
     dataNeeds.coreCommerce
@@ -2209,11 +1993,7 @@ export default async function AdminReportsPage({
         .select('product_id,output_qty,waste_percent,labor_minutes,labor_rate_cents,product_recipe_components(inventory_item_id,quantity,unit,component_role,inventory_items(id,name,sku,item_type,base_unit))')
         .limit(ADMIN_QUERY_ROW_LIMIT)
       : skippedReportQuery(),
-    dataNeeds.prospecting ? prospectingActivitiesQuery : skippedReportQuery(),
-    dataNeeds.prospecting ? prospectingLeadsCreatedQuery : skippedReportQuery(),
-    dataNeeds.prospecting ? prospectingCurrentLeadsQuery : skippedReportQuery(),
-    dataNeeds.prospecting ? prospectingBlocksQuery : skippedReportQuery(),
-    dataNeeds.prospecting ? prospectingFollowupBlocksQuery : skippedReportQuery(),
+    prospectingReportQuery,
   ]);
 
   if (ordersResult.error || orderItemsResult.error || centersResult.error || productsResult.error) {
@@ -2222,6 +2002,9 @@ export default async function AdminReportsPage({
         message={ordersResult.error?.message || orderItemsResult.error?.message || centersResult.error?.message || productsResult.error?.message || 'Unknown reporting query error.'}
       />
     );
+  }
+  if (dataNeeds.prospecting && prospectingReportResult.error) {
+    return <CriticalReportError message={prospectingReportResult.error.message || 'The Prospecting aggregate could not be loaded.'} />;
   }
 
   const centers = (centersResult.data ?? []) as ReportingCenterRow[];
@@ -2337,14 +2120,15 @@ export default async function AdminReportsPage({
     currentAccess.profile as AdminRow,
   ].filter((profile): profile is AdminRow => Boolean(profile?.id));
   const prospectingProfilesById = new Map(prospectingProfileRows.map((profile) => [profile.id, profile]));
-  const prospectingSummary = buildProspectingSummary({
-    activityRows: !dataNeeds.prospecting || prospectingActivitiesResult.error ? [] : ((prospectingActivitiesResult.data ?? []) as ProspectingActivityReportRow[]),
-    blockRows: !dataNeeds.prospecting || prospectingBlocksResult.error ? [] : ((prospectingBlocksResult.data ?? []) as ProspectingBlockReportRow[]),
-    currentLeads: !dataNeeds.prospecting || prospectingCurrentLeadsResult.error ? [] : ((prospectingCurrentLeadsResult.data ?? []) as ProspectingLeadReportRow[]),
-    followupRows: !dataNeeds.prospecting || prospectingFollowupBlocksResult.error ? [] : ((prospectingFollowupBlocksResult.data ?? []) as ProspectingFollowupBlockReportRow[]),
-    leadsCreatedRows: !dataNeeds.prospecting || prospectingLeadsCreatedResult.error ? [] : ((prospectingLeadsCreatedResult.data ?? []) as ProspectingLeadReportRow[]),
-    sampleBoxRows: dataNeeds.prospecting ? sampleBoxRuns : [],
-  });
+  const prospectingSummary = dataNeeds.prospecting
+    ? normalizeProspectingReportAggregate(prospectingReportResult.data)
+    : emptyProspectingReportAggregate();
+  if (dataNeeds.prospecting) {
+    logServerTiming('admin_prospecting_report', prospectingReportStartedAt, {
+      rep_scoped: Boolean(prospectingReportScope.salesProfileId),
+      total_leads: prospectingSummary.pipeline_snapshot.total_leads,
+    });
+  }
   const limitedSourceLabels = [
     ['orders', ordersResult.data],
     ['order items', orderItemsResult.data],
@@ -2359,11 +2143,6 @@ export default async function AdminReportsPage({
     ['expenses', nonInventoryExpensesResult.data],
     ['sample boxes', sampleBoxRunsResult.data],
     ['recipes', recipeResult.data],
-    ['prospecting activity', prospectingActivitiesResult.data],
-    ['new prospecting leads', prospectingLeadsCreatedResult.data],
-    ['current prospecting leads', prospectingCurrentLeadsResult.data],
-    ['prospecting blocks', prospectingBlocksResult.data],
-    ['follow-up blocks', prospectingFollowupBlocksResult.data],
   ]
     .filter((entry): entry is [string, unknown[]] => Array.isArray(entry[1]) && queryReachedAdminRowLimit(entry[1]))
     .map(([label]) => label);
@@ -2784,9 +2563,7 @@ export default async function AdminReportsPage({
       {activeReport === 'prospecting' ? (
         <ProspectingReport
           profilesById={prospectingProfilesById}
-          rangeEndExclusive={rangeEndExclusive}
-          rangeStart={rangeStart}
-          selectedSalesRepId={selectedSalesRepId}
+          salesProfileId={prospectingReportScope.salesProfileId}
           summary={prospectingSummary}
         />
       ) : null}
