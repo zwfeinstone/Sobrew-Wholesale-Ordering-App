@@ -1,7 +1,9 @@
+import { cache } from 'react';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { formatCentralDateInput, parseCentralDateInput } from '@/lib/time-clock';
 
 const DAY_IN_MS = 24 * 60 * 60 * 1000;
+const PAYROLL_RESULT_LIMIT = 1000;
 
 type SupabaseLike = {
   from: (table: string) => any;
@@ -196,7 +198,7 @@ async function evaluatePayrollWindow(supabase: SupabaseLike, window: PayrollWeek
       .select('id,status,clock_out_at')
       .gte('clock_in_at', window.weekStart.toISOString())
       .lte('clock_in_at', window.weekEnd.toISOString())
-      .limit(50000),
+      .limit(PAYROLL_RESULT_LIMIT),
     supabase
       .from('admin_payroll_locks')
       .select('id,lock_start_at,lock_end_at')
@@ -244,7 +246,7 @@ async function evaluateMonthlySalaryPayroll(supabase: SupabaseLike, window: Mont
   const settingsResult = await supabase
     .from('admin_time_settings')
     .select('profile_id,active,compensation_type,salary_amount_cents,salary_frequency')
-    .limit(50000);
+    .limit(PAYROLL_RESULT_LIMIT);
 
   if (settingsResult.error) {
     console.error('[payroll-status] monthly salary settings failed', {
@@ -276,7 +278,7 @@ async function evaluateMonthlySalaryPayroll(supabase: SupabaseLike, window: Mont
     .from('admin_salary_payroll_payments')
     .select('profile_id,salary_pay_cents,paid_at')
     .eq('payroll_month', window.payrollMonthInput)
-    .limit(50000);
+    .limit(PAYROLL_RESULT_LIMIT);
 
   if (paymentsResult.error) {
     console.error('[payroll-status] monthly salary payments failed', {
@@ -350,3 +352,6 @@ export async function getPayrollStatus({
     weekly,
   };
 }
+
+/** Deduplicates the layout badge and dashboard alert queries within one render. */
+export const getCachedPayrollStatus = cache(async () => getPayrollStatus());

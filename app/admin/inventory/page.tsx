@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
+import { requireAdminSectionView } from '@/lib/admin-permissions';
 import {
   convertInventoryQuantity,
   fixedRecipeCostCents,
@@ -140,6 +141,7 @@ export default async function InventoryPage({
 }: {
   searchParams?: Record<string, string | string[] | undefined>;
 }) {
+  await requireAdminSectionView('inventory');
   const requestedTab = typeof searchParams?.tab === 'string' ? searchParams.tab : '';
   if (requestedTab === 'setup') redirect('/admin/receiving');
   if (requestedTab === 'planning') redirect('/admin/planning');

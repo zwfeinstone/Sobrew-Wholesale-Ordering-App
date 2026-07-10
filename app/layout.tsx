@@ -2,6 +2,7 @@ import './globals.css';
 import { ReactNode } from 'react';
 import { Manrope } from 'next/font/google';
 import { Analytics } from '@vercel/analytics/next';
+import { SpeedInsights } from '@vercel/speed-insights/next';
 import { ButtonPressLock } from '@/components/button-press-lock';
 import { NumberInputScrollGuard } from '@/components/number-input-scroll-guard';
 
@@ -27,6 +28,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
         <NumberInputScrollGuard />
         {children}
         <Analytics />
+        <SpeedInsights />
       </body>
     </html>
   );

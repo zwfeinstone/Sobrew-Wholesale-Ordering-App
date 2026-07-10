@@ -1,18 +1,21 @@
 'use client';
 
-import { type FormEvent, useEffect, useRef, useState } from 'react';
+import Link from 'next/link';
+import { type FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  CART_UPDATED_EVENT,
   CartCatalogSync,
   CheckoutCartField,
   CheckoutCartSummary,
-  readCartItemCount,
+  useCart,
   type CartProductSnapshot,
 } from '@/components/cart-client';
 import CheckoutSubmitButton from '@/components/checkout-submit-button';
-import StatusToast from '@/components/status-toast';
 import { trackProductEvent } from '@/lib/analytics';
-import { RECURRING_FREQUENCY_OPTIONS } from '@/lib/recurring';
+import {
+  RECURRING_FREQUENCY_OPTIONS,
+  formatNextRecurringOrderDate,
+  type RecurringFrequency,
+} from '@/lib/recurring';
 
 type CheckoutFormProps = {
   actionUrl: string;
@@ -32,40 +35,59 @@ type CheckoutLocationOption = {
   zip: string | null;
 };
 
-function locationLabel(location: CheckoutLocationOption) {
-  const address = [location.address1, location.city, location.state, location.zip]
+function locationAddressLines(location: CheckoutLocationOption) {
+  const cityStateZip = [location.city, location.state, location.zip]
     .map((value) => value?.trim())
     .filter(Boolean)
     .join(', ');
-  return address ? `${location.name || 'Delivery location'} - ${address}` : location.name || 'Delivery location';
+  return [location.address1, location.address2, cityStateZip]
+    .map((value) => value?.trim())
+    .filter((value): value is string => Boolean(value));
+}
+
+function checkoutErrorMessage(initialToast: CheckoutFormProps['initialToast']) {
+  if (initialToast === 'invalid_cart') return 'Your order changed. Review the items and try placing it again.';
+  if (initialToast === 'checkout_error') return 'We couldn’t place your order. Your draft is still here, so you can try again.';
+  if (initialToast === 'location_required') return 'Choose a delivery location before placing your order.';
+  return '';
 }
 
 export default function CheckoutForm({ actionUrl, cartStorageKey, initialToast, locations, products }: CheckoutFormProps) {
-  const [submissionId] = useState(() => crypto.randomUUID());
-  const [cartItemCount, setCartItemCount] = useState(0);
+  const [submissionId, setSubmissionId] = useState('');
   const [isRecurring, setIsRecurring] = useState(false);
+  const [frequency, setFrequency] = useState<RecurringFrequency>('2_weeks');
+  const [selectedLocationId, setSelectedLocationId] = useState(locations.length === 1 ? locations[0].id : '');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const submittingRef = useRef(false);
-  const shouldSelectLocation = locations.length > 1;
-  const isCartEmpty = cartItemCount <= 0;
+  const { itemCount, subtotalCents } = useCart(cartStorageKey);
+  const selectedLocation = locations.find((location) => location.id === selectedLocationId) ?? null;
+  const mustChooseLocation = locations.length > 1 && !selectedLocation;
+  const hasNoLocation = locations.length === 0;
+  const isCartEmpty = itemCount <= 0;
+  const checkoutDisabled = isCartEmpty || hasNoLocation || mustChooseLocation || !submissionId;
+  const disabledLabel = isCartEmpty
+    ? 'Add items first'
+    : hasNoLocation
+      ? 'Address required'
+      : mustChooseLocation
+        ? 'Choose delivery'
+        : 'Preparing checkout…';
+  const errorMessage = checkoutErrorMessage(initialToast);
+  const nextRecurringDate = useMemo(
+    () => isRecurring ? formatNextRecurringOrderDate(frequency, new Date()) : '',
+    [frequency, isRecurring]
+  );
 
   useEffect(() => {
-    const syncCount = () => setCartItemCount(readCartItemCount(cartStorageKey));
-    syncCount();
-    window.addEventListener(CART_UPDATED_EVENT, syncCount as EventListener);
-    window.addEventListener('storage', syncCount);
-    return () => {
-      window.removeEventListener(CART_UPDATED_EVENT, syncCount as EventListener);
-      window.removeEventListener('storage', syncCount);
-    };
-  }, [cartStorageKey]);
+    setSubmissionId(crypto.randomUUID());
+  }, []);
 
   useEffect(() => {
     trackProductEvent('portal_checkout_started', { available_locations: locations.length });
   }, [locations.length]);
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
-    if (isCartEmpty || submittingRef.current) {
+    if (checkoutDisabled || submittingRef.current) {
       event.preventDefault();
       return;
     }
@@ -74,91 +96,127 @@ export default function CheckoutForm({ actionUrl, cartStorageKey, initialToast, 
   };
 
   return (
-    <form action={actionUrl} method="post" className="checkout-form space-y-6" onSubmit={handleSubmit}>
+    <form action={actionUrl} method="post" className="checkout-form" onSubmit={handleSubmit}>
       <CartCatalogSync products={products} storageKey={cartStorageKey} />
-      {initialToast === 'invalid_cart' ? (
-        <StatusToast
-          message="Your cart changed. Please review the items before placing this order."
-          tone="error"
-        />
-      ) : null}
-      {initialToast === 'checkout_error' ? (
-        <StatusToast
-          message="We couldn't place your order. Please try again."
-          tone="error"
-        />
-      ) : null}
-      {initialToast === 'location_required' ? (
-        <StatusToast
-          message="Please choose a delivery location before placing this order."
-          tone="error"
-        />
-      ) : null}
-      <section className="panel checkout-hero">
-        <span className="eyebrow">Checkout</span>
-        <h1 className="page-title checkout-title mt-4">Place your order</h1>
-        <p className="page-subtitle checkout-subtitle mt-3">A clear final review before your team receives the order.</p>
-        <div className="checkout-progress mt-5" aria-label="Checkout progress">
-          <div className="checkout-progress-step is-current"><span>1</span> Review</div>
-          <div className="checkout-progress-step"><span>2</span> Delivery</div>
-          <div className="checkout-progress-step"><span>3</span> Confirm</div>
-        </div>
-      </section>
-      <section className="card checkout-card space-y-5">
-        <CheckoutCartField storageKey={cartStorageKey} />
-        <input type="hidden" name="submission_id" value={submissionId} />
-        {locations.length === 1 ? <input type="hidden" name="center_location_id" value={locations[0].id} /> : null}
+      <CheckoutCartField storageKey={cartStorageKey} />
+      <input type="hidden" name="submission_id" value={submissionId} />
+
+      <header className="checkout-page-header">
+        <Link href="/portal/cart" className="checkout-back-link">← Back</Link>
+        <h1>Checkout</h1>
+        <span aria-hidden="true" />
+      </header>
+
+      {errorMessage ? <div className="checkout-critical-alert" role="alert">{errorMessage}</div> : null}
+
+      <div className="checkout-content">
         <CheckoutCartSummary storageKey={cartStorageKey} />
-        {shouldSelectLocation ? (
-          <div className="subtle-panel checkout-location-panel space-y-2">
-            <p className="text-xs font-bold uppercase tracking-[0.14em] text-slate-500">Delivery</p>
-            <label className="text-sm font-medium text-slate-700" htmlFor="checkout-delivery-location">Choose a delivery location</label>
-            <select id="checkout-delivery-location" className="input checkout-location-select" name="center_location_id" required defaultValue="">
-              <option value="" disabled>Choose a location</option>
-              {locations.map((location) => (
-                <option key={location.id} value={location.id}>{locationLabel(location)}</option>
-              ))}
-            </select>
+
+        <section className="checkout-section" aria-labelledby="checkout-delivery-heading">
+          <div className="checkout-section-heading">
+            <div>
+              <p className="checkout-section-kicker">Delivery</p>
+              <h2 id="checkout-delivery-heading" className="checkout-section-title">Where this order is going</h2>
+            </div>
           </div>
-        ) : null}
-        <div className="subtle-panel checkout-recurring-panel">
-          <label className="checkout-recurring-choice flex items-start gap-3 text-sm font-medium text-slate-800 sm:items-center" htmlFor="checkout-is-recurring">
-            <input
-              id="checkout-is-recurring"
-              checked={isRecurring}
-              className="checkout-recurring-checkbox"
-              type="checkbox"
-              name="is_recurring"
-              onChange={(event) => setIsRecurring(event.target.checked)}
-            />
-            <span>Make this order recurring</span>
-          </label>
+
+          {hasNoLocation ? (
+            <div className="checkout-critical-alert" role="alert">
+              No active delivery address is available. Contact Sobrew before placing this order.
+            </div>
+          ) : null}
+
+          {locations.length > 1 ? (
+            <div className="checkout-location-picker">
+              <label htmlFor="checkout-delivery-location">Delivery location</label>
+              <select
+                id="checkout-delivery-location"
+                className="input"
+                name="center_location_id"
+                required
+                value={selectedLocationId}
+                onChange={(event) => setSelectedLocationId(event.target.value)}
+              >
+                <option value="" disabled>Choose a location</option>
+                {locations.map((location) => (
+                  <option key={location.id} value={location.id}>{location.name || 'Delivery location'}</option>
+                ))}
+              </select>
+            </div>
+          ) : selectedLocation ? (
+            <input type="hidden" name="center_location_id" value={selectedLocation.id} />
+          ) : null}
+
+          {selectedLocation ? (
+            <address className="checkout-address">
+              <strong>{selectedLocation.name || 'Delivery location'}</strong>
+              {locationAddressLines(selectedLocation).map((line) => <span key={line}>{line}</span>)}
+            </address>
+          ) : locations.length > 1 ? (
+            <p className="checkout-location-hint">Choose a location to review its delivery address.</p>
+          ) : null}
+        </section>
+
+        <section className="checkout-section" aria-labelledby="checkout-recurring-heading">
+          <div className="checkout-recurring-row">
+            <div>
+              <p className="checkout-section-kicker">Schedule</p>
+              <h2 id="checkout-recurring-heading" className="checkout-section-title">Make recurring</h2>
+            </div>
+            <label className="checkout-switch">
+              <span className="sr-only">Make this order recurring</span>
+              <input
+                checked={isRecurring}
+                name="is_recurring"
+                type="checkbox"
+                onChange={(event) => setIsRecurring(event.target.checked)}
+              />
+              <span aria-hidden="true" className="checkout-switch-track"><span /></span>
+            </label>
+          </div>
           {isRecurring ? (
-            <div className="checkout-recurring-frequency mt-4">
-              <label className="mb-2 block text-sm font-medium text-slate-700" htmlFor="checkout-recurring-frequency">Recurring frequency</label>
-              <select id="checkout-recurring-frequency" className="input checkout-recurring-select" name="recurring_frequency" defaultValue="2_weeks">
+            <div className="checkout-recurring-options">
+              <label htmlFor="checkout-recurring-frequency">Repeat this order</label>
+              <select
+                id="checkout-recurring-frequency"
+                className="input"
+                name="recurring_frequency"
+                value={frequency}
+                onChange={(event) => setFrequency(event.target.value as RecurringFrequency)}
+              >
                 {RECURRING_FREQUENCY_OPTIONS.map((option) => (
                   <option key={option.value} value={option.value}>{option.label}</option>
                 ))}
               </select>
+              <p className="checkout-next-date">Next expected order: <strong>{nextRecurringDate}</strong></p>
             </div>
-          ) : null}
+          ) : (
+            <p className="checkout-section-help">Turn this on to automatically create the same order on a schedule.</p>
+          )}
+        </section>
+
+        <section className="checkout-section" aria-labelledby="checkout-notes-heading">
+          <div>
+            <p className="checkout-section-kicker">Optional</p>
+            <h2 id="checkout-notes-heading" className="checkout-section-title">Order notes</h2>
+          </div>
+          <label className="sr-only" htmlFor="checkout-notes">Order notes</label>
+          <textarea
+            id="checkout-notes"
+            className="input checkout-notes"
+            name="notes"
+            placeholder="Delivery notes, special handling, or anything your team should know."
+          />
+        </section>
+      </div>
+
+      <section className="checkout-submit-bar" aria-label="Place order">
+        <div aria-live="polite">
+          <span>Subtotal</span>
+          <strong>${(subtotalCents / 100).toFixed(2)}</strong>
         </div>
-        <div className="checkout-field space-y-2">
-          <p className="text-xs font-bold uppercase tracking-[0.14em] text-slate-500">Anything we should know?</p>
-          <label className="text-sm font-medium text-slate-700" htmlFor="checkout-notes">Notes</label>
-          <textarea id="checkout-notes" className="input checkout-notes min-h-28" name="notes" placeholder="Delivery notes, special handling, or anything your team should know." />
-        </div>
-      </section>
-      <section className="sticky-action-bar checkout-action-bar flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="checkout-action-copy">
-          <p className="text-sm font-semibold text-slate-950">Ready to place this order?</p>
-          <p className="mt-1 text-sm text-slate-500">Your cart and recurring preferences will be submitted together.</p>
-          <p className="mt-2 text-sm font-medium text-slate-700">
-            An invoice will be sent when this order is processed. No payment is collected in the ordering app.
-          </p>
-        </div>
-        <CheckoutSubmitButton disabled={isCartEmpty} pending={isSubmitting} />
+        <p>No payment is collected here. An invoice is sent when your order is processed.</p>
+        <CheckoutSubmitButton disabled={checkoutDisabled} disabledLabel={disabledLabel} pending={isSubmitting} />
       </section>
     </form>
   );

@@ -2,13 +2,22 @@
   "name": "sobrew-wholesale-ordering-portal",
   "version": "1.0.0",
   "private": true,
+  "engines": {
+    "node": "24.x"
+  },
+  "overrides": {
+    "ws": "8.21.0"
+  },
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "typecheck": "tsc --noEmit",
-    "check": "npm run typecheck && npm run lint",
+    "typecheck": "tsc --noEmit --incremental false",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "playwright test",
+    "check": "npm run typecheck && npm run lint && npm run test",
     "backfill:cogs": "node scripts/backfill-historical-cogs.mjs",
     "cron:recurring": "node scripts/run-recurring-cron.mjs",
     "repair:shipped-short-inventory": "node scripts/repair-shipped-short-inventory.mjs"
@@ -17,22 +26,28 @@
     "@supabase/ssr": "^0.5.2",
     "@supabase/supabase-js": "^2.49.1",
     "@vercel/analytics": "^2.0.1",
+    "@vercel/functions": "3.7.5",
+    "@vercel/speed-insights": "2.0.0",
     "clsx": "^2.1.1",
-    "next": "14.2.30",
+    "next": "14.2.35",
     "react": "18.3.1",
     "react-dom": "18.3.1",
     "resend": "^4.6.0",
+    "server-only": "0.0.1",
     "zod": "^3.24.2"
   },
   "devDependencies": {
+    "@axe-core/playwright": "4.12.1",
+    "@playwright/test": "1.61.1",
     "@types/node": "^22.13.10",
     "@types/react": "^18.3.18",
     "@types/react-dom": "^18.3.5",
     "autoprefixer": "^10.4.20",
     "eslint": "^8.57.1",
-    "eslint-config-next": "14.2.30",
+    "eslint-config-next": "14.2.35",
     "postcss": "^8.5.3",
     "tailwindcss": "^3.4.17",
-    "typescript": "^5.8.2"
+    "typescript": "^5.8.2",
+    "vitest": "4.1.10"
   }
 }

@@ -32,11 +32,11 @@ export default async function PortalLayout({ children }: { children: React.React
               <PortalCartLink storageKey={cartStorageKey} />
               <ActiveNavLink className="nav-pill shrink-0 whitespace-nowrap" href="/portal/orders">Orders</ActiveNavLink>
               <ActiveNavLink className="nav-pill shrink-0 whitespace-nowrap" href="/portal/recurring-orders">Recurring</ActiveNavLink>
-              <ActiveNavLink className="nav-pill shrink-0 whitespace-nowrap" href="/portal/settings">Settings</ActiveNavLink>
+              <ActiveNavLink className="nav-pill shrink-0 whitespace-nowrap" href="/portal/settings">Account</ActiveNavLink>
               {profile?.is_admin ? <ActiveNavLink className="nav-pill shrink-0 whitespace-nowrap" href="/admin">Admin</ActiveNavLink> : null}
             </nav>
             <div className="flex items-center gap-1.5 md:hidden">
-              <ActiveNavLink className="portal-header-action nav-pill justify-center" href="/portal/settings">Settings</ActiveNavLink>
+              <ActiveNavLink className="portal-header-action nav-pill justify-center" href="/portal/settings">Account</ActiveNavLink>
               <LogoutButton className="portal-header-action btn-secondary" />
             </div>
             <LogoutButton className="btn-secondary portal-header-desktop-logout" />

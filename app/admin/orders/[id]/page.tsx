@@ -6,6 +6,7 @@ import { ProductBoxUsageFields, type ProductBoxInventoryOption, type ProductBoxR
 import EasyPostPackageFields, { type EasyPostPackageInput } from '@/components/easypost-package-fields';
 import ShipOrderSubmitButton from '@/components/ship-order-submit-button';
 import StatusToast from '@/components/status-toast';
+import { requireAdminSectionView } from '@/lib/admin-permissions';
 import { requireAdminWriteAccess } from '@/lib/admin-write-access';
 import { getCenterLoginEmails } from '@/lib/center-logins';
 import { snapshotOrderCommissionForShipment } from '@/lib/commissions';
@@ -699,6 +700,7 @@ export default async function AdminOrderDetail({
   params: { id: string };
   searchParams: Record<string, string | string[] | undefined>;
 }) {
+  await requireAdminSectionView('orders');
   const supabase = await createClient();
   const toast = typeof searchParams.toast === 'string' ? searchParams.toast : '';
   const { data: order } = await supabase.from('orders').select('*,profiles(email,full_name),centers(name)').eq('id', params.id).single();

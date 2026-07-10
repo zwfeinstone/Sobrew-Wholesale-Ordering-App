@@ -1,39 +1,19 @@
-import type { CartProductSnapshot } from '@/components/cart-client';
+import type { CartProductSnapshot } from '@/lib/cart';
 
-type AssignedProductRow = {
+type PortalCatalogRow = {
   product_id: string;
-};
-
-type PriceRow = {
-  product_id: string;
-  price_cents: number;
-};
-
-type ProductRow = {
-  id: string;
   name: string;
+  current_price_cents: number;
 };
 
-export async function getCenterCartProducts(supabase: any, centerId: string): Promise<CartProductSnapshot[]> {
-  const [{ data: assigned }, { data: prices }] = await Promise.all([
-    supabase.from('user_products').select('product_id').eq('center_id', centerId),
-    supabase.from('user_product_prices').select('product_id,price_cents').eq('center_id', centerId),
-  ]);
+export async function getCenterCartProducts(supabase: any, _centerId: string): Promise<CartProductSnapshot[]> {
+  const { data } = await supabase
+    .from('portal_catalog')
+    .select('product_id,name,current_price_cents');
 
-  const productIds = ((assigned ?? []) as AssignedProductRow[]).map((row) => row.product_id);
-  if (!productIds.length) return [];
-
-  const { data: products } = await supabase
-    .from('products')
-    .select('id,name')
-    .in('id', productIds)
-    .eq('active', true);
-
-  const priceMap = new Map(((prices ?? []) as PriceRow[]).map((row) => [row.product_id, row.price_cents]));
-
-  return ((products ?? []) as ProductRow[]).map((product) => ({
-    product_id: product.id,
+  return ((data ?? []) as PortalCatalogRow[]).map((product) => ({
+    product_id: product.product_id,
     name: product.name,
-    price_cents: priceMap.get(product.id) ?? 0,
+    price_cents: product.current_price_cents,
   }));
 }

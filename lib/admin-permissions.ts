@@ -1,3 +1,4 @@
+import { cache } from 'react';
 import { redirect } from 'next/navigation';
 import { requireAdmin } from '@/lib/auth';
 import { createClient } from '@/lib/supabase/server';
@@ -28,6 +29,7 @@ type ProfileLike = {
 
 export type CurrentAdminAccess = {
   access: AdminAccessMap;
+  centerScope: string[] | null;
   firstAllowedHref: string;
   isOwner: boolean;
   isSuperadmin: boolean;
@@ -82,22 +84,32 @@ export async function getAdminAccessForProfile({
   return enforceOwnerOnlyPermissions(email, hasAnyRows ? mapped : legacyReadOnlyAccessMap(), superadmin);
 }
 
-export async function getCurrentAdminAccess(): Promise<CurrentAdminAccess> {
-  const { user, profile } = await requireAdmin();
-  const supabase = await createClient();
+export const getCurrentAdminAccess = cache(async (): Promise<CurrentAdminAccess> => {
+  const { adminAccess, centerScope, isOwnerAdmin, user, profile } = await requireAdmin();
   const email = user.email || profile?.email;
-  const isSuperadmin = hasSuperadminAccess(email, profile?.is_superadmin);
-  const access = isSuperadmin ? ownerAccessMap() : await getAdminAccessForProfile({ email, isSuperadmin, profileId: profile.id, supabase });
+  const isSuperadmin = isOwnerAdmin || hasSuperadminAccess(email, profile?.is_superadmin);
+  let access = adminAccess;
+  if (!access) {
+    access = isSuperadmin
+      ? ownerAccessMap()
+      : await getAdminAccessForProfile({
+        email,
+        isSuperadmin,
+        profileId: profile.id,
+        supabase: await createClient(),
+      });
+  }
 
   return {
     access,
+    centerScope,
     firstAllowedHref: firstAllowedAdminHref(access),
     isOwner: isSuperadmin,
     isSuperadmin,
     profile,
     user,
   };
-}
+});
 
 export function adminCanView(access: AdminAccessMap, sectionKey: AdminPermissionKey) {
   return canViewAdminSection(access, sectionKey);

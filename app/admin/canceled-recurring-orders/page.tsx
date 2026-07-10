@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import { requireAdminSectionView } from '@/lib/admin-permissions';
 import { createClient } from '@/lib/supabase/server';
 
 const adminDateFormatter = new Intl.DateTimeFormat('en-US', {
@@ -14,6 +15,7 @@ function formatAdminDate(value: string | null) {
 }
 
 export default async function AdminCanceledRecurringOrdersPage() {
+  await requireAdminSectionView('canceled_recurring_orders');
   const supabase = await createClient();
 
   const { data: recurringOrders } = await supabase

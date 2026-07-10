@@ -1,10 +1,24 @@
+import 'server-only';
+
 import { Resend } from 'resend';
 import { usd } from '@/lib/utils';
 
 const RESEND_FROM = 'Sobrew Wholesale <orders@orders.sobrew.com>';
 const ADMIN_EMAIL = 'hello@sobrew.com';
 
-const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
+let resendClient: Resend | null | undefined;
+
+export function getResend() {
+  if (typeof window !== 'undefined') {
+    throw new Error('The Resend client can only be used on the server.');
+  }
+
+  if (resendClient === undefined) {
+    resendClient = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
+  }
+
+  return resendClient;
+}
 
 type Line = { name: string; qty: number; price: number; line: number };
 type ShippedLine = { name: string; qty: number };
@@ -36,6 +50,7 @@ function buildCustomerOrderHtml(payload: OrderEmailPayload) {
 }
 
 export async function sendAdminNotificationEmail(payload: OrderEmailPayload) {
+  const resend = getResend();
   if (!resend) {
     console.error('Resend disabled: missing RESEND_API_KEY');
     return;
@@ -57,6 +72,7 @@ export async function sendAdminNotificationEmail(payload: OrderEmailPayload) {
 }
 
 export async function sendOrderEmail(payload: OrderEmailPayload) {
+  const resend = getResend();
   if (!resend) {
     console.error('Resend disabled: missing RESEND_API_KEY');
     return;
@@ -84,11 +100,14 @@ export async function sendOrderEmail(payload: OrderEmailPayload) {
 }
 
 export async function sendOrderEmails(payload: OrderEmailPayload) {
-  await sendAdminNotificationEmail(payload);
-  await sendOrderEmail(payload);
+  await Promise.all([
+    sendAdminNotificationEmail(payload),
+    sendOrderEmail(payload),
+  ]);
 }
 
 export async function sendShippedEmail(to: string | string[], items: ShippedLine[], trackingLines: TrackingLine[] = []) {
+  const resend = getResend();
   if (!resend) {
     console.error('Resend disabled: missing RESEND_API_KEY');
     return;

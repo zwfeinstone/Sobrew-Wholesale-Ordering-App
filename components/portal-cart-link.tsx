@@ -1,22 +1,10 @@
 'use client';
 
-import { useEffect, useState } from 'react';
 import { ActiveNavLink } from '@/components/active-nav-link';
-import { CART_UPDATED_EVENT, readCartItemCount } from '@/components/cart-client';
+import { useCart } from '@/components/cart-client';
 
 export function PortalCartLink({ storageKey }: { storageKey: string }) {
-  const [count, setCount] = useState(0);
-
-  useEffect(() => {
-    const syncCount = () => setCount(readCartItemCount(storageKey));
-    syncCount();
-    window.addEventListener(CART_UPDATED_EVENT, syncCount as EventListener);
-    window.addEventListener('storage', syncCount);
-    return () => {
-      window.removeEventListener(CART_UPDATED_EVENT, syncCount as EventListener);
-      window.removeEventListener('storage', syncCount);
-    };
-  }, [storageKey]);
+  const { itemCount } = useCart(storageKey);
 
   return (
     <ActiveNavLink className="nav-pill inline-flex shrink-0 items-center gap-2 whitespace-nowrap" href="/portal/cart">
@@ -25,7 +13,7 @@ export function PortalCartLink({ storageKey }: { storageKey: string }) {
       </svg>
       <span>Cart</span>
       <span className="inline-flex min-w-[1.5rem] items-center justify-center rounded-full bg-teal-600 px-2 py-0.5 text-xs font-semibold text-white">
-        {count}
+        {itemCount}
       </span>
     </ActiveNavLink>
   );

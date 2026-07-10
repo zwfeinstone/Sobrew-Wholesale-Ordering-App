@@ -1,9 +1,8 @@
 import { redirect } from 'next/navigation';
 import PendingSubmitButton from '@/components/pending-submit-button';
 import StatusToast from '@/components/status-toast';
+import { requireAdminSectionEdit, requireAdminSectionView } from '@/lib/admin-permissions';
 import { requireAdminWriteAccess } from '@/lib/admin-write-access';
-import { hasSuperadminAccess } from '@/lib/admin-permission-definitions';
-import { requireAdmin } from '@/lib/auth';
 import {
   centsFromDollars,
   dollarsInputValueFromCents,
@@ -189,9 +188,8 @@ async function recordProductionRun(formData: FormData) {
 
 async function voidProductionRun(formData: FormData) {
   'use server';
-  const { user, profile } = await requireAdmin();
-  const isSuperadmin = hasSuperadminAccess(user.email || profile?.email, profile?.is_superadmin);
-  if (!isSuperadmin) {
+  const current = await requireAdminSectionEdit('production', productionHref({ toast: 'production_void_denied' }));
+  if (!current.isOwner) {
     redirect(productionHref({ toast: 'production_void_denied' }));
   }
 
@@ -227,8 +225,8 @@ export default async function ProductionPage({
 }: {
   searchParams?: Record<string, string | string[] | undefined>;
 }) {
-  const { user, profile } = await requireAdmin();
-  const canVoidProductionRuns = hasSuperadminAccess(user.email || profile?.email, profile?.is_superadmin);
+  const current = await requireAdminSectionView('production');
+  const canVoidProductionRuns = current.isOwner;
   const supabase = await createClient();
   const toast = typeof searchParams?.toast === 'string' ? searchParams.toast : '';
   const produceProductId = typeof searchParams?.produce_product === 'string' ? searchParams.produce_product : '';

@@ -1,6 +1,6 @@
 import Link from 'next/link';
 import { getSalesScopedCenterIdsForAdmin, scopeCenterRelatedQueryForAdmin, scopeCentersForAdmin } from '@/lib/admin-center-scope';
-import { getCurrentAdminAccess } from '@/lib/admin-permissions';
+import { requireAdminSectionView } from '@/lib/admin-permissions';
 import { createClient } from '@/lib/supabase/server';
 import { usd } from '@/lib/utils';
 
@@ -279,8 +279,8 @@ export default async function AdminSalesPage({
 }: {
   searchParams?: Record<string, string | string[] | undefined>;
 }) {
+  const currentAccess = await requireAdminSectionView('sales');
   const supabase = await createClient();
-  const currentAccess = await getCurrentAdminAccess();
   const salesRepSettingsResult = currentAccess.isOwner
     ? await supabase.from('admin_commission_settings').select('profile_id').eq('is_sales_rep', true)
     : { data: [], error: null };

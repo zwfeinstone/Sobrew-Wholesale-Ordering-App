@@ -4,8 +4,8 @@ import LoginSubmitButton from '@/components/login-submit-button';
 import { firstAllowedAdminHref, isOwnerEmail } from '@/lib/admin-permission-definitions';
 import { loadSavedAdminPermissions } from '@/lib/admin-permission-save';
 import { logAuthProfileIssue } from '@/lib/auth-diagnostics';
-import { recordUserLastSeen } from '@/lib/last-seen';
-import { supabaseAdmin } from '@/lib/supabase/admin';
+import { scheduleUserLastSeen } from '@/lib/last-seen';
+import { getSupabaseAdmin } from '@/lib/supabase/admin';
 import { createClient } from '@/lib/supabase/server';
 
 type ServerSupabaseClient = Awaited<ReturnType<typeof createClient>>;
@@ -58,6 +58,7 @@ async function getLoginProfileWithAdminFallback({
 }) {
   if (rlsProfile) return { profile: rlsProfile, error: null };
 
+  const supabaseAdmin = getSupabaseAdmin();
   const adminLookup = await supabaseAdmin
     .from('profiles')
     .select('email,is_admin,is_active,is_superadmin')
@@ -96,41 +97,41 @@ async function login(formData: FormData) {
   const email = String(formData.get('email') ?? '').trim().toLowerCase();
   const password = String(formData.get('password') ?? '');
   const supabase = await createClient();
-  const { error: signInError } = await supabase.auth.signInWithPassword({ email, password });
-  if (signInError) redirect('/login?error=1');
-  const { data, error: userError } = await supabase.auth.getUser();
-  if (userError || !data.user) {
-    logAuthProfileIssue('Login auth user lookup failed', userError);
+  const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({ email, password });
+  if (signInError || !signInData.user) {
+    if (signInError) logAuthProfileIssue('Login auth sign-in failed', signInError);
     redirect('/login?error=1');
   }
+  const user = signInData.user;
 
-  const rlsProfileResult = await getLoginProfileWithRetry(supabase, data.user.id);
+  const rlsProfileResult = await getLoginProfileWithRetry(supabase, user.id);
   const { profile, error: profileError } = await getLoginProfileWithAdminFallback({
     email,
     rlsError: rlsProfileResult.error,
     rlsProfile: rlsProfileResult.profile,
-    userId: data.user.id,
+    userId: user.id,
   });
 
   if (profileError || !profile) {
-    logAuthProfileIssue('Login profile lookup failed', profileError, data.user.id);
+    logAuthProfileIssue('Login profile lookup failed', profileError, user.id);
     await supabase.auth.signOut();
     redirect('/login?error=profile');
   }
 
-  const { error: emailSyncError } = await supabaseAdmin.from('profiles').update({ email }).eq('id', data.user.id);
+  const supabaseAdmin = getSupabaseAdmin();
+  const { error: emailSyncError } = await supabaseAdmin.from('profiles').update({ email }).eq('id', user.id);
   if (emailSyncError) {
-    logAuthProfileIssue('Login profile email sync failed', emailSyncError, data.user.id);
+    logAuthProfileIssue('Login profile email sync failed', emailSyncError, user.id);
   }
 
   if (profile.is_active !== true && !isOwnerEmail(email)) {
     await supabase.auth.signOut();
     redirect('/login?inactive=1');
   }
-  await recordUserLastSeen(data.user);
+  scheduleUserLastSeen(supabase, user.id);
   if (profile.is_admin === true) {
-    const profileEmail = data.user.email || profile.email || email;
-    const access = await loadSavedAdminPermissions(supabaseAdmin, data.user.id, profileEmail, profile.is_superadmin);
+    const profileEmail = user.email || profile.email || email;
+    const access = await loadSavedAdminPermissions(supabaseAdmin, user.id, profileEmail, profile.is_superadmin);
     redirect(firstAllowedAdminHref(access));
   }
   redirect('/portal');
@@ -143,54 +144,56 @@ export default function LoginPage({ searchParams }: { searchParams: Record<strin
   const inactive = typeof searchParams.inactive === 'string';
 
   return (
-    <main className="flex min-h-screen items-center px-4 py-8 sm:px-6 lg:px-8">
-      <div className="mx-auto grid w-full max-w-5xl overflow-hidden rounded-2xl border border-slate-200/70 bg-white/90 shadow-[0_18px_45px_rgba(42,31,23,0.08)] backdrop-blur md:grid-cols-[1fr_0.9fr]">
-        <section className="flex min-h-[24rem] flex-col justify-between gap-10 px-6 py-8 sm:px-8 lg:px-10 lg:py-12">
-          <div className="space-y-8">
-            <div className="flex items-center gap-4">
-              <div className="brand-mark h-16 w-16">
-                <Image src="/sobrew-logo.png" alt="Sobrew logo" fill sizes="64px" className="object-contain" priority />
+    <main className="login-shell">
+      <div className="login-card">
+        <section className="login-form-panel">
+          <form action={login} className="login-form">
+            <div className="login-mobile-brand">
+              <div className="brand-mark h-12 w-12">
+                <Image src="/sobrew-logo.png" alt="Sobrew logo" fill sizes="48px" className="object-contain" priority />
               </div>
               <div>
-                <p className="text-xs font-semibold uppercase tracking-[0.16em] text-teal-800">Purpose In Every Pour</p>
-                <p className="mt-1 text-sm text-slate-500">Sobrew Wholesale</p>
+                <p className="text-xs font-semibold uppercase tracking-[0.16em] text-teal-800">Sobrew Wholesale</p>
+                <p className="mt-0.5 text-xs text-slate-500">Purpose in every pour</p>
               </div>
             </div>
-            <div className="max-w-xl space-y-4">
-              <h1 className="text-3xl font-semibold leading-tight tracking-tight text-slate-950 sm:text-4xl">Welcome to Sobrew Wholesale</h1>
-              <p className="text-base leading-7 text-slate-600">
-                More than coffee, every order helps someone take a step toward recovery. A portion of every purchase directly supports the recovery community.
-              </p>
+            <div>
+              <p className="login-kicker">Wholesale portal</p>
+              <h1>Welcome back</h1>
+              <p>Sign in to restock, review orders, and manage recurring shipments.</p>
             </div>
-          </div>
-
-          <p className="max-w-md border-t border-slate-200 pt-5 text-sm leading-6 text-slate-500">
-            Wholesale ordering with a direct community impact built into every purchase.
-          </p>
-        </section>
-
-        <section className="border-t border-slate-200/80 bg-slate-50/70 px-6 py-8 sm:px-8 md:border-l md:border-t-0 lg:px-10 lg:py-12">
-          <form action={login} className="mx-auto flex h-full w-full max-w-sm flex-col justify-center space-y-6">
-            <div className="space-y-2">
-              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-teal-800">Sign In</p>
-              <h2 className="text-2xl font-semibold tracking-tight text-slate-950">Welcome back</h2>
-              <p className="text-sm leading-6 text-slate-500">Use your wholesale portal credentials to access orders, cart, and recurring shipments.</p>
-            </div>
-            {credentialsError ? <p className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">We couldn&apos;t sign you in with those credentials.</p> : null}
-            {profileError ? <p className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">We couldn&apos;t load your account profile. Please try again in a moment or contact Sobrew if it keeps happening.</p> : null}
-            {inactive ? <p className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">Your account is inactive. Please contact Sobrew for access.</p> : null}
-            <div className="space-y-4">
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-slate-700" htmlFor="login-email">Email address</label>
+            {credentialsError ? <p className="login-alert is-error" role="alert">We couldn&apos;t sign you in with those credentials.</p> : null}
+            {profileError ? <p className="login-alert" role="alert">We couldn&apos;t load your account profile. Try again in a moment or contact Sobrew if it continues.</p> : null}
+            {inactive ? <p className="login-alert" role="alert">Your account is inactive. Please contact Sobrew for access.</p> : null}
+            <div className="login-fields">
+              <div>
+                <label htmlFor="login-email">Email address</label>
                 <input id="login-email" className="input bg-white" name="email" type="email" autoComplete="email" required placeholder="you@example.com" />
               </div>
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-slate-700" htmlFor="login-password">Password</label>
+              <div>
+                <label htmlFor="login-password">Password</label>
                 <input id="login-password" className="input bg-white" name="password" type="password" autoComplete="current-password" required placeholder="Enter your password" />
               </div>
             </div>
             <LoginSubmitButton />
           </form>
+        </section>
+
+        <section className="login-story-panel">
+          <div className="login-desktop-brand">
+            <div className="brand-mark h-16 w-16">
+              <Image src="/sobrew-logo.png" alt="" fill sizes="64px" className="object-contain" />
+            </div>
+            <div>
+              <p>Purpose in every pour</p>
+              <span>Sobrew Wholesale</span>
+            </div>
+          </div>
+          <div>
+            <h2>Coffee that moves recovery forward.</h2>
+            <p>Every wholesale order helps someone take another step toward recovery. A portion of every purchase directly supports the recovery community.</p>
+          </div>
+          <p className="login-story-footnote">Community impact is built into every purchase.</p>
         </section>
       </div>
     </main>

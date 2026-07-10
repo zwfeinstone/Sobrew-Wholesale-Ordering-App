@@ -15,11 +15,12 @@ export async function getAssignedCenterIdsForAdmin({
   profileId,
   supabase,
 }: {
-  current?: Pick<CurrentAdminAccess, 'isOwner' | 'profile'>;
+  current?: Pick<CurrentAdminAccess, 'centerScope' | 'isOwner' | 'profile'>;
   profileId?: string;
   supabase: SupabaseLike;
 }): Promise<AdminCenterScope> {
   if (current?.isOwner) return null;
+  if (current?.centerScope !== undefined && !profileId) return current.centerScope;
   const scopedProfileId = profileId ?? current?.profile?.id;
   if (!scopedProfileId) return [];
 
@@ -97,7 +98,7 @@ export async function getSalesScopedCenterIdsForAdmin({
   selectedSalesProfileId,
   supabase,
 }: {
-  current: Pick<CurrentAdminAccess, 'isOwner' | 'profile'>;
+  current: Pick<CurrentAdminAccess, 'centerScope' | 'isOwner' | 'profile'>;
   selectedSalesProfileId?: string;
   supabase: SupabaseLike;
 }): Promise<AdminCenterScope> {

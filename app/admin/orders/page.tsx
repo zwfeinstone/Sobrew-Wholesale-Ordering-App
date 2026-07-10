@@ -5,6 +5,7 @@ import ConfirmSubmitButton from '@/components/confirm-submit-button';
 import { OrderStatusBadge } from '@/components/order-status';
 import PendingSubmitButton from '@/components/pending-submit-button';
 import StatusToast from '@/components/status-toast';
+import { requireAdminSectionView } from '@/lib/admin-permissions';
 import { requireAdminWriteAccess } from '@/lib/admin-write-access';
 import { trackServerProductEvent } from '@/lib/analytics-server';
 import { createClient } from '@/lib/supabase/server';
@@ -154,6 +155,7 @@ async function deleteOrder(formData: FormData) {
 }
 
 export default async function AdminOrdersPage({ searchParams }: { searchParams: Record<string, string | string[] | undefined> }) {
+  await requireAdminSectionView('orders');
   const supabase = await createClient();
   const statusParam = typeof searchParams.status === 'string' ? searchParams.status : '';
   const status = isOrderStatus(statusParam) ? statusParam : '';

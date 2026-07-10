@@ -578,7 +578,7 @@ export default async function RecurringOrdersPage({ searchParams }: { searchPara
         </section>
 
         {searchParams?.success ? (
-          <div className="rounded-[1.5rem] border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-700">
+          <div className="rounded-[1.5rem] border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-700" role="status">
             {searchParams.success === 'reactivated'
               ? "Recurring shipment resumed and today's order was created."
               : searchParams.success === 'item_removed'
@@ -587,7 +587,7 @@ export default async function RecurringOrdersPage({ searchParams }: { searchPara
           </div>
         ) : null}
         {searchParams?.error ? (
-          <div className="rounded-[1.5rem] border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+          <div className="rounded-[1.5rem] border border-red-200 bg-red-50 p-4 text-sm text-red-700" role="alert">
             {searchParams.error === 'reactivation_failed'
               ? "Could not resume this shipment or create today's order."
               : searchParams.error === 'last_item'

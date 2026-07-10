@@ -1,8 +1,10 @@
 import { redirect } from 'next/navigation';
 import PendingSubmitButton from '@/components/pending-submit-button';
+import { requireAdminSectionView } from '@/lib/admin-permissions';
 import { requireAdminWriteAccess } from '@/lib/admin-write-access';
 import { listEasyPostCarrierAccounts, type EasyPostCarrierAccount } from '@/lib/easypost';
 import { env } from '@/lib/env';
+import { IMAGE_UPLOAD_ACCEPT, ImageUploadError, prepareImageUpload } from '@/lib/image-upload';
 import { createClient } from '@/lib/supabase/server';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 
@@ -18,13 +20,37 @@ async function saveSettings(formData: FormData) {
   let logo_url;
   let hero_image_url;
   if (logo?.size) {
-    const path = `logo-${Date.now()}-${logo.name}`;
-    await supabaseAdmin.storage.from('branding').upload(path, logo, { upsert: true });
+    let prepared;
+    try {
+      prepared = await prepareImageUpload(logo, { maxBytes: 2 * 1024 * 1024, maxDimension: 2048, maxPixels: 4_000_000 });
+    } catch (error) {
+      if (error instanceof ImageUploadError) redirect(`/admin/settings?error=${error.code}`);
+      throw error;
+    }
+    const path = `logo/${Date.now()}-${crypto.randomUUID()}.${prepared.extension}`;
+    const { error: uploadError } = await supabaseAdmin.storage.from('branding').upload(path, prepared.bytes, {
+      cacheControl: '31536000',
+      contentType: prepared.contentType,
+      upsert: false,
+    });
+    if (uploadError) redirect('/admin/settings?error=image_upload_failed');
     logo_url = supabaseAdmin.storage.from('branding').getPublicUrl(path).data.publicUrl;
   }
   if (hero?.size) {
-    const path = `hero-${Date.now()}-${hero.name}`;
-    await supabaseAdmin.storage.from('branding').upload(path, hero, { upsert: true });
+    let prepared;
+    try {
+      prepared = await prepareImageUpload(hero);
+    } catch (error) {
+      if (error instanceof ImageUploadError) redirect(`/admin/settings?error=${error.code}`);
+      throw error;
+    }
+    const path = `hero/${Date.now()}-${crypto.randomUUID()}.${prepared.extension}`;
+    const { error: uploadError } = await supabaseAdmin.storage.from('branding').upload(path, prepared.bytes, {
+      cacheControl: '31536000',
+      contentType: prepared.contentType,
+      upsert: false,
+    });
+    if (uploadError) redirect('/admin/settings?error=image_upload_failed');
     hero_image_url = supabaseAdmin.storage.from('branding').getPublicUrl(path).data.publicUrl;
   }
 
@@ -110,18 +136,29 @@ export default async function SettingsPage({
     password_success?: string;
   };
 }) {
+  const current = await requireAdminSectionView('settings');
   const supabase = await createClient();
   const { data: settings } = await supabase.from('app_settings').select('*').single();
   if (!settings) return <div>No settings row.</div>;
 
-  const { data } = await supabase.auth.getUser();
-  const email = data.user?.email ?? '';
+  const email = current.user.email || current.profile.email || '';
   const error = searchParams?.error;
   const passwordSuccess = searchParams?.password_success;
   const passwordError = searchParams?.password_error;
   const easyPostConfigured = Boolean(env.easypostApiKey);
   const easyPostStatus = searchParams?.easypost_status;
   const easyPostCount = Number.parseInt(searchParams?.easypost_count ?? '', 10);
+  const settingsErrorMessage = error === 'admin_write_denied'
+    ? 'Only superadmins can change admin data.'
+    : error === 'image_too_large'
+      ? 'Image files must be 5 MB or smaller (2 MB for the logo).'
+      : error === 'image_dimensions'
+        ? 'Image dimensions are too large. Use an image no larger than 4096 × 4096 pixels.'
+        : error === 'image_invalid'
+          ? 'Use a valid PNG, JPEG, or WebP image.'
+          : error === 'image_upload_failed'
+            ? 'The image could not be uploaded. Please try again.'
+            : '';
 
   return (
     <div className="space-y-6">
@@ -130,8 +167,8 @@ export default async function SettingsPage({
         <h1 className="page-title mt-4">Brand settings</h1>
         <p className="page-subtitle mt-3">Adjust the name, accent color, logo, and hero image used throughout the ordering experience.</p>
       </section>
-      {error === 'admin_write_denied' ? (
-        <div className="card text-sm text-red-700">Only superadmins can change admin data.</div>
+      {settingsErrorMessage ? (
+        <div className="card text-sm text-red-700" role="alert">{settingsErrorMessage}</div>
       ) : null}
       <form action={saveSettings} className="card space-y-4">
         <input type="hidden" name="id" value={settings.id} />
@@ -142,11 +179,13 @@ export default async function SettingsPage({
         </div>
         <label className="space-y-2 text-sm font-medium text-slate-700">
           <span className="block">Logo</span>
-          <input className="input" type="file" name="logo" accept="image/*" />
+          <input className="input" type="file" name="logo" accept={IMAGE_UPLOAD_ACCEPT} />
+          <span className="block text-xs font-normal text-slate-500">PNG, JPEG, or WebP · up to 2 MB and 2048 × 2048</span>
         </label>
         <label className="space-y-2 text-sm font-medium text-slate-700">
           <span className="block">Hero image</span>
-          <input className="input" type="file" name="hero" accept="image/*" />
+          <input className="input" type="file" name="hero" accept={IMAGE_UPLOAD_ACCEPT} />
+          <span className="block text-xs font-normal text-slate-500">PNG, JPEG, or WebP · up to 5 MB and 4096 × 4096</span>
         </label>
         <PendingSubmitButton className="btn-primary w-full sm:w-auto" label="Save" pendingLabel="Saving..." />
       </form>

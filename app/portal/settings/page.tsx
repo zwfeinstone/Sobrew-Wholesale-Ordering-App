@@ -43,25 +43,25 @@ export default async function PortalSettingsPage({
       </section>
 
       {searchParams?.success === 'password_updated' ? (
-        <div className="rounded-[1.5rem] border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-700">
+        <div className="rounded-[1.5rem] border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-700" role="status">
           Your password was updated successfully.
         </div>
       ) : null}
 
       {searchParams?.error === 'password_length' ? (
-        <div className="rounded-[1.5rem] border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">
+        <div className="rounded-[1.5rem] border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700" role="alert">
           Your new password must be at least 8 characters long.
         </div>
       ) : null}
 
       {searchParams?.error === 'password_mismatch' ? (
-        <div className="rounded-[1.5rem] border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">
+        <div className="rounded-[1.5rem] border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700" role="alert">
           Your password confirmation did not match.
         </div>
       ) : null}
 
       {searchParams?.error === 'update_failed' ? (
-        <div className="rounded-[1.5rem] border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">
+        <div className="rounded-[1.5rem] border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700" role="alert">
           We couldn&apos;t update your password right now. Please try again.
         </div>
       ) : null}

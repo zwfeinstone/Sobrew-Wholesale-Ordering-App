@@ -18,12 +18,14 @@ const ADMIN_NAV_GROUPS: Array<{ label: string; sections: AdminPermissionKey[] }>
 
 export function AdminShell({
   access,
+  centerScope,
   children,
   isOwner,
   newOrders,
   payrollBadgeCount = 0,
 }: {
   access: AdminAccessMap;
+  centerScope: string[] | null;
   children: ReactNode;
   isOwner: boolean;
   newOrders: number;
@@ -34,7 +36,7 @@ export function AdminShell({
 
   return (
     <div className="admin-shell min-h-screen md:flex" data-admin-can-write={isOwner ? 'true' : 'false'}>
-      <AdminRealtimeSync />
+      <AdminRealtimeSync centerScope={centerScope} />
       <AdminReadOnlyGuard editableSections={editableSections} isOwner={isOwner} />
       <aside className="admin-sidebar border-b border-white/40 bg-white/70 p-3 backdrop-blur-xl sm:p-4 md:min-h-screen md:w-72 md:border-b-0 md:border-r md:px-5 md:py-6">
         <div className="admin-summary-card card space-y-6 p-4 sm:p-5">

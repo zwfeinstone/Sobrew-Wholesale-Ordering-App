@@ -1,5 +1,5 @@
 import { NextResponse, type NextRequest } from 'next/server';
-import { adminCanEdit, getCurrentAdminAccess } from '@/lib/admin-permissions';
+import { requireAdminSectionEdit } from '@/lib/admin-permissions';
 import { createClient } from '@/lib/supabase/server';
 import {
   PROSPECTING_IMPORT_MAX_BYTES,
@@ -154,8 +154,8 @@ async function loadSalesReps(supabase: Awaited<ReturnType<typeof createClient>>)
 }
 
 export async function POST(request: NextRequest) {
-  const current = await getCurrentAdminAccess();
-  if (!current.isOwner || !adminCanEdit(current.access, 'prospecting')) {
+  const current = await requireAdminSectionEdit('prospecting', `${PROSPECTING_ADMIN_PATH}?toast=admin_write_denied`);
+  if (!current.isOwner) {
     return redirectTo(request, 'admin_write_denied');
   }
 

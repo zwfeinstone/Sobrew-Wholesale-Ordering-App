@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import { requireAdminSectionView } from '@/lib/admin-permissions';
 import { createClient } from '@/lib/supabase/server';
 import { OrderFormPrint } from '@/components/order-form-print';
 
@@ -13,6 +14,7 @@ export default async function AdminOrderFormPage({
 }: {
   searchParams: Record<string, string | string[] | undefined>;
 }) {
+  await requireAdminSectionView('order_form');
   const supabase = await createClient();
   const centerId = typeof searchParams.center === 'string' ? searchParams.center : '';
 

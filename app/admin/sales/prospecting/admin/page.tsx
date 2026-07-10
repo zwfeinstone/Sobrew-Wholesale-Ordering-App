@@ -4,7 +4,7 @@ import ConfirmSubmitButton from '@/components/confirm-submit-button';
 import PendingSubmitButton from '@/components/pending-submit-button';
 import ProspectingBulkSelectionControls from '@/components/prospecting-bulk-selection-controls';
 import StatusToast from '@/components/status-toast';
-import { adminCanEdit, getCurrentAdminAccess, requireAdminSectionEdit } from '@/lib/admin-permissions';
+import { adminCanEdit, requireAdminSectionEdit, requireAdminSectionView } from '@/lib/admin-permissions';
 import { createClient } from '@/lib/supabase/server';
 import {
   ACTIVE_PROSPECTING_STAGES,
@@ -960,7 +960,7 @@ function MissingBadges({ missing }: { missing: string[] }) {
 }
 
 export default async function ProspectingAdminPage({ searchParams }: { searchParams?: SearchParams }) {
-  const current = await getCurrentAdminAccess();
+  const current = await requireAdminSectionView('prospecting');
   if (!current.isOwner) redirect('/admin/access-denied?section=prospecting');
   const canEdit = adminCanEdit(current.access, 'prospecting');
   const isOwner = current.isOwner;

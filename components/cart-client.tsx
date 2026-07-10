@@ -1,60 +1,47 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
-import { trackProductEvent } from '@/lib/analytics';
+import Link from 'next/link';
+import { useRouter } from 'next/navigation';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import StatusToast from '@/components/status-toast';
-import { LEGACY_CART_STORAGE_KEY } from '@/lib/cart';
+import { trackProductEvent } from '@/lib/analytics';
+import {
+  LEGACY_CART_STORAGE_KEY,
+  applyReorderItems,
+  normalizeCartItems,
+  setCartItemQuantity,
+  summarizeCart,
+  type CartItem,
+  type CartProductSnapshot,
+  type ReorderMode,
+} from '@/lib/cart';
 
-export type Item = { product_id: string; name: string; price_cents: number; qty: number };
-export type CartProductSnapshot = Omit<Item, 'qty'>;
+export type Item = CartItem;
+export type { CartProductSnapshot, ReorderMode } from '@/lib/cart';
+
 export const CART_UPDATED_EVENT = 'sobrew-cart-updated';
 
-function cartTotals(items: Item[]) {
-  return items.reduce(
-    (totals, item) => ({
-      count: totals.count + Math.max(0, Number(item.qty) || 0),
-      subtotal: totals.subtotal + item.qty * item.price_cents,
-    }),
-    { count: 0, subtotal: 0 }
-  );
+type CartUpdateDetail = {
+  storageKey: string;
+};
+
+type CartExternalStore = {
+  hydrated: boolean;
+  items: Item[];
+  listeners: Set<() => void>;
+  disconnect: (() => void) | null;
+};
+
+const EMPTY_CART_ITEMS: Item[] = [];
+const cartStores = new Map<string, CartExternalStore>();
+
+function dispatchCartUpdate(storageKey: string) {
+  window.dispatchEvent(new CustomEvent<CartUpdateDetail>(CART_UPDATED_EVENT, { detail: { storageKey } }));
 }
 
-function mergeCartItems(existing: Item[], incoming: Item[]) {
-  const next = [...existing];
-  for (const item of incoming) {
-    const found = next.find((cartItem) => cartItem.product_id === item.product_id);
-    if (found) found.qty += item.qty;
-    else next.push({ ...item });
-  }
-  return next;
-}
+export function readCartItems(storageKey: string): Item[] {
+  if (typeof window === 'undefined') return [];
 
-function normalizeCartItem(rawItem: unknown): Item | null {
-  if (!rawItem || typeof rawItem !== 'object') return null;
-  const item = rawItem as Partial<Item>;
-  const productId = typeof item.product_id === 'string' ? item.product_id.trim() : '';
-  const name = typeof item.name === 'string' ? item.name.trim() : '';
-  const priceCents = Number(item.price_cents);
-  const qty = Number(item.qty);
-
-  if (!productId || !Number.isInteger(qty) || qty <= 0 || !Number.isFinite(priceCents) || priceCents < 0) {
-    return null;
-  }
-
-  return {
-    product_id: productId,
-    name: name || 'Unknown product',
-    price_cents: Math.trunc(priceCents),
-    qty,
-  };
-}
-
-function normalizeCartItems(rawItems: unknown) {
-  if (!Array.isArray(rawItems)) return [];
-  return rawItems.map(normalizeCartItem).filter((item): item is Item => Boolean(item));
-}
-
-export function readCartItems(storageKey: string) {
   try {
     localStorage.removeItem(LEGACY_CART_STORAGE_KEY);
     return normalizeCartItems(JSON.parse(localStorage.getItem(storageKey) ?? '[]'));
@@ -63,16 +50,118 @@ export function readCartItems(storageKey: string) {
   }
 }
 
-function saveCartItems(storageKey: string, next: Item[]) {
+export function saveCartItems(storageKey: string, next: Item[]) {
+  const normalized = normalizeCartItems(next);
   localStorage.removeItem(LEGACY_CART_STORAGE_KEY);
-  localStorage.setItem(storageKey, JSON.stringify(next));
-  window.dispatchEvent(new CustomEvent(CART_UPDATED_EVENT));
+  localStorage.setItem(storageKey, JSON.stringify(normalized));
+  dispatchCartUpdate(storageKey);
 }
 
-function clearCartItems(storageKey: string) {
+export function clearCartItems(storageKey: string) {
   localStorage.removeItem(storageKey);
   localStorage.removeItem(LEGACY_CART_STORAGE_KEY);
-  window.dispatchEvent(new CustomEvent(CART_UPDATED_EVENT));
+  dispatchCartUpdate(storageKey);
+}
+
+export function readCartItemCount(storageKey: string) {
+  return summarizeCart(readCartItems(storageKey)).itemCount;
+}
+
+function getCartStore(storageKey: string) {
+  const existing = cartStores.get(storageKey);
+  if (existing) return existing;
+
+  const store: CartExternalStore = {
+    hydrated: false,
+    items: EMPTY_CART_ITEMS,
+    listeners: new Set(),
+    disconnect: null,
+  };
+  cartStores.set(storageKey, store);
+  return store;
+}
+
+function hydrateCartStore(storageKey: string, store: CartExternalStore) {
+  if (store.hydrated || typeof window === 'undefined') return;
+  store.items = readCartItems(storageKey);
+  store.hydrated = true;
+}
+
+function connectCartStore(storageKey: string, store: CartExternalStore) {
+  if (store.disconnect || typeof window === 'undefined') return;
+
+  const syncItems = (event: Event) => {
+    if (event instanceof CustomEvent) {
+      const detail = event.detail as CartUpdateDetail | undefined;
+      if (detail?.storageKey && detail.storageKey !== storageKey) return;
+    }
+    if (event instanceof StorageEvent && event.key && event.key !== storageKey && event.key !== LEGACY_CART_STORAGE_KEY) {
+      return;
+    }
+
+    store.items = readCartItems(storageKey);
+    store.hydrated = true;
+    store.listeners.forEach((listener) => listener());
+  };
+
+  window.addEventListener(CART_UPDATED_EVENT, syncItems);
+  window.addEventListener('storage', syncItems);
+  store.disconnect = () => {
+    window.removeEventListener(CART_UPDATED_EVENT, syncItems);
+    window.removeEventListener('storage', syncItems);
+    store.disconnect = null;
+  };
+}
+
+function subscribeToCart(storageKey: string, listener: () => void) {
+  const store = getCartStore(storageKey);
+  hydrateCartStore(storageKey, store);
+  store.listeners.add(listener);
+  connectCartStore(storageKey, store);
+
+  return () => {
+    store.listeners.delete(listener);
+    if (!store.listeners.size) {
+      store.disconnect?.();
+      store.hydrated = false;
+    }
+  };
+}
+
+function getCartSnapshot(storageKey: string) {
+  const store = getCartStore(storageKey);
+  hydrateCartStore(storageKey, store);
+  return store.items;
+}
+
+function useCartItems(storageKey: string) {
+  const subscribe = useCallback((listener: () => void) => subscribeToCart(storageKey, listener), [storageKey]);
+  const getSnapshot = useCallback(() => getCartSnapshot(storageKey), [storageKey]);
+  return useSyncExternalStore(subscribe, getSnapshot, () => EMPTY_CART_ITEMS);
+}
+
+export function useCart(storageKey: string) {
+  const items = useCartItems(storageKey);
+  const { itemCount, subtotalCents } = useMemo(() => summarizeCart(items), [items]);
+
+  const setQuantity = useCallback((product: CartProductSnapshot, quantity: number) => {
+    saveCartItems(storageKey, setCartItemQuantity(readCartItems(storageKey), product, quantity));
+  }, [storageKey]);
+
+  const addReorderItems = useCallback((incoming: Item[], mode: ReorderMode) => {
+    saveCartItems(storageKey, applyReorderItems(readCartItems(storageKey), incoming, mode));
+  }, [storageKey]);
+
+  const clear = useCallback(() => clearCartItems(storageKey), [storageKey]);
+
+  return {
+    addReorderItems,
+    clear,
+    itemCount,
+    items,
+    setQuantity,
+    subtotalCents,
+  };
 }
 
 function reconcileCartItems(items: Item[], products: CartProductSnapshot[]) {
@@ -87,22 +176,12 @@ function reconcileCartItems(items: Item[], products: CartProductSnapshot[]) {
       continue;
     }
 
-    const syncedItem = {
-      ...item,
-      name: product.name,
-      price_cents: product.price_cents,
-    };
-    if (syncedItem.name !== item.name || syncedItem.price_cents !== item.price_cents) {
-      changed = true;
-    }
+    const syncedItem = { ...item, name: product.name, price_cents: product.price_cents };
+    if (syncedItem.name !== item.name || syncedItem.price_cents !== item.price_cents) changed = true;
     next.push(syncedItem);
   }
 
   return { items: next, changed, removedCount: items.length - next.length };
-}
-
-export function readCartItemCount(storageKey: string) {
-  return readCartItems(storageKey).reduce((sum, item) => sum + Math.max(0, Number(item.qty) || 0), 0);
 }
 
 export function CartCatalogSync({ products, storageKey }: { products: CartProductSnapshot[]; storageKey: string }) {
@@ -130,333 +209,399 @@ export function CartCatalogSync({ products, storageKey }: { products: CartProduc
   return syncMessage ? <StatusToast message={syncMessage} tone="success" /> : null;
 }
 
-export function AddToCartButton({ product, storageKey }: { product: Omit<Item, 'qty'>; storageKey: string }) {
+export function CatalogQuantityControl({
+  compact = false,
+  product,
+  storageKey,
+}: {
+  compact?: boolean;
+  product: CartProductSnapshot;
+  storageKey: string;
+}) {
+  const { items, setQuantity } = useCart(storageKey);
+  const [announcement, setAnnouncement] = useState('');
+  const qty = items.find((item) => item.product_id === product.product_id)?.qty ?? 0;
+
+  const updateQuantity = (nextQty: number) => {
+    setQuantity(product, nextQty);
+    const normalizedQty = Math.max(0, Math.trunc(nextQty));
+    if (normalizedQty > qty) {
+      trackProductEvent('portal_item_added', {
+        quantity: normalizedQty - qty,
+        source: 'catalog',
+      });
+    }
+    setAnnouncement(
+      normalizedQty > 0
+        ? `${product.name} quantity is now ${normalizedQty}.`
+        : `${product.name} removed from your order.`
+    );
+  };
+
+  if (qty === 0) {
+    return (
+      <div className={compact ? 'catalog-row-control' : 'catalog-card-actions'}>
+        <span className="sr-only" aria-live="polite">{announcement}</span>
+        <button
+          className="btn-primary catalog-add-button"
+          type="button"
+          onClick={() => updateQuantity(1)}
+        >
+          Add
+          <span className="sr-only"> {product.name} to order</span>
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className={compact ? 'catalog-row-control' : 'catalog-card-actions'}>
+      <span className="sr-only" aria-live="polite">{announcement}</span>
+      <div className="quantity-stepper" aria-label={`${product.name} quantity in order`}>
+        <button
+          aria-label={`Decrease ${product.name} quantity`}
+          className="quantity-stepper-button"
+          type="button"
+          onClick={() => updateQuantity(qty - 1)}
+        >
+          <span aria-hidden="true">−</span>
+        </button>
+        <span className="quantity-stepper-value" aria-live="polite">{qty}</span>
+        <button
+          aria-label={`Increase ${product.name} quantity`}
+          className="quantity-stepper-button is-positive"
+          type="button"
+          onClick={() => updateQuantity(qty + 1)}
+        >
+          <span aria-hidden="true">+</span>
+        </button>
+      </div>
+      <span className="catalog-in-cart-label">In order: {qty}</span>
+    </div>
+  );
+}
+
+export function AddToCartButton({ product, storageKey }: { product: CartProductSnapshot; storageKey: string }) {
+  const { items, setQuantity } = useCart(storageKey);
+  const qty = items.find((item) => item.product_id === product.product_id)?.qty ?? 0;
   const [showToast, setShowToast] = useState(false);
 
   return (
     <>
-      {showToast ? <StatusToast message={`${product.name} added to cart.`} tone="success" /> : null}
+      {showToast ? <StatusToast message={`${product.name} added to your order.`} tone="success" /> : null}
       <button
         className="btn-primary w-full sm:w-auto"
         type="button"
         onClick={() => {
-          const cart = readCartItems(storageKey);
-          saveCartItems(storageKey, mergeCartItems(cart, [{ ...product, qty: 1 }]));
+          setQuantity(product, qty + 1);
           trackProductEvent('portal_item_added', { quantity: 1, source: 'catalog' });
           setShowToast(false);
           window.setTimeout(() => setShowToast(true), 0);
         }}
       >
-        Add to cart
+        Add to order
       </button>
     </>
   );
 }
 
-export function AddToCartQuantityControls({ product, storageKey }: { product: Omit<Item, 'qty'>; storageKey: string }) {
-  const [qty, setQty] = useState(1);
-  const [showToast, setShowToast] = useState(false);
-  const normalizedQty = Math.max(1, Number.isFinite(qty) ? Math.trunc(qty) : 1);
+export function AddToCartQuantityControls({ product, storageKey }: { product: CartProductSnapshot; storageKey: string }) {
+  return <CatalogQuantityControl product={product} storageKey={storageKey} />;
+}
 
-  const updateQty = (nextQty: number) => {
-    setQty(Math.max(1, Number.isFinite(nextQty) ? Math.trunc(nextQty) : 1));
+export function ReorderButton({
+  className = 'btn-secondary w-full sm:w-auto',
+  items,
+  label = 'Reorder & review',
+  storageKey,
+}: {
+  className?: string;
+  items: Item[];
+  label?: string;
+  storageKey: string;
+  toastMessage?: string;
+}) {
+  const router = useRouter();
+  const { addReorderItems, itemCount } = useCart(storageKey);
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const mergeButtonRef = useRef<HTMLButtonElement>(null);
+  const dialogRef = useRef<HTMLElement>(null);
+
+  const closeDialog = useCallback(() => {
+    setDialogOpen(false);
+    window.setTimeout(() => triggerRef.current?.focus(), 0);
+  }, []);
+
+  useEffect(() => {
+    if (!dialogOpen) return;
+    mergeButtonRef.current?.focus();
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') closeDialog();
+      if (event.key !== 'Tab') return;
+
+      const focusable = [...(dialogRef.current?.querySelectorAll<HTMLElement>(
+        'button:not(:disabled), a[href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])'
+      ) ?? [])];
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && (document.activeElement === first || !dialogRef.current?.contains(document.activeElement))) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && (document.activeElement === last || !dialogRef.current?.contains(document.activeElement))) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [closeDialog, dialogOpen]);
+
+  const finishReorder = (mode: ReorderMode) => {
+    addReorderItems(items, mode);
+    trackProductEvent('portal_reorder_added', {
+      item_count: items.length,
+      quantity: items.reduce((sum, item) => sum + item.qty, 0),
+      mode,
+    });
+    setDialogOpen(false);
+    router.push('/portal/cart');
+  };
+
+  const startReorder = () => {
+    if (itemCount > 0) {
+      setDialogOpen(true);
+      return;
+    }
+    finishReorder('replace');
   };
 
   return (
     <>
-      {showToast ? <StatusToast message={`${normalizedQty} ${product.name} added to cart.`} tone="success" /> : null}
-      <div className="catalog-card-actions">
-        <div className="quantity-stepper" aria-label={`Quantity for ${product.name}`}>
-          <button
-            aria-label={`Decrease quantity for ${product.name}`}
-            className="quantity-stepper-button"
-            disabled={normalizedQty <= 1}
-            type="button"
-            onClick={() => updateQty(normalizedQty - 1)}
-          >
-            -
-          </button>
-          <input
-            aria-label={`Quantity for ${product.name}`}
-            className="quantity-stepper-input"
-            min={1}
-            type="number"
-            value={normalizedQty}
-            onChange={(event) => updateQty(Number(event.target.value))}
-          />
-          <button
-            aria-label={`Increase quantity for ${product.name}`}
-            className="quantity-stepper-button is-positive"
-            type="button"
-            onClick={() => updateQty(normalizedQty + 1)}
-          >
-            +
-          </button>
-        </div>
-        <button
-          className="btn-primary catalog-card-button w-full"
-          type="button"
-          onClick={() => {
-            const cart = readCartItems(storageKey);
-            saveCartItems(storageKey, mergeCartItems(cart, [{ ...product, qty: normalizedQty }]));
-            trackProductEvent('portal_item_added', { quantity: normalizedQty, source: 'catalog' });
-            setShowToast(false);
-            window.setTimeout(() => setShowToast(true), 0);
-          }}
-        >
-          Add {normalizedQty} to cart
-        </button>
-      </div>
-    </>
-  );
-}
-
-export function ReorderButton({
-  items,
-  storageKey,
-  label = 'Reorder',
-  toastMessage = 'Order added to cart.',
-  className = 'btn-secondary w-full sm:w-auto',
-}: {
-  items: Item[];
-  storageKey: string;
-  label?: string;
-  toastMessage?: string;
-  className?: string;
-}) {
-  const [showToast, setShowToast] = useState(false);
-
-  return (
-    <>
-      {showToast ? <StatusToast message={toastMessage} tone="success" /> : null}
       <button
+        ref={triggerRef}
+        aria-expanded={dialogOpen || undefined}
+        aria-haspopup="dialog"
         className={className}
         type="button"
         disabled={!items.length}
-        onClick={() => {
-          const cart = readCartItems(storageKey);
-          saveCartItems(storageKey, mergeCartItems(cart, items));
-          trackProductEvent('portal_reorder_added', {
-            item_count: items.length,
-            quantity: items.reduce((sum, item) => sum + item.qty, 0),
-          });
-          setShowToast(false);
-          window.setTimeout(() => setShowToast(true), 0);
-        }}
+        onClick={startReorder}
       >
         {label}
       </button>
+      {dialogOpen ? (
+        <div className="reorder-dialog-backdrop" role="presentation" onMouseDown={(event) => {
+          if (event.target === event.currentTarget) closeDialog();
+        }}>
+          <section
+            ref={dialogRef}
+            aria-describedby="reorder-dialog-description"
+            aria-labelledby="reorder-dialog-title"
+            aria-modal="true"
+            className="reorder-dialog"
+            role="dialog"
+          >
+            <span className="eyebrow">Current order found</span>
+            <h2 id="reorder-dialog-title" className="mt-4 text-xl font-semibold tracking-tight text-slate-950">How should we add this order?</h2>
+            <p id="reorder-dialog-description" className="mt-2 text-sm leading-6 text-slate-600">
+              Merge keeps the items already in your order. Replace starts fresh with this previous order.
+            </p>
+            <div className="mt-5 grid gap-2 sm:grid-cols-2">
+              <button ref={mergeButtonRef} className="btn-primary" type="button" onClick={() => finishReorder('merge')}>
+                Merge &amp; review
+              </button>
+              <button className="btn-secondary" type="button" onClick={() => finishReorder('replace')}>
+                Replace &amp; review
+              </button>
+            </div>
+            <button className="mt-3 w-full px-4 py-2 text-sm font-semibold text-slate-600 hover:text-slate-950" type="button" onClick={closeDialog}>
+              Cancel
+            </button>
+          </section>
+        </div>
+      ) : null}
     </>
   );
 }
 
 export function CartSummaryMetric({ storageKey }: { storageKey: string }) {
-  const [items, setItems] = useState<Item[]>([]);
-
-  useEffect(() => {
-    const syncItems = () => setItems(readCartItems(storageKey));
-    syncItems();
-    window.addEventListener(CART_UPDATED_EVENT, syncItems as EventListener);
-    window.addEventListener('storage', syncItems);
-    return () => {
-      window.removeEventListener(CART_UPDATED_EVENT, syncItems as EventListener);
-      window.removeEventListener('storage', syncItems);
-    };
-  }, [storageKey]);
-
-  const { count, subtotal } = cartTotals(items);
+  const { itemCount, subtotalCents } = useCart(storageKey);
 
   return (
     <div className="stat-card">
-      <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Cart</p>
-      <p className="mt-2 text-3xl font-semibold text-slate-950">${(subtotal / 100).toFixed(2)}</p>
-      <p className="mt-1 text-sm text-slate-500">{count} item{count === 1 ? '' : 's'} ready</p>
+      <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Your order</p>
+      <p className="mt-2 text-3xl font-semibold text-slate-950">${(subtotalCents / 100).toFixed(2)}</p>
+      <p className="mt-1 text-sm text-slate-500">{itemCount} item{itemCount === 1 ? '' : 's'} ready</p>
     </div>
   );
 }
 
 export function CartPreviewBar({ storageKey }: { storageKey: string }) {
-  const [items, setItems] = useState<Item[]>([]);
-  const [showClearedToast, setShowClearedToast] = useState(false);
-
-  useEffect(() => {
-    const syncItems = () => setItems(readCartItems(storageKey));
-    syncItems();
-    window.addEventListener(CART_UPDATED_EVENT, syncItems as EventListener);
-    window.addEventListener('storage', syncItems);
-    return () => {
-      window.removeEventListener(CART_UPDATED_EVENT, syncItems as EventListener);
-      window.removeEventListener('storage', syncItems);
-    };
-  }, [storageKey]);
-
-  const { count, subtotal } = cartTotals(items);
-  if (!items.length) return showClearedToast ? <StatusToast message="Cart cleared." tone="success" /> : null;
+  const { itemCount, subtotalCents } = useCart(storageKey);
+  if (!itemCount) return null;
 
   return (
-    <>
-      {showClearedToast ? <StatusToast message="Cart cleared." tone="success" /> : null}
-      <div className="cart-preview-bar">
-        <div className="cart-preview-copy">
-          <p className="cart-preview-label text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Current Cart</p>
-          <p className="cart-preview-total mt-1 text-lg font-semibold text-slate-950">
-            {count} item{count === 1 ? '' : 's'} &middot; ${(subtotal / 100).toFixed(2)}
-          </p>
-        </div>
-        <div className="cart-preview-actions grid gap-2 sm:flex sm:items-center">
-          <a href="/portal/cart" className="cart-preview-view btn-secondary inline-flex w-full sm:w-auto">View cart</a>
-          <button
-            aria-label="Clear all items from cart"
-            className="cart-preview-clear btn-secondary"
-            type="button"
-            onClick={() => {
-              if (!window.confirm('Clear all items from your cart?')) return;
-              clearCartItems(storageKey);
-              setShowClearedToast(false);
-              window.setTimeout(() => setShowClearedToast(true), 0);
-            }}
-          >
-            Clear
-          </button>
-          <a href="/portal/checkout" className="cart-preview-checkout btn-primary inline-flex w-full sm:w-auto">Checkout</a>
-        </div>
+    <div className="cart-preview-bar">
+      <div className="cart-preview-copy" aria-live="polite">
+        <p className="cart-preview-label text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Your order</p>
+        <p className="cart-preview-total mt-1 text-lg font-semibold text-slate-950">
+          {itemCount} item{itemCount === 1 ? '' : 's'} &middot; ${(subtotalCents / 100).toFixed(2)}
+        </p>
       </div>
-    </>
-  );
-}
-
-export function CartTable({ storageKey }: { storageKey: string }) {
-  const [items, setItems] = useState<Item[]>([]);
-  useEffect(() => {
-    const syncItems = () => setItems(readCartItems(storageKey));
-    syncItems();
-    window.addEventListener(CART_UPDATED_EVENT, syncItems as EventListener);
-    window.addEventListener('storage', syncItems);
-    return () => {
-      window.removeEventListener(CART_UPDATED_EVENT, syncItems as EventListener);
-      window.removeEventListener('storage', syncItems);
-    };
-  }, [storageKey]);
-
-  const save = (next: Item[]) => {
-    setItems(next);
-    saveCartItems(storageKey, next);
-  };
-
-  const updateQty = (productId: string, nextQty: number) => {
-    const normalizedQty = Math.max(1, Number.isFinite(nextQty) ? Math.trunc(nextQty) : 1);
-    save(items.map((item) => (item.product_id === productId ? { ...item, qty: normalizedQty } : item)));
-  };
-
-  const subtotal = items.reduce((sum, item) => sum + item.qty * item.price_cents, 0);
-
-  return (
-    <div className="space-y-4">
-      {!items.length ? (
-        <div className="empty-state text-center">
-          <p className="text-lg font-semibold text-slate-950">Your cart is empty.</p>
-          <p className="text-sm text-slate-500">Add products from the catalog to start building your next order.</p>
-          <a href="/portal" className="btn-secondary inline-flex">Browse catalog</a>
-        </div>
-      ) : null}
-      {items.map((item) => (
-        <div key={item.product_id} className="card flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-          <div className="min-w-0">
-            <p className="text-lg font-semibold text-slate-950">{item.name}</p>
-            <p className="mt-1 text-sm text-slate-500">${(item.price_cents / 100).toFixed(2)} each</p>
-          </div>
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-            <div className="flex items-center justify-between rounded-full border border-slate-200 bg-white/80 p-1 shadow-sm sm:justify-start">
-              <button
-                aria-label={`Decrease quantity for ${item.name}`}
-                className="btn-secondary h-11 w-11 shrink-0 px-0 py-0 sm:h-10 sm:w-10"
-                disabled={item.qty <= 1}
-                type="button"
-                onClick={() => updateQty(item.product_id, item.qty - 1)}
-              >
-                -
-              </button>
-              <input
-                aria-label={`Quantity for ${item.name}`}
-                className="w-14 bg-transparent px-2 text-center text-base font-semibold text-slate-950 outline-none"
-                value={item.qty}
-                min={1}
-                type="number"
-                onChange={(e) => updateQty(item.product_id, Number(e.target.value))}
-              />
-              <button
-                aria-label={`Increase quantity for ${item.name}`}
-                className="btn-primary h-11 w-11 shrink-0 px-0 py-0 sm:h-10 sm:w-10"
-                type="button"
-                onClick={() => updateQty(item.product_id, item.qty + 1)}
-              >
-                +
-              </button>
-            </div>
-            <button className="btn-secondary w-full px-3 py-2 sm:w-auto" type="button" onClick={() => save(items.filter((i) => i.product_id !== item.product_id))}>
-              Remove
-            </button>
-          </div>
-        </div>
-      ))}
-      {items.length ? (
-        <div className="cart-summary-bar flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <p className="text-sm uppercase tracking-[0.18em] text-slate-500">Order subtotal</p>
-            <p className="mt-2 text-3xl font-semibold text-slate-950">${(subtotal / 100).toFixed(2)}</p>
-          </div>
-          <a href="/portal/checkout" className="btn-primary inline-flex w-full sm:w-auto">Checkout</a>
-        </div>
-      ) : null}
+      <Link href="/portal/cart" className="btn-primary inline-flex">Review order</Link>
     </div>
   );
 }
 
-export function CheckoutCartSummary({ storageKey }: { storageKey: string }) {
-  const [items, setItems] = useState<Item[]>([]);
+function CartQuantityInput({
+  item,
+  onCommit,
+}: {
+  item: Item;
+  onCommit: (item: Item, quantity: number) => void;
+}) {
+  const [draftQuantity, setDraftQuantity] = useState(String(item.qty));
+  const cancelCommitRef = useRef(false);
 
   useEffect(() => {
-    const syncItems = () => setItems(readCartItems(storageKey));
-    syncItems();
-    window.addEventListener(CART_UPDATED_EVENT, syncItems as EventListener);
-    window.addEventListener('storage', syncItems);
-    return () => {
-      window.removeEventListener(CART_UPDATED_EVENT, syncItems as EventListener);
-      window.removeEventListener('storage', syncItems);
-    };
-  }, [storageKey]);
+    setDraftQuantity(String(item.qty));
+  }, [item.qty]);
 
-  const subtotal = items.reduce((sum, item) => sum + item.qty * item.price_cents, 0);
+  const commitDraft = () => {
+    if (cancelCommitRef.current) {
+      cancelCommitRef.current = false;
+      return;
+    }
+    const parsedQuantity = Number(draftQuantity);
+    if (!draftQuantity.trim() || !Number.isFinite(parsedQuantity)) {
+      setDraftQuantity(String(item.qty));
+      return;
+    }
+
+    const nextQuantity = Math.min(9999, Math.max(1, Math.trunc(parsedQuantity)));
+    setDraftQuantity(String(nextQuantity));
+    if (nextQuantity !== item.qty) onCommit(item, nextQuantity);
+  };
 
   return (
-    <div className="subtle-panel checkout-summary">
-      <div className="checkout-summary-header flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-        <div className="checkout-summary-copy">
-          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Order review</p>
-          <p className="checkout-summary-description mt-2 text-sm text-slate-600">Confirm the products and subtotal before placing your order.</p>
+    <input
+      id={`cart-qty-${item.product_id}`}
+      className="quantity-stepper-input"
+      inputMode="numeric"
+      max={9999}
+      min={1}
+      step={1}
+      type="number"
+      value={draftQuantity}
+      onBlur={commitDraft}
+      onChange={(event) => setDraftQuantity(event.target.value)}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter') event.currentTarget.blur();
+        if (event.key === 'Escape') {
+          cancelCommitRef.current = true;
+          setDraftQuantity(String(item.qty));
+          event.currentTarget.blur();
+        }
+      }}
+    />
+  );
+}
+
+export function CartTable({ storageKey }: { storageKey: string }) {
+  const { clear, itemCount, items, setQuantity, subtotalCents } = useCart(storageKey);
+  const [clearedItems, setClearedItems] = useState<Item[] | null>(null);
+  const [announcement, setAnnouncement] = useState('');
+
+  const updateQuantity = (item: Item, quantity: number) => {
+    setClearedItems(null);
+    setQuantity(item, quantity);
+    setAnnouncement(
+      quantity > 0
+        ? `${item.name} quantity is now ${quantity}.`
+        : `${item.name} removed from your order.`
+    );
+  };
+
+  const clearOrder = () => {
+    setClearedItems(items);
+    clear();
+    setAnnouncement('Order cleared. Use Undo to restore it.');
+  };
+
+  const undoClear = () => {
+    if (!clearedItems) return;
+    saveCartItems(storageKey, clearedItems);
+    setClearedItems(null);
+    setAnnouncement('Your order was restored.');
+  };
+
+  return (
+    <div className="cart-review space-y-4">
+      <p className="sr-only" aria-live="polite">{announcement}</p>
+      {clearedItems ? (
+        <div className="cart-undo" role="status">
+          <span>Your order was cleared.</span>
+          <button className="cart-undo-button" type="button" onClick={undoClear}>Undo</button>
         </div>
-        <a href="/portal/cart" className="btn-secondary checkout-summary-edit inline-flex w-full sm:w-auto">Edit cart</a>
-      </div>
+      ) : null}
       {!items.length ? (
-        <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-          Your cart is empty. Return to the cart to add products before placing an order.
+        <div className="empty-state text-center">
+          <p className="text-lg font-semibold text-slate-950">Your order is empty.</p>
+          <p className="mt-2 text-sm text-slate-500">Add products from Quick Restock to build your next delivery.</p>
+          <Link href="/portal" className="btn-secondary mt-4 inline-flex">Browse products</Link>
         </div>
       ) : (
         <>
-          <div className="checkout-summary-items mt-4 space-y-3">
+          <div className="cart-review-heading">
+            <p className="text-sm font-semibold text-slate-700">{itemCount} item{itemCount === 1 ? '' : 's'} in this order</p>
+            <button className="cart-clear-button" type="button" onClick={clearOrder}>Clear order</button>
+          </div>
+          <div className="cart-review-list">
             {items.map((item) => (
-              <div key={item.product_id} className="checkout-summary-item flex items-start justify-between gap-3 border-b border-slate-100 pb-3 last:border-b-0 last:pb-0">
+              <article key={item.product_id} className="cart-review-row">
                 <div className="min-w-0">
-                  <p className="font-medium text-slate-950">{item.name}</p>
-                  <p className="mt-1 text-sm text-slate-500">{item.qty} x ${(item.price_cents / 100).toFixed(2)}</p>
+                  <h2 className="font-semibold text-slate-950">{item.name}</h2>
+                  <p className="mt-1 text-sm text-slate-500">${(item.price_cents / 100).toFixed(2)} each</p>
                 </div>
-                <p className="text-sm font-semibold text-slate-950">${((item.qty * item.price_cents) / 100).toFixed(2)}</p>
-              </div>
+                <div className="cart-review-row-actions">
+                  <div className="quantity-stepper" aria-label={`${item.name} quantity`}>
+                    <button
+                      aria-label={`Decrease ${item.name} quantity`}
+                      className="quantity-stepper-button"
+                      type="button"
+                      onClick={() => updateQuantity(item, item.qty - 1)}
+                    >
+                      <span aria-hidden="true">−</span>
+                    </button>
+                    <label className="sr-only" htmlFor={`cart-qty-${item.product_id}`}>Quantity for {item.name}</label>
+                    <CartQuantityInput item={item} onCommit={updateQuantity} />
+                    <button
+                      aria-label={`Increase ${item.name} quantity`}
+                      className="quantity-stepper-button is-positive"
+                      type="button"
+                      disabled={item.qty >= 9999}
+                      onClick={() => updateQuantity(item, Math.min(9999, item.qty + 1))}
+                    >
+                      <span aria-hidden="true">+</span>
+                    </button>
+                  </div>
+                  <button className="cart-remove-button" type="button" onClick={() => updateQuantity(item, 0)}>Remove</button>
+                </div>
+              </article>
             ))}
           </div>
-          <div className="checkout-summary-subtotal mt-4 flex items-center justify-between border-t border-slate-200 pt-4">
-            <p className="text-sm uppercase tracking-[0.18em] text-slate-500">Subtotal</p>
-            <p className="text-xl font-semibold text-slate-950">${(subtotal / 100).toFixed(2)}</p>
+          <div className="cart-summary-bar">
+            <div>
+              <p className="text-sm uppercase tracking-[0.18em] text-slate-500">Subtotal</p>
+              <p className="mt-1 text-2xl font-semibold text-slate-950">${(subtotalCents / 100).toFixed(2)}</p>
+            </div>
+            <Link href="/portal/checkout" className="btn-primary inline-flex">Continue to checkout</Link>
           </div>
         </>
       )}
@@ -464,21 +609,46 @@ export function CheckoutCartSummary({ storageKey }: { storageKey: string }) {
   );
 }
 
+export function CheckoutCartSummary({ storageKey }: { storageKey: string }) {
+  const { itemCount, items, subtotalCents } = useCart(storageKey);
+
+  return (
+    <section className="checkout-section" aria-labelledby="checkout-order-heading">
+      <div className="checkout-section-heading">
+        <div>
+          <p className="checkout-section-kicker">Order · {itemCount} item{itemCount === 1 ? '' : 's'}</p>
+          <h2 id="checkout-order-heading" className="checkout-section-title">Review your restock</h2>
+        </div>
+        <Link href="/portal/cart" className="checkout-edit-link">Edit</Link>
+      </div>
+      {!items.length ? (
+        <div className="checkout-critical-alert" role="alert">
+          Your order is empty. Return to your cart and add products before placing an order.
+        </div>
+      ) : (
+        <div className="checkout-line-items">
+          {items.map((item) => (
+            <div key={item.product_id} className="checkout-line-item">
+              <div className="min-w-0">
+                <p className="font-medium text-slate-950">{item.name}</p>
+                <p className="mt-0.5 text-sm text-slate-500">{item.qty} × ${(item.price_cents / 100).toFixed(2)}</p>
+              </div>
+              <p className="shrink-0 text-sm font-semibold text-slate-950">${((item.qty * item.price_cents) / 100).toFixed(2)}</p>
+            </div>
+          ))}
+        </div>
+      )}
+      <div className="checkout-section-total">
+        <span>Subtotal</span>
+        <strong>${(subtotalCents / 100).toFixed(2)}</strong>
+      </div>
+    </section>
+  );
+}
+
 export function CheckoutCartField({ storageKey }: { storageKey: string }) {
-  const [value, setValue] = useState('[]');
-
-  useEffect(() => {
-    const syncValue = () => setValue(JSON.stringify(readCartItems(storageKey)));
-    syncValue();
-    window.addEventListener(CART_UPDATED_EVENT, syncValue as EventListener);
-    window.addEventListener('storage', syncValue);
-    return () => {
-      window.removeEventListener(CART_UPDATED_EVENT, syncValue as EventListener);
-      window.removeEventListener('storage', syncValue);
-    };
-  }, [storageKey]);
-
-  return <input type="hidden" name="cart_json" value={value} />;
+  const { items } = useCart(storageKey);
+  return <input type="hidden" name="cart_json" value={JSON.stringify(items)} />;
 }
 
 export function ClearCart({ storageKey }: { storageKey: string }) {

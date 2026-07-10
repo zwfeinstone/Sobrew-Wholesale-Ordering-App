@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import PendingSubmitButton from '@/components/pending-submit-button';
+import { requireAdminSectionView } from '@/lib/admin-permissions';
 import { requireAdminWriteAccess } from '@/lib/admin-write-access';
 import { formatNextRecurringOrderDate, isRecurringFrequency, RECURRING_FREQUENCY_OPTIONS } from '@/lib/recurring';
 import { createClient } from '@/lib/supabase/server';
@@ -19,13 +20,13 @@ function formatAdminDate(value: string | null) {
 
 async function updateRecurringOrder(formData: FormData) {
   'use server';
-  const supabase = await createClient();
   const recurringOrderId = String(formData.get('id') ?? '');
   const frequency = String(formData.get('frequency'));
   const status = String(formData.get('status'));
   const statusFilter = String(formData.get('statusFilter') ?? '');
   const deniedQuery = statusFilter ? `?status=${encodeURIComponent(statusFilter)}&error=admin_write_denied` : '?error=admin_write_denied';
   await requireAdminWriteAccess(`/admin/recurring-orders${deniedQuery}`, 'recurring_orders');
+  const supabase = await createClient();
 
   if (!recurringOrderId) redirect('/admin/recurring-orders?error=missing_id');
   if (!isRecurringFrequency(frequency)) redirect('/admin/recurring-orders?error=invalid_frequency');
@@ -46,6 +47,7 @@ async function updateRecurringOrder(formData: FormData) {
 }
 
 export default async function AdminRecurringOrdersPage({ searchParams }: { searchParams: Record<string, string | string[] | undefined> }) {
+  await requireAdminSectionView('recurring_orders');
   const supabase = await createClient();
   const statusFilter = typeof searchParams.status === 'string' ? searchParams.status : '';
 

@@ -4,6 +4,8 @@
 # next build output
 /.next
 /out
+/test-results
+/playwright-report
 
 # production
 /build

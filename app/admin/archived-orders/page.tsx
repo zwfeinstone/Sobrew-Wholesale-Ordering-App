@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import { requireAdminSectionView } from '@/lib/admin-permissions';
 import { createClient } from '@/lib/supabase/server';
 
 const PAGE_SIZE = 25;
@@ -24,6 +25,7 @@ export default async function ArchivedOrdersPage({
 }: {
   searchParams?: Record<string, string | string[] | undefined>;
 }) {
+  await requireAdminSectionView('archived_orders');
   const supabase = await createClient();
   const sort = typeof searchParams?.sort === 'string' ? searchParams.sort : 'archived_desc';
   const nameFilter = typeof searchParams?.name === 'string' ? searchParams.name.trim() : '';

@@ -1,8 +1,6 @@
 import { NextRequest } from 'next/server';
-import { isOwnerEmail } from '@/lib/admin-permission-definitions';
-import { adminCanEdit, getAdminAccessForProfile } from '@/lib/admin-permissions';
+import { requireAdminSectionEdit } from '@/lib/admin-permissions';
 import { supabaseAdmin } from '@/lib/supabase/admin';
-import { createClient } from '@/lib/supabase/server';
 import {
   completedBreakMinutes,
   formatCentralDateTime,
@@ -87,25 +85,7 @@ function normalizeSalaryLaborWorkType(value: string | null | undefined) {
 }
 
 export async function GET(request: NextRequest) {
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) return new Response('Unauthorized', { status: 401 });
-
-  const { data: profile } = await supabase
-    .from('profiles')
-    .select('id,email,is_admin,is_active,is_superadmin')
-    .eq('id', user.id)
-    .maybeSingle();
-  if (!profile?.is_admin || (profile.is_active !== true && !isOwnerEmail(user.email || profile.email))) {
-    return new Response('Forbidden', { status: 403 });
-  }
-
-  const access = await getAdminAccessForProfile({ email: user.email || profile.email, isSuperadmin: profile.is_superadmin, profileId: profile.id, supabase });
-  if (!adminCanEdit(access, 'payroll')) {
-    return new Response('Forbidden', { status: 403 });
-  }
+  await requireAdminSectionEdit('payroll', '/admin/payroll?error=write_denied');
 
   const fromInput = request.nextUrl.searchParams.get('from');
   const toInput = request.nextUrl.searchParams.get('to');

@@ -1,5 +1,6 @@
 import { redirect } from 'next/navigation';
 import PendingSubmitButton from '@/components/pending-submit-button';
+import { requireAdminSectionView } from '@/lib/admin-permissions';
 import { requireAdminWriteAccess } from '@/lib/admin-write-access';
 import { PRODUCT_CATEGORY_OPTIONS, isProductCategory } from '@/lib/product-categories';
 import { createClient } from '@/lib/supabase/server';
@@ -21,11 +22,12 @@ async function createProduct(formData: FormData) {
   redirect('/admin/products');
 }
 
-export default function NewProductPage({
+export default async function NewProductPage({
   searchParams,
 }: {
   searchParams?: Record<string, string | string[] | undefined>;
 }) {
+  await requireAdminSectionView('products');
   const error = typeof searchParams?.error === 'string' ? searchParams.error : '';
 
   return (

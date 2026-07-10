@@ -1,6 +1,7 @@
 import { redirect } from 'next/navigation';
 import PendingSubmitButton from '@/components/pending-submit-button';
 import StatusToast from '@/components/status-toast';
+import { requireAdminSectionView } from '@/lib/admin-permissions';
 import { requireAdminWriteAccess } from '@/lib/admin-write-access';
 import {
   INVENTORY_ADJUSTMENT_TYPES,
@@ -260,6 +261,7 @@ export default async function ReceivingPage({
 }: {
   searchParams?: Record<string, string | string[] | undefined>;
 }) {
+  await requireAdminSectionView('receiving');
   const supabase = await createClient();
   const toast = typeof searchParams?.toast === 'string' ? searchParams.toast : '';
   const [{ data: items }, { data: receipts }, { data: expenses }] = await Promise.all([

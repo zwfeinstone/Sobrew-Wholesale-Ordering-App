@@ -2,10 +2,10 @@ import { notFound, redirect } from 'next/navigation';
 import { AdminPermissionEditor } from '@/components/admin-permission-editor';
 import PendingSubmitButton from '@/components/pending-submit-button';
 import { recordAdminAuditLog } from '@/lib/admin-audit';
-import { requireCenterAccess, requireCenterViewAccess } from '@/lib/admin-center-scope';
+import { requireCenterAccess } from '@/lib/admin-center-scope';
 import { isOwnerEmail } from '@/lib/admin-permission-definitions';
 import { loadSavedAdminPermissions, parseAdminPermissionsForm, saveAdminPermissions, serializePermissionSnapshot } from '@/lib/admin-permission-save';
-import { getCurrentAdminAccess, requireManageAdmins } from '@/lib/admin-permissions';
+import { requireAdminSectionView, requireManageAdmins } from '@/lib/admin-permissions';
 import { requireAdminWriteAccess } from '@/lib/admin-write-access';
 import { productCategoryGroupKey, productCategoryLabel, productCategorySortRank, type ProductCategoryGroup } from '@/lib/product-categories';
 import { createClient } from '@/lib/supabase/server';
@@ -413,6 +413,7 @@ export default async function UserDetailPage({
   params: { id: string };
   searchParams?: Record<string, string | string[] | undefined>;
 }) {
+  const currentAccess = await requireAdminSectionView('centers');
   const supabase = await createClient();
   const success = typeof searchParams?.success === 'string' ? searchParams.success : '';
   const error = typeof searchParams?.error === 'string' ? searchParams.error : '';
@@ -420,7 +421,9 @@ export default async function UserDetailPage({
   const { data: center } = await supabase.from('centers').select('*').eq('id', params.id).maybeSingle();
 
   if (center) {
-    await requireCenterViewAccess();
+    if (currentAccess.centerScope !== null && !currentAccess.centerScope.includes(center.id)) {
+      redirect('/admin/access-denied?section=centers');
+    }
 
     const [{ data: products }, { data: assigned }, { data: prices }, { data: members }, { data: locations }] = await Promise.all([
       supabase.from('products').select('id,name,category').eq('active', true).order('name', { ascending: true }),
@@ -615,11 +618,10 @@ export default async function UserDetailPage({
     );
   }
 
+  await requireManageAdmins('/admin/access-denied?section=manage_admins');
   const { data: adminUser } = await supabase.from('profiles').select('*').eq('id', params.id).eq('is_admin', true).maybeSingle();
   if (!adminUser) return notFound();
-  const currentAccess = await getCurrentAdminAccess();
   const canManageAdmins = currentAccess.isOwner;
-  if (!canManageAdmins) redirect('/admin/access-denied?section=manage_admins');
   const isPrimaryOwnerAdmin = isOwnerEmail(adminUser.email);
   const isSuperadmin = isPrimaryOwnerAdmin || Boolean(adminUser.is_superadmin);
   const adminPermissions = await loadSavedAdminPermissions(supabase, adminUser.id, adminUser.email, isSuperadmin);

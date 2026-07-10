@@ -1,4 +1,5 @@
 import { UserWizard } from '@/components/user-wizard';
+import { requireAdminSectionView } from '@/lib/admin-permissions';
 import { createClient } from '@/lib/supabase/server';
 
 export default async function NewUserWizardPage({
@@ -6,6 +7,7 @@ export default async function NewUserWizardPage({
 }: {
   searchParams?: Record<string, string | string[] | undefined>;
 }) {
+  await requireAdminSectionView('centers');
   const supabase = await createClient();
   const { data: products } = await supabase.from('products').select('id,name,category').eq('active', true).order('name', { ascending: true });
   const error = typeof searchParams?.error === 'string' ? searchParams.error : '';

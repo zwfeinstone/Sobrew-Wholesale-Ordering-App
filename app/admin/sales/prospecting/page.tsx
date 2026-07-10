@@ -1,6 +1,6 @@
 import Link from 'next/link';
 import StatusToast from '@/components/status-toast';
-import { getCurrentAdminAccess } from '@/lib/admin-permissions';
+import { requireAdminSectionView } from '@/lib/admin-permissions';
 import { createClient } from '@/lib/supabase/server';
 import {
   ACTIVE_PROSPECTING_STAGES,
@@ -269,7 +269,7 @@ function assignedLeadQuery(
 }
 
 export default async function ProspectingPage({ searchParams }: { searchParams?: SearchParams }) {
-  const current = await getCurrentAdminAccess();
+  const current = await requireAdminSectionView('prospecting');
   const supabase = await createClient();
   const q = stringParam(searchParams?.q).trim();
   const tab = normalizeTab(searchParams?.tab);

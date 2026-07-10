@@ -1,40 +1,12 @@
 import { supabaseAdmin } from '@/lib/supabase/admin';
-import { canEditAdminSectionForProfile } from '@/lib/admin-permissions';
+import { requireAdminSectionEdit } from '@/lib/admin-permissions';
 import { recordAdminAuditLog } from '@/lib/admin-audit';
-import { hasSuperadminAccess } from '@/lib/admin-permission-definitions';
-import { createClient } from '@/lib/supabase/server';
 import { toCents } from '@/lib/utils';
 import { NextResponse } from 'next/server';
 
 export async function POST(request: Request) {
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) {
-    return new Response('Unauthorized', { status: 401 });
-  }
-
-  const { data: adminProfile } = await supabase
-    .from('profiles')
-    .select('id,email,is_admin,is_active,is_superadmin')
-    .eq('id', user.id)
-    .single();
-
-  if (!adminProfile?.is_admin || !adminProfile.is_active) {
-    return new Response('Forbidden', { status: 403 });
-  }
-
-  const canEditCenters = await canEditAdminSectionForProfile({
-    email: user.email || adminProfile.email,
-    isSuperadmin: adminProfile.is_superadmin,
-    profileId: adminProfile.id,
-    sectionKey: 'centers',
-    supabase,
-  });
-  if (!canEditCenters) {
-    return NextResponse.redirect(new URL('/admin/users/new?error=admin_write_denied', request.url));
-  }
+  const current = await requireAdminSectionEdit('centers', '/admin/users/new?error=admin_write_denied');
+  const { profile: adminProfile } = current;
 
   const formData = await request.formData();
   const centerName = String(formData.get('center_name') ?? '').trim();
@@ -65,7 +37,7 @@ export async function POST(request: Request) {
     .maybeSingle();
   const creatorIsSalesRep = Boolean(creatorCommissionSetting?.is_sales_rep);
 
-  const creatorIsSuperadmin = hasSuperadminAccess(user.email || adminProfile.email, adminProfile.is_superadmin);
+  const creatorIsSuperadmin = current.isOwner;
 
   if (!creatorIsSuperadmin) {
     const assignmentResult = await supabaseAdmin.from('admin_center_assignments').insert({

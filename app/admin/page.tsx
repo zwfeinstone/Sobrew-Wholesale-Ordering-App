@@ -3,8 +3,10 @@ import { OrderStatusBadge } from '@/components/order-status';
 import { TrackedLink } from '@/components/tracked-link';
 import { getAssignedCenterIdsForAdmin, scopeCenterRelatedQueryForAdmin } from '@/lib/admin-center-scope';
 import { canViewAdminSection } from '@/lib/admin-permission-definitions';
-import { getCurrentAdminAccess } from '@/lib/admin-permissions';
-import { getPayrollStatus } from '@/lib/payroll-status';
+import { getCachedNewOrderCount } from '@/lib/admin-order-status';
+import { requireAdminSectionView } from '@/lib/admin-permissions';
+import { ADMIN_QUERY_ROW_LIMIT, queryReachedAdminRowLimit } from '@/lib/admin-query-limits';
+import { getCachedPayrollStatus } from '@/lib/payroll-status';
 import { createClient } from '@/lib/supabase/server';
 import { usd } from '@/lib/utils';
 
@@ -311,36 +313,34 @@ export default async function AdminDashboard({
 }: {
   searchParams?: Record<string, string | string[] | undefined>;
 }) {
+  const currentAccess = await requireAdminSectionView('dashboard');
   const supabase = await createClient();
-  const currentAccess = await getCurrentAdminAccess();
   const centerScope = await getAssignedCenterIdsForAdmin({ current: currentAccess, supabase });
   const now = new Date();
-  const payrollStatus = canViewAdminSection(currentAccess.access, 'payroll') ? await getPayrollStatus() : null;
+  const payrollStatus = canViewAdminSection(currentAccess.access, 'payroll') ? await getCachedPayrollStatus() : null;
 
   const ordersRange = normalizeTimeRange(searchParams?.ordersRange);
   const revenueRange = normalizeTimeRange(searchParams?.revenueRange);
   const usersRange = normalizeTimeRange(searchParams?.usersRange);
 
   const ordersMetricQuery = scopeCenterRelatedQueryForAdmin(
-    applyRangeToQuery(supabase.from('orders').select('created_at,center_id'), 'created_at', ordersRange, now),
+    applyRangeToQuery(supabase.from('orders').select('created_at,center_id,subtotal_cents'), 'created_at', ordersRange, now),
     'center_id',
     centerScope
-  );
-  const revenueMetricQuery = scopeCenterRelatedQueryForAdmin(
-    applyRangeToQuery(supabase.from('orders').select('created_at,center_id,subtotal_cents'), 'created_at', revenueRange, now),
-    'center_id',
-    centerScope
-  );
+  ).limit(ADMIN_QUERY_ROW_LIMIT);
+  const sharesOrderMetricRange = ordersRange === revenueRange;
+  const revenueMetricQuery = sharesOrderMetricRange
+    ? Promise.resolve({ data: null as MetricRow[] | null, error: null })
+    : scopeCenterRelatedQueryForAdmin(
+      applyRangeToQuery(supabase.from('orders').select('created_at,center_id,subtotal_cents'), 'created_at', revenueRange, now),
+      'center_id',
+      centerScope
+    ).limit(ADMIN_QUERY_ROW_LIMIT);
   const usersMetricQuery = scopeCenterRelatedQueryForAdmin(
     applyRangeToQuery(supabase.from('profiles').select('created_at,center_id'), 'created_at', usersRange, now),
     'center_id',
     centerScope
-  );
-  const newOrdersQuery = scopeCenterRelatedQueryForAdmin(
-    supabase.from('orders').select('id', { head: true, count: 'exact' }).eq('status', 'New').is('archived_at', null),
-    'center_id',
-    centerScope
-  );
+  ).limit(ADMIN_QUERY_ROW_LIMIT);
   const processingOrdersQuery = scopeCenterRelatedQueryForAdmin(
     supabase.from('orders').select('id', { head: true, count: 'exact' }).eq('status', 'Processing').is('archived_at', null),
     'center_id',
@@ -369,7 +369,7 @@ export default async function AdminDashboard({
   );
 
   const [
-    { count: newOrders },
+    newOrders,
     { count: processingOrders },
     { count: shippedOrders },
     { data: workQueue },
@@ -378,7 +378,7 @@ export default async function AdminDashboard({
     { data: revenueMetricRows },
     { data: userMetricRows },
   ] = await Promise.all([
-    newOrdersQuery,
+    getCachedNewOrderCount(),
     processingOrdersQuery,
     shippedOrdersQuery,
     workQueueQuery,
@@ -391,27 +391,24 @@ export default async function AdminDashboard({
   const dashboardOrders = [...(workQueue ?? []), ...(recent ?? [])];
   const orderIds = [...new Set(dashboardOrders.map((order: any) => order.id))];
   const { data: items } = orderIds.length
-    ? await supabase.from('order_items').select('order_id,product_id,product_name_snapshot').in('order_id', orderIds)
+    ? await supabase.from('order_items').select('order_id,product_id,product_name_snapshot,products(name)').in('order_id', orderIds).limit(ADMIN_QUERY_ROW_LIMIT)
     : { data: [] as any[] };
-
-  const productIds = [...new Set((items ?? []).map((item: any) => item.product_id))];
-  const { data: products } = productIds.length
-    ? await supabase.from('products').select('id,name').in('id', productIds)
-    : { data: [] as any[] };
-  const productNameById = new Map((products ?? []).map((product: any) => [product.id, product.name]));
 
   const firstNameByOrderId = new Map<string, string>();
   for (const item of items ?? []) {
     if (!firstNameByOrderId.has(item.order_id)) {
-      firstNameByOrderId.set(item.order_id, productNameById.get(item.product_id) || item.product_name_snapshot || 'Unknown product');
+      const relatedProduct = Array.isArray(item.products) ? item.products[0] : item.products;
+      firstNameByOrderId.set(item.order_id, relatedProduct?.name || item.product_name_snapshot || 'Unknown product');
     }
   }
 
+  const effectiveRevenueMetricRows = sharesOrderMetricRange ? orderMetricRows : revenueMetricRows;
   const orderBuckets = buildBuckets((orderMetricRows ?? []) as MetricRow[], ordersRange, now, () => 1);
-  const revenueBuckets = buildBuckets((revenueMetricRows ?? []) as MetricRow[], revenueRange, now, (row) => row.subtotal_cents ?? 0);
+  const revenueBuckets = buildBuckets((effectiveRevenueMetricRows ?? []) as MetricRow[], revenueRange, now, (row) => row.subtotal_cents ?? 0);
   const userBuckets = buildBuckets((userMetricRows ?? []) as MetricRow[], usersRange, now, () => 1);
 
-  const totalRevenueCents = ((revenueMetricRows ?? []) as MetricRow[]).reduce((sum, row) => sum + (row.subtotal_cents ?? 0), 0);
+  const totalRevenueCents = ((effectiveRevenueMetricRows ?? []) as MetricRow[]).reduce((sum, row) => sum + (row.subtotal_cents ?? 0), 0);
+  const metricRowsLimited = [orderMetricRows, effectiveRevenueMetricRows, userMetricRows].some(queryReachedAdminRowLimit);
   const activeOrderCount = (newOrders ?? 0) + (processingOrders ?? 0);
   const queueOrders = (workQueue?.length ? workQueue : recent ?? []) as any[];
   const operationsLinks = [
@@ -428,6 +425,11 @@ export default async function AdminDashboard({
 
   return (
     <div className="space-y-6">
+      {metricRowsLimited ? (
+        <section className="rounded-xl border border-amber-200 bg-amber-50/80 px-4 py-3 text-sm leading-6 text-amber-900" role="status">
+          A dashboard chart reached the 1,000-row safety limit. Choose a shorter range for complete chart totals while database aggregate loaders are being introduced.
+        </section>
+      ) : null}
       <section className="panel space-y-5">
         <div className="grid gap-5 lg:grid-cols-[1fr_auto] lg:items-end">
           <div>

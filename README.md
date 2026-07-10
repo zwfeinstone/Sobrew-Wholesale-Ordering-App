@@ -37,11 +37,28 @@ Copy `.env.example` to `.env.local` and configure:
    - `avatars`
 4. Start app and create the first admin from `/bootstrap`.
 
+Migration `048_quick_restock_performance.sql` must be applied before deploying the matching checkout/recurring-order code. It adds the server-priced atomic checkout and recurring-generation functions used by the app. Test database changes in an approved non-production environment before applying them to production.
+
 ## Running locally
 ```bash
+nvm use
 npm install
 npm run dev
 ```
+
+## Verification
+```bash
+npm run check
+npm run build
+npm run test:e2e
+```
+
+The Playwright suite always checks the public login at 320, 390, 768, and 1440 pixels. Authenticated role and center-isolation scenarios run when the documented `E2E_*` credentials are supplied.
+
+## Deployment performance
+- Vercel functions are configured for `pdx1` in `vercel.json` to align with the Oregon Supabase region.
+- Vercel Speed Insights and privacy-safe server timings cover authenticated context, checkout, reports, and recurring cron work.
+- Re-run Supabase security and performance advisors after migration 048 is applied.
 
 ## Running recurring orders locally
 Recurring orders only generate when the cron endpoint is called.

@@ -4,7 +4,6 @@ import { OrderStatusBadge } from '@/components/order-status';
 import { requireUser } from '@/lib/auth';
 import { cartStorageKeyForUser } from '@/lib/cart';
 import { createClient } from '@/lib/supabase/server';
-import { supabaseAdmin } from '@/lib/supabase/admin';
 import { usd } from '@/lib/utils';
 
 const PAGE_SIZE = 25;
@@ -47,32 +46,33 @@ export default async function OrdersPage({
     : { data: [] as any[] };
 
   const productIds = [...new Set((items ?? []).map((item: any) => item.product_id))];
-  const { data: products } = productIds.length
-    ? await supabaseAdmin.from('products').select('id,name').in('id', productIds)
+  const { data: catalogProducts } = productIds.length
+    ? await supabase
+        .from('portal_catalog')
+        .select('product_id,name,current_price_cents')
+        .in('product_id', productIds)
     : { data: [] as any[] };
-  const { data: currentPrices } = productIds.length
-    ? await supabase.from('user_product_prices').select('product_id,price_cents').eq('center_id', centerId).in('product_id', productIds)
-    : { data: [] as any[] };
-  const productNameById = new Map((products ?? []).map((p: any) => [p.id, p.name]));
-  const currentPriceById = new Map((currentPrices ?? []).map((row) => [row.product_id, row.price_cents]));
+  const catalogProductById = new Map((catalogProducts ?? []).map((product) => [product.product_id, product]));
 
   const lineItemsByOrderId = new Map<string, string[]>();
   const reorderItemsByOrderId = new Map<string, Array<{ product_id: string; name: string; price_cents: number; qty: number }>>();
   for (const item of items ?? []) {
-    const mappedName = productNameById.get(item.product_id);
-    const name = mappedName || item.product_name_snapshot || 'Unknown product';
+    const catalogProduct = catalogProductById.get(item.product_id);
+    const name = catalogProduct?.name || item.product_name_snapshot || 'Unknown product';
     const itemLabel = `${name} x ${item.qty}`;
     const existingItems = lineItemsByOrderId.get(item.order_id) ?? [];
     existingItems.push(itemLabel);
     lineItemsByOrderId.set(item.order_id, existingItems);
 
     const reorderItems = reorderItemsByOrderId.get(item.order_id) ?? [];
-    reorderItems.push({
-      product_id: item.product_id,
-      name,
-      price_cents: currentPriceById.get(item.product_id) ?? item.unit_price_cents ?? 0,
-      qty: item.qty,
-    });
+    if (catalogProduct) {
+      reorderItems.push({
+        product_id: item.product_id,
+        name: catalogProduct.name,
+        price_cents: catalogProduct.current_price_cents,
+        qty: item.qty,
+      });
+    }
     reorderItemsByOrderId.set(item.order_id, reorderItems);
   }
 
@@ -101,8 +101,8 @@ export default async function OrdersPage({
         <div key={order.id} className="card transition-all duration-200 hover:-translate-y-0.5 hover:bg-white/95">
           <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
             <Link href={`/portal/orders/${order.id}`} className="block flex-1 min-w-0">
-              <p className="break-words text-lg font-semibold text-slate-950">{(lineItemsByOrderId.get(order.id) ?? ['Unknown product']).join(', ')}</p>
-              <p className="mt-2 text-sm text-slate-500">Placed {formatOrderTimestamp(order.created_at)}</p>
+              <h2 className="break-words text-lg font-semibold text-slate-950">Order from {formatOrderTimestamp(order.created_at)}</h2>
+              <p className="mt-2 line-clamp-2 text-sm text-slate-500">{(lineItemsByOrderId.get(order.id) ?? ['Unknown product']).join(', ')}</p>
             </Link>
             <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row sm:flex-wrap sm:items-center sm:justify-end">
               <OrderStatusBadge status={order.status} />
@@ -110,7 +110,7 @@ export default async function OrdersPage({
               <ReorderButton
                 items={reorderItemsByOrderId.get(order.id) ?? []}
                 storageKey={cartStorageKey}
-                label="Add to cart"
+                label="Reorder & review"
                 className="btn-primary w-full px-4 py-2.5 sm:w-auto"
               />
             </div>

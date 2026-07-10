@@ -3,7 +3,7 @@ import { notFound, redirect } from 'next/navigation';
 import ConfirmSubmitButton from '@/components/confirm-submit-button';
 import PendingSubmitButton from '@/components/pending-submit-button';
 import StatusToast from '@/components/status-toast';
-import { getCurrentAdminAccess, requireAdminSectionEdit } from '@/lib/admin-permissions';
+import { requireAdminSectionEdit, requireAdminSectionView } from '@/lib/admin-permissions';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { createClient } from '@/lib/supabase/server';
 import {
@@ -546,7 +546,7 @@ export default async function LeadDetailPage({
   params: { id: string };
   searchParams?: Record<string, string | string[] | undefined>;
 }) {
-  const current = await getCurrentAdminAccess();
+  const current = await requireAdminSectionView('prospecting');
   const supabase = await createClient();
   const toast = typeof searchParams?.toast === 'string' ? searchParams.toast : '';
   const selectedStateKey = normalizeStateFilter(searchParams?.state);

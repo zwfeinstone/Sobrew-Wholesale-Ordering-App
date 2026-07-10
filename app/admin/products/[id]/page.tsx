@@ -1,6 +1,7 @@
 import { notFound, redirect } from 'next/navigation';
 import PendingSubmitButton from '@/components/pending-submit-button';
 import StatusToast from '@/components/status-toast';
+import { requireAdminSectionView } from '@/lib/admin-permissions';
 import { requireAdminWriteAccess } from '@/lib/admin-write-access';
 import {
   INVENTORY_UNITS,
@@ -18,6 +19,7 @@ import {
   type InventoryUnit,
 } from '@/lib/inventory';
 import { PRODUCT_CATEGORY_OPTIONS, isProductCategory } from '@/lib/product-categories';
+import { IMAGE_UPLOAD_ACCEPT, ImageUploadError, prepareImageUpload } from '@/lib/image-upload';
 import { createClient } from '@/lib/supabase/server';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { usd } from '@/lib/utils';
@@ -90,8 +92,20 @@ async function updateProduct(formData: FormData) {
   const file = formData.get('image') as File;
   let image_url;
   if (file?.size) {
-    const path = `${id}/${Date.now()}-${file.name}`;
-    await supabaseAdmin.storage.from('products').upload(path, file, { upsert: true });
+    let prepared;
+    try {
+      prepared = await prepareImageUpload(file);
+    } catch (error) {
+      if (error instanceof ImageUploadError) redirect(`/admin/products/${id}?error=${error.code}`);
+      throw error;
+    }
+    const path = `${id}/${Date.now()}-${crypto.randomUUID()}.${prepared.extension}`;
+    const { error: uploadError } = await supabaseAdmin.storage.from('products').upload(path, prepared.bytes, {
+      cacheControl: '31536000',
+      contentType: prepared.contentType,
+      upsert: false,
+    });
+    if (uploadError) redirect(`/admin/products/${id}?error=image_upload_failed`);
     image_url = supabaseAdmin.storage.from('products').getPublicUrl(path).data.publicUrl;
   }
   await supabase.from('products').update({
@@ -216,11 +230,25 @@ export default async function ProductPage({
   params: { id: string };
   searchParams?: Record<string, string | string[] | undefined>;
 }) {
+  await requireAdminSectionView('products');
   const supabase = await createClient();
   const { data: product } = await supabase.from('products').select('*').eq('id', params.id).single();
   if (!product) return notFound();
   const error = typeof searchParams?.error === 'string' ? searchParams.error : '';
   const toast = typeof searchParams?.toast === 'string' ? searchParams.toast : '';
+  const productErrorMessage = error === 'admin_write_denied'
+    ? 'Only superadmins can change admin data.'
+    : error === 'invalid_category'
+      ? 'Choose a product category before saving.'
+      : error === 'image_too_large'
+        ? 'Product images must be 5 MB or smaller.'
+        : error === 'image_dimensions'
+          ? 'Product images must be no larger than 4096 × 4096 pixels.'
+          : error === 'image_invalid'
+            ? 'Use a valid PNG, JPEG, or WebP image.'
+            : error === 'image_upload_failed'
+              ? 'The product image could not be uploaded. Please try again.'
+              : '';
   const [{ data: items }, { data: recipeData }, { data: lots }] = await Promise.all([
     supabase.from('inventory_items').select('id,name,sku,item_type,base_unit,active').neq('item_type', 'finished_good').eq('active', true).order('name', { ascending: true }),
     supabase.from('product_recipes').select('id,product_id,output_qty,waste_percent,labor_minutes,labor_rate_cents,shipping_label_qty,branding_label_qty,notes,product_recipe_components(id,inventory_item_id,quantity,unit,component_role,notes,inventory_items(id,name,sku,item_type,base_unit,active))').eq('product_id', params.id).maybeSingle(),
@@ -269,9 +297,9 @@ export default async function ProductPage({
         <h1 className="page-title mt-4">Edit product</h1>
         <p className="page-subtitle mt-3">Update availability, refresh product copy, or upload a cleaner product image.</p>
       </section>
-      {error ? (
-        <div className="card text-sm text-red-700">
-          {error === 'admin_write_denied' ? 'Only superadmins can change admin data.' : 'Choose a product category before saving.'}
+      {productErrorMessage ? (
+        <div className="card text-sm text-red-700" role="alert">
+          {productErrorMessage}
         </div>
       ) : null}
       {toast === 'recipe_saved' ? <StatusToast message="Product recipe saved." tone="success" /> : null}
@@ -289,7 +317,11 @@ export default async function ProductPage({
         <textarea className="input min-h-28" name="description" defaultValue={product.description ?? ''} />
         <label className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-white/60 px-4 py-3 text-sm font-medium text-slate-700"><input type="checkbox" name="active" defaultChecked={product.active} /> Active</label>
         <label className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-white/60 px-4 py-3 text-sm font-medium text-slate-700"><input type="checkbox" name="shipping_box_count_required" defaultChecked={Boolean(product.shipping_box_count_required)} /> Box count required at shipping</label>
-        <input className="input" type="file" name="image" accept="image/*" />
+        <label className="space-y-2 text-sm font-medium text-slate-700">
+          Product image
+          <input className="input" type="file" name="image" accept={IMAGE_UPLOAD_ACCEPT} />
+          <span className="block text-xs font-normal text-slate-500">PNG, JPEG, or WebP · up to 5 MB and 4096 × 4096</span>
+        </label>
         <PendingSubmitButton className="btn-primary" label="Save" pendingLabel="Saving..." />
       </form>
 

@@ -11,7 +11,7 @@ function isMissingFulfillmentMethodColumn(error: unknown) {
 }
 
 export async function GET() {
-  await requireAdminSectionView('reports');
+  await requireAdminSectionView('orders');
   const supabase = await createClient();
   const result = await supabase
     .from('orders')

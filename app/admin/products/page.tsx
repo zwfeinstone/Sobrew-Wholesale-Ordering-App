@@ -3,6 +3,7 @@ import { revalidatePath } from 'next/cache';
 import { redirect } from 'next/navigation';
 import PendingSubmitButton from '@/components/pending-submit-button';
 import StatusToast from '@/components/status-toast';
+import { requireAdminSectionView } from '@/lib/admin-permissions';
 import { requireAdminWriteAccess } from '@/lib/admin-write-access';
 import {
   PRODUCT_CATEGORY_OPTIONS,
@@ -201,6 +202,7 @@ export default async function ProductsPage({
 }: {
   searchParams?: Record<string, string | string[] | undefined>;
 }) {
+  await requireAdminSectionView('products');
   const supabase = await createClient();
   const [{ data }, { count: recipeCount }] = await Promise.all([
     supabase.from('products').select('id,name,sku,category,active').order('name', { ascending: true }),

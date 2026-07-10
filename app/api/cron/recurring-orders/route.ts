@@ -1,23 +1,39 @@
 import { NextResponse } from 'next/server';
-import { getCenterLoginEmails } from '@/lib/center-logins';
+import { waitUntil } from '@vercel/functions';
 import { sendOrderEmails } from '@/lib/email';
 import { env } from '@/lib/env';
-import { isRecurringOrderDue } from '@/lib/recurring';
+import { elapsedMilliseconds, logServerTiming, serverTimingHeader } from '@/lib/server-performance';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 
 type RecurringCronError = { recurringOrderId: string; message: string };
 
-function normalizeStatus(recurringOrder: { status?: string | null; active?: boolean | null }) {
-  if (recurringOrder.status) return recurringOrder.status;
-  if (typeof recurringOrder.active === 'boolean') return recurringOrder.active ? 'active' : 'paused';
-  return 'active';
-}
+type GeneratedRecurringItem = {
+  line_total_cents: number;
+  name: string;
+  price_cents: number;
+  product_id: string | null;
+  qty: number;
+};
+
+type GeneratedRecurringOrder = {
+  center_location_id: string | null;
+  order_id: string;
+  placed_items: unknown;
+  shipping_address1: string | null;
+  shipping_address2: string | null;
+  shipping_city: string | null;
+  shipping_name: string | null;
+  shipping_state: string | null;
+  shipping_zip: string | null;
+  subtotal_cents: number;
+  was_created: boolean;
+};
 
 function isAuthorizedCronRequest(req: Request) {
   if (!env.cronSecret) return false;
 
   const authorization = req.headers.get('authorization');
-  if (authorization === `Bearer ${env.cronSecret}`) return true;
+  if (authorization === 'Bearer ' + env.cronSecret) return true;
 
   const providedSecret = req.headers.get('x-cron-secret');
   return providedSecret === env.cronSecret;
@@ -73,246 +89,215 @@ async function writeCronRunLog({
   }
 }
 
+function generatedItems(value: unknown): GeneratedRecurringItem[] {
+  if (!Array.isArray(value)) return [];
+
+  return value.flatMap((candidate) => {
+    if (!candidate || typeof candidate !== 'object') return [];
+    const item = candidate as Record<string, unknown>;
+    const qty = Number(item.qty);
+    const price = Number(item.price_cents);
+    const line = Number(item.line_total_cents);
+    if (!Number.isInteger(qty) || qty <= 0 || !Number.isInteger(price) || price < 0 || !Number.isInteger(line) || line < 0) {
+      return [];
+    }
+
+    return [{
+      line_total_cents: line,
+      name: typeof item.name === 'string' && item.name ? item.name : 'Unknown product',
+      price_cents: price,
+      product_id: typeof item.product_id === 'string' ? item.product_id : null,
+      qty,
+    }];
+  });
+}
+
 async function runRecurringOrders(req: Request) {
+  const cronStartedAt = performance.now();
+  const respond = (body: Record<string, unknown>, status = 200, outcome = 'success') => {
+    const durationMs = elapsedMilliseconds(cronStartedAt);
+    logServerTiming('recurring_cron', cronStartedAt, { outcome, status });
+    const response = NextResponse.json(body, { status });
+    response.headers.set('Server-Timing', serverTimingHeader([{ name: 'cron', durationMs }]));
+    return response;
+  };
+
   if (!isAuthorizedCronRequest(req)) {
-    return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
+    return respond({ error: 'unauthorized' }, 401, 'unauthorized');
   }
 
-  const now = new Date();
-  const startedAt = now.toISOString();
+  const startedAt = new Date().toISOString();
   const forceRun = isForcedCronRequest(req);
 
-  const { data: recurringOrders, error: recurringOrdersError } = await supabaseAdmin
+  let dueRecurringOrdersQuery = supabaseAdmin
     .from('recurring_orders')
-    .select('id,user_id,center_id,source_order_id,frequency,amount_cents,status,active,created_at,last_generated_at,profiles(email,full_name),centers(name)');
+    .select('id,center_id,next_run_at,profiles(email,full_name),centers(name)')
+    .eq('status', 'active')
+    .order('next_run_at', { ascending: true })
+    .limit(1000);
+  if (!forceRun) {
+    dueRecurringOrdersQuery = dueRecurringOrdersQuery.lte('next_run_at', startedAt);
+  }
+
+  const [
+    { data: recurringOrders, error: recurringOrdersError },
+    { count: activeRecurringCount },
+  ] = await Promise.all([
+    dueRecurringOrdersQuery,
+    supabaseAdmin
+      .from('recurring_orders')
+      .select('id', { count: 'exact', head: true })
+      .eq('status', 'active'),
+  ]);
 
   if (recurringOrdersError) {
+    const errors = [{ recurringOrderId: 'recurring_orders_query', message: recurringOrdersError.message }];
     await writeCronRunLog({
       created: 0,
-      errors: [{ recurringOrderId: 'recurring_orders_query', message: recurringOrdersError.message }],
+      errors,
       forceRun,
       req,
       startedAt,
       status: 'error',
     });
-    return NextResponse.json({ error: recurringOrdersError.message }, { status: 500 });
+    return respond({ error: recurringOrdersError.message }, 500, 'query_error');
   }
 
-  let created = 0;
+  const dueRecurringOrders = recurringOrders ?? [];
   const errors: RecurringCronError[] = [];
-
-  const activeRecurringOrders = (recurringOrders ?? []).filter((recurringOrder) => normalizeStatus(recurringOrder) === 'active');
-  const dueRecurringOrders = activeRecurringOrders.filter((recurringOrder) => {
-    const anchorDate = recurringOrder.last_generated_at ?? recurringOrder.created_at;
-    return isRecurringOrderDue(recurringOrder.frequency, anchorDate, now);
-  });
+  let created = 0;
+  let skippedDuplicates = 0;
 
   if (!dueRecurringOrders.length) {
     await writeCronRunLog({
-      activeRecurringCount: activeRecurringOrders.length,
+      activeRecurringCount: activeRecurringCount ?? 0,
       created,
-      dueRecurringCount: dueRecurringOrders.length,
+      dueRecurringCount: 0,
       errors,
       forceRun,
       req,
       startedAt,
       status: 'success',
     });
-    return NextResponse.json({ created, errors });
+    return respond({ created, errors, skippedDuplicates }, 200, 'no_due_orders');
   }
 
-  const sourceOrderIds = [...new Set(dueRecurringOrders.map((recurringOrder) => recurringOrder.source_order_id).filter(Boolean))];
-  const recurringOrderIds = dueRecurringOrders.map((recurringOrder) => recurringOrder.id);
-
-  const [{ data: sourceOrders, error: sourceOrdersError }, { data: allRecurringItems, error: recurringItemsError }] = await Promise.all([
-    supabaseAdmin
-      .from('orders')
-      .select('id,center_location_id,shipping_name,shipping_address1,shipping_address2,shipping_city,shipping_state,shipping_zip')
-      .in('id', sourceOrderIds),
-    supabaseAdmin
-      .from('recurring_order_items')
-      .select('recurring_order_id,product_id,product_name_snapshot,qty,unit_price_cents,line_total_cents')
-      .in('recurring_order_id', recurringOrderIds),
-  ]);
-
-  if (sourceOrdersError) {
-    await writeCronRunLog({
-      activeRecurringCount: activeRecurringOrders.length,
-      created,
-      dueRecurringCount: dueRecurringOrders.length,
-      errors: [{ recurringOrderId: 'source_orders_query', message: sourceOrdersError.message }],
-      forceRun,
-      req,
-      startedAt,
-      status: 'error',
-    });
-    return NextResponse.json({ error: sourceOrdersError.message }, { status: 500 });
-  }
-
-  if (recurringItemsError) {
-    await writeCronRunLog({
-      activeRecurringCount: activeRecurringOrders.length,
-      created,
-      dueRecurringCount: dueRecurringOrders.length,
-      errors: [{ recurringOrderId: 'recurring_items_query', message: recurringItemsError.message }],
-      forceRun,
-      req,
-      startedAt,
-      status: 'error',
-    });
-    return NextResponse.json({ error: recurringItemsError.message }, { status: 500 });
-  }
-
-  const sourceOrderById = new Map((sourceOrders ?? []).map((sourceOrder) => [sourceOrder.id, sourceOrder]));
-  const recurringItemsByOrderId = new Map<string, NonNullable<typeof allRecurringItems>>();
-  for (const item of allRecurringItems ?? []) {
-    const existing = recurringItemsByOrderId.get(item.recurring_order_id) ?? [];
-    existing.push(item);
-    recurringItemsByOrderId.set(item.recurring_order_id, existing);
-  }
-
-  const missingRecurringItemSourceOrderIds = dueRecurringOrders
-    .filter((recurringOrder) => !recurringItemsByOrderId.get(recurringOrder.id)?.length && recurringOrder.source_order_id)
-    .map((recurringOrder) => recurringOrder.source_order_id);
-
-  const { data: sourceOrderItems, error: sourceOrderItemsError } = missingRecurringItemSourceOrderIds.length
-    ? await supabaseAdmin
-        .from('order_items')
-        .select('order_id,product_id,product_name_snapshot,qty,unit_price_cents,line_total_cents')
-        .in('order_id', [...new Set(missingRecurringItemSourceOrderIds)])
-    : { data: [] as Array<{
-        order_id: string;
-        product_id: string | null;
-        product_name_snapshot: string | null;
-        qty: number;
-        unit_price_cents: number;
-        line_total_cents: number;
-      }>, error: null as null | { message: string } };
-
-  if (sourceOrderItemsError) {
-    await writeCronRunLog({
-      activeRecurringCount: activeRecurringOrders.length,
-      created,
-      dueRecurringCount: dueRecurringOrders.length,
-      errors: [{ recurringOrderId: 'source_order_items_query', message: sourceOrderItemsError.message }],
-      forceRun,
-      req,
-      startedAt,
-      status: 'error',
-    });
-    return NextResponse.json({ error: sourceOrderItemsError.message }, { status: 500 });
-  }
-
-  const recurringOrderIdBySourceOrderId = new Map(
+  const dueCenterIds = [...new Set(
     dueRecurringOrders
-      .filter((recurringOrder) => recurringOrder.source_order_id)
-      .map((recurringOrder) => [recurringOrder.source_order_id, recurringOrder.id])
-  );
-  for (const item of sourceOrderItems ?? []) {
-    const recurringOrderId = recurringOrderIdBySourceOrderId.get(item.order_id);
-    if (!recurringOrderId || recurringItemsByOrderId.get(recurringOrderId)?.length) continue;
-    const existing = recurringItemsByOrderId.get(recurringOrderId) ?? [];
-    existing.push({
-      recurring_order_id: recurringOrderId,
-      product_id: item.product_id,
-      product_name_snapshot: item.product_name_snapshot,
-      qty: item.qty,
-      unit_price_cents: item.unit_price_cents,
-      line_total_cents: item.line_total_cents
-    });
-    recurringItemsByOrderId.set(recurringOrderId, existing);
+      .map((recurringOrder) => recurringOrder.center_id)
+      .filter((centerId): centerId is string => Boolean(centerId))
+  )];
+
+  const { data: centerProfiles, error: centerProfilesError } = dueCenterIds.length
+    ? await supabaseAdmin
+      .from('profiles')
+      .select('center_id,email')
+      .in('center_id', dueCenterIds)
+      .eq('is_admin', false)
+      .eq('is_active', true)
+      .order('created_at', { ascending: true })
+      .limit(1000)
+    : { data: [] as Array<{ center_id: string | null; email: string | null }>, error: null };
+
+  if (centerProfilesError) {
+    console.error('[recurring-orders-cron] center login email batch query failed', centerProfilesError);
   }
+
+  const centerEmailsByCenterId = new Map<string, string[]>();
+  for (const profile of centerProfiles ?? []) {
+    if (!profile.center_id || !profile.email) continue;
+    const emails = centerEmailsByCenterId.get(profile.center_id) ?? [];
+    if (!emails.includes(profile.email)) emails.push(profile.email);
+    centerEmailsByCenterId.set(profile.center_id, emails);
+  }
+
+  const emailTasks: Array<() => Promise<void>> = [];
 
   for (const recurringOrder of dueRecurringOrders) {
-    const sourceOrder = sourceOrderById.get(recurringOrder.source_order_id);
-    if (!sourceOrder) {
-      errors.push({ recurringOrderId: recurringOrder.id, message: 'Missing source order' });
+    const scheduledFor = recurringOrder.next_run_at;
+    if (!scheduledFor || Number.isNaN(new Date(scheduledFor).getTime())) {
+      errors.push({ recurringOrderId: recurringOrder.id, message: 'Invalid recurring schedule' });
       continue;
     }
 
-    const recurringItems = recurringItemsByOrderId.get(recurringOrder.id);
-    if (!recurringItems?.length) {
-      errors.push({ recurringOrderId: recurringOrder.id, message: 'Missing recurring order items' });
-      continue;
-    }
-
-    const subtotal = recurringItems.reduce((sum, item) => sum + (item.line_total_cents ?? 0), 0);
-
-    const { data: newOrder, error: newOrderError } = await supabaseAdmin
-      .from('orders')
-      .insert({
-        center_id: recurringOrder.center_id,
-        center_location_id: sourceOrder.center_location_id ?? null,
-        user_id: recurringOrder.user_id,
-        shipping_name: sourceOrder.shipping_name ?? '',
-        shipping_address1: sourceOrder.shipping_address1 ?? '',
-        shipping_address2: sourceOrder.shipping_address2 ?? '',
-        shipping_city: sourceOrder.shipping_city ?? '',
-        shipping_state: sourceOrder.shipping_state ?? '',
-        shipping_zip: sourceOrder.shipping_zip ?? '',
-        notes: `Auto-generated recurring order (${recurringOrder.frequency})`,
-        subtotal_cents: subtotal
+    const { data: generatedOrder, error: generationError } = await supabaseAdmin
+      .rpc('generate_recurring_order', {
+        p_recurring_order_id: recurringOrder.id,
+        p_scheduled_for: scheduledFor,
       })
-      .select('id,center_location_id,shipping_name,shipping_address1,shipping_address2,shipping_city,shipping_state,shipping_zip')
       .single();
 
-    if (newOrderError || !newOrder) {
-      errors.push({ recurringOrderId: recurringOrder.id, message: newOrderError?.message ?? 'Failed to create order' });
+    if (generationError || !generatedOrder) {
+      errors.push({
+        recurringOrderId: recurringOrder.id,
+        message: generationError?.message ?? 'Failed to generate recurring order',
+      });
       continue;
     }
 
-    const { error: newItemsError } = await supabaseAdmin.from('order_items').insert(
-      recurringItems.map((item) => ({
-        order_id: newOrder.id,
-        product_id: item.product_id,
-        product_name_snapshot: item.product_name_snapshot,
-        qty: item.qty,
-        unit_price_cents: item.unit_price_cents,
-        line_total_cents: item.line_total_cents
-      }))
-    );
+    const generation = generatedOrder as GeneratedRecurringOrder;
 
-    if (newItemsError) {
-      await supabaseAdmin.from('orders').delete().eq('id', newOrder.id);
-      errors.push({ recurringOrderId: recurringOrder.id, message: newItemsError.message });
+    if (!generation.was_created) {
+      skippedDuplicates += 1;
       continue;
     }
 
-    const { error: updateRecurringOrderError } = await supabaseAdmin
-      .from('recurring_orders')
-      .update({ last_generated_at: now.toISOString() })
-      .eq('id', recurringOrder.id);
-
-    if (updateRecurringOrderError) {
-      await supabaseAdmin.from('order_items').delete().eq('order_id', newOrder.id);
-      await supabaseAdmin.from('orders').delete().eq('id', newOrder.id);
-      errors.push({ recurringOrderId: recurringOrder.id, message: updateRecurringOrderError.message });
+    const items = generatedItems(generation.placed_items);
+    if (!items.length) {
+      errors.push({
+        recurringOrderId: recurringOrder.id,
+        message: 'Generated order returned no valid line items',
+      });
       continue;
     }
 
-    const recurringProfile = Array.isArray(recurringOrder.profiles) ? recurringOrder.profiles[0] : recurringOrder.profiles;
-    const recurringCenter = Array.isArray(recurringOrder.centers) ? recurringOrder.centers[0] : recurringOrder.centers;
-    const centerEmails = await getCenterLoginEmails(supabaseAdmin, recurringOrder.center_id);
+    const recurringProfile = Array.isArray(recurringOrder.profiles)
+      ? recurringOrder.profiles[0]
+      : recurringOrder.profiles;
+    const recurringCenter = Array.isArray(recurringOrder.centers)
+      ? recurringOrder.centers[0]
+      : recurringOrder.centers;
+    const centerEmails = recurringOrder.center_id
+      ? centerEmailsByCenterId.get(recurringOrder.center_id) ?? []
+      : [];
 
-    await sendOrderEmails({
+    emailTasks.push(() => sendOrderEmails({
       customerEmail: centerEmails.length ? centerEmails : recurringProfile?.email ?? '',
       customerName: recurringCenter?.name ?? recurringProfile?.full_name ?? recurringProfile?.email ?? '',
-      orderId: newOrder.id,
-      shipping: newOrder,
-      items: recurringItems.map((item) => ({
-        name: item.product_name_snapshot ?? 'Unknown product',
+      orderId: generation.order_id,
+      shipping: {
+        center_location_id: generation.center_location_id,
+        shipping_name: generation.shipping_name,
+        shipping_address1: generation.shipping_address1,
+        shipping_address2: generation.shipping_address2,
+        shipping_city: generation.shipping_city,
+        shipping_state: generation.shipping_state,
+        shipping_zip: generation.shipping_zip,
+      },
+      items: items.map((item) => ({
+        name: item.name,
         qty: item.qty,
-        price: item.unit_price_cents,
-        line: item.line_total_cents
+        price: item.price_cents,
+        line: item.line_total_cents,
       })),
-      subtotalCents: subtotal
-    });
+      subtotalCents: generation.subtotal_cents,
+    }));
 
     created += 1;
   }
 
+  if (emailTasks.length) {
+    const backgroundEmails = Promise.allSettled(emailTasks.map((task) => task())).then((results) => {
+      const rejected = results.filter((result) => result.status === 'rejected');
+      if (rejected.length) {
+        console.error('[recurring-orders-cron] background email tasks rejected', { count: rejected.length });
+      }
+    });
+    waitUntil(backgroundEmails);
+  }
+
   await writeCronRunLog({
-    activeRecurringCount: activeRecurringOrders.length,
+    activeRecurringCount: activeRecurringCount ?? dueRecurringOrders.length,
     created,
     dueRecurringCount: dueRecurringOrders.length,
     errors,
@@ -322,7 +307,11 @@ async function runRecurringOrders(req: Request) {
     status: errors.length ? 'error' : 'success',
   });
 
-  return NextResponse.json({ created, errors });
+  return respond(
+    { created, errors, skippedDuplicates },
+    errors.length ? 207 : 200,
+    errors.length ? 'partial_error' : 'success'
+  );
 }
 
 export async function GET(req: Request) {
