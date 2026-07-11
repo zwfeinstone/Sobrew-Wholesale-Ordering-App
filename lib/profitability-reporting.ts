@@ -105,6 +105,59 @@ export type MarginBridgeRow = {
   detail: string;
 };
 
+export type MarginHealthValueFormat = 'currency' | 'number' | 'percent';
+
+export type MarginHealthMetricRow = {
+  id: string;
+  label: string;
+  currentValue: number;
+  baselineValue: number;
+  previousValue: number;
+  changeValue: number;
+  estimatedImpactCents: number;
+  format: MarginHealthValueFormat;
+  detail: string;
+};
+
+export type MarginLeakRow = {
+  id: string;
+  label: string;
+  currentRevenueCents: number;
+  currentMarginPercent: number;
+  baselineMarginPercent: number | null;
+  marginPointChange: number | null;
+  estimatedImpactCents: number;
+  status: 'declined' | 'improved' | 'flat' | 'new';
+};
+
+export type CogsTimingSummary = {
+  shippedProductCogsCents: number;
+  shippedTotalCogsCents: number;
+  shippedLaborCogsCents: number;
+  productionActualCogsCents: number;
+  productionLaborCogsCents: number;
+  inventoryFinishedValueCents: number;
+  inventoryFinishedLaborCents: number;
+  positiveFinishedUnits: number;
+  netFinishedUnits: number;
+  lotlessShortageUnits: number;
+  hasEstimatedInventoryLabor: boolean;
+};
+
+export type MarginHealthSummary = {
+  baselineRange: {
+    previousEndExclusive: Date;
+    previousStart: Date;
+    trailingEndExclusive: Date;
+    trailingStart: Date;
+  };
+  salesMetrics: MarginHealthMetricRow[];
+  unitEconomicsRows: MarginHealthMetricRow[];
+  productLeaks: MarginLeakRow[];
+  centerLeaks: MarginLeakRow[];
+  cogsTiming: CogsTimingSummary;
+};
+
 export type ProductionCogsRow = {
   id: string;
   productId: string;
@@ -150,6 +203,7 @@ export type ProfitabilityDashboard = {
   previous: ProfitabilityTotals;
   centerRows: ProfitabilityCenterRow[];
   itemRows: ProfitabilityItemRow[];
+  marginHealth: MarginHealthSummary;
   marginBridgeRows: MarginBridgeRow[];
   productionRows: ProductionCogsRow[];
   productionSummary: {
@@ -218,6 +272,7 @@ type InventoryItemRow = {
 
 type InventoryLotRow = {
   inventory_item_id: string;
+  production_run_id?: string | null;
   quantity_remaining: number | string | null;
   unit_cost_cents?: number | string | null;
 };
@@ -314,7 +369,7 @@ function lineRevenue(item: ProfitabilityOrderItemRow) {
 }
 
 function activeProductionQuantity(run: ProductionRunRow) {
-  if (run.status === 'void') return 0;
+  if (run.status === 'void' || run.status === 'voided') return 0;
   return Math.max(0, numericValue(run.quantity_produced) - numericValue(run.quantity_voided));
 }
 
@@ -607,6 +662,246 @@ function buildMarginBridge(current: ProfitabilityTotals, previous: Profitability
   ];
 }
 
+function periodDays(start: Date, endExclusive: Date) {
+  return Math.max(1, Math.round((endExclusive.getTime() - start.getTime()) / DAY_IN_MS));
+}
+
+function centsRate(numerator: number, denominator: number) {
+  return denominator > 0 ? (numerator / denominator) * 100 : 0;
+}
+
+function perUnit(numerator: number, denominator: number) {
+  return denominator > 0 ? numerator / denominator : 0;
+}
+
+export function buildBaselineRanges(rangeStart: Date, rangeEndExclusive: Date) {
+  const days = periodDays(rangeStart, rangeEndExclusive);
+  const previousEndExclusive = rangeStart;
+  const previousStart = new Date(rangeStart.getTime() - days * DAY_IN_MS);
+  const trailingEndExclusive = rangeStart;
+  const trailingStart = new Date(rangeStart.getTime() - 56 * DAY_IN_MS);
+
+  return {
+    previousEndExclusive,
+    previousStart,
+    trailingEndExclusive,
+    trailingStart,
+  };
+}
+
+function metricRow({
+  baselineValue,
+  currentValue,
+  detail,
+  estimatedImpactCents,
+  format,
+  id,
+  label,
+  previousValue,
+}: Omit<MarginHealthMetricRow, 'changeValue'>): MarginHealthMetricRow {
+  return {
+    baselineValue,
+    changeValue: currentValue - baselineValue,
+    currentValue,
+    detail,
+    estimatedImpactCents,
+    format,
+    id,
+    label,
+    previousValue,
+  };
+}
+
+export function buildNormalizedMarginBridge(
+  current: ProfitabilityTotals,
+  baseline: ProfitabilityTotals,
+  previous: ProfitabilityTotals = emptyTotals(),
+  currentDays = 1,
+  baselineDays = 1,
+  previousDays = 1
+) {
+  const baselineMarginRate = baseline.revenueCents > 0 ? baseline.grossProfitCents / baseline.revenueCents : current.revenueCents > 0 ? current.grossProfitCents / current.revenueCents : 0;
+  const baselineAov = perUnit(baseline.revenueCents, baseline.orderCount);
+  const baselineRevenuePerUnit = perUnit(baseline.revenueCents, baseline.unitsSold);
+
+  const currentRevenuePerDay = current.revenueCents / currentDays;
+  const baselineRevenuePerDay = baseline.revenueCents / baselineDays;
+  const previousRevenuePerDay = previous.revenueCents / previousDays;
+  const currentOrdersPerDay = current.orderCount / currentDays;
+  const baselineOrdersPerDay = baseline.orderCount / baselineDays;
+  const previousOrdersPerDay = previous.orderCount / previousDays;
+  const currentAov = perUnit(current.revenueCents, current.orderCount);
+  const previousAov = perUnit(previous.revenueCents, previous.orderCount);
+  const currentUnitsPerOrder = perUnit(current.unitsSold, current.orderCount);
+  const baselineUnitsPerOrder = perUnit(baseline.unitsSold, baseline.orderCount);
+  const previousUnitsPerOrder = perUnit(previous.unitsSold, previous.orderCount);
+  const currentRevenuePerUnit = perUnit(current.revenueCents, current.unitsSold);
+  const previousRevenuePerUnit = perUnit(previous.revenueCents, previous.unitsSold);
+
+  const salesMetrics: MarginHealthMetricRow[] = [
+    metricRow({
+      id: 'revenue_per_day',
+      label: 'Revenue / day',
+      currentValue: currentRevenuePerDay,
+      baselineValue: baselineRevenuePerDay,
+      previousValue: previousRevenuePerDay,
+      estimatedImpactCents: (currentRevenuePerDay - baselineRevenuePerDay) * currentDays * baselineMarginRate,
+      format: 'currency',
+      detail: 'Normalizes revenue for date ranges of different lengths.',
+    }),
+    metricRow({
+      id: 'orders_per_day',
+      label: 'Orders / day',
+      currentValue: currentOrdersPerDay,
+      baselineValue: baselineOrdersPerDay,
+      previousValue: previousOrdersPerDay,
+      estimatedImpactCents: (currentOrdersPerDay - baselineOrdersPerDay) * currentDays * baselineAov * baselineMarginRate,
+      format: 'number',
+      detail: 'Shows demand pace without letting month length distort the read.',
+    }),
+    metricRow({
+      id: 'average_order_value',
+      label: 'Average order value',
+      currentValue: currentAov,
+      baselineValue: baselineAov,
+      previousValue: previousAov,
+      estimatedImpactCents: (currentAov - baselineAov) * current.orderCount * baselineMarginRate,
+      format: 'currency',
+      detail: 'Revenue quality per shipped order.',
+    }),
+    metricRow({
+      id: 'units_per_order',
+      label: 'Units / order',
+      currentValue: currentUnitsPerOrder,
+      baselineValue: baselineUnitsPerOrder,
+      previousValue: previousUnitsPerOrder,
+      estimatedImpactCents: (currentUnitsPerOrder - baselineUnitsPerOrder) * current.orderCount * baselineRevenuePerUnit * baselineMarginRate,
+      format: 'number',
+      detail: 'Order density before product mix and pricing effects.',
+    }),
+  ];
+
+  const rateRow = (
+    id: string,
+    label: string,
+    currentCents: number,
+    baselineCents: number,
+    previousCents: number,
+    detail: string,
+    sign: 1 | -1
+  ) => {
+    const currentRate = centsRate(currentCents, current.revenueCents);
+    const baselineRate = centsRate(baselineCents, baseline.revenueCents);
+    const previousRate = centsRate(previousCents, previous.revenueCents);
+    return metricRow({
+      id,
+      label,
+      currentValue: currentRate,
+      baselineValue: baselineRate,
+      previousValue: previousRate,
+      estimatedImpactCents: sign * ((currentRate - baselineRate) / 100) * current.revenueCents,
+      format: 'percent',
+      detail,
+    });
+  };
+
+  const unitEconomicsRows: MarginHealthMetricRow[] = [
+    metricRow({
+      id: 'revenue_per_order',
+      label: 'Revenue / order',
+      currentValue: currentAov,
+      baselineValue: baselineAov,
+      previousValue: previousAov,
+      estimatedImpactCents: (currentAov - baselineAov) * current.orderCount * baselineMarginRate,
+      format: 'currency',
+      detail: 'Pricing and order-size signal at the shipped-order level.',
+    }),
+    metricRow({
+      id: 'revenue_per_unit',
+      label: 'Revenue / unit',
+      currentValue: currentRevenuePerUnit,
+      baselineValue: baselineRevenuePerUnit,
+      previousValue: previousRevenuePerUnit,
+      estimatedImpactCents: (currentRevenuePerUnit - baselineRevenuePerUnit) * current.unitsSold * baselineMarginRate,
+      format: 'currency',
+      detail: 'Pricing and product-mix signal per unit shipped.',
+    }),
+    rateRow('material_rate', 'Material COGS rate', current.materialCents, baseline.materialCents, previous.materialCents, 'Coffee, bags, boxes, and tracked recipe inputs as a share of revenue.', -1),
+    rateRow('labor_rate', 'Labor COGS rate', current.laborCents, baseline.laborCents, previous.laborCents, 'Snapshotted production labor as a share of shipped revenue.', -1),
+    rateRow('fixed_rate', 'Fixed packaging rate', current.fixedCents, baseline.fixedCents, previous.fixedCents, 'Tape, labels, and fixed packaging as a share of revenue.', -1),
+    rateRow('shipping_rate', 'Shipping COGS rate', current.shippingCogsCents, baseline.shippingCogsCents, previous.shippingCogsCents, 'Carrier/local delivery COGS as a share of revenue.', -1),
+    rateRow('processing_rate', 'Processing fee rate', current.processingFeeCogsCents, baseline.processingFeeCogsCents, previous.processingFeeCogsCents, 'Payment processing fees as a share of revenue.', -1),
+    rateRow('donation_rate', 'Donation rate', current.donationCogsCents, baseline.donationCogsCents, previous.donationCogsCents, 'Donation COGS as a share of revenue.', -1),
+  ];
+
+  return { salesMetrics, unitEconomicsRows };
+}
+
+function buildMarginLeakRows({
+  baselineLines,
+  centers,
+  currentLines,
+  groupBy,
+}: {
+  baselineLines: NormalizedLine[];
+  centers: CenterRow[];
+  currentLines: NormalizedLine[];
+  groupBy: 'center' | 'product';
+}): MarginLeakRow[] {
+  const centerById = new Map(centers.map((center) => [center.id, center]));
+  const group = (lines: NormalizedLine[]) => {
+    const grouped = new Map<string, { label: string; lines: NormalizedLine[] }>();
+    for (const line of lines) {
+      const id = groupBy === 'product' ? line.productId ?? line.productName : line.centerId ?? 'unknown';
+      const label = groupBy === 'product' ? line.productName : centerName(centerById.get(id));
+      const existing = grouped.get(id) ?? { label, lines: [] };
+      existing.lines.push(line);
+      grouped.set(id, existing);
+    }
+    return grouped;
+  };
+
+  const currentGroups = group(currentLines);
+  const baselineGroups = group(baselineLines);
+
+  return [...currentGroups.entries()]
+    .map(([id, currentGroup]) => {
+      const currentTotals = totalsForLines(currentGroup.lines);
+      const baselineGroup = baselineGroups.get(id);
+      if (!baselineGroup) {
+        return {
+          id,
+          label: currentGroup.label,
+          currentRevenueCents: currentTotals.revenueCents,
+          currentMarginPercent: currentTotals.marginPercent,
+          baselineMarginPercent: null,
+          marginPointChange: null,
+          estimatedImpactCents: 0,
+          status: 'new' as const,
+        };
+      }
+
+      const baselineTotals = totalsForLines(baselineGroup.lines);
+      const marginPointChange = currentTotals.marginPercent - baselineTotals.marginPercent;
+      const estimatedImpactCents = (marginPointChange / 100) * currentTotals.revenueCents;
+      return {
+        id,
+        label: currentGroup.label,
+        currentRevenueCents: currentTotals.revenueCents,
+        currentMarginPercent: currentTotals.marginPercent,
+        baselineMarginPercent: baselineTotals.marginPercent,
+        marginPointChange,
+        estimatedImpactCents,
+        status: marginPointChange < -0.01 ? 'declined' as const : marginPointChange > 0.01 ? 'improved' as const : 'flat' as const,
+      };
+    })
+    .sort((a, b) => {
+      if (a.status === 'new' && b.status !== 'new') return 1;
+      if (b.status === 'new' && a.status !== 'new') return -1;
+      return a.estimatedImpactCents - b.estimatedImpactCents || b.currentRevenueCents - a.currentRevenueCents || a.label.localeCompare(b.label);
+    });
+}
+
 function buildProductionRows({
   inputs,
   productById,
@@ -702,6 +997,109 @@ function buildInventoryRows({
   }).sort((a, b) => a.itemType.localeCompare(b.itemType) || a.name.localeCompare(b.name));
 }
 
+function buildCogsTimingSummary({
+  current,
+  inventoryItems,
+  inventoryLots,
+  productId,
+  productionRuns,
+  rangeEndExclusive,
+  rangeStart,
+  shortageMovements,
+}: {
+  current: ProfitabilityTotals;
+  inventoryItems: InventoryItemRow[];
+  inventoryLots: InventoryLotRow[];
+  productId?: string;
+  productionRuns: ProductionRunRow[];
+  rangeEndExclusive: Date;
+  rangeStart: Date;
+  shortageMovements: InventoryMovementRow[];
+}): CogsTimingSummary {
+  const finishedItemsById = new Map(
+    inventoryItems
+      .filter((item) => item.item_type === 'finished_good' && (!productId || item.product_id === productId))
+      .map((item) => [item.id, item])
+  );
+  const runById = new Map(productionRuns.map((run) => [run.id, run]));
+  const positiveLaborByItemId = new Map<string, { laborCents: number; units: number }>();
+  let inventoryFinishedValueCents = 0;
+  let inventoryFinishedLaborCents = 0;
+  let positiveFinishedUnits = 0;
+  let netFinishedUnits = 0;
+  let lotlessShortageUnits = 0;
+  let hasEstimatedInventoryLabor = false;
+
+  for (const lot of inventoryLots) {
+    const item = finishedItemsById.get(lot.inventory_item_id);
+    if (!item) continue;
+    const quantity = numericValue(lot.quantity_remaining);
+    const unitCostCents = numericValue(lot.unit_cost_cents);
+    inventoryFinishedValueCents += quantity * unitCostCents;
+    netFinishedUnits += quantity;
+    if (quantity > 0) positiveFinishedUnits += quantity;
+
+    const run = lot.production_run_id ? runById.get(lot.production_run_id) : undefined;
+    const laborUnitCents = run && numericValue(run.quantity_produced) > 0
+      ? numericValue(run.actual_labor_cost_cents) / numericValue(run.quantity_produced)
+      : 0;
+    const laborCents = quantity * laborUnitCents;
+    inventoryFinishedLaborCents += laborCents;
+
+    if (quantity > 0 && laborUnitCents > 0) {
+      const existing = positiveLaborByItemId.get(item.id) ?? { laborCents: 0, units: 0 };
+      existing.laborCents += laborCents;
+      existing.units += quantity;
+      positiveLaborByItemId.set(item.id, existing);
+    }
+  }
+
+  for (const movement of shortageMovements) {
+    const item = finishedItemsById.get(movement.inventory_item_id);
+    if (!item) continue;
+    const quantity = numericValue(movement.quantity_change);
+    if (quantity >= 0) continue;
+
+    inventoryFinishedValueCents += quantity * numericValue(movement.unit_cost_cents);
+    netFinishedUnits += quantity;
+    lotlessShortageUnits += Math.abs(quantity);
+
+    const itemLabor = positiveLaborByItemId.get(item.id);
+    if (itemLabor && itemLabor.units > 0) {
+      inventoryFinishedLaborCents += quantity * (itemLabor.laborCents / itemLabor.units);
+    }
+    hasEstimatedInventoryLabor = true;
+  }
+
+  const productionRows = productionRuns
+    .map((run) => ({ run, producedAt: validDate(run.produced_at) }))
+    .filter(({ run, producedAt }) => {
+      if (!producedAt || producedAt < rangeStart || producedAt >= rangeEndExclusive) return false;
+      if (productId && run.product_id !== productId) return false;
+      return activeProductionQuantity(run) > 0;
+    });
+  const productionActualCogsCents = productionRows.reduce((sum, { run }) => sum + activeProductionQuantity(run) * numericValue(run.actual_unit_cost_cents), 0);
+  const productionLaborCogsCents = productionRows.reduce((sum, { run }) => {
+    const quantityProduced = numericValue(run.quantity_produced);
+    const activeRatio = quantityProduced > 0 ? activeProductionQuantity(run) / quantityProduced : 0;
+    return sum + numericValue(run.actual_labor_cost_cents) * activeRatio;
+  }, 0);
+
+  return {
+    hasEstimatedInventoryLabor,
+    inventoryFinishedLaborCents,
+    inventoryFinishedValueCents,
+    lotlessShortageUnits,
+    netFinishedUnits,
+    positiveFinishedUnits,
+    productionActualCogsCents,
+    productionLaborCogsCents,
+    shippedLaborCogsCents: current.laborCents,
+    shippedProductCogsCents: current.productCogsCents,
+    shippedTotalCogsCents: current.totalCogsCents,
+  };
+}
+
 function expenseLabel(type: string) {
   if (type === 'shipping_label') return 'Shipping labels';
   if (type === 'branding_label') return 'Branding labels';
@@ -771,9 +1169,20 @@ export function buildProfitabilityDashboard({
   const allLines = normalizeLines({ orderItems, orders, products, productionRuns });
   const currentLines = filterLines(allLines, rangeStart, rangeEndExclusive, productId, centerId);
   const previousRange = previousRangeFor(rangeStart, rangeEndExclusive);
+  const baselineRange = buildBaselineRanges(rangeStart, rangeEndExclusive);
   const previousLines = filterLines(allLines, previousRange.previousStart, previousRange.previousEndExclusive, productId, centerId);
+  const trailingLines = filterLines(allLines, baselineRange.trailingStart, baselineRange.trailingEndExclusive, productId, centerId);
   const current = totalsForLines(currentLines);
   const previous = totalsForLines(previousLines);
+  const trailing = totalsForLines(trailingLines);
+  const normalizedBridge = buildNormalizedMarginBridge(
+    current,
+    trailing,
+    previous,
+    periodDays(rangeStart, rangeEndExclusive),
+    periodDays(baselineRange.trailingStart, baselineRange.trailingEndExclusive),
+    periodDays(previousRange.previousStart, previousRange.previousEndExclusive)
+  );
   const productionRows = buildProductionRows({
     inputs: productionRunInputs,
     productById,
@@ -830,6 +1239,23 @@ export function buildProfitabilityDashboard({
     previous,
     centerRows: buildCenterRows(currentLines, centers),
     itemRows: buildItemRows(currentLines),
+    marginHealth: {
+      baselineRange,
+      centerLeaks: buildMarginLeakRows({ baselineLines: trailingLines, centers, currentLines, groupBy: 'center' }),
+      cogsTiming: buildCogsTimingSummary({
+        current,
+        inventoryItems,
+        inventoryLots,
+        productId,
+        productionRuns,
+        rangeEndExclusive,
+        rangeStart,
+        shortageMovements,
+      }),
+      productLeaks: buildMarginLeakRows({ baselineLines: trailingLines, centers, currentLines, groupBy: 'product' }),
+      salesMetrics: normalizedBridge.salesMetrics,
+      unitEconomicsRows: normalizedBridge.unitEconomicsRows,
+    },
     marginBridgeRows: buildMarginBridge(current, previous),
     productionRows,
     productionSummary,

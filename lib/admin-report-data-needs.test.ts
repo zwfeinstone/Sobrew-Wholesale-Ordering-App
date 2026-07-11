@@ -35,4 +35,12 @@ describe('dataNeedsForReport', () => {
     expect(needs.productRecipes).toBe(true);
     expect(needs.inventoryValuation).toBe(false);
   });
+
+  it('loads inventory valuation and shortage movements for margin health', () => {
+    const needs = dataNeedsForReport('margin');
+    expect(needs.coreCommerce).toBe(true);
+    expect(needs.productionRuns).toBe(true);
+    expect(needs.inventoryValuation).toBe(true);
+    expect(needs.shortageMovements).toBe(true);
+  });
 });

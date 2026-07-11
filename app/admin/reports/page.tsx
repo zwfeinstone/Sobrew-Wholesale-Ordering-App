@@ -68,7 +68,7 @@ const REPORTS = [
   { id: 'overview', label: 'Profitability Overview' },
   { id: 'centers', label: 'Center Profitability' },
   { id: 'items', label: 'Item Profitability' },
-  { id: 'margin', label: 'Where Did Margin Go' },
+  { id: 'margin', label: 'Margin Health' },
   { id: 'simulator', label: 'Gross Profit Simulator' },
   { id: 'production', label: 'Production & COGS' },
   { id: 'inventory', label: 'Inventory Value & Expenses' },
@@ -1032,6 +1032,136 @@ function MarginBridgeTable({ rows }: { rows: ReturnType<typeof buildProfitabilit
   );
 }
 
+function metricValue(row: ReturnType<typeof buildProfitabilityDashboard>['marginHealth']['salesMetrics'][number], value: number) {
+  if (row.format === 'currency') return money(value);
+  if (row.format === 'percent') return `${number(value, 1)}%`;
+  return number(value, 1);
+}
+
+function metricChange(row: ReturnType<typeof buildProfitabilityDashboard>['marginHealth']['salesMetrics'][number]) {
+  if (row.format === 'currency') return signedMoney(row.changeValue);
+  if (row.format === 'percent') return `${row.changeValue > 0 ? '+' : ''}${number(row.changeValue, 1)} pts`;
+  return `${row.changeValue > 0 ? '+' : ''}${number(row.changeValue, 1)}`;
+}
+
+function impactTone(value: number) {
+  return value >= 0 ? 'text-teal-800' : 'text-rose-700';
+}
+
+function MarginHealthMetricTable({
+  rows,
+}: {
+  rows: ReturnType<typeof buildProfitabilityDashboard>['marginHealth']['salesMetrics'];
+}) {
+  if (!rows.length) return <EmptyState message="No margin health metrics found for the selected range." />;
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full min-w-[66rem] border-separate border-spacing-y-2 text-left text-sm">
+        <thead>
+          <tr className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+            <th className="px-4 py-2">Driver</th>
+            <th className="px-4 py-2 text-right">Current</th>
+            <th className="px-4 py-2 text-right">8-week baseline</th>
+            <th className="px-4 py-2 text-right">Previous range</th>
+            <th className="px-4 py-2 text-right">Change</th>
+            <th className="px-4 py-2 text-right">Est. impact</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <tr key={row.id} className="bg-white/65">
+              <td className="rounded-l-xl px-4 py-3">
+                <p className="font-semibold text-slate-950">{row.label}</p>
+                <p className="mt-1 text-xs leading-5 text-slate-500">{row.detail}</p>
+              </td>
+              <td className="px-4 py-3 text-right font-semibold text-slate-950">{metricValue(row, row.currentValue)}</td>
+              <td className="px-4 py-3 text-right text-slate-700">{metricValue(row, row.baselineValue)}</td>
+              <td className="px-4 py-3 text-right text-slate-700">{metricValue(row, row.previousValue)}</td>
+              <td className={`px-4 py-3 text-right font-semibold ${impactTone(row.changeValue)}`}>{metricChange(row)}</td>
+              <td className={`rounded-r-xl px-4 py-3 text-right font-semibold ${impactTone(row.estimatedImpactCents)}`}>{signedMoney(row.estimatedImpactCents)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function MarginLeakTable({
+  emptyLabel,
+  rows,
+}: {
+  emptyLabel: string;
+  rows: ReturnType<typeof buildProfitabilityDashboard>['marginHealth']['productLeaks'];
+}) {
+  if (!rows.length) return <EmptyState message={emptyLabel} />;
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full min-w-[58rem] border-separate border-spacing-y-2 text-left text-sm">
+        <thead>
+          <tr className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+            <th className="px-4 py-2">Product or center</th>
+            <th className="px-4 py-2 text-right">Revenue</th>
+            <th className="px-4 py-2 text-right">Current margin</th>
+            <th className="px-4 py-2 text-right">8-week margin</th>
+            <th className="px-4 py-2 text-right">Change</th>
+            <th className="px-4 py-2 text-right">Est. impact</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.slice(0, ROW_LIMIT).map((row) => (
+            <tr key={row.id} className="bg-white/65">
+              <td className="rounded-l-xl px-4 py-3">
+                <p className="font-semibold text-slate-950">{row.label}</p>
+                <p className="mt-1 text-xs uppercase tracking-[0.14em] text-slate-500">{row.status === 'new' ? 'New in current range' : row.status}</p>
+              </td>
+              <td className="px-4 py-3 text-right font-semibold text-slate-950">{money(row.currentRevenueCents)}</td>
+              <td className="px-4 py-3 text-right text-slate-700">{number(row.currentMarginPercent, 1)}%</td>
+              <td className="px-4 py-3 text-right text-slate-700">{row.baselineMarginPercent === null ? 'New' : `${number(row.baselineMarginPercent, 1)}%`}</td>
+              <td className={`px-4 py-3 text-right font-semibold ${row.marginPointChange === null ? 'text-slate-500' : impactTone(row.marginPointChange)}`}>
+                {row.marginPointChange === null ? 'New' : `${row.marginPointChange > 0 ? '+' : ''}${number(row.marginPointChange, 1)} pts`}
+              </td>
+              <td className={`rounded-r-xl px-4 py-3 text-right font-semibold ${impactTone(row.estimatedImpactCents)}`}>{signedMoney(row.estimatedImpactCents)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function CogsTimingGrid({
+  centerId,
+  productId,
+  summary,
+}: {
+  centerId?: string;
+  productId?: string;
+  summary: ReturnType<typeof buildProfitabilityDashboard>['marginHealth']['cogsTiming'];
+}) {
+  return (
+    <div className="space-y-4">
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+        <StatTile label="Shipped COGS" value={money(summary.shippedTotalCogsCents)} detail={`${money(summary.shippedProductCogsCents)} product COGS; ${money(summary.shippedLaborCogsCents)} labor recognized on shipped lines.`} />
+        <StatTile label="Production COGS Created" value={money(summary.productionActualCogsCents)} detail={`${money(summary.productionLaborCogsCents)} labor created in production runs during the selected range.`} />
+        <StatTile label="Finished Inventory Value" value={money(summary.inventoryFinishedValueCents)} detail={`${quantity(summary.netFinishedUnits)} net units; ${quantity(summary.positiveFinishedUnits)} units in positive lots.`} />
+        <StatTile label="Labor Still In Inventory" value={money(summary.inventoryFinishedLaborCents)} detail="Estimated labor COGS currently held in finished-good inventory." />
+        <StatTile label="Lotless Shortages" value={quantity(summary.lotlessShortageUnits)} detail="Shipment or sample consumption netted into visible inventory without an exact lot split." />
+        <StatTile label="Timing Lens" value={summary.productionActualCogsCents > summary.shippedProductCogsCents ? 'Building' : 'Drawing down'} detail="Compares production COGS created to product COGS recognized on shipments." />
+      </div>
+      {summary.hasEstimatedInventoryLabor || centerId ? (
+        <div className="rounded-xl border border-amber-200 bg-amber-50/80 px-4 py-3 text-sm leading-6 text-amber-900">
+          {summary.hasEstimatedInventoryLabor ? 'Finished inventory labor includes an estimate where lotless shortage movements are netted against positive production lots. ' : ''}
+          {centerId ? 'Production and inventory timing are not center-specific, so the center filter only affects shipped margin.' : ''}
+          {productId ? 'The product filter is applied to shipped margin, production timing, and finished-good inventory timing.' : ''}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function ProductionCogsTable({ rows }: { rows: ReturnType<typeof buildProfitabilityDashboard>['productionRows'] }) {
   if (!rows.length) return <EmptyState message="No production runs found for the selected range." />;
 
@@ -1961,7 +2091,7 @@ export default async function AdminReportsPage({
     dataNeeds.inventoryValuation
       ? supabase
         .from('inventory_lots')
-        .select('inventory_item_id,quantity_remaining,unit_cost_cents,received_at,created_at')
+        .select('inventory_item_id,production_run_id,quantity_remaining,unit_cost_cents,received_at,created_at')
         .or('quantity_remaining.neq.0,unit_cost_cents.gt.0')
         .order('created_at', { ascending: false })
         .limit(ADMIN_QUERY_ROW_LIMIT)
@@ -2259,7 +2389,9 @@ export default async function AdminReportsPage({
             <p className="mt-3 text-sm leading-6 text-slate-500">
               {activeReport === 'prospecting'
                 ? `${REPORTS.find((report) => report.id === activeReport)?.label}. Using ${dateLabel(rangeStart)} through ${dateLabel(addDays(rangeEndExclusive, -1))}.`
-                : `${REPORTS.find((report) => report.id === activeReport)?.label}. Using ${dateLabel(rangeStart)} through ${dateLabel(addDays(rangeEndExclusive, -1))}; sales comparisons still compare ${monthLabel(selectedMonth)} with ${monthLabel(dashboard.previousMonthStart)}.`}
+                : activeReport === 'margin'
+                  ? `${REPORTS.find((report) => report.id === activeReport)?.label}. Using ${dateLabel(rangeStart)} through ${dateLabel(addDays(rangeEndExclusive, -1))}; normalized against trailing 8 weeks and the previous equal-length range.`
+                  : `${REPORTS.find((report) => report.id === activeReport)?.label}. Using ${dateLabel(rangeStart)} through ${dateLabel(addDays(rangeEndExclusive, -1))}; sales comparisons still compare ${monthLabel(selectedMonth)} with ${monthLabel(dashboard.previousMonthStart)}.`}
             </p>
           </form>
         </div>
@@ -2332,21 +2464,45 @@ export default async function AdminReportsPage({
       ) : null}
 
       {activeReport === 'margin' ? (
-        <section className="grid gap-5 xl:grid-cols-[0.9fr_1.1fr]">
+        <section className="space-y-5">
           <div className="card space-y-5">
             <SectionHeading
-              eyebrow="Margin bridge"
-              title="Where did margin go?"
-              subtitle="Compares this selected range against the immediately previous range of the same length."
+              eyebrow="Margin health"
+              title="Is the business getting healthier?"
+              subtitle={`Selected range compared with a trailing 8-week baseline (${dateLabel(profitabilityDashboard.marginHealth.baselineRange.trailingStart)} through ${dateLabel(addDays(profitabilityDashboard.marginHealth.baselineRange.trailingEndExclusive, -1))}) and the immediately previous equal-length range.`}
             />
-            <div className="grid gap-3 sm:grid-cols-2">
-              <StatTile label="Current Profit" value={money(profitabilityDashboard.current.grossProfitCents)} detail={`${percent(profitabilityDashboard.current.marginPercent).replace('+', '')} current margin.`} />
-              <StatTile label="Previous Profit" value={money(profitabilityDashboard.previous.grossProfitCents)} detail={`${percent(profitabilityDashboard.previous.marginPercent).replace('+', '')} previous margin.`} />
+            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+              <StatTile label="Gross Margin" value={`${number(profitabilityDashboard.current.marginPercent, 1)}%`} detail={`${money(profitabilityDashboard.current.grossProfitCents)} gross profit on shipped orders.`} />
+              <StatTile label="Profit / $1k Revenue" value={money((profitabilityDashboard.current.marginPercent / 100) * 100000)} detail="Normalizes profit quality so revenue swings do not hide margin health." />
+              <StatTile label="Revenue / Day" value={metricValue(profitabilityDashboard.marginHealth.salesMetrics[0], profitabilityDashboard.marginHealth.salesMetrics[0]?.currentValue ?? 0)} detail={`${metricChange(profitabilityDashboard.marginHealth.salesMetrics[0])} versus the trailing 8-week baseline.`} />
+              <StatTile label="Orders / Day" value={metricValue(profitabilityDashboard.marginHealth.salesMetrics[1], profitabilityDashboard.marginHealth.salesMetrics[1]?.currentValue ?? 0)} detail={`${metricChange(profitabilityDashboard.marginHealth.salesMetrics[1])} versus the trailing 8-week baseline.`} />
             </div>
           </div>
+
           <div className="card space-y-5">
-            <SectionHeading eyebrow="Profit movement" title={signedMoney(profitabilityDashboard.current.grossProfitCents - profitabilityDashboard.previous.grossProfitCents)} subtitle="Positive numbers helped gross profit; negative numbers pulled it down." />
-            <MarginBridgeTable rows={profitabilityDashboard.marginBridgeRows} />
+            <SectionHeading eyebrow="Sales strength" title="Pace, order size, and density" subtitle="These are normalized by days and orders so the report does not compare a partial month to a full month." />
+            <MarginHealthMetricTable rows={profitabilityDashboard.marginHealth.salesMetrics} />
+          </div>
+
+          <div className="card space-y-5">
+            <SectionHeading eyebrow="Unit economics" title="Margin drivers at current revenue" subtitle="Estimated impact shows what each driver is worth at current revenue or volume versus the trailing 8-week baseline." />
+            <MarginHealthMetricTable rows={profitabilityDashboard.marginHealth.unitEconomicsRows} />
+          </div>
+
+          <section className="grid gap-5 xl:grid-cols-2">
+            <div className="card space-y-5">
+              <SectionHeading eyebrow="Top margin leaks" title="Products pulling margin down" subtitle="Ranked by margin-rate decline multiplied by current revenue." />
+              <MarginLeakTable rows={profitabilityDashboard.marginHealth.productLeaks} emptyLabel="No product-level margin leaks found for the selected range." />
+            </div>
+            <div className="card space-y-5">
+              <SectionHeading eyebrow="Top margin leaks" title="Centers pulling margin down" subtitle="Ranked by margin-rate decline multiplied by current revenue." />
+              <MarginLeakTable rows={profitabilityDashboard.marginHealth.centerLeaks} emptyLabel="No center-level margin leaks found for the selected range." />
+            </div>
+          </section>
+
+          <div className="card space-y-5">
+            <SectionHeading eyebrow="COGS timing" title="Is timing hiding the answer?" subtitle="Compares COGS recognized on shipments, COGS created in production, and value still sitting in finished-good inventory." />
+            <CogsTimingGrid centerId={centerId} productId={productId} summary={profitabilityDashboard.marginHealth.cogsTiming} />
           </div>
         </section>
       ) : null}
