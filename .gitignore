@@ -21,3 +21,5 @@
 
 # lockfiles (optional but recommended to commit normally — remove if you want lockfile tracked)
 # package-lock.json
+.vercel
+.env*

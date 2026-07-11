@@ -27,13 +27,20 @@ describe('dataNeedsForReport', () => {
     expect(needs.reorderSettings).toBe(true);
   });
 
-  it('loads production inputs and recipes only for production detail', () => {
+  it('loads production inputs and recipes for production detail', () => {
     const needs = dataNeedsForReport('production');
     expect(needs.coreCommerce).toBe(true);
     expect(needs.productionRuns).toBe(true);
     expect(needs.productionInputs).toBe(true);
     expect(needs.productRecipes).toBe(true);
     expect(needs.inventoryValuation).toBe(false);
+  });
+
+  it('loads recipes for item profitability price-per-pound reporting', () => {
+    const needs = dataNeedsForReport('items');
+    expect(needs.coreCommerce).toBe(true);
+    expect(needs.productionRuns).toBe(true);
+    expect(needs.productRecipes).toBe(true);
   });
 
   it('loads inventory valuation and shortage movements for margin health', () => {

@@ -28,6 +28,7 @@ export function dataNeedsForReport(report: AdminReportId): ReportDataNeeds {
   const prospecting = report === 'prospecting';
   const salesDashboard = report === 'sales';
   const inventory = report === 'inventory';
+  const items = report === 'items';
   const margin = report === 'margin';
   const production = report === 'production';
   const simulator = report === 'simulator';
@@ -40,7 +41,7 @@ export function dataNeedsForReport(report: AdminReportId): ReportDataNeeds {
     nonInventoryExpenses: inventory,
     productionInputs: production,
     productionRuns: profitability,
-    productRecipes: production || simulator,
+    productRecipes: items || production || simulator,
     prospecting,
     reorderSettings: salesDashboard,
     sampleBoxes: inventory,

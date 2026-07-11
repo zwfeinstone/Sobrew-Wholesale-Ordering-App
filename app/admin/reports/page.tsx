@@ -191,6 +191,21 @@ function todayCentralDate() {
   return parseDateInput(centralDateInput(new Date())) ?? startOfDay(new Date());
 }
 
+async function serverOpenAiApiKey() {
+  if (process.env.OPENAI_API_KEY) return process.env.OPENAI_API_KEY;
+
+  if (process.env.NODE_ENV !== 'production') {
+    try {
+      const { loadEnvConfig } = await import('@next/env');
+      loadEnvConfig(process.cwd());
+    } catch {
+      // Keep the UI error friendly; do not expose local env loading details.
+    }
+  }
+
+  return process.env.OPENAI_API_KEY;
+}
+
 function aiOverviewErrorMessage(code: string | string[] | undefined) {
   if (code === 'invalid_date') return 'Choose a valid as-of date that is not in the future.';
   if (code === 'missing_key') return 'AI report generation is not configured yet. Add the server-only OpenAI key and try again.';
@@ -215,7 +230,7 @@ async function generateAiOverviewReport(formData: FormData) {
 
   const asOfDate = startOfDay(parsedAsOfDate);
   const asOfDateInput = formatDateInput(asOfDate);
-  const apiKey = process.env.OPENAI_API_KEY;
+  const apiKey = await serverOpenAiApiKey();
   if (!apiKey) {
     redirect(`/admin/reports?report=ai_overview&asOf=${asOfDateInput}&ai_error=missing_key`);
   }
@@ -1237,7 +1252,7 @@ function CenterProfitabilityTable({ rows }: { rows: ProfitabilityCenterRows }) {
   );
 }
 
-function ItemProfitabilityTableHead() {
+function ItemProfitabilityTableHead({ showAveragePricePerPound = false }: { showAveragePricePerPound?: boolean }) {
   return (
     <thead>
       <tr className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
@@ -1245,6 +1260,7 @@ function ItemProfitabilityTableHead() {
         <th className="px-4 py-2 text-right">Units</th>
         <th className="px-4 py-2 text-right">Revenue</th>
         <th className="px-4 py-2 text-right">Rev/unit</th>
+        {showAveragePricePerPound ? <th className="px-4 py-2 text-right">Avg price/lb</th> : null}
         <th className="px-4 py-2 text-right">Product COGS/unit</th>
         <th className="px-4 py-2 text-right">Shipping</th>
         <th className="px-4 py-2 text-right">Fees</th>
@@ -1259,7 +1275,13 @@ function ItemProfitabilityTableHead() {
   );
 }
 
-function ItemProfitabilityRows({ rows }: { rows: ProfitabilityItemRows }) {
+function ItemProfitabilityRows({
+  rows,
+  showAveragePricePerPound = false,
+}: {
+  rows: ProfitabilityItemRows;
+  showAveragePricePerPound?: boolean;
+}) {
   return (
     <>
       {rows.map((row) => (
@@ -1268,6 +1290,9 @@ function ItemProfitabilityRows({ rows }: { rows: ProfitabilityItemRows }) {
           <td className="px-4 py-3 text-right text-slate-700">{quantity(row.unitsSold)}</td>
           <td className="px-4 py-3 text-right text-slate-700">{money(row.revenueCents)}</td>
           <td className="px-4 py-3 text-right text-slate-700">{money(row.revenuePerUnitCents)}</td>
+          {showAveragePricePerPound ? (
+            <td className="px-4 py-3 text-right text-slate-700">{row.coffeePoundsSold > 0 ? money(row.averagePricePerPoundCents) : 'N/A'}</td>
+          ) : null}
           <td className="px-4 py-3 text-right text-slate-700">{money(row.productCogsPerUnitCents)}</td>
           <td className="px-4 py-3 text-right text-slate-700">{money(row.shippingCogsCents)}</td>
           <td className="px-4 py-3 text-right text-slate-700">{money(row.processingFeeCogsCents)}</td>
@@ -1283,49 +1308,23 @@ function ItemProfitabilityRows({ rows }: { rows: ProfitabilityItemRows }) {
   );
 }
 
-function ItemProfitabilityTable({ rows }: { rows: ProfitabilityItemRows }) {
+function ItemProfitabilityTable({
+  rows,
+  showAveragePricePerPound = false,
+}: {
+  rows: ProfitabilityItemRows;
+  showAveragePricePerPound?: boolean;
+}) {
   if (!rows.length) return <EmptyState message="No shipped item profitability found for the selected range." />;
 
-  const previewRows = rows.slice(0, ROW_LIMIT);
-  const remainingRows = rows.slice(ROW_LIMIT);
-
   return (
-    <div className="space-y-3">
-      <div className="overflow-x-auto">
-        <table className="w-full min-w-[90rem] border-separate border-spacing-y-2 text-left text-sm">
-          <ItemProfitabilityTableHead />
-          <tbody>
-            <ItemProfitabilityRows rows={previewRows} />
-          </tbody>
-        </table>
-      </div>
-      {remainingRows.length ? (
-        <details className="rounded-xl border border-slate-200/70 bg-white/50">
-          <summary className="cursor-pointer px-4 py-3">
-            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-              <div>
-                <p className="font-semibold text-slate-950">Show all products</p>
-                <p className="mt-1 text-sm text-slate-500">
-                  Showing the top {number(previewRows.length)} by profit after COGS. Expand to review {number(remainingRows.length)} more product{remainingRows.length === 1 ? '' : 's'}.
-                </p>
-              </div>
-              <span className="w-fit rounded-full bg-white px-3 py-1 text-sm font-semibold text-slate-700 ring-1 ring-slate-200">
-                {number(rows.length)} products
-              </span>
-            </div>
-          </summary>
-          <div className="border-t border-slate-200/70 px-4 pb-4 pt-3">
-            <div className="overflow-x-auto">
-              <table className="w-full min-w-[90rem] border-separate border-spacing-y-2 text-left text-sm">
-                <ItemProfitabilityTableHead />
-                <tbody>
-                  <ItemProfitabilityRows rows={remainingRows} />
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </details>
-      ) : null}
+    <div className="overflow-x-auto">
+      <table className={`w-full border-separate border-spacing-y-2 text-left text-sm ${showAveragePricePerPound ? 'min-w-[96rem]' : 'min-w-[90rem]'}`}>
+        <ItemProfitabilityTableHead showAveragePricePerPound={showAveragePricePerPound} />
+        <tbody>
+          <ItemProfitabilityRows rows={rows} showAveragePricePerPound={showAveragePricePerPound} />
+        </tbody>
+      </table>
     </div>
   );
 }
@@ -2512,6 +2511,7 @@ export default async function AdminReportsPage({
     products: dataNeeds.productionRuns ? products : [],
     rangeEndExclusive,
     rangeStart,
+    recipes: !dataNeeds.productRecipes || recipeResult.error ? [] : ((recipeResult.data ?? []) as any[]),
     shortageMovements: !dataNeeds.shortageMovements || shortageMovementsResult.error ? [] : ((shortageMovementsResult.data ?? []) as any[]),
   });
   const rawCoffeePercentDelta = simulatorPercentParam(searchParams?.sim_raw_delta);
@@ -2864,10 +2864,9 @@ export default async function AdminReportsPage({
           <SectionHeading
             eyebrow="Item profitability"
             title="Profit by product"
-            subtitle="Item-level revenue, product COGS before shipping, allocated shipping COGS, profit, and margin."
+            subtitle="Item-level revenue, average price per raw coffee pound sold, product COGS before shipping, allocated shipping COGS, profit, and margin."
           />
-          <ItemProfitabilityTable rows={limitReportDetailRows(profitabilityDashboard.itemRows)} />
-          <DetailRowLimitNotice total={profitabilityDashboard.itemRows.length} />
+          <ItemProfitabilityTable rows={profitabilityDashboard.itemRows} showAveragePricePerPound />
         </section>
       ) : null}
 

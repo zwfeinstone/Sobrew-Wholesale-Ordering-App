@@ -1,3 +1,5 @@
+import { convertInventoryQuantity } from '@/lib/inventory';
+
 const DAY_IN_MS = 24 * 60 * 60 * 1000;
 
 export type ProfitabilityOrderRow = {
@@ -62,8 +64,10 @@ export type ProfitabilityItemRow = {
   id: string;
   name: string;
   unitsSold: number;
+  coffeePoundsSold: number;
   revenueCents: number;
   revenuePerUnitCents: number;
+  averagePricePerPoundCents: number;
   productCogsCents: number;
   productCogsPerUnitCents: number;
   shippingCogsCents: number;
@@ -289,6 +293,23 @@ type NonInventoryExpenseInputRow = {
   spent_at: string | null;
 };
 
+type RecipeInventoryItemRow = {
+  item_type?: string | null;
+};
+
+type RecipeComponentRow = {
+  component_role?: string | null;
+  inventory_items?: RecipeInventoryItemRow | RecipeInventoryItemRow[] | null;
+  quantity: number | string | null;
+  unit: string | null;
+};
+
+type RecipeRow = {
+  output_qty: number | string | null;
+  product_id: string;
+  product_recipe_components?: RecipeComponentRow[] | null;
+};
+
 type NormalizedLine = {
   centerId: string | null;
   date: Date;
@@ -323,6 +344,11 @@ function validDate(value: string | null | undefined) {
   if (!value) return null;
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function relatedOne<T>(value: T | T[] | null | undefined): T | null {
+  if (Array.isArray(value)) return value[0] ?? null;
+  return value ?? null;
 }
 
 function percent(numerator: number, denominator: number) {
@@ -401,6 +427,32 @@ function productName(product: ProductRow | undefined, snapshot?: string | null) 
 
 function centerName(center: CenterRow | undefined) {
   return center?.name?.trim() || 'Unknown center';
+}
+
+function normalizedInventoryItemType(itemType: string | null | undefined) {
+  return itemType === 'supply' ? 'material_supply' : itemType;
+}
+
+function rawCoffeePoundsPerUnit(recipe: RecipeRow | undefined) {
+  if (!recipe) return 0;
+  const outputQty = numericValue(recipe.output_qty) || 1;
+  let recipeRawCoffeePounds = 0;
+
+  for (const component of recipe.product_recipe_components ?? []) {
+    const inventoryItem = relatedOne(component.inventory_items);
+    const isRawCoffee =
+      component.component_role === 'raw_coffee' ||
+      normalizedInventoryItemType(inventoryItem?.item_type) === 'raw_coffee';
+    if (!isRawCoffee) continue;
+
+    try {
+      recipeRawCoffeePounds += convertInventoryQuantity(numericValue(component.quantity), component.unit ?? 'lb', 'lb');
+    } catch {
+      // Keep profitability rendering resilient if an old recipe has an unsupported unit.
+    }
+  }
+
+  return outputQty > 0 ? recipeRawCoffeePounds / outputQty : 0;
 }
 
 function runBreakdown(run: ProductionRunRow | undefined | null) {
@@ -589,8 +641,13 @@ function buildCenterRows(lines: NormalizedLine[], centers: CenterRow[]) {
   }).sort((a, b) => b.grossProfitCents - a.grossProfitCents || b.revenueCents - a.revenueCents || a.name.localeCompare(b.name));
 }
 
-function buildItemRows(lines: NormalizedLine[]) {
+function buildItemRows(lines: NormalizedLine[], recipes: RecipeRow[]) {
   const grouped = new Map<string, NormalizedLine[]>();
+  const recipeByProductId = new Map(recipes.map((recipe) => [recipe.product_id, recipe]));
+  const poundsPerUnitByProductId = new Map(
+    recipes.map((recipe) => [recipe.product_id, rawCoffeePoundsPerUnit(recipe)])
+  );
+
   for (const line of lines) {
     const key = line.productId ?? line.productName;
     grouped.set(key, [...(grouped.get(key) ?? []), line]);
@@ -601,12 +658,19 @@ function buildItemRows(lines: NormalizedLine[]) {
     const orderCount = new Set(productLines.map((line) => line.orderId)).size;
     const name = productLines[0]?.productName ?? 'Unknown product';
     const grossProfitBeforeShippingCents = totals.revenueCents - totals.productCogsCents;
+    const coffeePoundsSold = productLines.reduce((sum, line) => {
+      if (!line.productId || !recipeByProductId.has(line.productId)) return sum;
+      return sum + (poundsPerUnitByProductId.get(line.productId) ?? 0) * line.qty;
+    }, 0);
+
     return {
       id: productId,
       name,
       unitsSold: totals.unitsSold,
+      coffeePoundsSold,
       revenueCents: totals.revenueCents,
       revenuePerUnitCents: totals.unitsSold ? totals.revenueCents / totals.unitsSold : 0,
+      averagePricePerPoundCents: coffeePoundsSold > 0 ? totals.revenueCents / coffeePoundsSold : 0,
       productCogsCents: totals.productCogsCents,
       productCogsPerUnitCents: totals.unitsSold ? totals.productCogsCents / totals.unitsSold : 0,
       donationCogsCents: totals.donationCogsCents,
@@ -1148,6 +1212,7 @@ export function buildProfitabilityDashboard({
   products,
   rangeEndExclusive,
   rangeStart,
+  recipes,
   shortageMovements,
 }: {
   centerId?: string;
@@ -1163,6 +1228,7 @@ export function buildProfitabilityDashboard({
   products: ProductRow[];
   rangeEndExclusive: Date;
   rangeStart: Date;
+  recipes?: RecipeRow[];
   shortageMovements: InventoryMovementRow[];
 }): ProfitabilityDashboard {
   const productById = new Map(products.map((product) => [product.id, product]));
@@ -1238,7 +1304,7 @@ export function buildProfitabilityDashboard({
     current,
     previous,
     centerRows: buildCenterRows(currentLines, centers),
-    itemRows: buildItemRows(currentLines),
+    itemRows: buildItemRows(currentLines, recipes ?? []),
     marginHealth: {
       baselineRange,
       centerLeaks: buildMarginLeakRows({ baselineLines: trailingLines, centers, currentLines, groupBy: 'center' }),

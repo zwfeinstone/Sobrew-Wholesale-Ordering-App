@@ -238,3 +238,61 @@ describe('margin leak ranking', () => {
     expect(dashboard.marginHealth.productLeaks[0]?.estimatedImpactCents).toBe(0);
   });
 });
+
+describe('item profitability', () => {
+  it('calculates average item price per raw coffee pound sold', () => {
+    const dashboard = buildProfitabilityDashboard({
+      centers: [{ id: 'center-1', name: 'Center 1' }],
+      inventoryItems: [],
+      inventoryLots: [],
+      nonInventoryExpenses: [],
+      orderItems: [
+        {
+          cogs_donation_cents: 0,
+          cogs_estimated: false,
+          cogs_fixed_cents: 0,
+          cogs_labor_cents: 0,
+          cogs_material_cents: 0,
+          cogs_processing_fee_cents: 0,
+          cogs_product_cents: 0,
+          cogs_shipping_cents: 0,
+          cogs_snapshot_at: '2026-07-02T00:00:00.000Z',
+          cogs_total_cents: 0,
+          cogs_unit_cents: 0,
+          id: 'coffee-line',
+          line_total_cents: 2000,
+          order_id: 'coffee-order',
+          product_id: 'coffee-product',
+          product_name_snapshot: 'Coffee product',
+          qty: 2,
+          shipping_boxes_used: 1,
+          unit_price_cents: 1000,
+        },
+      ],
+      orders: [shippedOrder('coffee-order', '2026-07-02T12:00:00.000Z')],
+      productionRunInputs: [],
+      productionRuns: [],
+      products: [{ id: 'coffee-product', name: 'Coffee product', sku: 'COF' }],
+      rangeEndExclusive: new Date('2026-07-08T00:00:00.000Z'),
+      rangeStart: new Date('2026-07-01T00:00:00.000Z'),
+      recipes: [
+        {
+          output_qty: 4,
+          product_id: 'coffee-product',
+          product_recipe_components: [
+            {
+              component_role: 'raw_coffee',
+              inventory_items: { item_type: 'raw_coffee' },
+              quantity: 2,
+              unit: 'lb',
+            },
+          ],
+        },
+      ],
+      shortageMovements: [],
+    });
+
+    expect(dashboard.itemRows[0]?.coffeePoundsSold).toBeCloseTo(1);
+    expect(dashboard.itemRows[0]?.averagePricePerPoundCents).toBeCloseTo(2000);
+  });
+});
