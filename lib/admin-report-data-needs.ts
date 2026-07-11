@@ -8,6 +8,7 @@ export type AdminReportId =
   | 'inventory'
   | 'sales'
   | 'prospecting'
+  | 'ai_qa'
   | 'ai_overview';
 
 export type ReportDataNeeds = {
@@ -32,11 +33,11 @@ export function dataNeedsForReport(report: AdminReportId): ReportDataNeeds {
   const margin = report === 'margin';
   const production = report === 'production';
   const simulator = report === 'simulator';
-  const aiOverview = report === 'ai_overview';
-  const profitability = !prospecting && !salesDashboard && !aiOverview;
+  const aiReport = report === 'ai_overview' || report === 'ai_qa';
+  const profitability = !prospecting && !salesDashboard && !aiReport;
 
   return {
-    coreCommerce: !prospecting && !aiOverview,
+    coreCommerce: !prospecting && !aiReport,
     inventoryValuation: inventory || margin || simulator || salesDashboard,
     nonInventoryExpenses: inventory,
     productionInputs: production,

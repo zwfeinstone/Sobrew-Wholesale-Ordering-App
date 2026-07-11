@@ -66,4 +66,20 @@ describe('dataNeedsForReport', () => {
       shortageMovements: false,
     });
   });
+
+  it('keeps AI Q/A lightweight during normal page render', () => {
+    expect(dataNeedsForReport('ai_qa')).toEqual({
+      coreCommerce: false,
+      inventoryValuation: false,
+      nonInventoryExpenses: false,
+      productionInputs: false,
+      productionRuns: false,
+      productRecipes: false,
+      prospecting: false,
+      reorderSettings: false,
+      sampleBoxes: false,
+      salesDashboard: false,
+      shortageMovements: false,
+    });
+  });
 });

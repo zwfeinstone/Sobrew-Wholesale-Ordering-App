@@ -12,10 +12,13 @@ import {
   REPORT_DETAIL_ROW_LIMIT,
 } from '@/lib/admin-query-limits';
 import {
+  AI_BUSINESS_QA_PROMPT_VERSION,
   AI_BUSINESS_OVERVIEW_DEFAULT_MODEL,
   AI_BUSINESS_OVERVIEW_PROMPT_VERSION,
   buildBusinessHealthSnapshot,
+  generateAiBusinessQaAnswer,
   generateAiBusinessOverviewMarkdown,
+  type AiBusinessQaHistoryItem,
   type BusinessHealthSnapshot,
 } from '@/lib/ai-business-overview';
 import {
@@ -74,11 +77,16 @@ import { convertInventoryQuantity } from '@/lib/inventory';
 import { usd } from '@/lib/utils';
 
 const ROW_LIMIT = 12;
+const AI_QA_ACTIVE_KEEP_COUNT = 25;
+const AI_QA_HISTORY_CONTEXT_LIMIT = 8;
+const AI_QA_MAX_QUESTION_LENGTH = 2000;
+const AI_QA_PAGE_SIZE = 8;
 const REPORTS = [
   { id: 'overview', label: 'Profitability Overview' },
   { id: 'centers', label: 'Center Profitability' },
   { id: 'items', label: 'Item Profitability' },
   { id: 'margin', label: 'Margin Health' },
+  { id: 'ai_qa', label: 'AI Q/A About Business' },
   { id: 'ai_overview', label: 'AI Overview' },
   { id: 'simulator', label: 'Gross Profit Simulator' },
   { id: 'production', label: 'Production & COGS' },
@@ -100,6 +108,19 @@ type AiBusinessReportRow = {
   prompt_version: string;
   profiles?: AdminRow | AdminRow[] | null;
   report_markdown: string;
+};
+
+type AiBusinessQaRow = {
+  answer_markdown: string;
+  archived_at: string | null;
+  as_of_date: string;
+  generated_at: string;
+  generated_by: string | null;
+  id: string;
+  model: string;
+  profiles?: AdminRow | AdminRow[] | null;
+  prompt_version: string;
+  question: string;
 };
 
 function skippedReportQuery() {
@@ -212,6 +233,298 @@ function aiOverviewErrorMessage(code: string | string[] | undefined) {
   if (code === 'save_failed') return 'The AI report was generated, but it could not be saved. Please try again.';
   if (code === 'generation_failed') return 'The AI report could not be generated right now. Please try again in a few minutes.';
   return null;
+}
+
+function aiQaErrorMessage(code: string | string[] | undefined) {
+  if (code === 'empty_question') return 'Ask a business question before generating an answer.';
+  if (code === 'question_too_long') return `Keep the question under ${AI_QA_MAX_QUESTION_LENGTH.toLocaleString()} characters.`;
+  if (code === 'invalid_date') return 'Choose a valid as-of date that is not in the future.';
+  if (code === 'missing_key') return 'AI Q/A is not configured yet. Add the server-only OpenAI key and try again.';
+  if (code === 'save_failed') return 'The answer was generated, but it could not be saved. Please try again.';
+  if (code === 'generation_failed') return 'The answer could not be generated right now. Please try again in a few minutes.';
+  return null;
+}
+
+function aiQaViewParam(value: string | string[] | undefined): 'active' | 'archive' {
+  return value === 'archive' ? 'archive' : 'active';
+}
+
+function positivePageParam(value: string | string[] | undefined) {
+  const parsed = typeof value === 'string' ? Number.parseInt(value, 10) : 1;
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : 1;
+}
+
+function aiQaHref({
+  asOfDate,
+  page = 1,
+  view = 'active',
+}: {
+  asOfDate: Date;
+  page?: number;
+  view?: 'active' | 'archive';
+}) {
+  const params = new URLSearchParams();
+  params.set('report', 'ai_qa');
+  params.set('asOf', formatDateInput(asOfDate));
+  params.set('qa_view', view);
+  if (page > 1) params.set('qa_page', String(page));
+  return `/admin/reports?${params.toString()}`;
+}
+
+function aiQaTimestamp(value: string) {
+  return new Date(value).toLocaleString('en-US', {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  });
+}
+
+async function loadAiBusinessSnapshotForReports({
+  asOfDate,
+  currentAccess,
+  supabase,
+  today,
+}: {
+  asOfDate: Date;
+  currentAccess: Awaited<ReturnType<typeof requireAdminSectionView>>;
+  supabase: Awaited<ReturnType<typeof createClient>>;
+  today: Date;
+}) {
+  const centerScope = await getSalesScopedCenterIdsForAdmin({
+    current: currentAccess,
+    selectedSalesProfileId: '',
+    supabase,
+  });
+  const asOfDateInput = formatDateInput(asOfDate);
+  const asOfEndExclusive = addDays(asOfDate, 1);
+  const monthStart = startOfMonth(asOfDate);
+  const orderHistoryStart = addDays(monthStart, -120);
+
+  const scopedOrdersQuery = scopeCenterRelatedQueryForAdmin(
+    supabase
+      .from('orders')
+      .select('id,center_id,status,subtotal_cents,shipping_cost_cents,processing_fee_cents,donation_cogs_cents,created_at,shipped_at')
+      .or(`created_at.gte.${orderHistoryStart.toISOString()},shipped_at.gte.${orderHistoryStart.toISOString()}`)
+      .lt('created_at', asOfEndExclusive.toISOString())
+      .order('created_at', { ascending: false })
+      .limit(ADMIN_QUERY_ROW_LIMIT),
+    'center_id',
+    centerScope
+  );
+  const scopedCentersQuery = scopeCentersForAdmin(
+    supabase.from('centers').select('id,name,is_active,created_at').order('name', { ascending: true }).limit(ADMIN_QUERY_ROW_LIMIT),
+    centerScope
+  );
+
+  const ordersResult = await scopedOrdersQuery;
+  if (ordersResult.error) throw new Error('snapshot_orders_failed');
+
+  const orders = (ordersResult.data ?? []) as Array<ReportingOrderRow & ProfitabilityOrderRow>;
+  const orderIds = orders.map((order) => order.id).filter(Boolean);
+  const orderItemsQuery = orderIds.length
+    ? supabase
+      .from('order_items')
+      .select('id,order_id,product_id,product_name_snapshot,qty,unit_price_cents,line_total_cents,shipping_boxes_used,cogs_material_cents,cogs_labor_cents,cogs_fixed_cents,cogs_tape_cents,cogs_shipping_label_cents,cogs_branding_label_cents,cogs_fixed_other_cents,cogs_product_cents,cogs_shipping_cents,cogs_processing_fee_cents,cogs_donation_cents,cogs_total_cents,cogs_unit_cents,cogs_source,cogs_estimated,cogs_snapshot_at')
+      .in('order_id', orderIds)
+      .limit(ADMIN_QUERY_ROW_LIMIT)
+    : skippedReportQuery();
+
+  const [
+    orderItemsResult,
+    centersResult,
+    productsResult,
+    inventoryItemsResult,
+    inventoryLotsResult,
+    reorderSettingsResult,
+    productionRunsResult,
+    productionRunInputsResult,
+    shortageMovementsResult,
+    nonInventoryExpensesResult,
+    prospectingReportResult,
+  ] = await Promise.all([
+    orderItemsQuery,
+    scopedCentersQuery,
+    supabase.from('products').select('id,name,sku,category,active').order('name', { ascending: true }).limit(ADMIN_QUERY_ROW_LIMIT),
+    supabase.from('inventory_items').select('id,name,sku,item_type,base_unit,product_id,active').order('name', { ascending: true }).limit(ADMIN_QUERY_ROW_LIMIT),
+    supabase
+      .from('inventory_lots')
+      .select('inventory_item_id,production_run_id,quantity_remaining,unit_cost_cents,received_at,created_at')
+      .or('quantity_remaining.neq.0,unit_cost_cents.gt.0')
+      .order('created_at', { ascending: false })
+      .limit(ADMIN_QUERY_ROW_LIMIT),
+    supabase.from('inventory_reorder_settings').select('inventory_item_id,reorder_point,target_stock,lead_time_days').limit(ADMIN_QUERY_ROW_LIMIT),
+    supabase
+      .from('production_runs')
+      .select('id,product_id,quantity_produced,quantity_voided,status,estimated_unit_cost_cents,actual_unit_cost_cents,actual_labor_cost_cents,fixed_cost_cents,fixed_tape_cost_cents,fixed_shipping_label_cost_cents,fixed_branding_label_cost_cents,fixed_other_cost_cents,produced_at')
+      .lt('produced_at', asOfEndExclusive.toISOString())
+      .order('produced_at', { ascending: false })
+      .limit(ADMIN_QUERY_ROW_LIMIT),
+    supabase.from('production_run_inputs').select('production_run_id,quantity_expected,quantity_used,cost_cents').limit(ADMIN_QUERY_ROW_LIMIT),
+    supabase
+      .from('inventory_movements')
+      .select('inventory_item_id,quantity_change,unit_cost_cents,created_at')
+      .in('movement_type', ['shipment_consume', 'sample_box_consume'])
+      .is('lot_id', null)
+      .lt('created_at', asOfEndExclusive.toISOString())
+      .limit(ADMIN_QUERY_ROW_LIMIT),
+    supabase
+      .from('non_inventory_expenses')
+      .select('expense_type,amount_cents,spent_at')
+      .gte('spent_at', monthStart.toISOString())
+      .lt('spent_at', asOfEndExclusive.toISOString())
+      .limit(ADMIN_QUERY_ROW_LIMIT),
+    getSupabaseAdmin().rpc('admin_prospecting_report_v1', {
+      p_as_of_date: asOfDateInput,
+      p_center_ids: centerScope,
+      p_range_end_exclusive: formatDateInput(asOfEndExclusive),
+      p_range_start: formatDateInput(monthStart),
+      p_sales_profile_id: currentAccess.isOwner ? null : currentAccess.profile.id,
+    }),
+  ]);
+
+  if (
+    orderItemsResult.error
+    || centersResult.error
+    || productsResult.error
+    || inventoryItemsResult.error
+    || inventoryLotsResult.error
+  ) {
+    throw new Error('snapshot_sources_failed');
+  }
+
+  const snapshot = buildBusinessHealthSnapshot({
+    asOfDate,
+    centers: (centersResult.data ?? []) as ReportingCenterRow[],
+    currentDate: today,
+    inventoryItems: (inventoryItemsResult.data ?? []) as ReportingInventoryItemRow[],
+    inventoryLots: (inventoryLotsResult.data ?? []) as ReportingInventoryLotRow[],
+    nonInventoryExpenses: nonInventoryExpensesResult.error ? [] : (nonInventoryExpensesResult.data ?? []),
+    orderItems: (orderItemsResult.data ?? []) as Array<ReportingOrderItemRow & ProfitabilityOrderItemRow>,
+    orders,
+    products: (productsResult.data ?? []) as ReportingProductRow[],
+    productionRunInputs: productionRunInputsResult.error ? [] : (productionRunInputsResult.data ?? []),
+    productionRuns: productionRunsResult.error ? [] : (productionRunsResult.data ?? []),
+    prospectingAggregate: prospectingReportResult.error ? null : normalizeProspectingReportAggregate(prospectingReportResult.data),
+    reorderSettings: reorderSettingsResult.error ? [] : (reorderSettingsResult.data ?? []) as ReportingReorderSettingRow[],
+    shortageMovements: shortageMovementsResult.error ? [] : (shortageMovementsResult.data ?? []) as ReportingInventoryMovementRow[],
+  });
+
+  const limitedSources = [
+    ['orders', ordersResult.data],
+    ['order items', orderItemsResult.data],
+    ['customers', centersResult.data],
+    ['products', productsResult.data],
+    ['inventory items', inventoryItemsResult.data],
+    ['inventory lots', inventoryLotsResult.data],
+    ['production runs', productionRunsResult.data],
+    ['production inputs', productionRunInputsResult.data],
+    ['inventory adjustments', shortageMovementsResult.data],
+    ['expenses', nonInventoryExpensesResult.data],
+  ]
+    .filter((entry): entry is [string, unknown[]] => Array.isArray(entry[1]) && queryReachedAdminRowLimit(entry[1]))
+    .map(([label]) => label);
+
+  if (limitedSources.length) {
+    snapshot.data_coverage_notes.push(`Loaded row limit reached for: ${limitedSources.join(', ')}. The answer should treat those areas as partial.`);
+  }
+
+  return { limitedSources, snapshot };
+}
+
+async function archiveOldAiBusinessQaRows(supabase: Awaited<ReturnType<typeof createClient>>) {
+  const staleRowsResult = await supabase
+    .from('admin_ai_business_qa')
+    .select('id')
+    .is('archived_at', null)
+    .order('generated_at', { ascending: false })
+    .range(AI_QA_ACTIVE_KEEP_COUNT, AI_QA_ACTIVE_KEEP_COUNT + ADMIN_QUERY_ROW_LIMIT - 1);
+  const staleIds = (staleRowsResult.data ?? []).map((row: { id: string }) => row.id);
+  if (!staleIds.length) return;
+
+  await supabase
+    .from('admin_ai_business_qa')
+    .update({ archived_at: new Date().toISOString() })
+    .in('id', staleIds)
+    .is('archived_at', null);
+}
+
+async function askAiBusinessQuestion(formData: FormData) {
+  'use server';
+
+  const currentAccess = await requireAdminSectionView('reports');
+  if (!adminCanView(currentAccess.access, 'reports_profitability')) {
+    redirect('/admin/access-denied?section=reports_profitability');
+  }
+
+  const question = String(formData.get('question') ?? '').trim();
+  if (!question) redirect('/admin/reports?report=ai_qa&qa_error=empty_question');
+  if (question.length > AI_QA_MAX_QUESTION_LENGTH) redirect('/admin/reports?report=ai_qa&qa_error=question_too_long');
+
+  const parsedAsOfDate = parseDateInput(String(formData.get('as_of_date') ?? ''));
+  const today = todayCentralDate();
+  if (!parsedAsOfDate || parsedAsOfDate > today) {
+    redirect('/admin/reports?report=ai_qa&qa_error=invalid_date');
+  }
+
+  const asOfDate = startOfDay(parsedAsOfDate);
+  const asOfDateInput = formatDateInput(asOfDate);
+  const apiKey = await serverOpenAiApiKey();
+  if (!apiKey) {
+    redirect(`/admin/reports?report=ai_qa&asOf=${asOfDateInput}&qa_error=missing_key`);
+  }
+
+  const supabase = await createClient();
+  let snapshot: BusinessHealthSnapshot;
+  try {
+    const loaded = await loadAiBusinessSnapshotForReports({
+      asOfDate,
+      currentAccess,
+      supabase,
+      today,
+    });
+    snapshot = loaded.snapshot;
+  } catch {
+    redirect(`/admin/reports?report=ai_qa&asOf=${asOfDateInput}&qa_error=generation_failed`);
+  }
+
+  const historyResult = await supabase
+    .from('admin_ai_business_qa')
+    .select('question,answer_markdown,generated_at')
+    .order('generated_at', { ascending: false })
+    .limit(AI_QA_HISTORY_CONTEXT_LIMIT);
+  const history = (historyResult.data ?? []) as AiBusinessQaHistoryItem[];
+
+  let markdown = '';
+  let model = process.env.AI_QA_MODEL || AI_BUSINESS_OVERVIEW_DEFAULT_MODEL;
+  try {
+    const generated = await generateAiBusinessQaAnswer({
+      apiKey,
+      history,
+      model,
+      question,
+      snapshot,
+    });
+    markdown = generated.markdown;
+    model = generated.model;
+  } catch {
+    redirect(`/admin/reports?report=ai_qa&asOf=${asOfDateInput}&qa_error=generation_failed`);
+  }
+
+  const insertResult = await supabase.from('admin_ai_business_qa').insert({
+    answer_markdown: markdown,
+    as_of_date: asOfDateInput,
+    generated_by: currentAccess.profile.id,
+    input_summary_json: snapshot,
+    model,
+    prompt_version: AI_BUSINESS_QA_PROMPT_VERSION,
+    question,
+  });
+
+  if (insertResult.error) {
+    redirect(`/admin/reports?report=ai_qa&asOf=${asOfDateInput}&qa_error=save_failed`);
+  }
+
+  await archiveOldAiBusinessQaRows(supabase);
+  redirect(`/admin/reports?report=ai_qa&asOf=${asOfDateInput}&qa_status=answered`);
 }
 
 async function generateAiOverviewReport(formData: FormData) {
@@ -2606,6 +2919,29 @@ export default async function AdminReportsPage({
     : { data: [] as AiBusinessReportRow[], error: null };
   const aiOverviewReport = ((aiOverviewReportResult.data ?? []) as AiBusinessReportRow[])[0] ?? null;
   const aiOverviewGeneratedBy = relatedOne(aiOverviewReport?.profiles);
+  const aiQaView = aiQaViewParam(searchParams?.qa_view);
+  const aiQaPage = positivePageParam(searchParams?.qa_page);
+  const aiQaFrom = (aiQaPage - 1) * AI_QA_PAGE_SIZE;
+  const aiQaTo = aiQaFrom + AI_QA_PAGE_SIZE - 1;
+  let aiQaQuery = activeReport === 'ai_qa'
+    ? supabase
+      .from('admin_ai_business_qa')
+      .select('id,as_of_date,question,answer_markdown,model,prompt_version,generated_by,generated_at,archived_at,profiles(id,email,full_name,is_active)', { count: 'exact' })
+      .order(aiQaView === 'archive' ? 'archived_at' : 'generated_at', { ascending: false })
+      .range(aiQaFrom, aiQaTo)
+    : null;
+  if (aiQaQuery && aiQaView === 'archive') {
+    aiQaQuery = aiQaQuery.not('archived_at', 'is', null);
+  } else if (aiQaQuery) {
+    aiQaQuery = aiQaQuery.is('archived_at', null);
+  }
+  const aiQaResult = aiQaQuery
+    ? await aiQaQuery
+    : { count: 0, data: [] as AiBusinessQaRow[], error: null };
+  const aiQaRows = (aiQaResult.data ?? []) as AiBusinessQaRow[];
+  const aiQaTotal = aiQaResult.count ?? 0;
+  const aiQaHasPrevious = aiQaPage > 1;
+  const aiQaHasNext = aiQaFrom + aiQaRows.length < aiQaTotal;
   const limitedSourceLabels = [
     ['orders', ordersResult.data],
     ['order items', orderItemsResult.data],
@@ -2635,6 +2971,10 @@ export default async function AdminReportsPage({
   navParams.set('rangeStart', formatDateInput(rangeStart));
   navParams.set('rangeEnd', rangeEndInput);
   if (activeReport === 'ai_overview') navParams.set('asOf', formatDateInput(aiOverviewAsOfDate));
+  if (activeReport === 'ai_qa') {
+    navParams.set('asOf', formatDateInput(aiOverviewAsOfDate));
+    navParams.set('qa_view', aiQaView);
+  }
   if (productId) navParams.set('product', productId);
   if (centerId) navParams.set('center', centerId);
   if (selectedSalesRepId) navParams.set('sales_rep', selectedSalesRepId);
@@ -2662,7 +3002,7 @@ export default async function AdminReportsPage({
             <h1 className="page-title mt-4">{reportsTitle}</h1>
             <p className="page-subtitle mt-3">{reportsSubtitle}</p>
           </div>
-          <form className={activeReport === 'ai_overview' ? 'hidden' : 'rounded-xl border border-slate-200/70 bg-white/60 p-4'}>
+          <form className={activeReport === 'ai_overview' || activeReport === 'ai_qa' ? 'hidden' : 'rounded-xl border border-slate-200/70 bg-white/60 p-4'}>
             <input type="hidden" name="report" value={activeReport} />
             <div className="grid gap-3 sm:grid-cols-2">
               <label className="space-y-2 text-sm font-medium text-slate-700">
@@ -2677,7 +3017,7 @@ export default async function AdminReportsPage({
                 Range end
                 <input className="input" name="rangeEnd" type="date" defaultValue={rangeEndInput} />
               </label>
-              {activeReport !== 'prospecting' && activeReport !== 'ai_overview' ? (
+              {activeReport !== 'prospecting' && activeReport !== 'ai_overview' && activeReport !== 'ai_qa' ? (
                 <>
                   <label className="space-y-2 text-sm font-medium text-slate-700">
                     Product
@@ -2730,7 +3070,7 @@ export default async function AdminReportsPage({
 
       <SourceRowLimitNotice sources={limitedSourceLabels} />
 
-      {activeReport !== 'prospecting' && activeReport !== 'ai_overview' && !hasCommerceOrders ? (
+      {activeReport !== 'prospecting' && activeReport !== 'ai_overview' && activeReport !== 'ai_qa' && !hasCommerceOrders ? (
         <section className="card">
           <EmptyState message="No orders found yet. Reports will populate as wholesale orders are placed." />
         </section>
@@ -2811,6 +3151,114 @@ export default async function AdminReportsPage({
             ) : (
               <EmptyState message={`No saved AI overview for ${dateLabel(aiOverviewAsOfDate)} yet. Choose the date and generate one to save the snapshot.`} />
             )}
+          </div>
+        </section>
+      ) : null}
+
+      {activeReport === 'ai_qa' ? (
+        <section className="space-y-5">
+          <div className="card">
+            <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_22rem] lg:items-start">
+              <SectionHeading
+                eyebrow="AI Q/A"
+                title="Ask about the business"
+                subtitle="Answers use the current reporting snapshot, recent saved Q/A context, and the strategic business prompt."
+              />
+              <form action={askAiBusinessQuestion} className="rounded-xl border border-slate-200/70 bg-slate-50/80 p-4">
+                <label className="space-y-2 text-sm font-medium text-slate-700">
+                  As-of date
+                  <input
+                    className="input"
+                    max={formatDateInput(todayCentralDate())}
+                    name="as_of_date"
+                    type="date"
+                    defaultValue={formatDateInput(aiOverviewAsOfDate)}
+                  />
+                </label>
+                <label className="mt-4 block space-y-2 text-sm font-medium text-slate-700">
+                  Question
+                  <textarea
+                    className="input min-h-32 resize-y"
+                    maxLength={AI_QA_MAX_QUESTION_LENGTH}
+                    name="question"
+                    placeholder="What should we do about pricing, hiring, cash, customers, or growth?"
+                    required
+                  />
+                </label>
+                <PendingSubmitButton className="btn-primary mt-4 w-full" label="Ask AI" pendingLabel="Answering..." />
+              </form>
+            </div>
+            {searchParams?.qa_status === 'answered' ? (
+              <div className="mt-4 rounded-xl border border-teal-200 bg-teal-50 px-4 py-3 text-sm text-teal-900">
+                Answer generated and saved.
+              </div>
+            ) : null}
+            {aiQaErrorMessage(searchParams?.qa_error) ? (
+              <div className="mt-4 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
+                {aiQaErrorMessage(searchParams?.qa_error)}
+              </div>
+            ) : null}
+            {aiQaResult.error ? (
+              <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm leading-6 text-amber-900">
+                Saved AI Q/A is not available yet. Apply the new Supabase migration, then this tab will show saved questions and answers.
+              </div>
+            ) : null}
+          </div>
+
+          <div className="card space-y-5">
+            <SectionHeading
+              eyebrow={aiQaView === 'archive' ? 'Archive' : 'Recent Q/A'}
+              title={aiQaView === 'archive' ? 'Archived business answers' : 'Saved business answers'}
+              subtitle={`${number(aiQaTotal)} saved answer${aiQaTotal === 1 ? '' : 's'} in this view. Older active answers are archived automatically after ${number(AI_QA_ACTIVE_KEEP_COUNT)} active entries.`}
+              action={
+                <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
+                  <Link className={aiQaView === 'active' ? 'btn-primary text-center' : 'btn-secondary text-center'} href={aiQaHref({ asOfDate: aiOverviewAsOfDate, view: 'active' })}>Recent</Link>
+                  <Link className={aiQaView === 'archive' ? 'btn-primary text-center' : 'btn-secondary text-center'} href={aiQaHref({ asOfDate: aiOverviewAsOfDate, view: 'archive' })}>Archive</Link>
+                </div>
+              }
+            />
+
+            {!aiQaRows.length ? (
+              <EmptyState message={aiQaView === 'archive' ? 'No archived AI Q/A yet.' : 'No AI business questions have been saved yet.'} />
+            ) : null}
+
+            <div className="space-y-4">
+              {aiQaRows.map((row, index) => {
+                const generatedBy = relatedOne(row.profiles);
+                return (
+                  <details key={row.id} className="rounded-xl border border-slate-200/70 bg-white/70 px-4 py-3" open={index === 0}>
+                    <summary className="cursor-pointer list-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600 focus-visible:ring-offset-4">
+                      <div className="flex flex-col gap-2 lg:flex-row lg:items-start lg:justify-between">
+                        <div>
+                          <p className="font-semibold leading-6 text-slate-950">{row.question}</p>
+                          <p className="mt-1 text-xs text-slate-500">
+                            Asked {aiQaTimestamp(row.generated_at)} by {adminLabel(generatedBy ?? undefined)} · As of {dateLabel(parseDateInput(row.as_of_date))} · {row.model}
+                          </p>
+                        </div>
+                        {row.archived_at ? (
+                          <span className="w-fit rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700">Archived</span>
+                        ) : null}
+                      </div>
+                    </summary>
+                    <div className="mt-4 border-t border-slate-200 pt-4">
+                      <AiOverviewMarkdown markdown={row.answer_markdown} />
+                    </div>
+                  </details>
+                );
+              })}
+            </div>
+
+            <div className="flex flex-col items-start gap-3 border-t border-slate-200 pt-4 sm:flex-row sm:items-center sm:justify-between">
+              <p className="text-sm text-slate-500">Page {number(aiQaPage)}</p>
+              <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row">
+                {aiQaHasPrevious ? (
+                  <Link className="btn-secondary text-center" href={aiQaHref({ asOfDate: aiOverviewAsOfDate, page: aiQaPage - 1, view: aiQaView })}>Previous</Link>
+                ) : null}
+                {aiQaHasNext ? (
+                  <Link className="btn-secondary text-center" href={aiQaHref({ asOfDate: aiOverviewAsOfDate, page: aiQaPage + 1, view: aiQaView })}>Next</Link>
+                ) : null}
+              </div>
+            </div>
           </div>
         </section>
       ) : null}

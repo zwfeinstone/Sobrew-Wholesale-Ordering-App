@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  buildAiBusinessQaPrompt,
   buildAiBusinessOverviewPrompt,
   buildBusinessHealthSnapshot,
   extractOpenAiResponseText,
@@ -126,5 +127,29 @@ describe('buildAiBusinessOverviewPrompt', () => {
         { content: [{ text: 'First' }, { text: 'Second' }] },
       ],
     })).toBe('First\nSecond');
+  });
+});
+
+describe('buildAiBusinessQaPrompt', () => {
+  it('includes the business question, recent context, and structured snapshot', () => {
+    const snapshot = buildBusinessHealthSnapshot(baseInput());
+    const prompt = buildAiBusinessQaPrompt({
+      history: [
+        {
+          answer_markdown: 'Prior answer about pricing discipline.',
+          generated_at: '2026-07-09T12:00:00.000Z',
+          question: 'Should we raise prices?',
+        },
+      ],
+      question: 'Can we afford to hire another roaster?',
+      snapshot,
+    });
+    const promptText = prompt.input.map((message) => message.content.map((part) => part.text).join('\n')).join('\n');
+
+    expect(promptText).toContain('Can we afford to hire another roaster?');
+    expect(promptText).toContain('Prior answer about pricing discipline.');
+    expect(promptText).toContain('"as_of_date": "2026-07-10"');
+    expect(promptText).not.toContain('OPENAI_API_KEY');
+    expect(promptText).not.toContain('sk-proj');
   });
 });
