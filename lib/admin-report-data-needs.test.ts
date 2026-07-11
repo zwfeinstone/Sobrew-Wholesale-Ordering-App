@@ -43,4 +43,20 @@ describe('dataNeedsForReport', () => {
     expect(needs.inventoryValuation).toBe(true);
     expect(needs.shortageMovements).toBe(true);
   });
+
+  it('keeps AI overview lightweight during normal page render', () => {
+    expect(dataNeedsForReport('ai_overview')).toEqual({
+      coreCommerce: false,
+      inventoryValuation: false,
+      nonInventoryExpenses: false,
+      productionInputs: false,
+      productionRuns: false,
+      productRecipes: false,
+      prospecting: false,
+      reorderSettings: false,
+      sampleBoxes: false,
+      salesDashboard: false,
+      shortageMovements: false,
+    });
+  });
 });

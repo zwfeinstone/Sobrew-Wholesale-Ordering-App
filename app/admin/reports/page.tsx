@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
+import type { ReactNode } from 'react';
 import PendingSubmitButton from '@/components/pending-submit-button';
 import { getSalesScopedCenterIdsForAdmin, scopeCenterRelatedQueryForAdmin, scopeCentersForAdmin } from '@/lib/admin-center-scope';
 import { adminCanView, requireAdminSectionView } from '@/lib/admin-permissions';
@@ -10,6 +11,13 @@ import {
   queryReachedAdminRowLimit,
   REPORT_DETAIL_ROW_LIMIT,
 } from '@/lib/admin-query-limits';
+import {
+  AI_BUSINESS_OVERVIEW_DEFAULT_MODEL,
+  AI_BUSINESS_OVERVIEW_PROMPT_VERSION,
+  buildBusinessHealthSnapshot,
+  generateAiBusinessOverviewMarkdown,
+  type BusinessHealthSnapshot,
+} from '@/lib/ai-business-overview';
 import {
   buildGrossProfitSimulator,
   type GrossProfitSimulatorDashboard,
@@ -40,6 +48,8 @@ import {
   formatMonthInput,
   parseDateInput,
   parseMonthInput,
+  startOfDay,
+  startOfMonth,
   type CustomerSalesRow,
   type CustomerStatus,
   type InventoryPlanningRow,
@@ -69,6 +79,7 @@ const REPORTS = [
   { id: 'centers', label: 'Center Profitability' },
   { id: 'items', label: 'Item Profitability' },
   { id: 'margin', label: 'Margin Health' },
+  { id: 'ai_overview', label: 'AI Overview' },
   { id: 'simulator', label: 'Gross Profit Simulator' },
   { id: 'production', label: 'Production & COGS' },
   { id: 'inventory', label: 'Inventory Value & Expenses' },
@@ -78,6 +89,18 @@ const REPORTS = [
 
 type ReportId = AdminReportId;
 type SimulatorTab = 'labor' | 'raw' | 'supplies';
+
+type AiBusinessReportRow = {
+  as_of_date: string;
+  generated_at: string;
+  generated_by: string | null;
+  id: string;
+  input_summary_json: BusinessHealthSnapshot | Record<string, unknown> | null;
+  model: string;
+  prompt_version: string;
+  profiles?: AdminRow | AdminRow[] | null;
+  report_markdown: string;
+};
 
 function skippedReportQuery() {
   return Promise.resolve({ data: [] as any[], error: null });
@@ -162,6 +185,208 @@ function adminLabel(admin: AdminRow | undefined) {
 
 function reportParam(value: string | string[] | undefined): ReportId {
   return REPORTS.some((report) => report.id === value) ? value as ReportId : 'overview';
+}
+
+function todayCentralDate() {
+  return parseDateInput(centralDateInput(new Date())) ?? startOfDay(new Date());
+}
+
+function aiOverviewErrorMessage(code: string | string[] | undefined) {
+  if (code === 'invalid_date') return 'Choose a valid as-of date that is not in the future.';
+  if (code === 'missing_key') return 'AI report generation is not configured yet. Add the server-only OpenAI key and try again.';
+  if (code === 'save_failed') return 'The AI report was generated, but it could not be saved. Please try again.';
+  if (code === 'generation_failed') return 'The AI report could not be generated right now. Please try again in a few minutes.';
+  return null;
+}
+
+async function generateAiOverviewReport(formData: FormData) {
+  'use server';
+
+  const currentAccess = await requireAdminSectionView('reports');
+  if (!adminCanView(currentAccess.access, 'reports_profitability')) {
+    redirect('/admin/access-denied?section=reports_profitability');
+  }
+
+  const parsedAsOfDate = parseDateInput(String(formData.get('as_of_date') ?? ''));
+  const today = todayCentralDate();
+  if (!parsedAsOfDate || parsedAsOfDate > today) {
+    redirect('/admin/reports?report=ai_overview&ai_error=invalid_date');
+  }
+
+  const asOfDate = startOfDay(parsedAsOfDate);
+  const asOfDateInput = formatDateInput(asOfDate);
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) {
+    redirect(`/admin/reports?report=ai_overview&asOf=${asOfDateInput}&ai_error=missing_key`);
+  }
+
+  const supabase = await createClient();
+  const centerScope = await getSalesScopedCenterIdsForAdmin({
+    current: currentAccess,
+    selectedSalesProfileId: '',
+    supabase,
+  });
+  const asOfEndExclusive = addDays(asOfDate, 1);
+  const monthStart = startOfMonth(asOfDate);
+  const orderHistoryStart = addDays(monthStart, -120);
+
+  const scopedOrdersQuery = scopeCenterRelatedQueryForAdmin(
+    supabase
+      .from('orders')
+      .select('id,center_id,status,subtotal_cents,shipping_cost_cents,processing_fee_cents,donation_cogs_cents,created_at,shipped_at')
+      .or(`created_at.gte.${orderHistoryStart.toISOString()},shipped_at.gte.${orderHistoryStart.toISOString()}`)
+      .lt('created_at', asOfEndExclusive.toISOString())
+      .order('created_at', { ascending: false })
+      .limit(ADMIN_QUERY_ROW_LIMIT),
+    'center_id',
+    centerScope
+  );
+  const scopedCentersQuery = scopeCentersForAdmin(
+    supabase.from('centers').select('id,name,is_active,created_at').order('name', { ascending: true }).limit(ADMIN_QUERY_ROW_LIMIT),
+    centerScope
+  );
+
+  const ordersResult = await scopedOrdersQuery;
+  if (ordersResult.error) {
+    redirect(`/admin/reports?report=ai_overview&asOf=${asOfDateInput}&ai_error=generation_failed`);
+  }
+
+  const orders = (ordersResult.data ?? []) as Array<ReportingOrderRow & ProfitabilityOrderRow>;
+  const orderIds = orders.map((order) => order.id).filter(Boolean);
+  const orderItemsQuery = orderIds.length
+    ? supabase
+      .from('order_items')
+      .select('id,order_id,product_id,product_name_snapshot,qty,unit_price_cents,line_total_cents,shipping_boxes_used,cogs_material_cents,cogs_labor_cents,cogs_fixed_cents,cogs_tape_cents,cogs_shipping_label_cents,cogs_branding_label_cents,cogs_fixed_other_cents,cogs_product_cents,cogs_shipping_cents,cogs_processing_fee_cents,cogs_donation_cents,cogs_total_cents,cogs_unit_cents,cogs_source,cogs_estimated,cogs_snapshot_at')
+      .in('order_id', orderIds)
+      .limit(ADMIN_QUERY_ROW_LIMIT)
+    : skippedReportQuery();
+
+  const [
+    orderItemsResult,
+    centersResult,
+    productsResult,
+    inventoryItemsResult,
+    inventoryLotsResult,
+    reorderSettingsResult,
+    productionRunsResult,
+    productionRunInputsResult,
+    shortageMovementsResult,
+    nonInventoryExpensesResult,
+    prospectingReportResult,
+  ] = await Promise.all([
+    orderItemsQuery,
+    scopedCentersQuery,
+    supabase.from('products').select('id,name,sku,category,active').order('name', { ascending: true }).limit(ADMIN_QUERY_ROW_LIMIT),
+    supabase.from('inventory_items').select('id,name,sku,item_type,base_unit,product_id,active').order('name', { ascending: true }).limit(ADMIN_QUERY_ROW_LIMIT),
+    supabase
+      .from('inventory_lots')
+      .select('inventory_item_id,production_run_id,quantity_remaining,unit_cost_cents,received_at,created_at')
+      .or('quantity_remaining.neq.0,unit_cost_cents.gt.0')
+      .order('created_at', { ascending: false })
+      .limit(ADMIN_QUERY_ROW_LIMIT),
+    supabase.from('inventory_reorder_settings').select('inventory_item_id,reorder_point,target_stock,lead_time_days').limit(ADMIN_QUERY_ROW_LIMIT),
+    supabase
+      .from('production_runs')
+      .select('id,product_id,quantity_produced,quantity_voided,status,estimated_unit_cost_cents,actual_unit_cost_cents,actual_labor_cost_cents,fixed_cost_cents,fixed_tape_cost_cents,fixed_shipping_label_cost_cents,fixed_branding_label_cost_cents,fixed_other_cost_cents,produced_at')
+      .lt('produced_at', asOfEndExclusive.toISOString())
+      .order('produced_at', { ascending: false })
+      .limit(ADMIN_QUERY_ROW_LIMIT),
+    supabase.from('production_run_inputs').select('production_run_id,quantity_expected,quantity_used,cost_cents').limit(ADMIN_QUERY_ROW_LIMIT),
+    supabase
+      .from('inventory_movements')
+      .select('inventory_item_id,quantity_change,unit_cost_cents,created_at')
+      .in('movement_type', ['shipment_consume', 'sample_box_consume'])
+      .is('lot_id', null)
+      .lt('created_at', asOfEndExclusive.toISOString())
+      .limit(ADMIN_QUERY_ROW_LIMIT),
+    supabase
+      .from('non_inventory_expenses')
+      .select('expense_type,amount_cents,spent_at')
+      .gte('spent_at', monthStart.toISOString())
+      .lt('spent_at', asOfEndExclusive.toISOString())
+      .limit(ADMIN_QUERY_ROW_LIMIT),
+    getSupabaseAdmin().rpc('admin_prospecting_report_v1', {
+      p_as_of_date: asOfDateInput,
+      p_center_ids: centerScope,
+      p_range_end_exclusive: formatDateInput(asOfEndExclusive),
+      p_range_start: formatDateInput(monthStart),
+      p_sales_profile_id: currentAccess.isOwner ? null : currentAccess.profile.id,
+    }),
+  ]);
+
+  if (
+    orderItemsResult.error
+    || centersResult.error
+    || productsResult.error
+    || inventoryItemsResult.error
+    || inventoryLotsResult.error
+  ) {
+    redirect(`/admin/reports?report=ai_overview&asOf=${asOfDateInput}&ai_error=generation_failed`);
+  }
+
+  const snapshot = buildBusinessHealthSnapshot({
+    asOfDate,
+    centers: (centersResult.data ?? []) as ReportingCenterRow[],
+    currentDate: today,
+    inventoryItems: (inventoryItemsResult.data ?? []) as ReportingInventoryItemRow[],
+    inventoryLots: (inventoryLotsResult.data ?? []) as ReportingInventoryLotRow[],
+    nonInventoryExpenses: nonInventoryExpensesResult.error ? [] : (nonInventoryExpensesResult.data ?? []),
+    orderItems: (orderItemsResult.data ?? []) as Array<ReportingOrderItemRow & ProfitabilityOrderItemRow>,
+    orders,
+    products: (productsResult.data ?? []) as ReportingProductRow[],
+    productionRunInputs: productionRunInputsResult.error ? [] : (productionRunInputsResult.data ?? []),
+    productionRuns: productionRunsResult.error ? [] : (productionRunsResult.data ?? []),
+    prospectingAggregate: prospectingReportResult.error ? null : normalizeProspectingReportAggregate(prospectingReportResult.data),
+    reorderSettings: reorderSettingsResult.error ? [] : (reorderSettingsResult.data ?? []) as ReportingReorderSettingRow[],
+    shortageMovements: shortageMovementsResult.error ? [] : (shortageMovementsResult.data ?? []) as ReportingInventoryMovementRow[],
+  });
+
+  const limitedSources = [
+    ['orders', ordersResult.data],
+    ['order items', orderItemsResult.data],
+    ['customers', centersResult.data],
+    ['products', productsResult.data],
+    ['inventory items', inventoryItemsResult.data],
+    ['inventory lots', inventoryLotsResult.data],
+    ['production runs', productionRunsResult.data],
+    ['production inputs', productionRunInputsResult.data],
+    ['inventory adjustments', shortageMovementsResult.data],
+    ['expenses', nonInventoryExpensesResult.data],
+  ]
+    .filter((entry): entry is [string, unknown[]] => Array.isArray(entry[1]) && queryReachedAdminRowLimit(entry[1]))
+    .map(([label]) => label);
+  if (limitedSources.length) {
+    snapshot.data_coverage_notes.push(`Loaded row limit reached for: ${limitedSources.join(', ')}. The report should treat those areas as partial.`);
+  }
+
+  let markdown = '';
+  let model = process.env.AI_OVERVIEW_MODEL || AI_BUSINESS_OVERVIEW_DEFAULT_MODEL;
+  try {
+    const generated = await generateAiBusinessOverviewMarkdown({
+      apiKey,
+      model,
+      snapshot,
+    });
+    markdown = generated.markdown;
+    model = generated.model;
+  } catch {
+    redirect(`/admin/reports?report=ai_overview&asOf=${asOfDateInput}&ai_error=generation_failed`);
+  }
+
+  const insertResult = await supabase.from('admin_ai_business_reports').insert({
+    as_of_date: asOfDateInput,
+    generated_by: currentAccess.profile.id,
+    input_summary_json: snapshot,
+    model,
+    prompt_version: AI_BUSINESS_OVERVIEW_PROMPT_VERSION,
+    report_markdown: markdown,
+  });
+
+  if (insertResult.error) {
+    redirect(`/admin/reports?report=ai_overview&asOf=${asOfDateInput}&ai_error=save_failed`);
+  }
+
+  redirect(`/admin/reports?report=ai_overview&asOf=${asOfDateInput}&ai_status=generated`);
 }
 
 function money(value: number) {
@@ -811,6 +1036,95 @@ function ReportNav({
       </div>
     </section>
   );
+}
+
+function InlineMarkdown({ text }: { text: string }) {
+  const parts = text.split(/(\*\*[^*]+\*\*)/g);
+  return (
+    <>
+      {parts.map((part, index) => {
+        if (part.startsWith('**') && part.endsWith('**')) {
+          return <strong key={index} className="font-semibold text-slate-950">{part.slice(2, -2)}</strong>;
+        }
+        return <span key={index}>{part}</span>;
+      })}
+    </>
+  );
+}
+
+function AiOverviewMarkdown({ markdown }: { markdown: string }) {
+  const blocks: ReactNode[] = [];
+  let listItems: string[] = [];
+  let orderedItems: string[] = [];
+
+  const flushLists = () => {
+    if (listItems.length) {
+      const items = listItems;
+      blocks.push(
+        <ul key={`ul-${blocks.length}`} className="list-disc space-y-2 pl-6 text-sm leading-7 text-slate-700">
+          {items.map((item, index) => <li key={index}><InlineMarkdown text={item} /></li>)}
+        </ul>
+      );
+      listItems = [];
+    }
+    if (orderedItems.length) {
+      const items = orderedItems;
+      blocks.push(
+        <ol key={`ol-${blocks.length}`} className="list-decimal space-y-2 pl-6 text-sm leading-7 text-slate-700">
+          {items.map((item, index) => <li key={index}><InlineMarkdown text={item} /></li>)}
+        </ol>
+      );
+      orderedItems = [];
+    }
+  };
+
+  for (const rawLine of markdown.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line) {
+      flushLists();
+      continue;
+    }
+
+    const heading = /^(#{1,4})\s+(.+)$/.exec(line);
+    if (heading) {
+      flushLists();
+      const level = heading[1].length;
+      const title = heading[2].replace(/\*\*/g, '');
+      if (level <= 1) {
+        blocks.push(<h2 key={`h-${blocks.length}`} className="text-xl font-semibold text-slate-950">{title}</h2>);
+      } else if (level === 2) {
+        blocks.push(<h3 key={`h-${blocks.length}`} className="pt-3 text-lg font-semibold text-slate-950">{title}</h3>);
+      } else {
+        blocks.push(<h4 key={`h-${blocks.length}`} className="pt-2 text-base font-semibold text-slate-900">{title}</h4>);
+      }
+      continue;
+    }
+
+    const unordered = /^[-*]\s+(.+)$/.exec(line);
+    if (unordered) {
+      orderedItems = [];
+      listItems.push(unordered[1]);
+      continue;
+    }
+
+    const ordered = /^\d+\.\s+(.+)$/.exec(line);
+    if (ordered) {
+      listItems = [];
+      orderedItems.push(ordered[1]);
+      continue;
+    }
+
+    flushLists();
+    blocks.push(
+      <p key={`p-${blocks.length}`} className="text-sm leading-7 text-slate-700">
+        <InlineMarkdown text={line} />
+      </p>
+    );
+  }
+
+  flushLists();
+
+  return <div className="space-y-4">{blocks}</div>;
 }
 
 function MarginValue({ value }: { value: number }) {
@@ -2032,6 +2346,10 @@ export default async function AdminReportsPage({
     parsedRangeEnd && parsedRangeEnd >= rangeStart
       ? addDays(parsedRangeEnd, 1)
       : defaultRange.rangeEndExclusive;
+  const parsedAiOverviewAsOfDate = parseDateInput(searchParams?.asOf);
+  const aiOverviewAsOfDate = parsedAiOverviewAsOfDate && parsedAiOverviewAsOfDate <= todayCentralDate()
+    ? parsedAiOverviewAsOfDate
+    : todayCentralDate();
   const prospectingReportProfileId = currentAccess.isOwner
     ? selectedSalesRepId || null
     : currentAccess.profile.id;
@@ -2278,6 +2596,16 @@ export default async function AdminReportsPage({
       total_leads: prospectingSummary.pipeline_snapshot.total_leads,
     });
   }
+  const aiOverviewReportResult = activeReport === 'ai_overview'
+    ? await supabase
+      .from('admin_ai_business_reports')
+      .select('id,as_of_date,report_markdown,input_summary_json,model,prompt_version,generated_by,generated_at,profiles(id,email,full_name,is_active)')
+      .eq('as_of_date', formatDateInput(aiOverviewAsOfDate))
+      .order('generated_at', { ascending: false })
+      .limit(1)
+    : { data: [] as AiBusinessReportRow[], error: null };
+  const aiOverviewReport = ((aiOverviewReportResult.data ?? []) as AiBusinessReportRow[])[0] ?? null;
+  const aiOverviewGeneratedBy = relatedOne(aiOverviewReport?.profiles);
   const limitedSourceLabels = [
     ['orders', ordersResult.data],
     ['order items', orderItemsResult.data],
@@ -2306,6 +2634,7 @@ export default async function AdminReportsPage({
   navParams.set('month', formatMonthInput(selectedMonth));
   navParams.set('rangeStart', formatDateInput(rangeStart));
   navParams.set('rangeEnd', rangeEndInput);
+  if (activeReport === 'ai_overview') navParams.set('asOf', formatDateInput(aiOverviewAsOfDate));
   if (productId) navParams.set('product', productId);
   if (centerId) navParams.set('center', centerId);
   if (selectedSalesRepId) navParams.set('sales_rep', selectedSalesRepId);
@@ -2333,7 +2662,7 @@ export default async function AdminReportsPage({
             <h1 className="page-title mt-4">{reportsTitle}</h1>
             <p className="page-subtitle mt-3">{reportsSubtitle}</p>
           </div>
-          <form className="rounded-xl border border-slate-200/70 bg-white/60 p-4">
+          <form className={activeReport === 'ai_overview' ? 'hidden' : 'rounded-xl border border-slate-200/70 bg-white/60 p-4'}>
             <input type="hidden" name="report" value={activeReport} />
             <div className="grid gap-3 sm:grid-cols-2">
               <label className="space-y-2 text-sm font-medium text-slate-700">
@@ -2348,7 +2677,7 @@ export default async function AdminReportsPage({
                 Range end
                 <input className="input" name="rangeEnd" type="date" defaultValue={rangeEndInput} />
               </label>
-              {activeReport !== 'prospecting' ? (
+              {activeReport !== 'prospecting' && activeReport !== 'ai_overview' ? (
                 <>
                   <label className="space-y-2 text-sm font-medium text-slate-700">
                     Product
@@ -2401,9 +2730,88 @@ export default async function AdminReportsPage({
 
       <SourceRowLimitNotice sources={limitedSourceLabels} />
 
-      {activeReport !== 'prospecting' && !hasCommerceOrders ? (
+      {activeReport !== 'prospecting' && activeReport !== 'ai_overview' && !hasCommerceOrders ? (
         <section className="card">
           <EmptyState message="No orders found yet. Reports will populate as wholesale orders are placed." />
+        </section>
+      ) : null}
+
+      {activeReport === 'ai_overview' ? (
+        <section className="space-y-5">
+          <div className="card">
+            <div className="grid gap-5 lg:grid-cols-[1fr_24rem] lg:items-end">
+              <SectionHeading
+                eyebrow="AI Overview"
+                title="Business health as of a specific date"
+                subtitle="Choose an as-of date and generate a saved owner-level report. The AI sees a structured Sobrew metrics snapshot, not raw database rows."
+              />
+              <form action={generateAiOverviewReport} className="rounded-xl border border-slate-200/70 bg-slate-50/80 p-4">
+                <label className="space-y-2 text-sm font-medium text-slate-700">
+                  As-of date
+                  <input
+                    className="input"
+                    max={formatDateInput(todayCentralDate())}
+                    name="as_of_date"
+                    type="date"
+                    defaultValue={formatDateInput(aiOverviewAsOfDate)}
+                  />
+                </label>
+                <PendingSubmitButton className="btn-primary mt-4 w-full" label="Generate AI report" pendingLabel="Generating report..." />
+              </form>
+            </div>
+            {searchParams?.ai_status === 'generated' ? (
+              <div className="mt-4 rounded-xl border border-teal-200 bg-teal-50 px-4 py-3 text-sm text-teal-900">
+                AI overview generated and saved for {dateLabel(aiOverviewAsOfDate)}.
+              </div>
+            ) : null}
+            {aiOverviewErrorMessage(searchParams?.ai_error) ? (
+              <div className="mt-4 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
+                {aiOverviewErrorMessage(searchParams?.ai_error)}
+              </div>
+            ) : null}
+            {aiOverviewReportResult.error ? (
+              <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm leading-6 text-amber-900">
+                Saved AI reports are not available yet. Apply the new Supabase migration, then this tab will reopen saved reports by date.
+              </div>
+            ) : null}
+          </div>
+
+          <div className="card">
+            {aiOverviewReport ? (
+              <div className="space-y-5">
+                <div className="flex flex-col gap-3 border-b border-slate-200 pb-5 lg:flex-row lg:items-start lg:justify-between">
+                  <div>
+                    <span className="eyebrow">Saved report</span>
+                    <h2 className="mt-2 text-xl font-semibold text-slate-950">AI Overview for {dateLabel(aiOverviewAsOfDate)}</h2>
+                    <p className="mt-2 text-sm text-slate-600">
+                      Generated {new Date(aiOverviewReport.generated_at).toLocaleString('en-US', {
+                        dateStyle: 'medium',
+                        timeStyle: 'short',
+                      })} by {adminLabel(aiOverviewGeneratedBy ?? undefined)}.
+                    </p>
+                  </div>
+                  <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
+                    <p><span className="font-semibold text-slate-800">Model:</span> {aiOverviewReport.model}</p>
+                    <p className="mt-1"><span className="font-semibold text-slate-800">Prompt:</span> {aiOverviewReport.prompt_version}</p>
+                  </div>
+                </div>
+                {Array.isArray((aiOverviewReport.input_summary_json as BusinessHealthSnapshot | null)?.data_coverage_notes)
+                  && (aiOverviewReport.input_summary_json as BusinessHealthSnapshot).data_coverage_notes.length ? (
+                    <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+                      <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">Data coverage notes</p>
+                      <ul className="mt-2 list-disc space-y-1 pl-5 text-sm leading-6 text-slate-600">
+                        {(aiOverviewReport.input_summary_json as BusinessHealthSnapshot).data_coverage_notes.map((note, index) => (
+                          <li key={index}>{note}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : null}
+                <AiOverviewMarkdown markdown={aiOverviewReport.report_markdown} />
+              </div>
+            ) : (
+              <EmptyState message={`No saved AI overview for ${dateLabel(aiOverviewAsOfDate)} yet. Choose the date and generate one to save the snapshot.`} />
+            )}
+          </div>
         </section>
       ) : null}
 
