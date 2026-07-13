@@ -11,6 +11,7 @@ import {
 } from '@/components/cart-client';
 import CheckoutSubmitButton from '@/components/checkout-submit-button';
 import { trackProductEvent } from '@/lib/analytics';
+import { checkoutSubmitState } from '@/lib/checkout-submit-state';
 import {
   RECURRING_FREQUENCY_OPTIONS,
   formatNextRecurringOrderDate,
@@ -61,17 +62,13 @@ export default function CheckoutForm({ actionUrl, cartStorageKey, initialToast, 
   const submittingRef = useRef(false);
   const { itemCount, subtotalCents } = useCart(cartStorageKey);
   const selectedLocation = locations.find((location) => location.id === selectedLocationId) ?? null;
-  const mustChooseLocation = locations.length > 1 && !selectedLocation;
   const hasNoLocation = locations.length === 0;
-  const isCartEmpty = itemCount <= 0;
-  const checkoutDisabled = isCartEmpty || hasNoLocation || mustChooseLocation || !submissionId;
-  const disabledLabel = isCartEmpty
-    ? 'Add items first'
-    : hasNoLocation
-      ? 'Address required'
-      : mustChooseLocation
-        ? 'Choose delivery'
-        : 'Preparing checkout…';
+  const { disabled: checkoutDisabled, disabledLabel } = checkoutSubmitState({
+    hasSelectedLocation: Boolean(selectedLocation),
+    itemCount,
+    locationCount: locations.length,
+    submissionId,
+  });
   const errorMessage = checkoutErrorMessage(initialToast);
   const nextRecurringDate = useMemo(
     () => isRecurring ? formatNextRecurringOrderDate(frequency, new Date()) : '',
@@ -121,8 +118,8 @@ export default function CheckoutForm({ actionUrl, cartStorageKey, initialToast, 
           </div>
 
           {hasNoLocation ? (
-            <div className="checkout-critical-alert" role="alert">
-              No active delivery address is available. Contact Sobrew before placing this order.
+            <div className="checkout-location-hint">
+              No saved delivery location is on this account. You can still place the order.
             </div>
           ) : null}
 
