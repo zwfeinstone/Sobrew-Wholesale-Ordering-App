@@ -62,7 +62,6 @@ export default function CheckoutForm({ actionUrl, cartStorageKey, initialToast, 
   const submittingRef = useRef(false);
   const { itemCount, subtotalCents } = useCart(cartStorageKey);
   const selectedLocation = locations.find((location) => location.id === selectedLocationId) ?? null;
-  const hasNoLocation = locations.length === 0;
   const { disabled: checkoutDisabled, disabledLabel } = checkoutSubmitState({
     hasSelectedLocation: Boolean(selectedLocation),
     itemCount,
@@ -116,12 +115,6 @@ export default function CheckoutForm({ actionUrl, cartStorageKey, initialToast, 
               <h2 id="checkout-delivery-heading" className="checkout-section-title">Where this order is going</h2>
             </div>
           </div>
-
-          {hasNoLocation ? (
-            <div className="checkout-location-hint">
-              No saved delivery location is on this account. You can still place the order.
-            </div>
-          ) : null}
 
           {locations.length > 1 ? (
             <div className="checkout-location-picker">
