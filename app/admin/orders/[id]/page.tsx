@@ -680,17 +680,17 @@ async function deleteOrder(formData: FormData) {
   const supabase = await createClient();
   if (!id) redirect('/admin/orders?toast=delete_error');
 
-  const { count: recurringCount } = await supabase
-    .from('recurring_orders')
-    .select('id', { count: 'exact', head: true })
-    .eq('source_order_id', id);
+  const { data: deleteResult, error: deleteError } = await supabase
+    .rpc('delete_order_and_restore_inventory', { p_order_id: id })
+    .single();
 
-  const deleteResult = await supabase.from('orders').delete().eq('id', id).select('id');
-  if (deleteResult.error || !deleteResult.data?.length) {
+  if (deleteError || !deleteResult) {
+    if (deleteError) console.error('[orders] delete with inventory restore failed', deleteError);
     redirect(`/admin/orders/${id}?toast=delete_error`);
   }
 
-  redirect(`/admin/orders?toast=${(recurringCount ?? 0) > 0 ? 'delete_success_with_recurring' : 'delete_success'}`);
+  const recurringCount = Number((deleteResult as { recurring_source_count?: unknown }).recurring_source_count ?? 0);
+  redirect(`/admin/orders?toast=${recurringCount > 0 ? 'delete_success_with_recurring' : 'delete_success'}`);
 }
 
 export default async function AdminOrderDetail({
@@ -862,8 +862,8 @@ export default async function AdminOrderDetail({
               className="w-full rounded-full border border-rose-200 px-4 py-2.5 text-sm font-semibold text-rose-700 transition-all duration-200 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-70 md:w-auto"
               confirmMessage={
                 (recurringCount ?? 0) > 0
-                  ? 'Delete this order permanently? This will also delete the recurring schedule created from it. This action cannot be undone.'
-                  : 'Delete this order permanently? This action cannot be undone.'
+                  ? 'Delete this order permanently? This will restore shipped inventory deductions and also delete the recurring schedule created from it. This action cannot be undone.'
+                  : 'Delete this order permanently? If it was shipped, inventory deductions will be restored. This action cannot be undone.'
               }
               label="Delete order"
               pendingLabel="Deleting..."

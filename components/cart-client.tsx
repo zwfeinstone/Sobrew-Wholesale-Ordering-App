@@ -324,8 +324,10 @@ export function ReorderButton({
   const router = useRouter();
   const { addReorderItems, itemCount } = useCart(storageKey);
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [isReordering, setIsReordering] = useState(false);
+  const reorderingRef = useRef(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
-  const mergeButtonRef = useRef<HTMLButtonElement>(null);
+  const replaceButtonRef = useRef<HTMLButtonElement>(null);
   const dialogRef = useRef<HTMLElement>(null);
 
   const closeDialog = useCallback(() => {
@@ -335,7 +337,7 @@ export function ReorderButton({
 
   useEffect(() => {
     if (!dialogOpen) return;
-    mergeButtonRef.current?.focus();
+    replaceButtonRef.current?.focus();
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -364,6 +366,9 @@ export function ReorderButton({
   }, [closeDialog, dialogOpen]);
 
   const finishReorder = (mode: ReorderMode) => {
+    if (reorderingRef.current) return;
+    reorderingRef.current = true;
+    setIsReordering(true);
     addReorderItems(items, mode);
     trackProductEvent('portal_reorder_added', {
       item_count: items.length,
@@ -390,10 +395,10 @@ export function ReorderButton({
         aria-haspopup="dialog"
         className={className}
         type="button"
-        disabled={!items.length}
+        disabled={!items.length || isReordering}
         onClick={startReorder}
       >
-        {label}
+        {isReordering ? 'Opening cart...' : label}
       </button>
       {dialogOpen ? (
         <div className="reorder-dialog-backdrop" role="presentation" onMouseDown={(event) => {
@@ -410,17 +415,17 @@ export function ReorderButton({
             <span className="eyebrow">Current order found</span>
             <h2 id="reorder-dialog-title" className="mt-4 text-xl font-semibold tracking-tight text-slate-950">How should we add this order?</h2>
             <p id="reorder-dialog-description" className="mt-2 text-sm leading-6 text-slate-600">
-              Merge keeps the items already in your order. Replace starts fresh with this previous order.
+              Replace starts fresh with this previous order. Merge adds these items to what is already in your cart.
             </p>
             <div className="mt-5 grid gap-2 sm:grid-cols-2">
-              <button ref={mergeButtonRef} className="btn-primary" type="button" onClick={() => finishReorder('merge')}>
-                Merge &amp; review
+              <button ref={replaceButtonRef} className="btn-primary" type="button" disabled={isReordering} onClick={() => finishReorder('replace')}>
+                {isReordering ? 'Opening cart...' : 'Replace & review'}
               </button>
-              <button className="btn-secondary" type="button" onClick={() => finishReorder('replace')}>
-                Replace &amp; review
+              <button className="btn-secondary" type="button" disabled={isReordering} onClick={() => finishReorder('merge')}>
+                {isReordering ? 'Opening cart...' : 'Merge & review'}
               </button>
             </div>
-            <button className="mt-3 w-full px-4 py-2 text-sm font-semibold text-slate-600 hover:text-slate-950" type="button" onClick={closeDialog}>
+            <button className="mt-3 w-full px-4 py-2 text-sm font-semibold text-slate-600 hover:text-slate-950 disabled:cursor-not-allowed disabled:opacity-60" type="button" disabled={isReordering} onClick={closeDialog}>
               Cancel
             </button>
           </section>
