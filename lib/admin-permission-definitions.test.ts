@@ -29,6 +29,7 @@ describe('admin permissions', () => {
 
   it('maps nested routes to the correct authorization section', () => {
     expect(adminSectionForPath('/admin/orders/123')).toBe('orders');
+    expect(adminSectionForPath('/admin/sales-price-guide')).toBe('sales');
     expect(adminSectionForPath('/admin/sales/prospecting/list/123')).toBe('prospecting');
     expect(adminSectionForPath('/admin/access-denied')).toBeNull();
   });

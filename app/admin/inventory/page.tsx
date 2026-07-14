@@ -52,6 +52,18 @@ type InventoryMovementRow = {
   unit_cost_cents: number | string | null;
 };
 
+type InventoryAdjustmentRow = {
+  id: string;
+  inventory_item_id: string;
+  adjustment_type: string;
+  quantity_change: number | string;
+  unit: InventoryUnit;
+  unit_cost_cents: number | string | null;
+  notes: string | null;
+  adjusted_at: string | null;
+  created_at: string | null;
+};
+
 type RecipeComponentRow = {
   id: string;
   inventory_item_id: string;
@@ -108,6 +120,25 @@ function activeProductionQuantity(run: ProductionRunRow) {
   return Math.max(0, normalizeInventoryNumber(run.quantity_produced) - normalizeInventoryNumber(run.quantity_voided));
 }
 
+function adjustmentTypeLabel(value: string | null | undefined) {
+  return INVENTORY_ADJUSTMENT_TYPES.find((type) => type.value === value)?.label ?? 'Adjustment';
+}
+
+function formatAdjustmentTimestamp(value: string | null | undefined) {
+  if (!value) return 'Unknown time';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return 'Unknown time';
+  return new Intl.DateTimeFormat('en-US', {
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    month: 'short',
+    timeZone: 'America/Chicago',
+    timeZoneName: 'short',
+    year: 'numeric',
+  }).format(date);
+}
+
 function parsePositiveNumber(value: FormDataEntryValue | null, fallback = 0) {
   const parsed = Number.parseFloat(String(value ?? ''));
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
@@ -115,7 +146,7 @@ function parsePositiveNumber(value: FormDataEntryValue | null, fallback = 0) {
 
 async function adjustFinishedGoods(formData: FormData) {
   'use server';
-  await requireAdminWriteAccess(inventoryHref('admin_write_denied'), 'inventory');
+  await requireAdminWriteAccess(inventoryHref('admin_write_denied'));
 
   const supabase = await createClient();
   const productId = String(formData.get('product_id') ?? '').trim();
@@ -304,7 +335,8 @@ export default async function InventoryPage({
 }: {
   searchParams?: Record<string, string | string[] | undefined>;
 }) {
-  await requireAdminSectionView('inventory');
+  const current = await requireAdminSectionView('inventory');
+  const canAdjustInventory = current.isSuperadmin;
   const requestedTab = typeof searchParams?.tab === 'string' ? searchParams.tab : '';
   const toast = typeof searchParams?.toast === 'string' ? searchParams.toast : '';
   if (requestedTab === 'setup') redirect('/admin/receiving');
@@ -320,6 +352,7 @@ export default async function InventoryPage({
     runsResult,
     openOrdersResult,
     shortageMovementsResult,
+    adjustmentsResult,
   ] = await Promise.all([
     supabase.from('products').select('id,name,sku,active').order('name', { ascending: true }),
     supabase.from('inventory_items').select('id,name,sku,item_type,base_unit,product_id,active').order('name', { ascending: true }),
@@ -328,6 +361,7 @@ export default async function InventoryPage({
     supabase.from('production_runs').select('product_id,quantity_produced,quantity_voided,status,actual_unit_cost_cents').order('produced_at', { ascending: false }).limit(500),
     supabase.from('orders').select('id,status,order_items(product_id,qty)').in('status', ['New', 'Processing']).is('archived_at', null),
     supabase.from('inventory_movements').select('inventory_item_id,quantity_change,unit_cost_cents').in('movement_type', ['shipment_consume', 'sample_box_consume']).is('lot_id', null).limit(50000),
+    supabase.from('inventory_adjustments').select('id,inventory_item_id,adjustment_type,quantity_change,unit,unit_cost_cents,notes,adjusted_at,created_at').order('adjusted_at', { ascending: false }).order('created_at', { ascending: false }).limit(25),
   ]);
 
   if (itemsResult.error) {
@@ -350,6 +384,7 @@ export default async function InventoryPage({
   const runs = (runsResult.data ?? []) as ProductionRunRow[];
   const openOrders = (openOrdersResult.data ?? []) as any[];
   const shortageMovements = shortageMovementsResult.error ? [] : ((shortageMovementsResult.data ?? []) as InventoryMovementRow[]);
+  const adjustmentRows = adjustmentsResult.error ? [] : ((adjustmentsResult.data ?? []) as InventoryAdjustmentRow[]);
   const itemsById = new Map(items.map((item) => [item.id, item]));
 
   const lotSummaryByItem = new Map<string, { remaining: number; avgCostCents: number; valueCents: number }>();
@@ -452,7 +487,7 @@ export default async function InventoryPage({
     <div className="space-y-6">
       {toast === 'finished_adjustment_saved' ? <StatusToast message="Finished goods inventory adjustment saved." tone="success" /> : null}
       {toast === 'finished_adjustment_error' ? <StatusToast message="Unable to adjust finished goods inventory." tone="error" /> : null}
-      {toast === 'admin_write_denied' ? <StatusToast message="You do not have permission to edit inventory." tone="error" /> : null}
+      {toast === 'admin_write_denied' ? <StatusToast message="Only superadmins can adjust inventory." tone="error" /> : null}
 
       <section className="panel">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
@@ -536,41 +571,81 @@ export default async function InventoryPage({
                   </div>
                 </div>
               </div>
-              <details className="mt-4 border-t border-slate-100 pt-4">
-                <summary className="cursor-pointer text-sm font-semibold text-teal-700">Adjust finished goods</summary>
-                <form action={adjustFinishedGoods} className="mt-4 grid gap-3 md:grid-cols-[9rem_11rem_8rem_9rem_minmax(0,1fr)_auto] md:items-end">
-                  <input name="product_id" type="hidden" value={row.product.id} />
-                  <label className="space-y-1 text-sm font-medium text-slate-700">
-                    Direction
-                    <select className="input" name="direction" defaultValue="add">
-                      <option value="add">Add stock</option>
-                      <option value="subtract">Subtract stock</option>
-                    </select>
-                  </label>
-                  <label className="space-y-1 text-sm font-medium text-slate-700">
-                    Reason
-                    <select className="input" name="adjustment_type" defaultValue="count_correction">
-                      {INVENTORY_ADJUSTMENT_TYPES.map((type) => <option key={type.value} value={type.value}>{type.label}</option>)}
-                    </select>
-                  </label>
-                  <label className="space-y-1 text-sm font-medium text-slate-700">
-                    Quantity
-                    <input className="input" name="quantity" required min="1" step="1" type="number" placeholder="Qty" />
-                  </label>
-                  <label className="space-y-1 text-sm font-medium text-slate-700">
-                    Unit COGS
-                    <input className="input" name="unit_cost" min="0" step="0.0001" type="number" defaultValue={dollarsInputValueFromCents(row.costCents)} placeholder="0.00" />
-                  </label>
-                  <label className="space-y-1 text-sm font-medium text-slate-700">
-                    Notes
-                    <input className="input" name="notes" placeholder="Adjustment reason" />
-                  </label>
-                  <PendingSubmitButton className="btn-secondary w-full md:w-auto" label="Save" pendingLabel="Saving..." />
-                </form>
-              </details>
+              {canAdjustInventory ? (
+                <details className="mt-4 border-t border-slate-100 pt-4">
+                  <summary className="cursor-pointer text-sm font-semibold text-teal-700">Adjust finished goods</summary>
+                  <form action={adjustFinishedGoods} className="mt-4 grid gap-3 md:grid-cols-[9rem_11rem_8rem_9rem_minmax(0,1fr)_auto] md:items-end">
+                    <input name="product_id" type="hidden" value={row.product.id} />
+                    <label className="space-y-1 text-sm font-medium text-slate-700">
+                      Direction
+                      <select className="input" name="direction" defaultValue="add">
+                        <option value="add">Add stock</option>
+                        <option value="subtract">Subtract stock</option>
+                      </select>
+                    </label>
+                    <label className="space-y-1 text-sm font-medium text-slate-700">
+                      Reason
+                      <select className="input" name="adjustment_type" defaultValue="count_correction">
+                        {INVENTORY_ADJUSTMENT_TYPES.map((type) => <option key={type.value} value={type.value}>{type.label}</option>)}
+                      </select>
+                    </label>
+                    <label className="space-y-1 text-sm font-medium text-slate-700">
+                      Quantity
+                      <input className="input" name="quantity" required min="1" step="1" type="number" placeholder="Qty" />
+                    </label>
+                    <label className="space-y-1 text-sm font-medium text-slate-700">
+                      Unit COGS
+                      <input className="input" name="unit_cost" min="0" step="0.0001" type="number" defaultValue={dollarsInputValueFromCents(row.costCents)} placeholder="0.00" />
+                    </label>
+                    <label className="space-y-1 text-sm font-medium text-slate-700">
+                      Notes
+                      <input className="input" name="notes" placeholder="Adjustment reason" />
+                    </label>
+                    <PendingSubmitButton className="btn-secondary w-full md:w-auto" label="Save" pendingLabel="Saving..." />
+                  </form>
+                </details>
+              ) : null}
             </div>
           ))}
           {!sellableRows.length ? <p className="rounded-2xl border border-slate-200 bg-white/70 p-4 text-sm text-slate-500">No active products found.</p> : null}
+        </div>
+      </section>
+
+      <section className="card space-y-4">
+        <SectionHeading eyebrow="Adjustment Log" title="Corrections and adjustments" subtitle="Recent manual inventory changes across raw coffee, materials, supplies, and finished goods." />
+        <div className="space-y-3">
+          {adjustmentRows.map((adjustment) => {
+            const item = itemsById.get(adjustment.inventory_item_id);
+            const quantityChange = normalizeInventoryNumber(adjustment.quantity_change);
+            const isPositive = quantityChange >= 0;
+            const quantityLabel = `${isPositive ? '+' : '-'}${formatInventoryQuantity(Math.abs(quantityChange), adjustment.unit)}`;
+            return (
+              <div key={adjustment.id} className="rounded-2xl border border-slate-200 bg-white/70 p-4">
+                <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_8rem_9rem_10rem] md:items-start">
+                  <div className="min-w-0">
+                    <p className="break-words font-semibold text-slate-950">{itemDisplayName(item)}</p>
+                    <p className="mt-1 text-sm text-slate-500">
+                      {adjustmentTypeLabel(adjustment.adjustment_type)} - {item ? inventoryItemTypeLabel(item.item_type) : 'Inventory Item'}
+                    </p>
+                    {adjustment.notes ? <p className="mt-2 break-words text-sm text-slate-600">{adjustment.notes}</p> : null}
+                  </div>
+                  <div>
+                    <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Change</p>
+                    <p className={`mt-1 font-semibold ${isPositive ? 'text-emerald-700' : 'text-rose-700'}`}>{quantityLabel}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Unit COGS</p>
+                    <p className="mt-1 font-semibold text-slate-950">{usd(Math.round(normalizeInventoryNumber(adjustment.unit_cost_cents)))}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Recorded</p>
+                    <p className="mt-1 text-sm font-semibold text-slate-950">{formatAdjustmentTimestamp(adjustment.adjusted_at ?? adjustment.created_at)}</p>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+          {!adjustmentRows.length ? <p className="rounded-2xl border border-slate-200 bg-white/70 p-4 text-sm text-slate-500">No inventory corrections or adjustments have been logged yet.</p> : null}
         </div>
       </section>
     </div>

@@ -74,6 +74,7 @@ export const ADMIN_NAV_LINKS: Array<{
 }> = [
   { name: 'Dashboard', href: '/admin', exact: true, sectionKey: 'dashboard' },
   { name: 'Sales', href: '/admin/sales', exact: true, sectionKey: 'sales' },
+  { name: 'Sales Price Guide', href: '/admin/sales-price-guide', sectionKey: 'sales' },
   { name: 'Sales Admin', href: '/admin/sales-admin', sectionKey: 'sales_admin' },
   { name: 'Commission', href: '/admin/commission', sectionKey: 'commission' },
   { name: 'Reports', href: '/admin/reports', sectionKey: 'reports' },
@@ -258,6 +259,7 @@ export function adminSectionForPath(pathname: string): AdminPermissionKey | null
   if (pathname === '/admin/admins/new' || pathname.startsWith('/admin/admins/new/')) return 'manage_admins';
   if (pathname === '/admin') return 'dashboard';
   if (pathname === '/admin/sales-admin' || pathname.startsWith('/admin/sales-admin/')) return 'sales_admin';
+  if (pathname === '/admin/sales-price-guide' || pathname.startsWith('/admin/sales-price-guide/')) return 'sales';
   if (pathname === '/admin/commission' || pathname.startsWith('/admin/commission/')) return 'commission';
   if (pathname === '/admin/marketing' || pathname.startsWith('/admin/marketing/')) return 'marketing';
   if (pathname === '/admin/sales/prospecting' || pathname.startsWith('/admin/sales/prospecting/')) return 'prospecting';
