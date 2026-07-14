@@ -128,6 +128,9 @@ function formatRunDate(value: string | null | undefined) {
     hour: 'numeric',
     minute: '2-digit',
     month: 'short',
+    timeZone: 'America/Chicago',
+    timeZoneName: 'short',
+    year: 'numeric',
   }).format(date);
 }
 
@@ -416,6 +419,7 @@ export default async function ProductionPage({
             const lotRemaining = normalizeInventoryNumber(finishedLot?.quantity_remaining);
             const maxVoidable = Math.max(0, Math.min(lotRemaining, unvoidedQuantity));
             const runVoidEvents = voidEventsByRunId.get(run.id) ?? [];
+            const runTimestamp = formatRunDate(run.produced_at);
             return (
               <div key={run.id} className="rounded-2xl border border-slate-200 bg-white/70 p-4">
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -426,6 +430,11 @@ export default async function ProductionPage({
                         {productionStatusLabel(run.status)}
                       </span>
                     </div>
+                    {runTimestamp ? (
+                      <p className="mt-1 text-xs font-medium text-slate-500">
+                        Recorded <time dateTime={run.produced_at ?? undefined}>{runTimestamp}</time>
+                      </p>
+                    ) : null}
                     <p className="mt-1 text-sm text-slate-500">
                       Produced {formatInventoryQuantity(quantityProduced, 'each')}
                       {quantityVoided > 0 ? ` - Voided ${formatInventoryQuantity(quantityVoided, 'each')}` : ''}

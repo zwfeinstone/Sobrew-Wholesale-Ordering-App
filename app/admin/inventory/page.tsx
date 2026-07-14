@@ -1,11 +1,18 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
+import PendingSubmitButton from '@/components/pending-submit-button';
+import StatusToast from '@/components/status-toast';
 import { requireAdminSectionView } from '@/lib/admin-permissions';
+import { requireAdminWriteAccess } from '@/lib/admin-write-access';
 import {
+  INVENTORY_ADJUSTMENT_TYPES,
   convertInventoryQuantity,
+  centsFromDollars,
+  dollarsInputValueFromCents,
   fixedRecipeCostCents,
   formatInventoryQuantity,
   inventoryItemTypeLabel,
+  isInventoryAdjustmentType,
   isWholeCountPackagingComponentRole,
   laborCostCents,
   normalizeInventoryNumber,
@@ -73,6 +80,10 @@ type ProductionRunRow = {
   actual_unit_cost_cents: number | string | null;
 };
 
+function inventoryHref(toast: string) {
+  return `/admin/inventory?toast=${toast}`;
+}
+
 function productName(product: ProductRow | undefined | null) {
   return product?.name?.trim() || 'Unnamed product';
 }
@@ -95,6 +106,158 @@ function isBoxComponent(component: RecipeComponentRow) {
 function activeProductionQuantity(run: ProductionRunRow) {
   if (run.status === 'void') return 0;
   return Math.max(0, normalizeInventoryNumber(run.quantity_produced) - normalizeInventoryNumber(run.quantity_voided));
+}
+
+function parsePositiveNumber(value: FormDataEntryValue | null, fallback = 0) {
+  const parsed = Number.parseFloat(String(value ?? ''));
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+async function adjustFinishedGoods(formData: FormData) {
+  'use server';
+  await requireAdminWriteAccess(inventoryHref('admin_write_denied'), 'inventory');
+
+  const supabase = await createClient();
+  const productId = String(formData.get('product_id') ?? '').trim();
+  const adjustmentType = String(formData.get('adjustment_type') ?? '');
+  const direction = String(formData.get('direction') ?? 'add');
+  const quantity = parsePositiveNumber(formData.get('quantity'));
+  let unitCostCents = 0;
+
+  try {
+    unitCostCents = centsFromDollars(String(formData.get('unit_cost') ?? '0'));
+  } catch {
+    redirect(inventoryHref('finished_adjustment_error'));
+  }
+
+  const notes = String(formData.get('notes') ?? '').trim() || null;
+
+  if (!productId || quantity <= 0 || !isInventoryAdjustmentType(adjustmentType) || !['add', 'subtract'].includes(direction)) {
+    redirect(inventoryHref('finished_adjustment_error'));
+  }
+
+  const { data: product } = await supabase
+    .from('products')
+    .select('id,name,sku')
+    .eq('id', productId)
+    .single();
+
+  if (!product) redirect(inventoryHref('finished_adjustment_error'));
+
+  let { data: item } = await supabase
+    .from('inventory_items')
+    .select('id,base_unit,item_type,product_id')
+    .eq('item_type', 'finished_good')
+    .eq('product_id', productId)
+    .maybeSingle();
+
+  if (!item && direction === 'subtract') redirect(inventoryHref('finished_adjustment_error'));
+
+  if (!item) {
+    const { data: insertedItem, error: itemError } = await supabase
+      .from('inventory_items')
+      .insert({
+        name: product.name,
+        sku: `FIN-${product.sku || productId.slice(0, 8)}`,
+        item_type: 'finished_good',
+        base_unit: 'each',
+        product_id: productId,
+        active: true,
+      })
+      .select('id,base_unit,item_type,product_id')
+      .single();
+
+    if (itemError || !insertedItem) redirect(inventoryHref('finished_adjustment_error'));
+    item = insertedItem;
+  }
+
+  if (item.item_type !== 'finished_good' || item.product_id !== productId) {
+    redirect(inventoryHref('finished_adjustment_error'));
+  }
+
+  const signedQuantity = direction === 'subtract' ? -quantity : quantity;
+  const adjustedAt = new Date().toISOString();
+  let lotId: string | null = null;
+  let movementUnitCostCents = unitCostCents;
+
+  if (signedQuantity > 0) {
+    const { data: lot, error: lotError } = await supabase
+      .from('inventory_lots')
+      .insert({
+        inventory_item_id: item.id,
+        lot_code: `FG-ADJ-${adjustedAt.slice(0, 10)}`,
+        source_type: 'adjustment',
+        quantity_received: signedQuantity,
+        quantity_remaining: signedQuantity,
+        unit_cost_cents: unitCostCents,
+        received_at: adjustedAt,
+        notes,
+      })
+      .select('id')
+      .single();
+
+    if (lotError || !lot) redirect(inventoryHref('finished_adjustment_error'));
+    lotId = lot.id;
+  } else {
+    const { data: lots } = await supabase
+      .from('inventory_lots')
+      .select('id,quantity_remaining,unit_cost_cents')
+      .eq('inventory_item_id', item.id)
+      .gt('quantity_remaining', 0)
+      .order('received_at', { ascending: true })
+      .order('created_at', { ascending: true });
+
+    const available = (lots ?? []).reduce((sum: number, lot: any) => sum + normalizeInventoryNumber(lot.quantity_remaining), 0);
+    let remaining = Math.abs(signedQuantity);
+    let consumedValueCents = 0;
+
+    if (available < remaining) redirect(inventoryHref('finished_adjustment_error'));
+
+    for (const lot of lots ?? []) {
+      if (remaining <= 0) break;
+      const take = Math.min(normalizeInventoryNumber(lot.quantity_remaining), remaining);
+      const { error: lotError } = await supabase
+        .from('inventory_lots')
+        .update({ quantity_remaining: normalizeInventoryNumber(lot.quantity_remaining) - take })
+        .eq('id', lot.id);
+
+      if (lotError) redirect(inventoryHref('finished_adjustment_error'));
+      consumedValueCents += take * normalizeInventoryNumber(lot.unit_cost_cents);
+      lotId = lot.id;
+      remaining -= take;
+    }
+
+    movementUnitCostCents = quantity > 0 ? consumedValueCents / quantity : unitCostCents;
+  }
+
+  const { data: adjustment, error: adjustmentError } = await supabase
+    .from('inventory_adjustments')
+    .insert({
+      inventory_item_id: item.id,
+      lot_id: lotId,
+      adjustment_type: adjustmentType,
+      quantity_change: signedQuantity,
+      unit: item.base_unit,
+      unit_cost_cents: movementUnitCostCents,
+      notes,
+      adjusted_at: adjustedAt,
+    })
+    .select('id')
+    .single();
+
+  if (adjustmentError || !adjustment) redirect(inventoryHref('finished_adjustment_error'));
+
+  const { error: movementError } = await supabase.from('inventory_movements').insert({
+    inventory_item_id: item.id,
+    lot_id: lotId,
+    movement_type: 'adjustment',
+    quantity_change: signedQuantity,
+    unit: item.base_unit,
+    unit_cost_cents: movementUnitCostCents,
+    notes: notes || `Finished goods ${adjustmentType}`,
+  });
+
+  redirect(inventoryHref(movementError ? 'finished_adjustment_error' : 'finished_adjustment_saved'));
 }
 
 function SectionHeading({ eyebrow, title, subtitle }: { eyebrow: string; title: string; subtitle: string }) {
@@ -143,6 +306,7 @@ export default async function InventoryPage({
 }) {
   await requireAdminSectionView('inventory');
   const requestedTab = typeof searchParams?.tab === 'string' ? searchParams.tab : '';
+  const toast = typeof searchParams?.toast === 'string' ? searchParams.toast : '';
   if (requestedTab === 'setup') redirect('/admin/receiving');
   if (requestedTab === 'planning') redirect('/admin/planning');
   if (requestedTab === 'production') redirect('/admin/production');
@@ -286,6 +450,10 @@ export default async function InventoryPage({
 
   return (
     <div className="space-y-6">
+      {toast === 'finished_adjustment_saved' ? <StatusToast message="Finished goods inventory adjustment saved." tone="success" /> : null}
+      {toast === 'finished_adjustment_error' ? <StatusToast message="Unable to adjust finished goods inventory." tone="error" /> : null}
+      {toast === 'admin_write_denied' ? <StatusToast message="You do not have permission to edit inventory." tone="error" /> : null}
+
       <section className="panel">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
           <div>
@@ -368,6 +536,38 @@ export default async function InventoryPage({
                   </div>
                 </div>
               </div>
+              <details className="mt-4 border-t border-slate-100 pt-4">
+                <summary className="cursor-pointer text-sm font-semibold text-teal-700">Adjust finished goods</summary>
+                <form action={adjustFinishedGoods} className="mt-4 grid gap-3 md:grid-cols-[9rem_11rem_8rem_9rem_minmax(0,1fr)_auto] md:items-end">
+                  <input name="product_id" type="hidden" value={row.product.id} />
+                  <label className="space-y-1 text-sm font-medium text-slate-700">
+                    Direction
+                    <select className="input" name="direction" defaultValue="add">
+                      <option value="add">Add stock</option>
+                      <option value="subtract">Subtract stock</option>
+                    </select>
+                  </label>
+                  <label className="space-y-1 text-sm font-medium text-slate-700">
+                    Reason
+                    <select className="input" name="adjustment_type" defaultValue="count_correction">
+                      {INVENTORY_ADJUSTMENT_TYPES.map((type) => <option key={type.value} value={type.value}>{type.label}</option>)}
+                    </select>
+                  </label>
+                  <label className="space-y-1 text-sm font-medium text-slate-700">
+                    Quantity
+                    <input className="input" name="quantity" required min="1" step="1" type="number" placeholder="Qty" />
+                  </label>
+                  <label className="space-y-1 text-sm font-medium text-slate-700">
+                    Unit COGS
+                    <input className="input" name="unit_cost" min="0" step="0.0001" type="number" defaultValue={dollarsInputValueFromCents(row.costCents)} placeholder="0.00" />
+                  </label>
+                  <label className="space-y-1 text-sm font-medium text-slate-700">
+                    Notes
+                    <input className="input" name="notes" placeholder="Adjustment reason" />
+                  </label>
+                  <PendingSubmitButton className="btn-secondary w-full md:w-auto" label="Save" pendingLabel="Saving..." />
+                </form>
+              </details>
             </div>
           ))}
           {!sellableRows.length ? <p className="rounded-2xl border border-slate-200 bg-white/70 p-4 text-sm text-slate-500">No active products found.</p> : null}
