@@ -669,6 +669,8 @@ export default async function InventoryPage({
         <div className="grid gap-3 lg:grid-cols-2">
           {materialSupplyItems.map((item) => {
             const summary = lotSummaryByItem.get(item.id);
+            const quantityMin = item.base_unit === 'each' ? '1' : '0.0001';
+            const quantityStep = item.base_unit === 'each' ? '1' : '0.0001';
             return (
               <StockCard
                 key={item.id}
@@ -698,7 +700,7 @@ export default async function InventoryPage({
                       </label>
                       <label className="min-w-0 space-y-1 text-sm font-medium text-slate-700">
                         Quantity
-                        <input className="input" name="quantity" required min="0.0001" step={item.base_unit === 'each' ? '1' : '0.0001'} type="number" placeholder="Qty" />
+                        <input className="input" name="quantity" required min={quantityMin} step={quantityStep} type="number" placeholder="Qty" />
                       </label>
                       <label className="min-w-0 space-y-1 text-sm font-medium text-slate-700">
                         Unit COGS
