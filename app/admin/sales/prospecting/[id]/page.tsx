@@ -119,6 +119,22 @@ function noteBlocks(notes: string | null | undefined) {
     .filter(Boolean);
 }
 
+function titleCase(value: string | null | undefined) {
+  return String(value ?? 'Activity')
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function activityTone(activityType: string | null | undefined) {
+  const type = String(activityType ?? '').toLowerCase();
+  if (type === 'call') return { accent: 'bg-teal-600', badge: 'bg-teal-50 text-teal-800', border: 'border-teal-100' };
+  if (type === 'email') return { accent: 'bg-indigo-600', badge: 'bg-indigo-50 text-indigo-800', border: 'border-indigo-100' };
+  if (type === 'note') return { accent: 'bg-amber-500', badge: 'bg-amber-50 text-amber-800', border: 'border-amber-100' };
+  if (type === 'assignment') return { accent: 'bg-slate-500', badge: 'bg-slate-100 text-slate-700', border: 'border-slate-200' };
+  if (type === 'stage_change') return { accent: 'bg-emerald-600', badge: 'bg-emerald-50 text-emerald-800', border: 'border-emerald-100' };
+  return { accent: 'bg-blue-600', badge: 'bg-blue-50 text-blue-800', border: 'border-blue-100' };
+}
+
 function safeDateInput(value: FormDataEntryValue | null) {
   const text = String(value ?? '').trim();
   return /^\d{4}-\d{2}-\d{2}$/.test(text) ? text : null;
@@ -571,6 +587,65 @@ function ResultOptions({ type }: { type: 'call' | 'email' }) {
   return options.map((result) => <option key={result} value={result}>{result}</option>);
 }
 
+function ActivityTimeline({ activities }: { activities: ActivityRow[] }) {
+  return (
+    <section className="card space-y-5 border-teal-100 bg-white/95">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-teal-700">Timeline</p>
+          <h2 className="mt-2 text-2xl font-semibold tracking-tight text-slate-950">Calls, emails, notes, and changes</h2>
+        </div>
+        <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700">
+          {activities.length.toLocaleString()} {activities.length === 1 ? 'entry' : 'entries'}
+        </span>
+      </div>
+
+      <div className="max-h-[44rem] space-y-3 overflow-y-auto pr-1">
+        {activities.map((activity) => {
+          const tone = activityTone(activity.activity_type);
+          const bodyBlocks = noteBlocks(activity.body);
+          return (
+            <article key={activity.id} className={`relative overflow-hidden rounded-lg border ${tone.border} bg-white px-4 py-4 shadow-sm`}>
+              <div className={`absolute left-0 top-0 h-full w-1 ${tone.accent}`} />
+              <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_13rem]">
+                <div className="min-w-0 space-y-3 pl-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${tone.badge}`}>{titleCase(activity.activity_type)}</span>
+                    {activity.result ? <span className="rounded-full bg-white px-2.5 py-1 text-xs font-semibold text-slate-700 ring-1 ring-slate-200">{activity.result}</span> : null}
+                  </div>
+
+                  {activity.previous_stage !== activity.next_stage && activity.next_stage ? (
+                    <p className="text-base font-semibold text-teal-800">{stageLabel(activity.previous_stage)} to {stageLabel(activity.next_stage)}</p>
+                  ) : null}
+
+                  {activity.next_follow_up_at ? (
+                    <p className="inline-flex rounded-lg bg-slate-50 px-3 py-1.5 text-sm font-semibold text-slate-700">
+                      Next follow-up: {formatDate(activity.next_follow_up_at)}
+                    </p>
+                  ) : null}
+
+                  {bodyBlocks.length ? (
+                    <div className="space-y-2 rounded-lg bg-slate-50 px-4 py-3 text-[0.95rem] leading-7 text-slate-700">
+                      {bodyBlocks.map((block, index) => (
+                        <p key={`${activity.id}-${index}`} className="whitespace-pre-wrap break-words">{block}</p>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+
+                <time className="pl-2 text-sm font-semibold text-slate-500 md:text-right" dateTime={activity.created_at ?? undefined}>
+                  {formatDateTime(activity.created_at)}
+                </time>
+              </div>
+            </article>
+          );
+        })}
+        {!activities.length ? <p className="rounded-lg border border-dashed border-slate-200 px-3 py-10 text-center text-sm font-semibold text-slate-500">No activity yet.</p> : null}
+      </div>
+    </section>
+  );
+}
+
 export default async function LeadDetailPage({
   params,
   searchParams,
@@ -705,6 +780,8 @@ export default async function LeadDetailPage({
           This lead is marked do not contact.
         </div>
       ) : null}
+
+      <ActivityTimeline activities={activities} />
 
       <section className="card border-amber-200 bg-amber-50/70">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -896,31 +973,7 @@ export default async function LeadDetailPage({
         </form>
       </section>
 
-      <section className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_minmax(20rem,0.55fr)]">
-        <section className="card space-y-4">
-          <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Timeline</p>
-            <h2 className="mt-2 text-xl font-semibold tracking-tight text-slate-950">Calls, emails, notes, and changes</h2>
-          </div>
-          <div className="space-y-3">
-            {activities.map((activity) => (
-              <div key={activity.id} className="rounded-lg bg-white/70 px-4 py-3">
-                <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
-                  <p className="font-semibold capitalize text-slate-950">{activity.activity_type.replace(/_/g, ' ')}{activity.result ? ` - ${activity.result}` : ''}</p>
-                  <p className="text-sm text-slate-500">{formatDateTime(activity.created_at)}</p>
-                </div>
-                {activity.previous_stage !== activity.next_stage && activity.next_stage ? (
-                  <p className="mt-2 text-sm font-semibold text-teal-800">{stageLabel(activity.previous_stage)} to {stageLabel(activity.next_stage)}</p>
-                ) : null}
-                {activity.next_follow_up_at ? <p className="mt-2 text-sm text-slate-600">Next follow-up: {formatDate(activity.next_follow_up_at)}</p> : null}
-                {activity.body ? <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-slate-600">{activity.body}</p> : null}
-              </div>
-            ))}
-            {!activities.length ? <p className="rounded-lg border border-dashed border-slate-200 px-3 py-8 text-center text-sm text-slate-500">No activity yet.</p> : null}
-          </div>
-        </section>
-
-        <aside className="card space-y-4">
+      <aside className="card space-y-4">
           <div>
             <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Lead Lists</p>
             <h2 className="mt-2 text-xl font-semibold tracking-tight text-slate-950">Source context</h2>
@@ -947,8 +1000,7 @@ export default async function LeadDetailPage({
               <p className="mt-1">{formatDateTime(lead.hubspot_exported_at)}</p>
             </div>
           ) : null}
-        </aside>
-      </section>
+      </aside>
     </div>
   );
 }
