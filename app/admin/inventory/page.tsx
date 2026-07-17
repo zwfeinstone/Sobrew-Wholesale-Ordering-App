@@ -92,6 +92,8 @@ type ProductionRunRow = {
   actual_unit_cost_cents: number | string | null;
 };
 
+type FinishedGoodsSort = 'name' | 'on_hand';
+
 function inventoryHref(toast: string) {
   return `/admin/inventory?toast=${toast}`;
 }
@@ -137,6 +139,10 @@ function formatAdjustmentTimestamp(value: string | null | undefined) {
     timeZoneName: 'short',
     year: 'numeric',
   }).format(date);
+}
+
+function normalizeFinishedGoodsSort(value: string | string[] | undefined): FinishedGoodsSort {
+  return value === 'on_hand' ? 'on_hand' : 'name';
 }
 
 function parsePositiveNumber(value: FormDataEntryValue | null, fallback = 0) {
@@ -338,6 +344,7 @@ export default async function InventoryPage({
   const current = await requireAdminSectionView('inventory');
   const canAdjustInventory = current.isSuperadmin;
   const requestedTab = typeof searchParams?.tab === 'string' ? searchParams.tab : '';
+  const finishedGoodsSort = normalizeFinishedGoodsSort(searchParams?.finished_sort);
   const toast = typeof searchParams?.toast === 'string' ? searchParams.toast : '';
   if (requestedTab === 'setup') redirect('/admin/receiving');
   if (requestedTab === 'planning') redirect('/admin/planning');
@@ -481,7 +488,18 @@ export default async function InventoryPage({
         costCents: latestCost || averageFinishedCost || estimatedRecipeCost,
         costSource: latestCost ? 'Latest production COGS' : averageFinishedCost ? 'Average finished stock COGS' : estimatedRecipeCost ? 'Recipe estimate' : 'No COGS yet',
       };
+    })
+    .sort((left, right) => {
+      if (finishedGoodsSort === 'on_hand') {
+        const leftHasStock = left.onHand > 0 ? 1 : 0;
+        const rightHasStock = right.onHand > 0 ? 1 : 0;
+        return rightHasStock - leftHasStock
+          || right.onHand - left.onHand
+          || productName(left.product).localeCompare(productName(right.product));
+      }
+      return productName(left.product).localeCompare(productName(right.product));
     });
+  const sellableRowsWithOnHand = sellableRows.filter((row) => row.onHand > 0).length;
 
   return (
     <div className="space-y-6">
@@ -543,7 +561,22 @@ export default async function InventoryPage({
       </section>
 
       <section className="card space-y-4">
-        <SectionHeading eyebrow="Sellable Inventory" title="Finished goods available to sell" subtitle="On hand comes from production. Available stock subtracts open New and Processing orders and can go negative." />
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+          <SectionHeading eyebrow="Sellable Inventory" title="Finished goods available to sell" subtitle="On hand comes from production. Available stock subtracts open New and Processing orders and can go negative." />
+          <form className="grid gap-2 sm:grid-cols-[minmax(12rem,16rem)_auto] sm:items-end">
+            <label className="text-sm font-semibold text-slate-700">
+              Sort finished goods
+              <select className="input mt-2" name="finished_sort" defaultValue={finishedGoodsSort}>
+                <option value="name">Product name</option>
+                <option value="on_hand">On hand first</option>
+              </select>
+            </label>
+            <button className="btn-secondary" type="submit">Apply</button>
+          </form>
+        </div>
+        <p className="text-sm font-semibold text-slate-500">
+          {sellableRowsWithOnHand.toLocaleString()} of {sellableRows.length.toLocaleString()} active products have inventory on hand.
+        </p>
         <div className="space-y-3">
           {sellableRows.map((row) => (
             <div key={row.product.id} className="rounded-2xl border border-slate-200 bg-white/70 p-4">

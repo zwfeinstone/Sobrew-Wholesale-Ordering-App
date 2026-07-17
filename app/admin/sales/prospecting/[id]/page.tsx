@@ -170,11 +170,11 @@ function QueueContextFields({ context }: { context: ProspectingQueueContext }) {
 async function loadLeadForMutation(supabase: Awaited<ReturnType<typeof createClient>>, leadId: string, current: Awaited<ReturnType<typeof requireAdminSectionEdit>>) {
   let query = supabase
     .from('prospecting_leads')
-    .select('id,assigned_profile_id,stage,hubspot_status,company_name')
+    .select('id,assigned_profile_id,stage,hubspot_status,company_name,notes')
     .eq('id', leadId);
   if (!current.isOwner) query = query.eq('assigned_profile_id', current.profile.id);
   const { data } = await query.maybeSingle();
-  return data as { assigned_profile_id: string | null; company_name: string; hubspot_status: string | null; id: string; stage: string | null } | null;
+  return data as { assigned_profile_id: string | null; company_name: string; hubspot_status: string | null; id: string; notes: string | null; stage: string | null } | null;
 }
 
 async function syncHubspotQueue({
@@ -293,7 +293,7 @@ async function saveLeadDetails(formData: FormData) {
       country: cleanText(formData.get('country')),
       do_not_contact: doNotContact,
       next_follow_up_at: nextFollowUp,
-      notes: cleanText(formData.get('notes')),
+      notes: formData.has('notes') ? cleanText(formData.get('notes')) : before.notes,
       phone,
       phone_key: normalizePhoneKey(phone),
       postal_code: cleanText(formData.get('postal_code')),
@@ -350,6 +350,44 @@ async function saveLeadDetails(formData: FormData) {
     }));
   }
   redirect(leadHref(leadId, 'lead_saved', queueContext));
+}
+
+async function updateLeadNotes(formData: FormData) {
+  'use server';
+
+  const leadId = String(formData.get('lead_id') ?? '').trim();
+  const queueContext = prospectingQueueContextFromParams(formData);
+  const current = await requireAdminSectionEdit('prospecting', leadHref(leadId, 'admin_write_denied', queueContext));
+  const supabase = await createClient();
+  const before = await loadLeadForMutation(supabase, leadId, current);
+  if (!before) redirect('/admin/sales/prospecting?toast=missing_lead');
+
+  const notes = cleanText(formData.get('notes'));
+  const now = new Date().toISOString();
+  const { error } = await supabaseAdmin
+    .from('prospecting_leads')
+    .update({
+      notes,
+      updated_at: now,
+      updated_by: current.profile.id,
+    })
+    .eq('id', leadId);
+
+  if (error) redirect(leadHref(leadId, 'notes_error', queueContext));
+
+  if ((before.notes ?? '') !== (notes ?? '')) {
+    const { error: activityError } = await supabaseAdmin.from('prospecting_activities').insert({
+      activity_type: 'enrichment',
+      body: 'Lead notes updated.',
+      created_by: current.profile.id,
+      lead_id: leadId,
+      previous_stage: before.stage,
+      result: 'Notes updated',
+    });
+    if (activityError) redirect(leadHref(leadId, 'notes_error', queueContext));
+  }
+
+  redirect(leadHref(leadId, 'notes_saved', queueContext));
 }
 
 async function addContact(formData: FormData) {
@@ -567,6 +605,8 @@ function Toasts({ toast }: { toast: string }) {
     lead_recycled: { message: 'Lead recycled. Moved to the next record.', tone: 'success' },
     lead_reviewed: { message: 'Lead moved to review. Moved to the next record.', tone: 'success' },
     lead_saved: { message: 'Lead saved.', tone: 'success' },
+    notes_error: { message: 'Unable to save lead notes.', tone: 'error' },
+    notes_saved: { message: 'Lead notes saved.', tone: 'success' },
     save_error: { message: 'Unable to save this lead. Check for duplicate company and phone values.', tone: 'error' },
   };
   const match = messages[toast];
@@ -783,31 +823,6 @@ export default async function LeadDetailPage({
 
       <ActivityTimeline activities={activities} />
 
-      <section className="card border-amber-200 bg-amber-50/70">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-          <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-amber-700">Lead Notes</p>
-            <h2 className="mt-2 text-xl font-semibold tracking-tight text-slate-950">Internal notes</h2>
-          </div>
-          <span className="rounded-full bg-white/80 px-3 py-1 text-xs font-semibold text-amber-800">Rep context</span>
-        </div>
-        {leadNoteBlocks.length ? (
-          <div className="mt-4 max-h-72 overflow-y-auto rounded-lg border border-amber-100 bg-white/85 px-5 py-4 text-[0.95rem] leading-7 text-slate-800 shadow-sm">
-            <div className="space-y-4">
-              {leadNoteBlocks.map((block, index) => (
-                <p key={`${index}-${block.slice(0, 24)}`} className="whitespace-pre-wrap break-words">
-                  {block}
-                </p>
-              ))}
-            </div>
-          </div>
-        ) : (
-          <p className="mt-4 rounded-lg border border-dashed border-amber-200 bg-white/70 px-5 py-5 text-sm font-semibold text-slate-500">
-            No lead notes yet.
-          </p>
-        )}
-      </section>
-
       {missing.length ? (
         <section className="card">
           <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Missing Info</p>
@@ -827,10 +842,6 @@ export default async function LeadDetailPage({
             <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Company Profile</p>
             <h2 className="mt-2 text-xl font-semibold tracking-tight text-slate-950">Enrich lead details</h2>
           </div>
-          <label className="block rounded-lg border border-amber-100 bg-amber-50/50 px-3 py-3 text-sm font-semibold text-slate-700">
-            Lead notes
-            <textarea className="input mt-2 min-h-48 text-[0.95rem] leading-7" name="notes" defaultValue={lead.notes ?? ''} />
-          </label>
           <div className="grid gap-3 md:grid-cols-2">
             <Field label="Company name"><input className="input" name="company_name" defaultValue={lead.company_name} required /></Field>
             <Field label="Phone"><input className="input" name="phone" defaultValue={lead.phone ?? ''} /></Field>
@@ -1001,6 +1012,44 @@ export default async function LeadDetailPage({
             </div>
           ) : null}
       </aside>
+
+      <section className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_minmax(22rem,0.7fr)]">
+        <section className="card border-slate-200 bg-white/80">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Lead Notes</p>
+              <h2 className="mt-2 text-xl font-semibold tracking-tight text-slate-950">Internal notes</h2>
+            </div>
+            <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600">Secondary</span>
+          </div>
+          {leadNoteBlocks.length ? (
+            <div className="mt-4 max-h-72 overflow-y-auto rounded-lg border border-slate-200 bg-white/85 px-5 py-4 text-[0.95rem] leading-7 text-slate-700">
+              <div className="space-y-4">
+                {leadNoteBlocks.map((block, index) => (
+                  <p key={`${index}-${block.slice(0, 24)}`} className="whitespace-pre-wrap break-words">
+                    {block}
+                  </p>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <p className="mt-4 rounded-lg border border-dashed border-slate-200 bg-white/70 px-5 py-5 text-sm font-semibold text-slate-500">
+              No lead notes yet.
+            </p>
+          )}
+        </section>
+
+        <form action={updateLeadNotes} className="card space-y-4 border-slate-200 bg-white/80">
+          <input type="hidden" name="lead_id" value={lead.id} />
+          <QueueContextFields context={queueContext} />
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Edit Notes</p>
+            <h2 className="mt-2 text-xl font-semibold tracking-tight text-slate-950">Lead notes</h2>
+          </div>
+          <textarea className="input min-h-44 text-[0.95rem] leading-7" name="notes" defaultValue={lead.notes ?? ''} />
+          <PendingSubmitButton className="btn-secondary w-full sm:w-auto" label="Save Notes" pendingLabel="Saving..." />
+        </form>
+      </section>
     </div>
   );
 }
