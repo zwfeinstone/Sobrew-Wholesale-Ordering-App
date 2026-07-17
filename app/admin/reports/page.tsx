@@ -91,6 +91,7 @@ const REPORTS = [
   { id: 'simulator', label: 'Gross Profit Simulator' },
   { id: 'production', label: 'Production & COGS' },
   { id: 'inventory', label: 'Inventory Value & Expenses' },
+  { id: 'inventory_adjustments', label: 'Inventory Adjustments' },
   { id: 'sales', label: 'Sales & Customers' },
   { id: 'prospecting', label: 'Prospecting' },
 ] as const;
@@ -121,6 +122,78 @@ type AiBusinessQaRow = {
   profiles?: AdminRow | AdminRow[] | null;
   prompt_version: string;
   question: string;
+};
+
+type InventoryAdjustmentInventoryItemRow = {
+  base_unit: string | null;
+  id: string;
+  item_type: string | null;
+  name: string | null;
+  sku: string | null;
+};
+
+type InventoryAdjustmentRow = {
+  adjusted_at: string | null;
+  adjustment_type: string | null;
+  created_at: string | null;
+  id: string;
+  inventory_item_id: string;
+  inventory_items?: InventoryAdjustmentInventoryItemRow | InventoryAdjustmentInventoryItemRow[] | null;
+  notes: string | null;
+  quantity_change: number | string;
+  unit: string | null;
+  unit_cost_cents: number | string | null;
+};
+
+type InventoryAdjustmentCategoryRow = {
+  addedCents: number;
+  adjustmentCount: number;
+  itemCount: number;
+  label: string;
+  netCents: number;
+  removedCents: number;
+  type: string;
+};
+
+type InventoryAdjustmentItemRow = {
+  addedCents: number;
+  addedQuantity: number;
+  adjustmentCount: number;
+  itemName: string;
+  itemType: string;
+  itemTypeLabel: string;
+  netCents: number;
+  netQuantity: number;
+  removedCents: number;
+  removedQuantity: number;
+  topReasons: string;
+  unit: string;
+};
+
+type InventoryAdjustmentDetailRow = {
+  amountCents: number;
+  itemName: string;
+  itemTypeLabel: string;
+  notes: string | null;
+  quantityChange: number;
+  reason: string;
+  recordedAt: Date | null;
+  unit: string;
+  unitCostCents: number;
+};
+
+type InventoryAdjustmentReport = {
+  categoryRows: InventoryAdjustmentCategoryRow[];
+  detailRows: InventoryAdjustmentDetailRow[];
+  itemRows: InventoryAdjustmentItemRow[];
+  summary: {
+    addedCents: number;
+    adjustmentCount: number;
+    averageAbsCents: number;
+    netCents: number;
+    removedCents: number;
+    touchedItemCount: number;
+  };
 };
 
 function skippedReportQuery() {
@@ -859,6 +932,147 @@ function prospectingStageTone(stage: ProspectingStage) {
 function relatedOne<T>(value: T | T[] | null | undefined): T | null {
   if (Array.isArray(value)) return value[0] ?? null;
   return value ?? null;
+}
+
+function inventoryAdjustmentTypeLabel(value: string | null | undefined) {
+  if (value === 'raw_coffee') return 'Raw Coffee';
+  if (value === 'material_supply' || value === 'supply') return 'Materials & Supplies';
+  if (value === 'finished_good') return 'Finished Goods';
+  return value ? value.replaceAll('_', ' ') : 'Inventory Item';
+}
+
+function inventoryAdjustmentReasonLabel(value: string | null | undefined) {
+  const labels: Record<string, string> = {
+    count_correction: 'Count Correction',
+    damaged: 'Damaged',
+    expired: 'Expired',
+    lost: 'Lost',
+    other: 'Other',
+    sample: 'Sample',
+    starting_count: 'Starting Count',
+  };
+  return value ? labels[value] ?? value.replaceAll('_', ' ') : 'Adjustment';
+}
+
+function inventoryAdjustmentItemName(item: InventoryAdjustmentInventoryItemRow | null, fallbackId: string) {
+  if (!item) return `Unknown item (${fallbackId.slice(0, 8)})`;
+  return item.sku ? `${item.name || 'Inventory item'} (${item.sku})` : item.name || 'Inventory item';
+}
+
+function buildInventoryAdjustmentReport(rows: InventoryAdjustmentRow[]): InventoryAdjustmentReport {
+  const categoryGroups = new Map<string, InventoryAdjustmentCategoryRow & { itemIds: Set<string> }>();
+  const itemGroups = new Map<string, InventoryAdjustmentItemRow & { reasonCounts: Map<string, number> }>();
+  const detailRows: InventoryAdjustmentDetailRow[] = [];
+  const touchedItemIds = new Set<string>();
+  let addedCents = 0;
+  let removedCents = 0;
+
+  for (const row of rows) {
+    const item = relatedOne(row.inventory_items);
+    const itemType = item?.item_type === 'supply' ? 'material_supply' : item?.item_type || 'unknown';
+    const itemTypeLabel = inventoryAdjustmentTypeLabel(itemType);
+    const itemName = inventoryAdjustmentItemName(item, row.inventory_item_id);
+    const quantityChange = normalizeReportNumber(row.quantity_change);
+    const unitCostCents = normalizeReportNumber(row.unit_cost_cents);
+    const amountCents = quantityChange * unitCostCents;
+    const absAmountCents = Math.abs(amountCents);
+    const reason = inventoryAdjustmentReasonLabel(row.adjustment_type);
+    const unit = row.unit || item?.base_unit || '';
+    const recordedAt = reportDate(row.adjusted_at) ?? reportDate(row.created_at);
+
+    touchedItemIds.add(row.inventory_item_id);
+    if (amountCents >= 0) addedCents += absAmountCents;
+    else removedCents += absAmountCents;
+
+    const category = categoryGroups.get(itemType) ?? {
+      addedCents: 0,
+      adjustmentCount: 0,
+      itemCount: 0,
+      itemIds: new Set<string>(),
+      label: itemTypeLabel,
+      netCents: 0,
+      removedCents: 0,
+      type: itemType,
+    };
+    category.adjustmentCount += 1;
+    category.itemIds.add(row.inventory_item_id);
+    category.itemCount = category.itemIds.size;
+    category.netCents += amountCents;
+    if (amountCents >= 0) category.addedCents += absAmountCents;
+    else category.removedCents += absAmountCents;
+    categoryGroups.set(itemType, category);
+
+    const itemGroup = itemGroups.get(row.inventory_item_id) ?? {
+      addedCents: 0,
+      addedQuantity: 0,
+      adjustmentCount: 0,
+      itemName,
+      itemType,
+      itemTypeLabel,
+      netCents: 0,
+      netQuantity: 0,
+      reasonCounts: new Map<string, number>(),
+      removedCents: 0,
+      removedQuantity: 0,
+      topReasons: '',
+      unit,
+    };
+    itemGroup.adjustmentCount += 1;
+    itemGroup.netCents += amountCents;
+    itemGroup.netQuantity += quantityChange;
+    itemGroup.reasonCounts.set(reason, (itemGroup.reasonCounts.get(reason) ?? 0) + 1);
+    if (quantityChange >= 0) {
+      itemGroup.addedQuantity += quantityChange;
+      itemGroup.addedCents += absAmountCents;
+    } else {
+      itemGroup.removedQuantity += Math.abs(quantityChange);
+      itemGroup.removedCents += absAmountCents;
+    }
+    itemGroups.set(row.inventory_item_id, itemGroup);
+
+    detailRows.push({
+      amountCents,
+      itemName,
+      itemTypeLabel,
+      notes: row.notes,
+      quantityChange,
+      reason,
+      recordedAt,
+      unit,
+      unitCostCents,
+    });
+  }
+
+  const itemRows = [...itemGroups.values()]
+    .map(({ reasonCounts, ...row }) => ({
+      ...row,
+      topReasons: [...reasonCounts.entries()]
+        .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+        .slice(0, 3)
+        .map(([reason, count]) => `${reason} (${number(count)})`)
+        .join(', '),
+    }))
+    .sort((left, right) => Math.abs(right.netCents) - Math.abs(left.netCents) || left.itemName.localeCompare(right.itemName));
+
+  const categoryRows = [...categoryGroups.values()]
+    .map(({ itemIds, ...row }) => row)
+    .sort((left, right) => Math.abs(right.netCents) - Math.abs(left.netCents) || left.label.localeCompare(right.label));
+
+  detailRows.sort((left, right) => (right.recordedAt?.getTime() ?? 0) - (left.recordedAt?.getTime() ?? 0));
+
+  return {
+    categoryRows,
+    detailRows,
+    itemRows,
+    summary: {
+      addedCents,
+      adjustmentCount: rows.length,
+      averageAbsCents: rows.length ? (addedCents + removedCents) / rows.length : 0,
+      netCents: addedCents - removedCents,
+      removedCents,
+      touchedItemCount: touchedItemIds.size,
+    },
+  };
 }
 
 const UNKNOWN_REP_ID = '__unknown_rep__';
@@ -1884,6 +2098,121 @@ function InventoryValueTable({ rows }: { rows: ReturnType<typeof buildProfitabil
   );
 }
 
+function InventoryAdjustmentCategoryTable({ rows }: { rows: InventoryAdjustmentCategoryRow[] }) {
+  if (!rows.length) return <EmptyState message="No inventory adjustments found for the selected range." />;
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full min-w-[54rem] border-separate border-spacing-y-2 text-left text-sm">
+        <thead>
+          <tr className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+            <th className="px-4 py-2">Category</th>
+            <th className="px-4 py-2 text-right">Adjustments</th>
+            <th className="px-4 py-2 text-right">Items affected</th>
+            <th className="px-4 py-2 text-right">Added value</th>
+            <th className="px-4 py-2 text-right">Removed value</th>
+            <th className="px-4 py-2 text-right">Net impact</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <tr key={row.type} className="bg-white/65">
+              <td className="rounded-l-xl px-4 py-3 font-semibold text-slate-950">{row.label}</td>
+              <td className="px-4 py-3 text-right text-slate-700">{number(row.adjustmentCount)}</td>
+              <td className="px-4 py-3 text-right text-slate-700">{number(row.itemCount)}</td>
+              <td className="px-4 py-3 text-right font-semibold text-emerald-700">{money(row.addedCents)}</td>
+              <td className="px-4 py-3 text-right font-semibold text-rose-700">{money(row.removedCents)}</td>
+              <td className={`rounded-r-xl px-4 py-3 text-right font-semibold ${row.netCents >= 0 ? 'text-teal-800' : 'text-rose-700'}`}>{signedMoney(row.netCents)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function InventoryAdjustmentItemTable({ rows }: { rows: InventoryAdjustmentItemRow[] }) {
+  if (!rows.length) return <EmptyState message="No item-level adjustments found for the selected range." />;
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full min-w-[86rem] border-separate border-spacing-y-2 text-left text-sm">
+        <thead>
+          <tr className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+            <th className="px-4 py-2">Item</th>
+            <th className="px-4 py-2">Category</th>
+            <th className="px-4 py-2">Reasons</th>
+            <th className="px-4 py-2 text-right">Adjustments</th>
+            <th className="px-4 py-2 text-right">Added qty</th>
+            <th className="px-4 py-2 text-right">Removed qty</th>
+            <th className="px-4 py-2 text-right">Net qty</th>
+            <th className="px-4 py-2 text-right">Added value</th>
+            <th className="px-4 py-2 text-right">Removed value</th>
+            <th className="px-4 py-2 text-right">Net impact</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <tr key={`${row.itemType}-${row.itemName}`} className="bg-white/65">
+              <td className="rounded-l-xl px-4 py-3 font-semibold text-slate-950">{row.itemName}</td>
+              <td className="px-4 py-3 text-slate-700">{row.itemTypeLabel}</td>
+              <td className="px-4 py-3 text-slate-700">{row.topReasons || 'Adjustment'}</td>
+              <td className="px-4 py-3 text-right text-slate-700">{number(row.adjustmentCount)}</td>
+              <td className="px-4 py-3 text-right text-slate-700">{quantity(row.addedQuantity)} {row.unit}</td>
+              <td className="px-4 py-3 text-right text-slate-700">{quantity(row.removedQuantity)} {row.unit}</td>
+              <td className={`px-4 py-3 text-right font-semibold ${row.netQuantity >= 0 ? 'text-slate-700' : 'text-rose-700'}`}>
+                {row.netQuantity > 0 ? '+' : ''}{quantity(row.netQuantity)} {row.unit}
+              </td>
+              <td className="px-4 py-3 text-right font-semibold text-emerald-700">{money(row.addedCents)}</td>
+              <td className="px-4 py-3 text-right font-semibold text-rose-700">{money(row.removedCents)}</td>
+              <td className={`rounded-r-xl px-4 py-3 text-right font-semibold ${row.netCents >= 0 ? 'text-teal-800' : 'text-rose-700'}`}>{signedMoney(row.netCents)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function InventoryAdjustmentDetailTable({ rows }: { rows: InventoryAdjustmentDetailRow[] }) {
+  if (!rows.length) return <EmptyState message="No adjustment log entries found for the selected range." />;
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full min-w-[82rem] border-separate border-spacing-y-2 text-left text-sm">
+        <thead>
+          <tr className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+            <th className="px-4 py-2">Recorded</th>
+            <th className="px-4 py-2">Item</th>
+            <th className="px-4 py-2">Category</th>
+            <th className="px-4 py-2">Reason</th>
+            <th className="px-4 py-2">Notes</th>
+            <th className="px-4 py-2 text-right">Quantity</th>
+            <th className="px-4 py-2 text-right">Unit cost</th>
+            <th className="px-4 py-2 text-right">Dollar impact</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row, index) => (
+            <tr key={`${row.itemName}-${row.recordedAt?.toISOString() ?? index}-${index}`} className="bg-white/65">
+              <td className="rounded-l-xl px-4 py-3 text-slate-700">{row.recordedAt ? dateLabel(row.recordedAt) : 'Unknown'}</td>
+              <td className="px-4 py-3 font-semibold text-slate-950">{row.itemName}</td>
+              <td className="px-4 py-3 text-slate-700">{row.itemTypeLabel}</td>
+              <td className="px-4 py-3 text-slate-700">{row.reason}</td>
+              <td className="px-4 py-3 text-slate-700">{row.notes || '—'}</td>
+              <td className={`px-4 py-3 text-right font-semibold ${row.quantityChange >= 0 ? 'text-teal-800' : 'text-rose-700'}`}>
+                {row.quantityChange > 0 ? '+' : ''}{quantity(row.quantityChange)} {row.unit}
+              </td>
+              <td className="px-4 py-3 text-right text-slate-700">{money(row.unitCostCents)}</td>
+              <td className={`rounded-r-xl px-4 py-3 text-right font-semibold ${row.amountCents >= 0 ? 'text-teal-800' : 'text-rose-700'}`}>{signedMoney(row.amountCents)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 function FixedExpenseTable({ rows }: { rows: ReturnType<typeof buildProfitabilityDashboard>['fixedExpenseComparisonRows'] }) {
   return (
     <div className="overflow-x-auto">
@@ -2701,6 +3030,7 @@ export default async function AdminReportsPage({
     productionRunsResult,
     productionRunInputsResult,
     shortageMovementsResult,
+    inventoryAdjustmentsResult,
     nonInventoryExpensesResult,
     sampleBoxRunsResult,
     recipeResult,
@@ -2737,6 +3067,16 @@ export default async function AdminReportsPage({
       : skippedReportQuery(),
     dataNeeds.shortageMovements
       ? supabase.from('inventory_movements').select('inventory_item_id,quantity_change,unit_cost_cents').in('movement_type', ['shipment_consume', 'sample_box_consume']).is('lot_id', null).limit(ADMIN_QUERY_ROW_LIMIT)
+      : skippedReportQuery(),
+    dataNeeds.inventoryAdjustments
+      ? supabase
+        .from('inventory_adjustments')
+        .select('id,inventory_item_id,adjustment_type,quantity_change,unit,unit_cost_cents,notes,adjusted_at,created_at,inventory_items(id,name,sku,item_type,base_unit)')
+        .gte('adjusted_at', rangeStart.toISOString())
+        .lt('adjusted_at', rangeEndExclusive.toISOString())
+        .order('adjusted_at', { ascending: false })
+        .order('created_at', { ascending: false })
+        .limit(ADMIN_QUERY_ROW_LIMIT)
       : skippedReportQuery(),
     dataNeeds.nonInventoryExpenses
       ? supabase
@@ -2784,6 +3124,9 @@ export default async function AdminReportsPage({
   if (activeReport === 'simulator' && shippingBoxUsagesResult.error) {
     return <CriticalReportError message={shippingBoxUsagesResult.error.message || 'The simulator shipping box usage could not be loaded.'} />;
   }
+  if (dataNeeds.inventoryAdjustments && inventoryAdjustmentsResult.error) {
+    return <CriticalReportError message={inventoryAdjustmentsResult.error.message || 'The inventory adjustment report could not be loaded.'} />;
+  }
 
   const centers = (centersResult.data ?? []) as ReportingCenterRow[];
   const products = (productsResult.data ?? []) as ReportingProductRow[];
@@ -2827,6 +3170,9 @@ export default async function AdminReportsPage({
     recipes: !dataNeeds.productRecipes || recipeResult.error ? [] : ((recipeResult.data ?? []) as any[]),
     shortageMovements: !dataNeeds.shortageMovements || shortageMovementsResult.error ? [] : ((shortageMovementsResult.data ?? []) as any[]),
   });
+  const inventoryAdjustmentReport = buildInventoryAdjustmentReport(
+    dataNeeds.inventoryAdjustments ? (inventoryAdjustmentsResult.data ?? []) as InventoryAdjustmentRow[] : []
+  );
   const rawCoffeePercentDelta = simulatorPercentParam(searchParams?.sim_raw_delta);
   const materialSupplyPercentDelta = simulatorPercentParam(searchParams?.sim_material_delta);
   const laborPercentDelta = simulatorPercentParam(searchParams?.sim_labor_delta);
@@ -2952,7 +3298,8 @@ export default async function AdminReportsPage({
     ['reorder settings', reorderSettingsResult.data],
     ['production runs', productionRunsResult.data],
     ['production inputs', productionRunInputsResult.data],
-    ['inventory adjustments', shortageMovementsResult.data],
+    ['inventory shortages', shortageMovementsResult.data],
+    ['inventory adjustments', inventoryAdjustmentsResult.data],
     ['expenses', nonInventoryExpensesResult.data],
     ['sample boxes', sampleBoxRunsResult.data],
     ['recipes', recipeResult.data],
@@ -3017,7 +3364,7 @@ export default async function AdminReportsPage({
                 Range end
                 <input className="input" name="rangeEnd" type="date" defaultValue={rangeEndInput} />
               </label>
-              {activeReport !== 'prospecting' && activeReport !== 'ai_overview' && activeReport !== 'ai_qa' ? (
+              {activeReport !== 'prospecting' && activeReport !== 'ai_overview' && activeReport !== 'ai_qa' && activeReport !== 'inventory_adjustments' ? (
                 <>
                   <label className="space-y-2 text-sm font-medium text-slate-700">
                     Product
@@ -3058,6 +3405,8 @@ export default async function AdminReportsPage({
             <p className="mt-3 text-sm leading-6 text-slate-500">
               {activeReport === 'prospecting'
                 ? `${REPORTS.find((report) => report.id === activeReport)?.label}. Using ${dateLabel(rangeStart)} through ${dateLabel(addDays(rangeEndExclusive, -1))}.`
+                : activeReport === 'inventory_adjustments'
+                  ? `${REPORTS.find((report) => report.id === activeReport)?.label}. Using ${dateLabel(rangeStart)} through ${dateLabel(addDays(rangeEndExclusive, -1))}.`
                 : activeReport === 'margin'
                   ? `${REPORTS.find((report) => report.id === activeReport)?.label}. Using ${dateLabel(rangeStart)} through ${dateLabel(addDays(rangeEndExclusive, -1))}; normalized against trailing 8 weeks and the previous equal-length range.`
                   : `${REPORTS.find((report) => report.id === activeReport)?.label}. Using ${dateLabel(rangeStart)} through ${dateLabel(addDays(rangeEndExclusive, -1))}; sales comparisons still compare ${monthLabel(selectedMonth)} with ${monthLabel(dashboard.previousMonthStart)}.`}
@@ -3070,7 +3419,7 @@ export default async function AdminReportsPage({
 
       <SourceRowLimitNotice sources={limitedSourceLabels} />
 
-      {activeReport !== 'prospecting' && activeReport !== 'ai_overview' && activeReport !== 'ai_qa' && !hasCommerceOrders ? (
+      {activeReport !== 'prospecting' && activeReport !== 'ai_overview' && activeReport !== 'ai_qa' && activeReport !== 'inventory_adjustments' && !hasCommerceOrders ? (
         <section className="card">
           <EmptyState message="No orders found yet. Reports will populate as wholesale orders are placed." />
         </section>
@@ -3454,6 +3803,67 @@ export default async function AdminReportsPage({
               <StatTile label="Fixed Costs" value={money(sampleBoxSummary.fixedCents)} detail="Sample shipping and miscellaneous costs." />
               <StatTile label="Boxes Sent" value={quantity(sampleBoxSummary.boxes)} detail="Sample boxes recorded in the selected range." />
             </div>
+          </section>
+        </>
+      ) : null}
+
+      {activeReport === 'inventory_adjustments' ? (
+        <>
+          <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
+            <StatTile
+              label="Net Impact"
+              value={signedMoney(inventoryAdjustmentReport.summary.netCents)}
+              detail="Added value minus removed value for the selected range."
+            />
+            <StatTile
+              label="Added Value"
+              value={money(inventoryAdjustmentReport.summary.addedCents)}
+              detail="Dollar value added through count corrections, starting counts, and other positive adjustments."
+            />
+            <StatTile
+              label="Removed Value"
+              value={money(inventoryAdjustmentReport.summary.removedCents)}
+              detail="Dollar value removed through lost, damaged, expired, sample, or other negative adjustments."
+            />
+            <StatTile
+              label="Adjustments"
+              value={number(inventoryAdjustmentReport.summary.adjustmentCount)}
+              detail={`${number(inventoryAdjustmentReport.summary.touchedItemCount)} item${inventoryAdjustmentReport.summary.touchedItemCount === 1 ? '' : 's'} affected.`}
+            />
+            <StatTile
+              label="Avg Dollar Move"
+              value={money(inventoryAdjustmentReport.summary.averageAbsCents)}
+              detail="Average absolute dollar value per adjustment entry."
+            />
+          </section>
+
+          <section className="card space-y-5">
+            <SectionHeading
+              eyebrow="Inventory categories"
+              title="Dollar impact by inventory type"
+              subtitle="Separates raw coffee, materials and supplies, and finished goods so operational corrections do not get blended together."
+            />
+            <InventoryAdjustmentCategoryTable rows={inventoryAdjustmentReport.categoryRows} />
+          </section>
+
+          <section className="card space-y-5">
+            <SectionHeading
+              eyebrow="Items"
+              title="Adjustment totals by item"
+              subtitle="Shows quantity changes and dollar impact per item, with additions and removals kept separate before netting."
+            />
+            <InventoryAdjustmentItemTable rows={limitReportDetailRows(inventoryAdjustmentReport.itemRows)} />
+            <DetailRowLimitNotice total={inventoryAdjustmentReport.itemRows.length} />
+          </section>
+
+          <section className="card space-y-5">
+            <SectionHeading
+              eyebrow="Adjustment log"
+              title="Individual inventory adjustment entries"
+              subtitle="Every loaded adjustment in the selected range with reason, notes, quantity, unit cost, and signed dollar impact."
+            />
+            <InventoryAdjustmentDetailTable rows={limitReportDetailRows(inventoryAdjustmentReport.detailRows)} />
+            <DetailRowLimitNotice total={inventoryAdjustmentReport.detailRows.length} />
           </section>
         </>
       ) : null}

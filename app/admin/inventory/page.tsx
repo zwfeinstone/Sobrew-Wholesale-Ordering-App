@@ -669,8 +669,6 @@ export default async function InventoryPage({
         <div className="grid gap-3 lg:grid-cols-2">
           {materialSupplyItems.map((item) => {
             const summary = lotSummaryByItem.get(item.id);
-            const quantityMin = item.base_unit === 'each' ? '1' : '0.0001';
-            const quantityStep = item.base_unit === 'each' ? '1' : '0.0001';
             return (
               <StockCard
                 key={item.id}
@@ -683,7 +681,7 @@ export default async function InventoryPage({
                 {canAdjustInventory ? (
                   <details>
                     <summary className="cursor-pointer text-sm font-semibold text-teal-700">Adjust material or supply</summary>
-                    <form action={adjustMaterialSupply} className="mt-4 grid min-w-0 gap-3 sm:grid-cols-2">
+                    <form action={adjustMaterialSupply} className="mt-4 grid min-w-0 gap-3 sm:grid-cols-2" noValidate>
                       <input name="inventory_item_id" type="hidden" value={item.id} />
                       <label className="min-w-0 space-y-1 text-sm font-medium text-slate-700">
                         Direction
@@ -700,7 +698,7 @@ export default async function InventoryPage({
                       </label>
                       <label className="min-w-0 space-y-1 text-sm font-medium text-slate-700">
                         Quantity
-                        <input className="input" name="quantity" required min={quantityMin} step={quantityStep} type="number" placeholder="Qty" />
+                        <input className="input" name="quantity" required min="0" step="any" type="number" placeholder="Qty" />
                       </label>
                       <label className="min-w-0 space-y-1 text-sm font-medium text-slate-700">
                         Unit COGS

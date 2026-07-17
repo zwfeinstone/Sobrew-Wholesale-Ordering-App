@@ -5,6 +5,7 @@ describe('dataNeedsForReport', () => {
   it('loads only prospecting sources for the prospecting report', () => {
     expect(dataNeedsForReport('prospecting')).toEqual({
       coreCommerce: false,
+      inventoryAdjustments: false,
       inventoryValuation: false,
       nonInventoryExpenses: false,
       productionInputs: false,
@@ -54,6 +55,7 @@ describe('dataNeedsForReport', () => {
   it('keeps AI overview lightweight during normal page render', () => {
     expect(dataNeedsForReport('ai_overview')).toEqual({
       coreCommerce: false,
+      inventoryAdjustments: false,
       inventoryValuation: false,
       nonInventoryExpenses: false,
       productionInputs: false,
@@ -70,7 +72,25 @@ describe('dataNeedsForReport', () => {
   it('keeps AI Q/A lightweight during normal page render', () => {
     expect(dataNeedsForReport('ai_qa')).toEqual({
       coreCommerce: false,
+      inventoryAdjustments: false,
       inventoryValuation: false,
+      nonInventoryExpenses: false,
+      productionInputs: false,
+      productionRuns: false,
+      productRecipes: false,
+      prospecting: false,
+      reorderSettings: false,
+      sampleBoxes: false,
+      salesDashboard: false,
+      shortageMovements: false,
+    });
+  });
+
+  it('loads inventory items and adjustments only for inventory adjustment reporting', () => {
+    expect(dataNeedsForReport('inventory_adjustments')).toEqual({
+      coreCommerce: false,
+      inventoryAdjustments: true,
+      inventoryValuation: true,
       nonInventoryExpenses: false,
       productionInputs: false,
       productionRuns: false,
