@@ -681,34 +681,36 @@ export default async function InventoryPage({
                 {canAdjustInventory ? (
                   <details>
                     <summary className="cursor-pointer text-sm font-semibold text-teal-700">Adjust material or supply</summary>
-                    <form action={adjustMaterialSupply} className="mt-4 grid gap-3 md:grid-cols-[9rem_11rem_8rem_9rem_minmax(0,1fr)_auto] md:items-end">
+                    <form action={adjustMaterialSupply} className="mt-4 grid min-w-0 gap-3 sm:grid-cols-2">
                       <input name="inventory_item_id" type="hidden" value={item.id} />
-                      <label className="space-y-1 text-sm font-medium text-slate-700">
+                      <label className="min-w-0 space-y-1 text-sm font-medium text-slate-700">
                         Direction
                         <select className="input" name="direction" defaultValue="add">
                           <option value="add">Add stock</option>
                           <option value="subtract">Subtract stock</option>
                         </select>
                       </label>
-                      <label className="space-y-1 text-sm font-medium text-slate-700">
+                      <label className="min-w-0 space-y-1 text-sm font-medium text-slate-700">
                         Reason
                         <select className="input" name="adjustment_type" defaultValue="count_correction">
                           {INVENTORY_ADJUSTMENT_TYPES.map((type) => <option key={type.value} value={type.value}>{type.label}</option>)}
                         </select>
                       </label>
-                      <label className="space-y-1 text-sm font-medium text-slate-700">
+                      <label className="min-w-0 space-y-1 text-sm font-medium text-slate-700">
                         Quantity
                         <input className="input" name="quantity" required min="0.0001" step={item.base_unit === 'each' ? '1' : '0.0001'} type="number" placeholder="Qty" />
                       </label>
-                      <label className="space-y-1 text-sm font-medium text-slate-700">
+                      <label className="min-w-0 space-y-1 text-sm font-medium text-slate-700">
                         Unit COGS
                         <input className="input" name="unit_cost" min="0" step="0.0001" type="number" defaultValue={dollarsInputValueFromCents(summary?.avgCostCents ?? 0)} placeholder="0.00" />
                       </label>
-                      <label className="space-y-1 text-sm font-medium text-slate-700">
+                      <label className="min-w-0 space-y-1 text-sm font-medium text-slate-700 sm:col-span-2">
                         Notes
                         <input className="input" name="notes" placeholder="Adjustment reason" />
                       </label>
-                      <PendingSubmitButton className="btn-secondary w-full md:w-auto" label="Save" pendingLabel="Saving..." />
+                      <div className="sm:col-span-2">
+                        <PendingSubmitButton className="btn-secondary w-full" label="Save" pendingLabel="Saving..." />
+                      </div>
                     </form>
                   </details>
                 ) : null}
