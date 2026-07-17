@@ -258,7 +258,8 @@ function assignedLeadQuery(
 export default async function ProspectingPage({ searchParams }: { searchParams?: SearchParams }) {
   const current = await requireAdminSectionView('prospecting');
   const supabase = await createClient();
-  const queueContext = prospectingQueueContextFromParams(searchParams);
+  const parsedQueueContext = prospectingQueueContextFromParams(searchParams);
+  const queueContext = { ...parsedQueueContext, repId: current.profile.id };
   const q = queueContext.q;
   const tab = queueContext.tab;
   const page = normalizePageNumber(searchParams?.page);
@@ -279,7 +280,7 @@ export default async function ProspectingPage({ searchParams }: { searchParams?:
 
   let leadsQuery = assignedLeadQuery(supabase, current.profile.id, q, selectedPriority, selectedStateKey, selectedListId, '*', { count: 'exact' });
   leadsQuery = leadsQuery.in('stage', prospectingQueueStageFilter(queueContext));
-  if (prospectingQueueRequiresFollowUp(queueContext)) leadsQuery = leadsQuery.not('next_follow_up_at', 'is', null);
+  if (prospectingQueueRequiresFollowUp(queueContext)) leadsQuery = leadsQuery.not('next_follow_up_at', 'is', null).lte('next_follow_up_at', today);
 
   if (tab === 'tasks') {
     leadsQuery = leadsQuery.order('next_follow_up_at', { ascending: true }).order('last_activity_at', { ascending: true });

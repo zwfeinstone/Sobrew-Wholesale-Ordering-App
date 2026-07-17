@@ -11,6 +11,7 @@ import {
 } from '@/lib/prospecting';
 
 const LIST_ID = '11111111-2222-3333-4444-555555555555';
+const REP_ID = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
 
 describe('prospecting queue context', () => {
   it('round-trips the full working queue through URL params', () => {
@@ -19,6 +20,7 @@ describe('prospecting queue context', () => {
       page_size: '25',
       priority: 'high',
       q: 'detox center',
+      rep: REP_ID,
       stage: 'follow_up',
       state: 'TX',
       tab: 'pipeline',
@@ -29,6 +31,7 @@ describe('prospecting queue context', () => {
       pageSize: 25,
       priority: 'high',
       q: 'detox center',
+      repId: REP_ID,
       stage: 'follow_up',
       state: 'TX',
       tab: 'pipeline',
@@ -44,12 +47,13 @@ describe('prospecting queue context', () => {
       page_size: '25',
       priority: 'high',
       q: 'Chicago',
+      rep: REP_ID,
       state: 'missing',
       tab: 'tasks',
     });
 
     expect(prospectingLeadPath('lead-123', context, { includePageSize: true })).toBe(
-      `/admin/sales/prospecting/lead-123?tab=tasks&q=Chicago&priority=high&state=missing&list=${LIST_ID}&page_size=25`,
+      `/admin/sales/prospecting/lead-123?tab=tasks&q=Chicago&priority=high&state=missing&list=${LIST_ID}&rep=${REP_ID}&page_size=25`,
     );
   });
 
@@ -67,9 +71,28 @@ describe('prospecting queue context', () => {
       listId: '',
       pageSize: 50,
       priority: '',
+      repId: '',
       stage: '',
       state: '',
       tab: 'tasks',
+    });
+  });
+
+  it('keeps queue hidden fields from colliding with editable lead fields', () => {
+    const context = prospectingQueueContextFromParams({
+      priority: 'low',
+      queue_priority: 'high',
+      queue_rep_id: REP_ID,
+      queue_stage: 'new',
+      queue_tab: 'pipeline',
+      stage: 'interested',
+    });
+
+    expect(context).toMatchObject({
+      priority: 'high',
+      repId: REP_ID,
+      stage: 'new',
+      tab: 'pipeline',
     });
   });
 
@@ -79,18 +102,20 @@ describe('prospecting queue context', () => {
       page_size: '25',
       priority: 'low',
       q: 'Austin',
+      rep: REP_ID,
       state: 'TX',
       tab: 'list',
     });
 
     expect(prospectingQueueHiddenFields(context)).toEqual([
-      { name: 'tab', value: 'list' },
-      { name: 'q', value: 'Austin' },
-      { name: 'priority', value: 'low' },
-      { name: 'stage', value: '' },
-      { name: 'state', value: 'TX' },
-      { name: 'page_size', value: '25' },
-      { name: 'list', value: LIST_ID },
+      { name: 'queue_tab', value: 'list' },
+      { name: 'queue_q', value: 'Austin' },
+      { name: 'queue_priority', value: 'low' },
+      { name: 'queue_stage', value: '' },
+      { name: 'queue_state', value: 'TX' },
+      { name: 'queue_page_size', value: '25' },
+      { name: 'queue_list', value: LIST_ID },
+      { name: 'queue_rep_id', value: REP_ID },
     ]);
   });
 });

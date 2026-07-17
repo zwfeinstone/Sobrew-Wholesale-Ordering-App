@@ -6,6 +6,7 @@ import StatusToast from '@/components/status-toast';
 import { requireAdminSectionEdit, requireAdminSectionView } from '@/lib/admin-permissions';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { createClient } from '@/lib/supabase/server';
+import { formatCentralDateInput } from '@/lib/time-clock';
 import {
   CALL_RESULTS,
   EMAIL_RESULTS,
@@ -194,6 +195,7 @@ async function shuckedRepRedirectHref({
   if (!candidateIds.length) return prospectingListHref(toast, queueContext);
 
   const supabase = await createClient();
+  const today = formatCentralDateInput(new Date());
   const selectColumns = queueContext.listId ? 'id,prospecting_list_leads!inner(list_id)' : 'id';
   let query = supabase
     .from('prospecting_leads')
@@ -203,7 +205,7 @@ async function shuckedRepRedirectHref({
     .is('archived_at', null);
 
   query = query.in('stage', prospectingQueueStageFilter(queueContext));
-  if (prospectingQueueRequiresFollowUp(queueContext)) query = query.not('next_follow_up_at', 'is', null);
+  if (prospectingQueueRequiresFollowUp(queueContext)) query = query.not('next_follow_up_at', 'is', null).lte('next_follow_up_at', today);
   if (queueContext.priority) query = query.eq('priority', queueContext.priority);
   if (queueContext.state === MISSING_STATE_FILTER) query = query.is('state_key', null);
   else if (queueContext.state) query = query.eq('state_key', queueContext.state);
@@ -607,7 +609,10 @@ export default async function LeadDetailPage({
     : { data: [] };
   const salesReps = ((salesRepsData ?? []) as ProfileRow[]).sort((a, b) => profileLabel(a).localeCompare(profileLabel(b)));
   const assignedProfile = assignedProfileResult.data as ProfileRow | null;
-  const queueProfileId = lead.assigned_profile_id ?? (isOwner ? null : current.profile.id);
+  const today = formatCentralDateInput(new Date());
+  const queueProfileId = isOwner
+    ? queueContext.repId || lead.assigned_profile_id || null
+    : current.profile.id;
   const nextQueueSelect = queueContext.listId ? 'id,prospecting_list_leads!inner(list_id)' : 'id';
   let nextQueueQuery = supabase
     .from('prospecting_leads')
@@ -619,7 +624,7 @@ export default async function LeadDetailPage({
     : nextQueueQuery.is('assigned_profile_id', null);
   if (!isOwner) nextQueueQuery = nextQueueQuery.eq('assigned_profile_id', current.profile.id);
   nextQueueQuery = nextQueueQuery.in('stage', prospectingQueueStageFilter(queueContext));
-  if (prospectingQueueRequiresFollowUp(queueContext)) nextQueueQuery = nextQueueQuery.not('next_follow_up_at', 'is', null);
+  if (prospectingQueueRequiresFollowUp(queueContext)) nextQueueQuery = nextQueueQuery.not('next_follow_up_at', 'is', null).lte('next_follow_up_at', today);
   if (queueContext.priority) nextQueueQuery = nextQueueQuery.eq('priority', queueContext.priority);
   if (queueContext.state === MISSING_STATE_FILTER) nextQueueQuery = nextQueueQuery.is('state_key', null);
   else if (queueContext.state) nextQueueQuery = nextQueueQuery.eq('state_key', queueContext.state);

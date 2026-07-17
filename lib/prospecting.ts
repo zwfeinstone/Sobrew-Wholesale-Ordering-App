@@ -44,6 +44,7 @@ export type ProspectingQueueContext = {
   pageSize: typeof PROSPECTING_PAGE_SIZES[number];
   priority: '' | ProspectingPriority;
   q: string;
+  repId: string;
   stage: '' | ProspectingStage;
   state: '' | ProspectingStateFilter;
   tab: RepProspectingTab;
@@ -351,10 +352,14 @@ export function normalizeProspectingListId(value: string | string[] | null | und
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(text) ? text : '';
 }
 
+export function normalizeProspectingProfileId(value: string | string[] | null | undefined) {
+  return normalizeProspectingListId(value);
+}
+
 export function prospectingQueueContextFromParams(source: ProspectingQueueParamSource): ProspectingQueueContext {
-  const tab = normalizeProspectingTab(queueParam(source, 'tab'));
-  const requestedPriority = queueParam(source, 'priority');
-  const requestedStage = queueParam(source, 'stage');
+  const tab = normalizeProspectingTab(queueParam(source, 'queue_tab') || queueParam(source, 'tab'));
+  const requestedPriority = queueParam(source, 'queue_priority') || queueParam(source, 'priority');
+  const requestedStage = queueParam(source, 'queue_stage') || queueParam(source, 'stage');
   const priority = PROSPECTING_PRIORITIES.some((item) => item.id === requestedPriority)
     ? requestedPriority as ProspectingPriority
     : '';
@@ -363,12 +368,13 @@ export function prospectingQueueContextFromParams(source: ProspectingQueueParamS
     : '';
 
   return {
-    listId: normalizeProspectingListId(queueParam(source, 'list') || queueParam(source, 'list_id')),
-    pageSize: normalizePageSize(queueParam(source, 'page_size')),
+    listId: normalizeProspectingListId(queueParam(source, 'queue_list') || queueParam(source, 'list') || queueParam(source, 'list_id')),
+    pageSize: normalizePageSize(queueParam(source, 'queue_page_size') || queueParam(source, 'page_size')),
     priority,
-    q: queueParam(source, 'q'),
+    q: queueParam(source, 'queue_q') || queueParam(source, 'q'),
+    repId: normalizeProspectingProfileId(queueParam(source, 'queue_rep_id') || queueParam(source, 'rep')),
     stage: tab === 'pipeline' && normalizedStage && REP_PIPELINE_STAGES.includes(normalizedStage) ? normalizedStage : '',
-    state: normalizeStateFilter(queueParam(source, 'state') || queueParam(source, 'state_filter')),
+    state: normalizeStateFilter(queueParam(source, 'queue_state') || queueParam(source, 'state') || queueParam(source, 'state_filter')),
     tab,
   };
 }
@@ -384,6 +390,7 @@ export function prospectingQueueQueryString(
   if (context.tab === 'pipeline' && context.stage) query.set('stage', context.stage);
   if (context.state) query.set('state', context.state);
   if (context.listId) query.set('list', context.listId);
+  if (context.repId) query.set('rep', context.repId);
   if (options.includePageSize || context.pageSize !== DEFAULT_PROSPECTING_PAGE_SIZE) query.set('page_size', String(context.pageSize));
   if (options.page) query.set('page', String(options.page));
   if (options.toast) query.set('toast', options.toast);
@@ -409,13 +416,14 @@ export function prospectingLeadPath(
 
 export function prospectingQueueHiddenFields(context: ProspectingQueueContext) {
   return [
-    { name: 'tab', value: context.tab },
-    { name: 'q', value: context.q },
-    { name: 'priority', value: context.priority },
-    { name: 'stage', value: context.stage },
-    { name: 'state', value: context.state },
-    { name: 'page_size', value: String(context.pageSize) },
-    { name: 'list', value: context.listId },
+    { name: 'queue_tab', value: context.tab },
+    { name: 'queue_q', value: context.q },
+    { name: 'queue_priority', value: context.priority },
+    { name: 'queue_stage', value: context.stage },
+    { name: 'queue_state', value: context.state },
+    { name: 'queue_page_size', value: String(context.pageSize) },
+    { name: 'queue_list', value: context.listId },
+    { name: 'queue_rep_id', value: context.repId },
   ];
 }
 
