@@ -41,6 +41,7 @@ export type RepProspectingTab = (typeof REP_PROSPECTING_TABS)[number]['id'];
 
 export type ProspectingQueueContext = {
   listId: string;
+  page: number;
   pageSize: typeof PROSPECTING_PAGE_SIZES[number];
   priority: '' | ProspectingPriority;
   q: string;
@@ -369,6 +370,7 @@ export function prospectingQueueContextFromParams(source: ProspectingQueueParamS
 
   return {
     listId: normalizeProspectingListId(queueParam(source, 'queue_list') || queueParam(source, 'list') || queueParam(source, 'list_id')),
+    page: normalizePageNumber(queueParam(source, 'queue_page') || queueParam(source, 'page')),
     pageSize: normalizePageSize(queueParam(source, 'queue_page_size') || queueParam(source, 'page_size')),
     priority,
     q: queueParam(source, 'queue_q') || queueParam(source, 'q'),
@@ -392,7 +394,8 @@ export function prospectingQueueQueryString(
   if (context.listId) query.set('list', context.listId);
   if (context.repId) query.set('rep', context.repId);
   if (options.includePageSize || context.pageSize !== DEFAULT_PROSPECTING_PAGE_SIZE) query.set('page_size', String(context.pageSize));
-  if (options.page) query.set('page', String(options.page));
+  const page = options.page ?? context.page;
+  if (options.page || Number(page) > 1) query.set('page', String(page));
   if (options.toast) query.set('toast', options.toast);
   return query.toString();
 }
@@ -421,6 +424,7 @@ export function prospectingQueueHiddenFields(context: ProspectingQueueContext) {
     { name: 'queue_priority', value: context.priority },
     { name: 'queue_stage', value: context.stage },
     { name: 'queue_state', value: context.state },
+    { name: 'queue_page', value: String(context.page) },
     { name: 'queue_page_size', value: String(context.pageSize) },
     { name: 'queue_list', value: context.listId },
     { name: 'queue_rep_id', value: context.repId },

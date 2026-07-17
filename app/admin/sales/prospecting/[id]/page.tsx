@@ -111,6 +111,14 @@ function profileLabel(profile: ProfileRow | null | undefined) {
   return profile?.full_name || profile?.email || 'Unassigned';
 }
 
+function noteBlocks(notes: string | null | undefined) {
+  return String(notes ?? '')
+    .trim()
+    .split(/\n{2,}/)
+    .map((block) => block.trim())
+    .filter(Boolean);
+}
+
 function safeDateInput(value: FormDataEntryValue | null) {
   const text = String(value ?? '').trim();
   return /^\d{4}-\d{2}-\d{2}$/.test(text) ? text : null;
@@ -654,13 +662,14 @@ export default async function LeadDetailPage({
   const nextLeadId = currentQueueIndex >= 0
     ? queueIds[currentQueueIndex + 1] ?? null
     : queueIds.find((id) => id !== lead.id) ?? null;
+  const leadNoteBlocks = noteBlocks(lead.notes);
 
   return (
     <div className="space-y-6">
       <Toasts toast={toast} />
       <section className="panel">
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-          <Link className="text-sm font-semibold text-teal-800" href={prospectingBackHref(queueContext)}>Back to prospecting</Link>
+          <Link className="btn-secondary inline-flex self-start" href={prospectingBackHref(queueContext)}>Back to Main Prospecting List</Link>
           <div className="flex flex-col gap-2 sm:flex-row">
             {previousLeadId ? <Link className="btn-secondary inline-flex" href={leadHref(previousLeadId, undefined, queueContext)}>Previous Record</Link> : null}
             {nextLeadId ? <Link className="btn-primary inline-flex" href={leadHref(nextLeadId, undefined, queueContext)}>Next Record</Link> : null}
@@ -697,6 +706,31 @@ export default async function LeadDetailPage({
         </div>
       ) : null}
 
+      <section className="card border-amber-200 bg-amber-50/70">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-amber-700">Lead Notes</p>
+            <h2 className="mt-2 text-xl font-semibold tracking-tight text-slate-950">Internal notes</h2>
+          </div>
+          <span className="rounded-full bg-white/80 px-3 py-1 text-xs font-semibold text-amber-800">Rep context</span>
+        </div>
+        {leadNoteBlocks.length ? (
+          <div className="mt-4 max-h-72 overflow-y-auto rounded-lg border border-amber-100 bg-white/85 px-5 py-4 text-[0.95rem] leading-7 text-slate-800 shadow-sm">
+            <div className="space-y-4">
+              {leadNoteBlocks.map((block, index) => (
+                <p key={`${index}-${block.slice(0, 24)}`} className="whitespace-pre-wrap break-words">
+                  {block}
+                </p>
+              ))}
+            </div>
+          </div>
+        ) : (
+          <p className="mt-4 rounded-lg border border-dashed border-amber-200 bg-white/70 px-5 py-5 text-sm font-semibold text-slate-500">
+            No lead notes yet.
+          </p>
+        )}
+      </section>
+
       {missing.length ? (
         <section className="card">
           <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Missing Info</p>
@@ -716,6 +750,10 @@ export default async function LeadDetailPage({
             <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Company Profile</p>
             <h2 className="mt-2 text-xl font-semibold tracking-tight text-slate-950">Enrich lead details</h2>
           </div>
+          <label className="block rounded-lg border border-amber-100 bg-amber-50/50 px-3 py-3 text-sm font-semibold text-slate-700">
+            Lead notes
+            <textarea className="input mt-2 min-h-48 text-[0.95rem] leading-7" name="notes" defaultValue={lead.notes ?? ''} />
+          </label>
           <div className="grid gap-3 md:grid-cols-2">
             <Field label="Company name"><input className="input" name="company_name" defaultValue={lead.company_name} required /></Field>
             <Field label="Phone"><input className="input" name="phone" defaultValue={lead.phone ?? ''} /></Field>
@@ -747,7 +785,6 @@ export default async function LeadDetailPage({
               </Field>
             ) : <input type="hidden" name="assigned_profile_id" value={lead.assigned_profile_id ?? ''} />}
           </div>
-          <Field label="Notes"><textarea className="input min-h-28" name="notes" defaultValue={lead.notes ?? ''} /></Field>
           <label className="flex items-center gap-2 rounded-lg bg-white/70 px-3 py-2 text-sm font-semibold text-slate-700">
             <input type="checkbox" name="do_not_contact" defaultChecked={Boolean(lead.do_not_contact)} />
             Do not contact

@@ -17,6 +17,7 @@ describe('prospecting queue context', () => {
   it('round-trips the full working queue through URL params', () => {
     const context = prospectingQueueContextFromParams({
       list: LIST_ID,
+      page: '3',
       page_size: '25',
       priority: 'high',
       q: 'detox center',
@@ -28,6 +29,7 @@ describe('prospecting queue context', () => {
 
     expect(context).toEqual({
       listId: LIST_ID,
+      page: 3,
       pageSize: 25,
       priority: 'high',
       q: 'detox center',
@@ -38,12 +40,13 @@ describe('prospecting queue context', () => {
     });
 
     const path = prospectingPath(context, { includePageSize: true, page: 2 });
-    expect(prospectingQueueContextFromParams(new URLSearchParams(path.split('?')[1]))).toEqual(context);
+    expect(prospectingQueueContextFromParams(new URLSearchParams(path.split('?')[1]))).toEqual({ ...context, page: 2 });
   });
 
   it('builds lead detail links that preserve task filters and import-list context', () => {
     const context = prospectingQueueContextFromParams({
       list: LIST_ID,
+      page: '4',
       page_size: '25',
       priority: 'high',
       q: 'Chicago',
@@ -53,7 +56,7 @@ describe('prospecting queue context', () => {
     });
 
     expect(prospectingLeadPath('lead-123', context, { includePageSize: true })).toBe(
-      `/admin/sales/prospecting/lead-123?tab=tasks&q=Chicago&priority=high&state=missing&list=${LIST_ID}&rep=${REP_ID}&page_size=25`,
+      `/admin/sales/prospecting/lead-123?tab=tasks&q=Chicago&priority=high&state=missing&list=${LIST_ID}&rep=${REP_ID}&page_size=25&page=4`,
     );
   });
 
@@ -69,6 +72,7 @@ describe('prospecting queue context', () => {
 
     expect(context).toMatchObject({
       listId: '',
+      page: 1,
       pageSize: 50,
       priority: '',
       repId: '',
@@ -99,6 +103,7 @@ describe('prospecting queue context', () => {
   it('keeps hidden form fields aligned with the parsed queue context', () => {
     const context = prospectingQueueContextFromParams({
       list: LIST_ID,
+      page: '2',
       page_size: '25',
       priority: 'low',
       q: 'Austin',
@@ -113,6 +118,7 @@ describe('prospecting queue context', () => {
       { name: 'queue_priority', value: 'low' },
       { name: 'queue_stage', value: '' },
       { name: 'queue_state', value: 'TX' },
+      { name: 'queue_page', value: '2' },
       { name: 'queue_page_size', value: '25' },
       { name: 'queue_list', value: LIST_ID },
       { name: 'queue_rep_id', value: REP_ID },

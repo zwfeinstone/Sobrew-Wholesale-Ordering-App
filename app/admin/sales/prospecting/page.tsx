@@ -13,7 +13,6 @@ import {
   US_STATE_OPTIONS,
   formatDate,
   missingLeadFields,
-  normalizePageNumber,
   normalizePriority,
   normalizeStage,
   paginationRange,
@@ -262,7 +261,7 @@ export default async function ProspectingPage({ searchParams }: { searchParams?:
   const queueContext = { ...parsedQueueContext, repId: current.profile.id };
   const q = queueContext.q;
   const tab = queueContext.tab;
-  const page = normalizePageNumber(searchParams?.page);
+  const page = queueContext.page;
   const pageSize = queueContext.pageSize;
   const { from, to } = paginationRange(page, pageSize);
   const selectedPriority = queueContext.priority;
@@ -467,7 +466,7 @@ export default async function ProspectingPage({ searchParams }: { searchParams?:
             {q || selectedPriority || selectedStage || selectedStateKey || selectedListId ? (
               <Link
                 className="btn-secondary inline-flex"
-                href={prospectingPath({ ...queueContext, listId: '', priority: '', q: '', stage: '', state: '' }, { includePageSize: true })}
+                href={prospectingPath({ ...queueContext, listId: '', priority: '', q: '', stage: '', state: '' }, { includePageSize: true, page: 1 })}
               >
                 Clear
               </Link>
