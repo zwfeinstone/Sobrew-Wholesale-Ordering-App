@@ -2,26 +2,32 @@ import Link from 'next/link';
 import StatusToast from '@/components/status-toast';
 import { requireAdminSectionView } from '@/lib/admin-permissions';
 import { createClient } from '@/lib/supabase/server';
+import { formatCentralDateInput, parseCentralDateInput } from '@/lib/time-clock';
 import {
   ACTIVE_PROSPECTING_STAGES,
   PROSPECTING_PAGE_SIZES,
   PROSPECTING_PRIORITIES,
   REP_PIPELINE_STAGES,
+  REP_PROSPECTING_TABS,
   MISSING_STATE_FILTER,
   US_STATE_OPTIONS,
   formatDate,
   missingLeadFields,
   normalizePageNumber,
-  normalizePageSize,
   normalizePriority,
-  normalizeStateFilter,
   normalizeStage,
   paginationRange,
   postgrestIlikePattern,
   priorityLabel,
+  prospectingLeadPath,
+  prospectingPath,
+  prospectingQueueContextFromParams,
+  prospectingQueueRequiresFollowUp,
+  prospectingQueueStageFilter,
   stageLabel,
   totalPageCount,
   type ProspectingPriority,
+  type ProspectingQueueContext,
   type ProspectingStateFilter,
   type ProspectingStage,
 } from '@/lib/prospecting';
@@ -57,50 +63,28 @@ type ContactSummary = {
   phone: string | null;
 };
 
-const REP_TABS = [
-  { id: 'list', label: 'List' },
-  { id: 'pipeline', label: 'Pipeline' },
-  { id: 'tasks', label: 'Tasks' },
-] as const;
+const DAY_IN_MS = 24 * 60 * 60 * 1000;
 
-type RepTab = (typeof REP_TABS)[number]['id'];
-
-function stringParam(value: string | string[] | undefined) {
-  return typeof value === 'string' ? value : '';
+function dateInputFromUtcDate(date: Date) {
+  const year = date.getUTCFullYear();
+  const month = String(date.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(date.getUTCDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
 }
 
-function normalizeTab(value: string | string[] | undefined): RepTab {
-  return REP_TABS.some((tab) => tab.id === value) ? value as RepTab : 'list';
+function utcDateFromInput(value: string) {
+  const [year, month, day] = value.split('-').map(Number);
+  return new Date(Date.UTC(year, month - 1, day));
 }
 
-function prospectingHref(params: {
-  page?: number | string;
-  pageSize?: number | string;
-  priority?: string;
-  q?: string;
-  stage?: string;
-  state?: string;
-  tab?: RepTab;
-  toast?: string;
-}) {
-  const query = new URLSearchParams();
-  if (params.tab && params.tab !== 'list') query.set('tab', params.tab);
-  if (params.q) query.set('q', params.q);
-  if (params.priority) query.set('priority', params.priority);
-  if (params.stage) query.set('stage', params.stage);
-  if (params.state) query.set('state', params.state);
-  if (params.page) query.set('page', String(params.page));
-  if (params.pageSize) query.set('page_size', String(params.pageSize));
-  if (params.toast) query.set('toast', params.toast);
-  const qs = query.toString();
-  return `/admin/sales/prospecting${qs ? `?${qs}` : ''}`;
+function addCalendarDays(value: string, days: number) {
+  return dateInputFromUtcDate(new Date(utcDateFromInput(value).getTime() + days * DAY_IN_MS));
 }
 
-function leadDetailHref(leadId: string, stateKey: '' | ProspectingStateFilter = '') {
-  const query = new URLSearchParams();
-  if (stateKey) query.set('state', stateKey);
-  const qs = query.toString();
-  return `/admin/sales/prospecting/${leadId}${qs ? `?${qs}` : ''}`;
+function weekStartInput(value: string) {
+  const weekday = utcDateFromInput(value).getUTCDay();
+  const daysSinceMonday = weekday === 0 ? 6 : weekday - 1;
+  return addCalendarDays(value, -daysSinceMonday);
 }
 
 function StageBadge({ stage }: { stage: string | null | undefined }) {
@@ -152,13 +136,13 @@ function LeadListTable({
   contactsByLead,
   emptyLabel,
   leads,
-  stateKey,
+  queueContext,
   showDue = false,
 }: {
   contactsByLead: Map<string, ContactSummary[]>;
   emptyLabel: string;
   leads: LeadRow[];
-  stateKey: '' | ProspectingStateFilter;
+  queueContext: ProspectingQueueContext;
   showDue?: boolean;
 }) {
   if (!leads.length) {
@@ -194,7 +178,7 @@ function LeadListTable({
               return (
                 <tr key={lead.id} className="bg-white/80 shadow-sm">
                   <td className="rounded-l-lg px-3 py-3">
-                    <Link className="font-semibold text-slate-950 hover:text-teal-800" href={leadDetailHref(lead.id, stateKey)}>
+                    <Link className="font-semibold text-slate-950 hover:text-teal-800" href={prospectingLeadPath(lead.id, queueContext, { includePageSize: true })}>
                       {lead.company_name}
                     </Link>
                     <div className="mt-1 flex flex-wrap gap-1.5">
@@ -222,7 +206,7 @@ function LeadListTable({
                     ) : <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[0.7rem] font-semibold text-emerald-800">Ready</span>}
                   </td>
                   <td className="rounded-r-lg px-3 py-3 text-right">
-                    <Link className="btn-primary inline-flex" href={leadDetailHref(lead.id, stateKey)}>Open</Link>
+                    <Link className="btn-primary inline-flex" href={prospectingLeadPath(lead.id, queueContext, { includePageSize: true })}>Open</Link>
                   </td>
                 </tr>
               );
@@ -240,12 +224,14 @@ function assignedLeadQuery(
   q: string,
   priority: string,
   stateKey: '' | ProspectingStateFilter,
+  listId: string,
   columns: string,
   options?: { count?: 'exact'; head?: boolean },
 ) {
+  const selectColumns = listId ? `${columns},prospecting_list_leads!inner(list_id)` : columns;
   let query = supabase
     .from('prospecting_leads')
-    .select(columns, options)
+    .select(selectColumns, options)
     .eq('assigned_profile_id', profileId)
     .is('archived_at', null)
     .in('stage', REP_PIPELINE_STAGES);
@@ -253,6 +239,7 @@ function assignedLeadQuery(
   if (priority) query = query.eq('priority', priority);
   if (stateKey === MISSING_STATE_FILTER) query = query.is('state_key', null);
   else if (stateKey) query = query.eq('state_key', stateKey);
+  if (listId) query = query.eq('prospecting_list_leads.list_id', listId);
   if (q) {
     const search = postgrestIlikePattern(q);
     query = query.or([
@@ -271,23 +258,28 @@ function assignedLeadQuery(
 export default async function ProspectingPage({ searchParams }: { searchParams?: SearchParams }) {
   const current = await requireAdminSectionView('prospecting');
   const supabase = await createClient();
-  const q = stringParam(searchParams?.q).trim();
-  const tab = normalizeTab(searchParams?.tab);
+  const queueContext = prospectingQueueContextFromParams(searchParams);
+  const q = queueContext.q;
+  const tab = queueContext.tab;
   const page = normalizePageNumber(searchParams?.page);
-  const pageSize = normalizePageSize(searchParams?.page_size);
+  const pageSize = queueContext.pageSize;
   const { from, to } = paginationRange(page, pageSize);
-  const requestedPriority = stringParam(searchParams?.priority);
-  const selectedPriority = PROSPECTING_PRIORITIES.some((priority) => priority.id === requestedPriority) ? requestedPriority as ProspectingPriority : '';
-  const requestedStage = stringParam(searchParams?.stage);
-  const selectedStage = tab === 'pipeline' && REP_PIPELINE_STAGES.includes(requestedStage as ProspectingStage) ? requestedStage as ProspectingStage : '';
-  const selectedStateKey = normalizeStateFilter(searchParams?.state);
-  const toast = stringParam(searchParams?.toast);
-  const today = new Date().toISOString().slice(0, 10);
+  const selectedPriority = queueContext.priority;
+  const selectedStage = queueContext.stage;
+  const selectedStateKey = queueContext.state;
+  const selectedListId = queueContext.listId;
+  const toast = typeof searchParams?.toast === 'string' ? searchParams.toast : '';
+  const now = new Date();
+  const today = formatCentralDateInput(now);
+  const tomorrow = addCalendarDays(today, 1);
+  const currentWeekStart = weekStartInput(today);
+  const todayStart = parseCentralDateInput(today) ?? now;
+  const tomorrowStart = parseCentralDateInput(tomorrow) ?? now;
+  const weekStart = parseCentralDateInput(currentWeekStart) ?? todayStart;
 
-  let leadsQuery = assignedLeadQuery(supabase, current.profile.id, q, selectedPriority, selectedStateKey, '*', { count: 'exact' });
-  if (tab === 'list') leadsQuery = leadsQuery.in('stage', ACTIVE_PROSPECTING_STAGES);
-  if (tab === 'tasks') leadsQuery = leadsQuery.not('next_follow_up_at', 'is', null);
-  if (selectedStage) leadsQuery = leadsQuery.eq('stage', selectedStage);
+  let leadsQuery = assignedLeadQuery(supabase, current.profile.id, q, selectedPriority, selectedStateKey, selectedListId, '*', { count: 'exact' });
+  leadsQuery = leadsQuery.in('stage', prospectingQueueStageFilter(queueContext));
+  if (prospectingQueueRequiresFollowUp(queueContext)) leadsQuery = leadsQuery.not('next_follow_up_at', 'is', null);
 
   if (tab === 'tasks') {
     leadsQuery = leadsQuery.order('next_follow_up_at', { ascending: true }).order('last_activity_at', { ascending: true });
@@ -304,14 +296,30 @@ export default async function ProspectingPage({ searchParams }: { searchParams?:
     { count: activeCount },
     { count: followUpsDue },
     { count: samplesRequested },
+    { count: callsToday },
+    { count: callsThisWeek },
     ...stageCountResults
   ] = await Promise.all([
-    assignedLeadQuery(supabase, current.profile.id, q, selectedPriority, selectedStateKey, 'id', { count: 'exact', head: true }),
-    assignedLeadQuery(supabase, current.profile.id, q, selectedPriority, selectedStateKey, 'id', { count: 'exact', head: true }).in('stage', ACTIVE_PROSPECTING_STAGES),
-    assignedLeadQuery(supabase, current.profile.id, q, selectedPriority, selectedStateKey, 'id', { count: 'exact', head: true }).not('next_follow_up_at', 'is', null).lte('next_follow_up_at', today),
-    assignedLeadQuery(supabase, current.profile.id, q, selectedPriority, selectedStateKey, 'id', { count: 'exact', head: true }).eq('stage', 'sample_requested'),
+    assignedLeadQuery(supabase, current.profile.id, q, selectedPriority, selectedStateKey, selectedListId, 'id', { count: 'exact', head: true }),
+    assignedLeadQuery(supabase, current.profile.id, q, selectedPriority, selectedStateKey, selectedListId, 'id', { count: 'exact', head: true }).in('stage', ACTIVE_PROSPECTING_STAGES),
+    assignedLeadQuery(supabase, current.profile.id, q, selectedPriority, selectedStateKey, selectedListId, 'id', { count: 'exact', head: true }).not('next_follow_up_at', 'is', null).lte('next_follow_up_at', today),
+    assignedLeadQuery(supabase, current.profile.id, q, selectedPriority, selectedStateKey, selectedListId, 'id', { count: 'exact', head: true }).eq('stage', 'sample_requested'),
+    supabase
+      .from('prospecting_activities')
+      .select('id', { count: 'exact', head: true })
+      .eq('created_by', current.profile.id)
+      .eq('activity_type', 'call')
+      .gte('created_at', todayStart.toISOString())
+      .lt('created_at', tomorrowStart.toISOString()),
+    supabase
+      .from('prospecting_activities')
+      .select('id', { count: 'exact', head: true })
+      .eq('created_by', current.profile.id)
+      .eq('activity_type', 'call')
+      .gte('created_at', weekStart.toISOString())
+      .lt('created_at', tomorrowStart.toISOString()),
     ...REP_PIPELINE_STAGES.map((stage) => (
-      assignedLeadQuery(supabase, current.profile.id, q, selectedPriority, selectedStateKey, 'id', { count: 'exact', head: true }).eq('stage', stage)
+      assignedLeadQuery(supabase, current.profile.id, q, selectedPriority, selectedStateKey, selectedListId, 'id', { count: 'exact', head: true }).eq('stage', stage)
     )),
   ]);
 
@@ -336,6 +344,7 @@ export default async function ProspectingPage({ searchParams }: { searchParams?:
 
   const firstLead = leads[0];
   const resultLabel = tab === 'tasks' ? 'tasks' : tab === 'pipeline' ? 'pipeline leads' : 'active leads';
+  const taskBadgeCount = followUpsDue ?? 0;
 
   return (
     <div className="space-y-6">
@@ -354,10 +363,32 @@ export default async function ProspectingPage({ searchParams }: { searchParams?:
             </p>
           </div>
           <div className="flex flex-col gap-2 sm:flex-row lg:justify-end">
-            {firstLead ? <Link className="btn-primary inline-flex" href={leadDetailHref(firstLead.id, selectedStateKey)}>Start Calling</Link> : null}
+            {firstLead ? <Link className="btn-primary inline-flex" href={prospectingLeadPath(firstLead.id, queueContext, { includePageSize: true })}>Start Calling</Link> : null}
             {current.isOwner ? (
               <Link className="btn-secondary inline-flex" href="/admin/sales/prospecting/admin">Prospecting Admin</Link>
             ) : null}
+          </div>
+        </div>
+      </section>
+
+      <section className="space-y-3">
+        <div className="flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">My Call Scoreboard</p>
+            <h2 className="text-2xl font-semibold tracking-tight text-slate-950">Your prospecting calls</h2>
+          </div>
+          <p className="text-sm font-semibold text-slate-500">Only calls logged by you</p>
+        </div>
+        <div className="grid gap-4 md:grid-cols-2">
+          <div className="stat-card border-teal-200 bg-teal-50/70">
+            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-teal-700">Calls Today</p>
+            <p className="mt-3 text-4xl font-semibold tracking-tight text-slate-950">{(callsToday ?? 0).toLocaleString()}</p>
+            <p className="mt-2 text-sm font-semibold text-teal-800">{formatDate(today)}</p>
+          </div>
+          <div className="stat-card border-indigo-200 bg-indigo-50/70">
+            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-indigo-700">Calls This Week</p>
+            <p className="mt-3 text-4xl font-semibold tracking-tight text-slate-950">{(callsThisWeek ?? 0).toLocaleString()}</p>
+            <p className="mt-2 text-sm font-semibold text-indigo-800">{formatDate(currentWeekStart)} - {formatDate(today)}</p>
           </div>
         </div>
       </section>
@@ -383,13 +414,20 @@ export default async function ProspectingPage({ searchParams }: { searchParams?:
 
       <section className="card space-y-4">
         <nav className="grid gap-2 sm:grid-cols-3">
-          {REP_TABS.map((item) => (
+          {REP_PROSPECTING_TABS.map((item) => (
             <Link
               key={item.id}
               className={`rounded-lg border px-3 py-2 text-center text-sm font-semibold ${tab === item.id ? 'border-teal-200 bg-teal-50 text-teal-900' : 'border-slate-200 bg-white/70 text-slate-700'}`}
-              href={prospectingHref({ page: 1, pageSize, priority: selectedPriority, q, state: selectedStateKey, tab: item.id })}
+              href={prospectingPath({ ...queueContext, stage: '', tab: item.id }, { includePageSize: true, page: 1 })}
             >
-              {item.label}
+              <span className="inline-flex items-center justify-center gap-2">
+                {item.label}
+                {item.id === 'tasks' ? (
+                  <span className={`min-w-6 rounded-full px-2 py-0.5 text-xs font-semibold ${tab === 'tasks' ? 'bg-teal-900 text-white' : 'bg-amber-50 text-amber-800'}`}>
+                    {taskBadgeCount.toLocaleString()}
+                  </span>
+                ) : null}
+              </span>
             </Link>
           ))}
         </nav>
@@ -397,6 +435,7 @@ export default async function ProspectingPage({ searchParams }: { searchParams?:
         <form className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_14rem_16rem_9rem_auto] lg:items-end">
           <input type="hidden" name="tab" value={tab} />
           {selectedStage ? <input type="hidden" name="stage" value={selectedStage} /> : null}
+          {selectedListId ? <input type="hidden" name="list" value={selectedListId} /> : null}
           <label className="text-sm font-semibold text-slate-700">
             Search my leads
             <input className="input mt-2" name="q" defaultValue={q} placeholder="Company, phone, city, result" />
@@ -424,7 +463,14 @@ export default async function ProspectingPage({ searchParams }: { searchParams?:
           </label>
           <div className="flex gap-2">
             <button className="btn-primary w-full md:w-auto" type="submit">Filter</button>
-            {q || selectedPriority || selectedStage || selectedStateKey ? <Link className="btn-secondary inline-flex" href={prospectingHref({ pageSize, tab })}>Clear</Link> : null}
+            {q || selectedPriority || selectedStage || selectedStateKey || selectedListId ? (
+              <Link
+                className="btn-secondary inline-flex"
+                href={prospectingPath({ ...queueContext, listId: '', priority: '', q: '', stage: '', state: '' }, { includePageSize: true })}
+              >
+                Clear
+              </Link>
+            ) : null}
           </div>
         </form>
 
@@ -433,13 +479,13 @@ export default async function ProspectingPage({ searchParams }: { searchParams?:
           <div className="flex gap-2">
             <Link
               className={`btn-secondary inline-flex ${page <= 1 ? 'pointer-events-none opacity-50' : ''}`}
-              href={prospectingHref({ page: Math.max(1, page - 1), pageSize, priority: selectedPriority, q, stage: selectedStage, state: selectedStateKey, tab })}
+              href={prospectingPath(queueContext, { includePageSize: true, page: Math.max(1, page - 1) })}
             >
               Previous
             </Link>
             <Link
               className={`btn-secondary inline-flex ${page >= totalPages ? 'pointer-events-none opacity-50' : ''}`}
-              href={prospectingHref({ page: Math.min(totalPages, page + 1), pageSize, priority: selectedPriority, q, stage: selectedStage, state: selectedStateKey, tab })}
+              href={prospectingPath(queueContext, { includePageSize: true, page: Math.min(totalPages, page + 1) })}
             >
               Next
             </Link>
@@ -452,15 +498,7 @@ export default async function ProspectingPage({ searchParams }: { searchParams?:
           <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
             {REP_PIPELINE_STAGES.map((stage) => {
               const isSelected = selectedStage === stage;
-              const href = prospectingHref({
-                page: 1,
-                pageSize,
-                priority: selectedPriority,
-                q,
-                stage: isSelected ? '' : stage,
-                state: selectedStateKey,
-                tab: 'pipeline',
-              });
+              const href = prospectingPath({ ...queueContext, stage: isSelected ? '' : stage, tab: 'pipeline' }, { includePageSize: true, page: 1 });
               return (
                 <Link
                   key={stage}
@@ -475,12 +513,12 @@ export default async function ProspectingPage({ searchParams }: { searchParams?:
               );
             })}
           </section>
-          <LeadListTable contactsByLead={contactsByLead} emptyLabel="No leads in this pipeline view" leads={leads} stateKey={selectedStateKey} />
+          <LeadListTable contactsByLead={contactsByLead} emptyLabel="No leads in this pipeline view" leads={leads} queueContext={queueContext} />
         </>
       ) : tab === 'tasks' ? (
-        <LeadListTable contactsByLead={contactsByLead} emptyLabel="No follow-ups due" leads={leads} showDue stateKey={selectedStateKey} />
+        <LeadListTable contactsByLead={contactsByLead} emptyLabel="No follow-ups due" leads={leads} queueContext={queueContext} showDue />
       ) : (
-        <LeadListTable contactsByLead={contactsByLead} emptyLabel="No active leads in your queue" leads={leads} stateKey={selectedStateKey} />
+        <LeadListTable contactsByLead={contactsByLead} emptyLabel="No active leads in your queue" leads={leads} queueContext={queueContext} />
       )}
 
     </div>

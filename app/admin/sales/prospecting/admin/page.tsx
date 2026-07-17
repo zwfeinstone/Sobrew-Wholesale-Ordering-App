@@ -699,6 +699,152 @@ async function importLeadCsv(formData: FormData) {
   redirect(prospectingHref({ bucket: 'active', list: listId, toast: 'import_complete' }));
 }
 
+async function createSingleLead(formData: FormData) {
+  'use server';
+
+  const current = await requireProspectingOwner();
+  const supabase = await createClient();
+  const companyName = cleanText(formData.get('company_name'));
+  if (!companyName) redirect(`${PROSPECTING_ADMIN_PATH}?toast=single_company_required`);
+
+  const salesProfileId = String(formData.get('assigned_profile_id') ?? '').trim() || null;
+  if (salesProfileId) {
+    const { data } = await supabase
+      .from('admin_commission_settings')
+      .select('profile_id,is_sales_rep')
+      .eq('profile_id', salesProfileId)
+      .eq('is_sales_rep', true)
+      .maybeSingle();
+    if (!data) redirect(`${PROSPECTING_ADMIN_PATH}?toast=invalid_rep`);
+  }
+
+  const requestedListId = String(formData.get('existing_list_id') ?? '').trim();
+  const listName = String(formData.get('list_name') ?? '').trim();
+  let listId = requestedListId;
+  if (!listId && listName) {
+    const { data: createdList, error: listError } = await supabase
+      .from('prospecting_lists')
+      .insert({
+        created_by: current.profile.id,
+        description: 'Created from a single manual lead.',
+        name: listName,
+        source: 'manual',
+        updated_by: current.profile.id,
+      })
+      .select('id')
+      .single();
+    if (listError || !createdList) redirect(`${PROSPECTING_ADMIN_PATH}?toast=single_error`);
+    listId = createdList.id;
+  }
+
+  const phone = cleanText(formData.get('phone'));
+  const state = cleanText(formData.get('state'));
+  const companyNameKey = normalizeTextKey(companyName);
+  const phoneKey = normalizePhoneKey(phone);
+  const stage = normalizeStage(String(formData.get('stage') ?? 'new'));
+  const payload = {
+    address_line_1: cleanText(formData.get('address_line_1')),
+    address_line_2: cleanText(formData.get('address_line_2')),
+    assigned_profile_id: salesProfileId,
+    city: cleanText(formData.get('city')),
+    company_email: cleanText(formData.get('company_email')),
+    company_name: companyName,
+    company_name_key: companyNameKey,
+    company_website: cleanText(formData.get('company_website')),
+    country: cleanText(formData.get('country')) || 'US',
+    created_by: current.profile.id,
+    last_result: cleanText(formData.get('last_result')),
+    next_follow_up_at: safeDateInput(formData.get('next_follow_up_at')),
+    notes: cleanText(formData.get('notes')),
+    phone,
+    phone_key: phoneKey,
+    postal_code: cleanText(formData.get('postal_code')),
+    priority: normalizePriority(String(formData.get('priority') ?? 'normal')),
+    source: listName || 'manual',
+    stage,
+    state,
+    state_key: normalizeStateKey(state),
+    updated_by: current.profile.id,
+  };
+
+  const { data: existingData, error: existingError } = await supabase
+    .from('prospecting_leads')
+    .select('*')
+    .eq('company_name_key', companyNameKey);
+  if (existingError) redirect(`${PROSPECTING_ADMIN_PATH}?toast=single_error`);
+
+  const existingRows = (existingData ?? []) as LeadRow[];
+  const exact = existingRows.find((lead) => `${lead.company_name_key}:${lead.phone_key ?? ''}` === `${companyNameKey}:${phoneKey}`);
+  const sameCompanyDifferentPhone = existingRows.find((lead) => (lead.phone_key ?? '') !== phoneKey);
+  if (!exact && sameCompanyDifferentPhone) {
+    redirect(`${PROSPECTING_ADMIN_PATH}?toast=single_duplicate_review`);
+  }
+
+  let leadId = exact?.id ?? '';
+  let wasMerge = false;
+  if (exact) {
+    const updates = mergeMissingFields(exact, payload, current.profile.id);
+    if (!exact.next_follow_up_at && payload.next_follow_up_at) updates.next_follow_up_at = payload.next_follow_up_at;
+    if (!exact.last_result && payload.last_result) updates.last_result = payload.last_result;
+    if (Object.keys(updates).length) {
+      const { error } = await supabase.from('prospecting_leads').update(updates).eq('id', exact.id);
+      if (error) redirect(`${PROSPECTING_ADMIN_PATH}?toast=single_error`);
+    }
+    wasMerge = true;
+  } else {
+    const { data: createdLead, error } = await supabase
+      .from('prospecting_leads')
+      .insert(payload)
+      .select('id')
+      .single();
+    if (error || !createdLead) redirect(`${PROSPECTING_ADMIN_PATH}?toast=single_error`);
+    leadId = createdLead.id;
+  }
+
+  if (listId) {
+    const { error } = await supabase.from('prospecting_list_leads').upsert({
+      added_by: current.profile.id,
+      lead_id: leadId,
+      list_id: listId,
+    }, { onConflict: 'list_id,lead_id' });
+    if (error) redirect(`${PROSPECTING_ADMIN_PATH}?toast=single_error`);
+  }
+
+  const contactFullName = cleanText(formData.get('contact_full_name'));
+  const contactTitle = cleanText(formData.get('contact_title'));
+  const contactEmail = cleanText(formData.get('contact_email'));
+  const contactPhone = cleanText(formData.get('contact_phone'));
+  if (contactFullName || contactTitle || contactEmail || contactPhone) {
+    const { error } = await supabase.from('prospecting_contacts').insert({
+      created_by: current.profile.id,
+      email: contactEmail,
+      full_name: contactFullName,
+      is_primary: true,
+      lead_id: leadId,
+      phone: contactPhone,
+      title: contactTitle,
+      updated_by: current.profile.id,
+    });
+    if (error) redirect(`${PROSPECTING_ADMIN_PATH}?toast=single_error`);
+  }
+
+  await supabase.from('prospecting_activities').insert({
+    activity_type: wasMerge ? 'enrichment' : 'enrichment',
+    body: wasMerge ? 'Manual single-lead entry merged missing fields.' : 'Manual single-lead entry created.',
+    created_by: current.profile.id,
+    lead_id: leadId,
+    next_follow_up_at: payload.next_follow_up_at,
+    next_stage: stage,
+    result: wasMerge ? 'Manual merge' : 'Manual add',
+  });
+
+  redirect(prospectingHref({
+    bucket: stage === 'sample_requested' ? 'sample_requested' : stage === 'interested' ? 'interested' : ACTIVE_PROSPECTING_STAGES.includes(stage) ? 'active' : 'all',
+    list: listId,
+    toast: wasMerge ? 'single_merged' : 'single_created',
+  }));
+}
+
 async function bulkAssignLeads(formData: FormData) {
   'use server';
 
@@ -916,6 +1062,11 @@ function Toasts({ toast }: { toast: string }) {
     maintenance_error: { message: 'Unable to update that maintenance lead.', tone: 'error' },
     maintenance_missing: { message: 'That maintenance lead could not be found.', tone: 'error' },
     maintenance_recycled: { message: 'Lead moved to Recycle / Try Later and returned to the unassigned pool.', tone: 'success' },
+    single_company_required: { message: 'Company name is required before adding a lead.', tone: 'error' },
+    single_created: { message: 'Lead added.', tone: 'success' },
+    single_duplicate_review: { message: 'A lead with that company already exists under a different phone number. Review the existing lead before adding another.', tone: 'error' },
+    single_error: { message: 'Unable to add that lead.', tone: 'error' },
+    single_merged: { message: 'Existing lead found. Missing fields were merged.', tone: 'success' },
   };
   const match = messages[toast];
   return match ? <StatusToast message={match.message} tone={match.tone} /> : null;
@@ -1393,7 +1544,128 @@ export default async function ProspectingAdminPage({ searchParams }: { searchPar
       ) : null}
 
       {isOwner ? (
-        <section className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_minmax(22rem,0.7fr)]">
+        <section className="space-y-5">
+          <form action={createSingleLead} className="card space-y-5">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Single Lead</p>
+                <h2 className="mt-2 text-xl font-semibold tracking-tight text-slate-950">Add one prospect</h2>
+                <p className="mt-1 text-sm leading-6 text-slate-500">
+                  Add a single company directly, assign it to a rep, and optionally place it into a lead list.
+                </p>
+              </div>
+              <PendingSubmitButton className="btn-primary w-full sm:w-auto" disabled={!canEdit} disabledLabel="No edit access" label="Add Lead" pendingLabel="Adding..." />
+            </div>
+
+            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+              <label className="text-sm font-semibold text-slate-700">
+                Company name
+                <input className="input mt-2" name="company_name" required />
+              </label>
+              <label className="text-sm font-semibold text-slate-700">
+                Phone
+                <input className="input mt-2" name="phone" />
+              </label>
+              <label className="text-sm font-semibold text-slate-700">
+                Company email
+                <input className="input mt-2" name="company_email" type="email" />
+              </label>
+              <label className="text-sm font-semibold text-slate-700">
+                Website
+                <input className="input mt-2" name="company_website" />
+              </label>
+              <label className="text-sm font-semibold text-slate-700">
+                Address 1
+                <input className="input mt-2" name="address_line_1" />
+              </label>
+              <label className="text-sm font-semibold text-slate-700">
+                Address 2
+                <input className="input mt-2" name="address_line_2" />
+              </label>
+              <label className="text-sm font-semibold text-slate-700">
+                City
+                <input className="input mt-2" name="city" />
+              </label>
+              <label className="text-sm font-semibold text-slate-700">
+                State
+                <input className="input mt-2" name="state" />
+              </label>
+              <label className="text-sm font-semibold text-slate-700">
+                Postal code
+                <input className="input mt-2" name="postal_code" />
+              </label>
+              <label className="text-sm font-semibold text-slate-700">
+                Country
+                <input className="input mt-2" name="country" defaultValue="US" />
+              </label>
+              <label className="text-sm font-semibold text-slate-700">
+                Assigned rep
+                <select className="input mt-2" name="assigned_profile_id" defaultValue="">
+                  <option value="">Unassigned</option>
+                  {salesRepsRows.map((rep) => <option key={rep.id} value={rep.id}>{profileLabel(rep)}</option>)}
+                </select>
+              </label>
+              <label className="text-sm font-semibold text-slate-700">
+                Next follow-up
+                <input className="input mt-2" name="next_follow_up_at" type="date" />
+              </label>
+              <label className="text-sm font-semibold text-slate-700">
+                Stage
+                <select className="input mt-2" name="stage" defaultValue="new">
+                  {PROSPECTING_STAGES.map((stage) => <option key={stage.id} value={stage.id}>{stage.label}</option>)}
+                </select>
+              </label>
+              <label className="text-sm font-semibold text-slate-700">
+                Priority
+                <select className="input mt-2" name="priority" defaultValue="normal">
+                  {PROSPECTING_PRIORITIES.map((priority) => <option key={priority.id} value={priority.id}>{priority.label}</option>)}
+                </select>
+              </label>
+              <label className="text-sm font-semibold text-slate-700">
+                New list name
+                <input className="input mt-2" name="list_name" placeholder="Detox Centers Q3" />
+              </label>
+              <label className="text-sm font-semibold text-slate-700">
+                Or add to existing list
+                <select className="input mt-2" name="existing_list_id" defaultValue="">
+                  <option value="">No existing list</option>
+                  {listRows.map((list) => <option key={list.id} value={list.id}>{list.name}</option>)}
+                </select>
+              </label>
+            </div>
+
+            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+              <label className="text-sm font-semibold text-slate-700">
+                Contact name
+                <input className="input mt-2" name="contact_full_name" />
+              </label>
+              <label className="text-sm font-semibold text-slate-700">
+                Contact title
+                <input className="input mt-2" name="contact_title" />
+              </label>
+              <label className="text-sm font-semibold text-slate-700">
+                Contact email
+                <input className="input mt-2" name="contact_email" type="email" />
+              </label>
+              <label className="text-sm font-semibold text-slate-700">
+                Contact phone
+                <input className="input mt-2" name="contact_phone" />
+              </label>
+            </div>
+
+            <div className="grid gap-3 lg:grid-cols-2">
+              <label className="text-sm font-semibold text-slate-700">
+                Last result
+                <input className="input mt-2" name="last_result" placeholder="Warm lead, referral, needs pricing..." />
+              </label>
+              <label className="text-sm font-semibold text-slate-700">
+                Notes
+                <textarea className="input mt-2 min-h-24" name="notes" />
+              </label>
+            </div>
+          </form>
+
+          <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_minmax(22rem,0.7fr)]">
           <form action="/admin/sales/prospecting/import" method="post" encType="multipart/form-data" className="card space-y-4">
             <div>
               <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">CSV Import</p>
@@ -1444,6 +1716,7 @@ export default async function ProspectingAdminPage({ searchParams }: { searchPar
               {!importRows.length ? <p className="rounded-lg border border-dashed border-slate-200 px-3 py-6 text-center text-sm text-slate-500">No imports yet.</p> : null}
             </div>
           </section>
+          </div>
         </section>
       ) : null}
 

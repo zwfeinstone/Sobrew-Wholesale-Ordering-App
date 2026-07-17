@@ -31,6 +31,24 @@ export const PROSPECTING_IMPORT_MAX_BYTES = 10 * 1024 * 1024;
 export const PROSPECTING_IMPORT_MAX_ROWS = 5000;
 export const MISSING_STATE_FILTER = 'missing';
 
+export const REP_PROSPECTING_TABS = [
+  { id: 'list', label: 'List' },
+  { id: 'pipeline', label: 'Pipeline' },
+  { id: 'tasks', label: 'Tasks' },
+] as const;
+
+export type RepProspectingTab = (typeof REP_PROSPECTING_TABS)[number]['id'];
+
+export type ProspectingQueueContext = {
+  listId: string;
+  pageSize: typeof PROSPECTING_PAGE_SIZES[number];
+  priority: '' | ProspectingPriority;
+  q: string;
+  stage: '' | ProspectingStage;
+  state: '' | ProspectingStateFilter;
+  tab: RepProspectingTab;
+};
+
 export const US_STATE_OPTIONS = [
   { id: 'AL', label: 'Alabama' },
   { id: 'AK', label: 'Alaska' },
@@ -306,6 +324,108 @@ export function normalizePageSize(value: string | string[] | undefined) {
   return PROSPECTING_PAGE_SIZES.includes(parsed as typeof PROSPECTING_PAGE_SIZES[number])
     ? parsed as typeof PROSPECTING_PAGE_SIZES[number]
     : DEFAULT_PROSPECTING_PAGE_SIZE;
+}
+
+type ProspectingQueueParamSource =
+  | FormData
+  | URLSearchParams
+  | Record<string, FormDataEntryValue | string | string[] | null | undefined>
+  | null
+  | undefined;
+
+function queueParam(source: ProspectingQueueParamSource, key: string) {
+  if (!source) return '';
+  if (source instanceof URLSearchParams) return String(source.get(key) ?? '').trim();
+  if (typeof FormData !== 'undefined' && source instanceof FormData) return String(source.get(key) ?? '').trim();
+  const value = (source as Record<string, FormDataEntryValue | string | string[] | null | undefined>)[key];
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+export function normalizeProspectingTab(value: string | string[] | null | undefined): RepProspectingTab {
+  const text = typeof value === 'string' ? value : '';
+  return REP_PROSPECTING_TABS.some((tab) => tab.id === text) ? text as RepProspectingTab : 'list';
+}
+
+export function normalizeProspectingListId(value: string | string[] | null | undefined) {
+  const text = typeof value === 'string' ? value.trim() : '';
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(text) ? text : '';
+}
+
+export function prospectingQueueContextFromParams(source: ProspectingQueueParamSource): ProspectingQueueContext {
+  const tab = normalizeProspectingTab(queueParam(source, 'tab'));
+  const requestedPriority = queueParam(source, 'priority');
+  const requestedStage = queueParam(source, 'stage');
+  const priority = PROSPECTING_PRIORITIES.some((item) => item.id === requestedPriority)
+    ? requestedPriority as ProspectingPriority
+    : '';
+  const normalizedStage = PROSPECTING_STAGES.some((stage) => stage.id === requestedStage)
+    ? requestedStage as ProspectingStage
+    : '';
+
+  return {
+    listId: normalizeProspectingListId(queueParam(source, 'list') || queueParam(source, 'list_id')),
+    pageSize: normalizePageSize(queueParam(source, 'page_size')),
+    priority,
+    q: queueParam(source, 'q'),
+    stage: tab === 'pipeline' && normalizedStage && REP_PIPELINE_STAGES.includes(normalizedStage) ? normalizedStage : '',
+    state: normalizeStateFilter(queueParam(source, 'state') || queueParam(source, 'state_filter')),
+    tab,
+  };
+}
+
+export function prospectingQueueQueryString(
+  context: ProspectingQueueContext,
+  options: { includePageSize?: boolean; page?: number | string; toast?: string } = {},
+) {
+  const query = new URLSearchParams();
+  if (context.tab !== 'list') query.set('tab', context.tab);
+  if (context.q) query.set('q', context.q);
+  if (context.priority) query.set('priority', context.priority);
+  if (context.tab === 'pipeline' && context.stage) query.set('stage', context.stage);
+  if (context.state) query.set('state', context.state);
+  if (context.listId) query.set('list', context.listId);
+  if (options.includePageSize || context.pageSize !== DEFAULT_PROSPECTING_PAGE_SIZE) query.set('page_size', String(context.pageSize));
+  if (options.page) query.set('page', String(options.page));
+  if (options.toast) query.set('toast', options.toast);
+  return query.toString();
+}
+
+export function prospectingPath(
+  context: ProspectingQueueContext,
+  options: { includePageSize?: boolean; page?: number | string; toast?: string } = {},
+) {
+  const qs = prospectingQueueQueryString(context, options);
+  return `/admin/sales/prospecting${qs ? `?${qs}` : ''}`;
+}
+
+export function prospectingLeadPath(
+  leadId: string,
+  context: ProspectingQueueContext,
+  options: { includePageSize?: boolean; toast?: string } = {},
+) {
+  const qs = prospectingQueueQueryString(context, { includePageSize: options.includePageSize, toast: options.toast });
+  return `/admin/sales/prospecting/${leadId}${qs ? `?${qs}` : ''}`;
+}
+
+export function prospectingQueueHiddenFields(context: ProspectingQueueContext) {
+  return [
+    { name: 'tab', value: context.tab },
+    { name: 'q', value: context.q },
+    { name: 'priority', value: context.priority },
+    { name: 'stage', value: context.stage },
+    { name: 'state', value: context.state },
+    { name: 'page_size', value: String(context.pageSize) },
+    { name: 'list', value: context.listId },
+  ];
+}
+
+export function prospectingQueueStageFilter(context: ProspectingQueueContext): ProspectingStage[] {
+  if (context.stage) return [context.stage];
+  return context.tab === 'list' ? ACTIVE_PROSPECTING_STAGES : REP_PIPELINE_STAGES;
+}
+
+export function prospectingQueueRequiresFollowUp(context: ProspectingQueueContext) {
+  return context.tab === 'tasks';
 }
 
 export function paginationRange(page: number, pageSize: number) {
