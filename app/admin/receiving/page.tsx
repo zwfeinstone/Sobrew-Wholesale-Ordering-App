@@ -1,7 +1,7 @@
 import { redirect } from 'next/navigation';
 import PendingSubmitButton from '@/components/pending-submit-button';
 import StatusToast from '@/components/status-toast';
-import { requireAdminSectionView } from '@/lib/admin-permissions';
+import { requireAdminSectionEdit, requireAdminSectionView } from '@/lib/admin-permissions';
 import { requireAdminWriteAccess } from '@/lib/admin-write-access';
 import {
   INVENTORY_ADJUSTMENT_TYPES,
@@ -15,6 +15,7 @@ import {
   normalizeInventoryNumber,
   type InventoryUnit,
 } from '@/lib/inventory';
+import { buildInventoryLotCode, receiptNotesWithSupplierReference } from '@/lib/inventory-lot-codes';
 import { createClient } from '@/lib/supabase/server';
 import { usd } from '@/lib/utils';
 
@@ -36,9 +37,26 @@ function itemDisplayName(item: InventoryItemRow | undefined | null) {
   return item.sku ? `${item.name} (${item.sku})` : item.name;
 }
 
+function relatedOne<T>(value: T | T[] | null | undefined): T | null {
+  if (Array.isArray(value)) return value[0] ?? null;
+  return value ?? null;
+}
+
 function parsePositiveNumber(value: FormDataEntryValue | null, fallback = 0) {
   const parsed = Number.parseFloat(String(value ?? ''));
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function formatReceiptDate(value: string | null | undefined) {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  return new Intl.DateTimeFormat('en-US', {
+    day: 'numeric',
+    month: 'short',
+    timeZone: 'America/Chicago',
+    year: 'numeric',
+  }).format(date);
 }
 
 async function createInventoryItem(formData: FormData) {
@@ -80,7 +98,7 @@ async function receiveInventory(formData: FormData) {
 
   const { data: item } = await supabase
     .from('inventory_items')
-    .select('id,base_unit,item_type')
+    .select('id,name,sku,base_unit,item_type')
     .eq('id', itemId)
     .single();
 
@@ -88,8 +106,11 @@ async function receiveInventory(formData: FormData) {
 
   const landedUnitCostCents = ((quantity * itemUnitCostCents) + freightCents + otherCostCents) / quantity;
   const receivedAt = String(formData.get('received_at') ?? '') || new Date().toISOString();
-  const lotCode = String(formData.get('lot_code') ?? '').trim() || `LOT-${new Date().toISOString().slice(0, 10)}`;
-  const notes = String(formData.get('notes') ?? '').trim() || null;
+  const lotCode = buildInventoryLotCode({ item, receivedAt, source: 'purchase' });
+  const notes = receiptNotesWithSupplierReference({
+    notes: String(formData.get('notes') ?? ''),
+    supplierReference: String(formData.get('supplier_reference') ?? ''),
+  });
 
   const { data: lot, error: lotError } = await supabase
     .from('inventory_lots')
@@ -156,7 +177,7 @@ async function adjustInventory(formData: FormData) {
 
   const { data: item } = await supabase
     .from('inventory_items')
-    .select('id,base_unit,item_type')
+    .select('id,name,sku,base_unit,item_type')
     .eq('id', itemId)
     .single();
 
@@ -172,7 +193,11 @@ async function adjustInventory(formData: FormData) {
       .from('inventory_lots')
       .insert({
         inventory_item_id: itemId,
-        lot_code: `ADJ-${new Date().toISOString().slice(0, 10)}`,
+        lot_code: buildInventoryLotCode({
+          item,
+          receivedAt: new Date().toISOString(),
+          source: 'adjustment',
+        }),
         source_type: 'adjustment',
         quantity_received: signedQuantity,
         quantity_remaining: signedQuantity,
@@ -256,17 +281,46 @@ async function recordExpense(formData: FormData) {
   redirect(receivingHref(error ? 'expense_error' : 'expense_saved'));
 }
 
+async function reverseInventoryReceipt(formData: FormData) {
+  'use server';
+  const current = await requireAdminSectionEdit('receiving', receivingHref('receipt_reverse_denied'));
+  if (!current.isOwner) redirect(receivingHref('receipt_reverse_denied'));
+
+  const receiptId = String(formData.get('receipt_id') ?? '').trim();
+  const reason = String(formData.get('reason') ?? '').trim();
+
+  if (!receiptId || !reason) redirect(receivingHref('receipt_reverse_missing'));
+
+  const supabase = await createClient();
+  const { error } = await supabase.rpc('reverse_inventory_receipt', {
+    p_receipt_id: receiptId,
+    p_reason: reason,
+  });
+
+  if (error) {
+    const message = String(error.message ?? '').toLowerCase();
+    if (message.includes('superadmin')) redirect(receivingHref('receipt_reverse_denied'));
+    if (message.includes('consumed')) redirect(receivingHref('receipt_reverse_consumed'));
+    if (message.includes('already reversed')) redirect(receivingHref('receipt_reverse_already'));
+    if (message.includes('required') || message.includes('reason')) redirect(receivingHref('receipt_reverse_missing'));
+    redirect(receivingHref('receipt_reverse_error'));
+  }
+
+  redirect(receivingHref('receipt_reversed'));
+}
+
 export default async function ReceivingPage({
   searchParams,
 }: {
   searchParams?: Record<string, string | string[] | undefined>;
 }) {
-  await requireAdminSectionView('receiving');
+  const current = await requireAdminSectionView('receiving');
+  const canReverseReceipts = current.isOwner;
   const supabase = await createClient();
   const toast = typeof searchParams?.toast === 'string' ? searchParams.toast : '';
   const [{ data: items }, { data: receipts }, { data: expenses }] = await Promise.all([
     supabase.from('inventory_items').select('id,name,sku,item_type,base_unit,active').neq('item_type', 'finished_good').eq('active', true).order('name', { ascending: true }),
-    supabase.from('inventory_receipts').select('id,inventory_item_id,quantity,unit,landed_unit_cost_cents,received_at,supplier').order('received_at', { ascending: false }).limit(8),
+    supabase.from('inventory_receipts').select('id,inventory_item_id,quantity,unit,landed_unit_cost_cents,received_at,supplier,reversed_at,reversal_reason,inventory_lots(id,lot_code,quantity_remaining)').order('received_at', { ascending: false }).limit(8),
     supabase.from('non_inventory_expenses').select('id,expense_type,vendor,amount_cents,spent_at').order('spent_at', { ascending: false }).limit(8),
   ]);
   const receivableItems = (items ?? []) as InventoryItemRow[];
@@ -283,6 +337,12 @@ export default async function ReceivingPage({
       {toast === 'expense_saved' ? <StatusToast message="Non-inventory expense recorded." tone="success" /> : null}
       {toast === 'expense_error' ? <StatusToast message="Unable to record that expense." tone="error" /> : null}
       {toast === 'admin_write_denied' ? <StatusToast message="Only superadmins can change admin data." tone="error" /> : null}
+      {toast === 'receipt_reversed' ? <StatusToast message="Receipt reversed. Re-enter it with the corrected cost when ready." tone="success" /> : null}
+      {toast === 'receipt_reverse_denied' ? <StatusToast message="Only superadmins can reverse receiving receipts." tone="error" /> : null}
+      {toast === 'receipt_reverse_consumed' ? <StatusToast message="That receipt cannot be reversed because the full received quantity is no longer available." tone="error" /> : null}
+      {toast === 'receipt_reverse_already' ? <StatusToast message="That receipt was already reversed." tone="error" /> : null}
+      {toast === 'receipt_reverse_missing' ? <StatusToast message="Choose a receipt and enter a reversal reason." tone="error" /> : null}
+      {toast === 'receipt_reverse_error' ? <StatusToast message="Unable to reverse that receipt." tone="error" /> : null}
 
       <section className="panel">
         <span className="eyebrow">Receiving</span>
@@ -314,7 +374,7 @@ export default async function ReceivingPage({
           <div>
             <span className="eyebrow">Receive</span>
             <h2 className="mt-3 text-2xl font-semibold tracking-tight text-slate-950">Receive purchased inventory</h2>
-            <p className="mt-2 text-sm text-slate-500">Creates a lot, updates stock, and calculates landed unit cost.</p>
+            <p className="mt-2 text-sm text-slate-500">Creates a clean internal lot code automatically, updates stock, and calculates landed unit cost.</p>
           </div>
           <label className="space-y-2 text-sm font-medium text-slate-700">
             Item received
@@ -324,7 +384,7 @@ export default async function ReceivingPage({
             </select>
           </label>
           <div className="grid gap-3 sm:grid-cols-2">
-            <input className="input" name="lot_code" placeholder="Lot or batch code" />
+            <input className="input" name="supplier_reference" placeholder="Supplier batch or PO reference" />
             <input className="input" name="received_at" type="date" defaultValue={new Date().toISOString().slice(0, 10)} />
           </div>
           <input className="input" name="supplier" placeholder="Supplier" />
@@ -397,12 +457,43 @@ export default async function ReceivingPage({
           <div className="space-y-3">
             {(receipts ?? []).map((receipt: any) => {
               const item = itemById.get(receipt.inventory_item_id);
+              const lot = relatedOne(receipt.inventory_lots);
+              const lotRemaining = normalizeInventoryNumber(lot?.quantity_remaining);
+              const receiptQuantity = normalizeInventoryNumber(receipt.quantity);
+              const isReversed = Boolean(receipt.reversed_at);
+              const canReverseThisReceipt = canReverseReceipts && !isReversed && lot?.id && lotRemaining >= receiptQuantity;
               return (
                 <div key={receipt.id} className="rounded-2xl border border-slate-200 bg-white/70 p-3">
-                  <p className="font-semibold text-slate-950">{itemDisplayName(item)}</p>
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                    <div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <p className="font-semibold text-slate-950">{itemDisplayName(item)}</p>
+                        {isReversed ? (
+                          <span className="rounded-full px-2.5 py-1 text-xs font-semibold text-rose-700 ring-1 ring-rose-100">Reversed</span>
+                        ) : null}
+                      </div>
+                      {receipt.received_at ? <p className="mt-1 text-xs font-medium text-slate-500">Received {formatReceiptDate(receipt.received_at)}</p> : null}
+                    </div>
+                    {receipt.supplier ? <p className="text-sm text-slate-500">{receipt.supplier}</p> : null}
+                  </div>
                   <p className="mt-1 text-sm text-slate-500">
                     {formatInventoryQuantity(receipt.quantity, receipt.unit)} - {usd(Math.round(normalizeInventoryNumber(receipt.landed_unit_cost_cents)))} / {receipt.unit}
                   </p>
+                  {lot?.lot_code ? <p className="mt-1 font-mono text-xs font-semibold text-slate-500">{lot.lot_code}</p> : null}
+                  {isReversed && receipt.reversal_reason ? <p className="mt-2 text-xs text-slate-500">Reason: {receipt.reversal_reason}</p> : null}
+                  {canReverseReceipts && !isReversed && !canReverseThisReceipt ? (
+                    <p className="mt-2 text-xs text-slate-500">Cannot reverse unless the full received quantity is still available.</p>
+                  ) : null}
+                  {canReverseThisReceipt ? (
+                    <form action={reverseInventoryReceipt} className="mt-3 grid gap-3 border-t border-slate-100 pt-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-end">
+                      <input name="receipt_id" type="hidden" value={receipt.id} />
+                      <label className="space-y-1 text-sm font-medium text-slate-700">
+                        Reversal reason
+                        <input className="input" name="reason" required placeholder="Cost entered wrong" />
+                      </label>
+                      <PendingSubmitButton className="btn-secondary" label="Reverse Receipt" pendingLabel="Reversing..." />
+                    </form>
+                  ) : null}
                 </div>
               );
             })}
