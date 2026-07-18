@@ -3,7 +3,7 @@ import { redirect } from 'next/navigation';
 import PendingSubmitButton from '@/components/pending-submit-button';
 import { requireAdminSectionView } from '@/lib/admin-permissions';
 import { requireAdminWriteAccess } from '@/lib/admin-write-access';
-import { formatNextRecurringOrderDate, isRecurringFrequency, RECURRING_FREQUENCY_OPTIONS } from '@/lib/recurring';
+import { isRecurringFrequency, RECURRING_FREQUENCY_OPTIONS } from '@/lib/recurring';
 import { createClient } from '@/lib/supabase/server';
 
 const adminDateFormatter = new Intl.DateTimeFormat('en-US', {
@@ -53,7 +53,7 @@ export default async function AdminRecurringOrdersPage({ searchParams }: { searc
 
   let recurringQuery = supabase
     .from('recurring_orders')
-    .select('id,user_id,center_id,frequency,status,amount_cents,created_at,last_generated_at,profiles(email),centers(name)')
+    .select('id,user_id,center_id,frequency,status,amount_cents,created_at,last_generated_at,next_run_at,profiles(email),centers(name)')
     .neq('status', 'canceled')
     .order('created_at', { ascending: false });
 
@@ -139,7 +139,7 @@ export default async function AdminRecurringOrdersPage({ searchParams }: { searc
               </div>
               <div>
                 <div className="text-slate-500">Next order date</div>
-                <div>{formatNextRecurringOrderDate(order.frequency, order.last_generated_at ?? order.created_at)}</div>
+                <div>{formatAdminDate(order.next_run_at)}</div>
               </div>
               <div>
                 <div className="text-slate-500">Last generated</div>
