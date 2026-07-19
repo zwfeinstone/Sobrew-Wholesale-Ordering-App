@@ -5,7 +5,7 @@ import ConfirmSubmitButton from '@/components/confirm-submit-button';
 import { OrderStatusBadge } from '@/components/order-status';
 import PendingSubmitButton from '@/components/pending-submit-button';
 import StatusToast from '@/components/status-toast';
-import { requireAdminSectionView } from '@/lib/admin-permissions';
+import { requireAdminSectionEdit, requireAdminSectionView } from '@/lib/admin-permissions';
 import { requireAdminWriteAccess } from '@/lib/admin-write-access';
 import { trackServerProductEvent } from '@/lib/analytics-server';
 import { createClient } from '@/lib/supabase/server';
@@ -87,7 +87,8 @@ async function archiveOrder(formData: FormData) {
   const id = String(formData.get('id') ?? '');
   const statusFilter = String(formData.get('statusFilter') ?? '');
   const qFilter = String(formData.get('qFilter') ?? '');
-  await requireAdminWriteAccess(ordersToastHref(statusFilter, 'admin_write_denied', qFilter), 'orders');
+  const current = await requireAdminSectionEdit('orders', ordersToastHref(statusFilter, 'admin_write_denied', qFilter));
+  if (!current.isOwner) redirect(ordersToastHref(statusFilter, 'archive_denied', qFilter));
 
   const supabase = await createClient();
   if (!id) redirect(ordersToastHref(statusFilter, 'archive_error', qFilter));
@@ -107,7 +108,8 @@ async function archiveSelectedOrders(formData: FormData) {
   const statusFilter = String(formData.get('statusFilter') ?? '');
   const qFilter = String(formData.get('qFilter') ?? '');
   const ids = formData.getAll('order_id').map(String).filter(Boolean);
-  await requireAdminWriteAccess(ordersToastHref(statusFilter, 'admin_write_denied', qFilter), 'orders');
+  const current = await requireAdminSectionEdit('orders', ordersToastHref(statusFilter, 'admin_write_denied', qFilter));
+  if (!current.isOwner) redirect(ordersToastHref(statusFilter, 'archive_denied', qFilter));
 
   const supabase = await createClient();
 
@@ -155,7 +157,8 @@ async function deleteOrder(formData: FormData) {
 }
 
 export default async function AdminOrdersPage({ searchParams }: { searchParams: Record<string, string | string[] | undefined> }) {
-  await requireAdminSectionView('orders');
+  const current = await requireAdminSectionView('orders');
+  const canArchiveOrders = current.isOwner;
   const supabase = await createClient();
   const statusParam = typeof searchParams.status === 'string' ? searchParams.status : '';
   const status = isOrderStatus(statusParam) ? statusParam : '';
@@ -227,6 +230,7 @@ export default async function AdminOrdersPage({ searchParams }: { searchParams: 
       {toast === 'ship_on_detail_required' ? <StatusToast message="Open the order detail page to enter shipping cost before marking it shipped." tone="error" /> : null}
       {toast === 'archive_success' ? <StatusToast message="Order archive updated." tone="success" /> : null}
       {toast === 'archive_error' ? <StatusToast message="Unable to archive the selected order(s)." tone="error" /> : null}
+      {toast === 'archive_denied' ? <StatusToast message="Only superadmins can archive orders." tone="error" /> : null}
       {toast === 'delete_success' ? <StatusToast message="Order deleted." tone="success" /> : null}
       {toast === 'delete_success_with_recurring' ? <StatusToast message="Order and linked recurring schedule deleted." tone="success" /> : null}
       {toast === 'delete_error' ? <StatusToast message="Unable to delete this order." tone="error" /> : null}
@@ -290,18 +294,20 @@ export default async function AdminOrdersPage({ searchParams }: { searchParams: 
         ) : null}
       </section>
 
-      <form id="archive-orders-form" action={archiveSelectedOrders} className="card grid gap-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
-        <input type="hidden" name="statusFilter" value={status} />
-        <input type="hidden" name="qFilter" value={q} />
-        <div>
-          <p className="text-sm font-semibold text-slate-950">Bulk archive</p>
-          <p className="mt-1 text-sm text-slate-500">Select completed or in-process rows, then archive them together.</p>
-        </div>
-        <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row sm:flex-wrap sm:items-center sm:justify-end">
-          <AdminOrderBulkControls />
-          <PendingSubmitButton className="btn-primary w-full sm:w-auto" label="Archive selected" pendingLabel="Archiving..." />
-        </div>
-      </form>
+      {canArchiveOrders ? (
+        <form id="archive-orders-form" action={archiveSelectedOrders} className="card grid gap-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
+          <input type="hidden" name="statusFilter" value={status} />
+          <input type="hidden" name="qFilter" value={q} />
+          <div>
+            <p className="text-sm font-semibold text-slate-950">Bulk archive</p>
+            <p className="mt-1 text-sm text-slate-500">Select completed or in-process rows, then archive them together.</p>
+          </div>
+          <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row sm:flex-wrap sm:items-center sm:justify-end">
+            <AdminOrderBulkControls />
+            <PendingSubmitButton className="btn-primary w-full sm:w-auto" label="Archive selected" pendingLabel="Archiving..." />
+          </div>
+        </form>
+      ) : null}
 
       <section className="space-y-3">
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
@@ -329,16 +335,18 @@ export default async function AdminOrdersPage({ searchParams }: { searchParams: 
 
             return (
               <div key={order.id} className="card grid gap-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
-                <div className="grid gap-4 sm:grid-cols-[auto_minmax(0,1fr)] sm:items-start">
-                  <input
-                    form="archive-orders-form"
-                    data-archivable-order-checkbox
-                    className="mt-1 h-4 w-4 rounded border-slate-300"
-                    disabled={!['Processing', 'Shipped'].includes(order.status)}
-                    name="order_id"
-                    type="checkbox"
-                    value={order.id}
-                  />
+                <div className={`grid gap-4 ${canArchiveOrders ? 'sm:grid-cols-[auto_minmax(0,1fr)]' : ''} sm:items-start`}>
+                  {canArchiveOrders ? (
+                    <input
+                      form="archive-orders-form"
+                      data-archivable-order-checkbox
+                      className="mt-1 h-4 w-4 rounded border-slate-300"
+                      disabled={!['Processing', 'Shipped'].includes(order.status)}
+                      name="order_id"
+                      type="checkbox"
+                      value={order.id}
+                    />
+                  ) : null}
                   <Link href={`/admin/orders/${order.id}`} className="block min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
                       <OrderStatusBadge status={order.status} />
@@ -371,7 +379,7 @@ export default async function AdminOrdersPage({ searchParams }: { searchParams: 
                           <PendingSubmitButton className="btn-secondary w-full" label="Save status" pendingLabel="Saving..." />
                         </form>
                       ) : null}
-                      {['Processing', 'Shipped'].includes(order.status) ? (
+                      {canArchiveOrders && ['Processing', 'Shipped'].includes(order.status) ? (
                         <form action={archiveOrder}>
                           <input type="hidden" name="id" value={order.id} />
                           <input type="hidden" name="statusFilter" value={status} />

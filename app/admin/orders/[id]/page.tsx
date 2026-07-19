@@ -6,7 +6,7 @@ import { ProductBoxUsageFields, type ProductBoxInventoryOption, type ProductBoxR
 import EasyPostPackageFields, { type EasyPostPackageInput } from '@/components/easypost-package-fields';
 import ShipOrderSubmitButton from '@/components/ship-order-submit-button';
 import StatusToast from '@/components/status-toast';
-import { requireAdminSectionView } from '@/lib/admin-permissions';
+import { requireAdminSectionEdit, requireAdminSectionView } from '@/lib/admin-permissions';
 import { requireAdminWriteAccess } from '@/lib/admin-write-access';
 import { getCenterLoginEmails } from '@/lib/center-logins';
 import { snapshotOrderCommissionForShipment } from '@/lib/commissions';
@@ -658,7 +658,8 @@ async function voidEasyPostLabels(formData: FormData) {
 async function archiveOrder(formData: FormData) {
   'use server';
   const id = String(formData.get('id') ?? '');
-  await requireAdminWriteAccess(id ? `/admin/orders/${id}?toast=admin_write_denied` : '/admin/orders?toast=admin_write_denied', 'orders');
+  const current = await requireAdminSectionEdit('orders', id ? `/admin/orders/${id}?toast=admin_write_denied` : '/admin/orders?toast=admin_write_denied');
+  if (!current.isOwner) redirect(id ? `/admin/orders/${id}?toast=archive_denied` : '/admin/orders?toast=archive_denied');
 
   const supabase = await createClient();
   if (!id) redirect('/admin/orders?toast=archive_error');
@@ -700,7 +701,8 @@ export default async function AdminOrderDetail({
   params: { id: string };
   searchParams: Record<string, string | string[] | undefined>;
 }) {
-  await requireAdminSectionView('orders');
+  const current = await requireAdminSectionView('orders');
+  const canArchiveOrders = current.isOwner;
   const supabase = await createClient();
   const toast = typeof searchParams.toast === 'string' ? searchParams.toast : '';
   const { data: order } = await supabase.from('orders').select('*,profiles(email,full_name),centers(name)').eq('id', params.id).single();
@@ -817,6 +819,7 @@ export default async function AdminOrderDetail({
       {toast === 'easypost_void_error' ? <StatusToast message="Unable to void EasyPost labels." tone="error" /> : null}
       {toast === 'archive_success' ? <StatusToast message="Order archived." tone="success" /> : null}
       {toast === 'archive_error' ? <StatusToast message="Unable to archive this order." tone="error" /> : null}
+      {toast === 'archive_denied' ? <StatusToast message="Only superadmins can archive orders." tone="error" /> : null}
       {toast === 'delete_error' ? <StatusToast message="Unable to delete this order." tone="error" /> : null}
       {toast === 'admin_write_denied' ? <StatusToast message="You do not have permission to edit orders." tone="error" /> : null}
       <section className="panel">
@@ -850,7 +853,7 @@ export default async function AdminOrderDetail({
           <div className="text-sm font-semibold text-slate-700">This order was shipped {formatOrderTimestamp(order.shipped_at)}.</div>
         )}
         <div className="flex w-full flex-col gap-3 md:w-auto md:flex-row md:flex-wrap md:justify-end">
-          {!order.archived_at && ['Processing', 'Shipped'].includes(order.status) ? (
+          {canArchiveOrders && !order.archived_at && ['Processing', 'Shipped'].includes(order.status) ? (
             <form action={archiveOrder} className="w-full md:w-auto">
               <input type="hidden" name="id" value={order.id} />
               <PendingSubmitButton className="btn-secondary w-full md:w-auto" label="Archive order" pendingLabel="Archiving..." />
