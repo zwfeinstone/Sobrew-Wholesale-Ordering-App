@@ -5,6 +5,11 @@ import PendingSubmitButton from '@/components/pending-submit-button';
 import ProspectingBulkSelectionControls from '@/components/prospecting-bulk-selection-controls';
 import StatusToast from '@/components/status-toast';
 import { adminCanEdit, requireAdminSectionEdit, requireAdminSectionView } from '@/lib/admin-permissions';
+import {
+  PIPELINE_REVIEW_STAGES,
+  summarizePipelineReview,
+  type PipelineReviewLeadSummary,
+} from '@/lib/prospecting-pipeline-review';
 import { createClient } from '@/lib/supabase/server';
 import {
   ACTIVE_PROSPECTING_STAGES,
@@ -160,6 +165,17 @@ type RecycleTouchRow = {
   lead_id: string;
 };
 
+type PipelineReviewTouchRow = {
+  activity_type: string | null;
+  created_at: string | null;
+  lead_id: string | null;
+};
+
+type PipelineReviewListLeadRow = {
+  lead_id: string;
+  prospecting_lists?: { name: string | null; source: string | null } | { name: string | null; source: string | null }[] | null;
+};
+
 type LeadFilterState = {
   bucket: Bucket;
   isOwner: boolean;
@@ -214,6 +230,10 @@ function prospectingHref(params: {
   rep?: string;
   recyclePage?: number | string;
   recyclePageSize?: number | string;
+  reviewPage?: number | string;
+  reviewPageSize?: number | string;
+  reviewRep?: string;
+  reviewStage?: string;
   stage?: string;
   state?: string;
   toast?: string;
@@ -224,6 +244,10 @@ function prospectingHref(params: {
     if (key === 'pageSize') query.set('page_size', String(value));
     else if (key === 'recyclePage') query.set('recycle_page', String(value));
     else if (key === 'recyclePageSize') query.set('recycle_page_size', String(value));
+    else if (key === 'reviewPage') query.set('review_page', String(value));
+    else if (key === 'reviewPageSize') query.set('review_page_size', String(value));
+    else if (key === 'reviewRep') query.set('review_rep', String(value));
+    else if (key === 'reviewStage') query.set('review_stage', String(value));
     else query.set(key, String(value));
   }
   const qs = query.toString();
@@ -288,6 +312,12 @@ function importListName(row: ImportRow) {
   return relatedOne(row.prospecting_lists)?.name || 'Lead list';
 }
 
+function pipelineReviewListLabel(row: PipelineReviewListLeadRow) {
+  const list = relatedOne(row.prospecting_lists);
+  if (!list) return 'Lead list';
+  return [list.name, list.source].filter(Boolean).join(' / ') || 'Lead list';
+}
+
 function salesRepOptionRows(profiles: ProfileRow[]) {
   return profiles
     .filter((profile) => profile.is_active !== false)
@@ -297,6 +327,17 @@ function salesRepOptionRows(profiles: ProfileRow[]) {
 function safeDateInput(value: FormDataEntryValue | null) {
   const text = String(value ?? '').trim();
   return /^\d{4}-\d{2}-\d{2}$/.test(text) ? text : null;
+}
+
+function pipelineReviewUrgencyScore(summary: PipelineReviewLeadSummary<LeadRow>) {
+  const followUpDate = String(summary.lead.next_follow_up_at ?? '').slice(0, 10);
+  const today = new Date().toISOString().slice(0, 10);
+  if (followUpDate && followUpDate < today) return 0;
+  if (followUpDate && followUpDate === today) return 1;
+  if (summary.totalTouches === 0) return 2;
+  if (summary.daysSinceLastTouch !== null && summary.daysSinceLastTouch >= 14) return 3;
+  if (summary.lead.priority === 'high') return 4;
+  return 5;
 }
 
 function leadPayloadFromCsv(row: Record<string, string>, createdBy: string, salesRepId: string | null) {
@@ -457,6 +498,81 @@ async function fetchFilteredLeadIds(
     if (rows.length < batchSize) break;
   }
   return { error: null, ids };
+}
+
+async function fetchPipelineReviewLeads(supabase: Awaited<ReturnType<typeof createClient>>, repId: string) {
+  const leads: LeadRow[] = [];
+  if (!repId) return { error: null, leads };
+
+  const batchSize = 1000;
+  while (true) {
+    const { data, error } = await supabase
+      .from('prospecting_leads')
+      .select('*')
+      .is('archived_at', null)
+      .eq('assigned_profile_id', repId)
+      .in('stage', [...PIPELINE_REVIEW_STAGES])
+      .order('stage', { ascending: true })
+      .order('next_follow_up_at', { ascending: true })
+      .order('updated_at', { ascending: false })
+      .range(leads.length, leads.length + batchSize - 1);
+    if (error) return { error, leads };
+
+    const rows = (data ?? []) as unknown as LeadRow[];
+    leads.push(...rows);
+    if (rows.length < batchSize) break;
+  }
+
+  return { error: null, leads };
+}
+
+async function fetchPipelineReviewContacts(supabase: Awaited<ReturnType<typeof createClient>>, leadIds: string[]) {
+  const contacts: ContactSummary[] = [];
+  for (const batch of chunkArray(leadIds, 500)) {
+    const { data, error } = await supabase.from('prospecting_contacts').select('lead_id,full_name,email,phone').in('lead_id', batch);
+    if (error) return { contacts, error };
+    contacts.push(...((data ?? []) as ContactSummary[]));
+  }
+  return { contacts, error: null };
+}
+
+async function fetchPipelineReviewListRows(supabase: Awaited<ReturnType<typeof createClient>>, leadIds: string[]) {
+  const listRows: PipelineReviewListLeadRow[] = [];
+  for (const batch of chunkArray(leadIds, 500)) {
+    const { data, error } = await supabase
+      .from('prospecting_list_leads')
+      .select('lead_id,prospecting_lists(name,source)')
+      .in('lead_id', batch);
+    if (error) return { error, listRows };
+    listRows.push(...((data ?? []) as unknown as PipelineReviewListLeadRow[]));
+  }
+  return { error: null, listRows };
+}
+
+async function fetchPipelineReviewTouches(supabase: Awaited<ReturnType<typeof createClient>>, leadIds: string[]) {
+  const touches: PipelineReviewTouchRow[] = [];
+  const batchSize = 1000;
+
+  for (const leadBatch of chunkArray(leadIds, 400)) {
+    let offset = 0;
+    while (true) {
+      const { data, error } = await supabase
+        .from('prospecting_activities')
+        .select('lead_id,activity_type,created_at')
+        .in('lead_id', leadBatch)
+        .in('activity_type', ['call', 'email'])
+        .order('created_at', { ascending: false })
+        .range(offset, offset + batchSize - 1);
+      if (error) return { error, touches };
+
+      const rows = (data ?? []) as PipelineReviewTouchRow[];
+      touches.push(...rows);
+      if (rows.length < batchSize) break;
+      offset += batchSize;
+    }
+  }
+
+  return { error: null, touches };
 }
 
 async function updateLeadAssignments({
@@ -1126,8 +1242,13 @@ export default async function ProspectingAdminPage({ searchParams }: { searchPar
   const pageSize = normalizePageSize(searchParams?.page_size);
   const recyclePage = normalizePageNumber(searchParams?.recycle_page);
   const recyclePageSize = normalizePageSize(searchParams?.recycle_page_size);
+  const requestedReviewRepId = stringParam(searchParams?.review_rep);
+  const requestedReviewStage = stringParam(searchParams?.review_stage);
+  const reviewPage = normalizePageNumber(searchParams?.review_page);
+  const reviewPageSize = normalizePageSize(searchParams?.review_page_size);
   const { from, to } = paginationRange(page, pageSize);
   const { from: recycleFrom, to: recycleTo } = paginationRange(recyclePage, recyclePageSize);
+  const { from: reviewFrom, to: reviewTo } = paginationRange(reviewPage, reviewPageSize);
   const q = stringParam(searchParams?.q).trim();
   const toast = stringParam(searchParams?.toast);
 
@@ -1142,6 +1263,9 @@ export default async function ProspectingAdminPage({ searchParams }: { searchPar
   const selectedStage = isMaintenanceBucket(bucket) ? '' : PROSPECTING_STAGES.some((stage) => stage.id === requestedStage) ? requestedStage as ProspectingStage : '';
   const listRows = (listsData ?? []) as ListRow[];
   const selectedListId = listRows.some((list) => list.id === requestedListId) ? requestedListId : '';
+  const selectedReviewRepId = salesRepsRows.some((rep) => rep.id === requestedReviewRepId) ? requestedReviewRepId : salesRepsRows[0]?.id ?? '';
+  const selectedReviewStage = PIPELINE_REVIEW_STAGES.some((stage) => stage === requestedReviewStage) ? requestedReviewStage as ProspectingStage : '';
+  const selectedReviewRep = selectedReviewRepId ? salesRepsRows.find((rep) => rep.id === selectedReviewRepId) ?? null : null;
 
   const filters: LeadFilterState = {
     bucket,
@@ -1267,6 +1391,57 @@ export default async function ProspectingAdminPage({ searchParams }: { searchPar
     return summary;
   }, { calls: 0, emails: 0, interested: 0, samples: 0 });
 
+  const pipelineReviewLeadResult = await fetchPipelineReviewLeads(supabase, selectedReviewRepId);
+  const pipelineReviewLeadRows = pipelineReviewLeadResult.leads;
+  const pipelineReviewLeadIds = pipelineReviewLeadRows.map((lead) => lead.id);
+  const [
+    pipelineReviewContactsResult,
+    pipelineReviewListRowsResult,
+    pipelineReviewTouchesResult,
+  ] = pipelineReviewLeadIds.length
+    ? await Promise.all([
+        fetchPipelineReviewContacts(supabase, pipelineReviewLeadIds),
+        fetchPipelineReviewListRows(supabase, pipelineReviewLeadIds),
+        fetchPipelineReviewTouches(supabase, pipelineReviewLeadIds),
+      ])
+    : [
+        { contacts: [], error: null },
+        { listRows: [], error: null },
+        { touches: [], error: null },
+      ];
+  const pipelineReview = summarizePipelineReview({
+    contacts: pipelineReviewContactsResult.contacts,
+    leads: pipelineReviewLeadRows,
+    touches: pipelineReviewTouchesResult.touches,
+  });
+  const pipelineReviewErrors = [
+    pipelineReviewLeadResult.error,
+    pipelineReviewContactsResult.error,
+    pipelineReviewListRowsResult.error,
+    pipelineReviewTouchesResult.error,
+  ].filter(Boolean);
+  const reviewListLabelsByLead = new Map<string, string[]>();
+  for (const row of pipelineReviewListRowsResult.listRows) {
+    reviewListLabelsByLead.set(row.lead_id, [...(reviewListLabelsByLead.get(row.lead_id) ?? []), pipelineReviewListLabel(row)]);
+  }
+  const pipelineReviewRows = pipelineReview.leadSummaries
+    .filter((summary) => !selectedReviewStage || normalizeStage(summary.lead.stage) === selectedReviewStage)
+    .sort((a, b) => {
+      const stageDiff = PIPELINE_REVIEW_STAGES.indexOf(normalizeStage(a.lead.stage)) - PIPELINE_REVIEW_STAGES.indexOf(normalizeStage(b.lead.stage));
+      if (stageDiff !== 0) return stageDiff;
+      const urgencyDiff = pipelineReviewUrgencyScore(a) - pipelineReviewUrgencyScore(b);
+      if (urgencyDiff !== 0) return urgencyDiff;
+      const aFollowUp = a.lead.next_follow_up_at ? Date.parse(a.lead.next_follow_up_at) : Number.MAX_SAFE_INTEGER;
+      const bFollowUp = b.lead.next_follow_up_at ? Date.parse(b.lead.next_follow_up_at) : Number.MAX_SAFE_INTEGER;
+      if (aFollowUp !== bFollowUp) return aFollowUp - bFollowUp;
+      return String(a.lead.company_name).localeCompare(String(b.lead.company_name));
+    });
+  const reviewTotalRows = pipelineReviewRows.length;
+  const reviewTotalPages = totalPageCount(reviewTotalRows, reviewPageSize);
+  const reviewDisplayStart = reviewTotalRows ? reviewFrom + 1 : 0;
+  const reviewDisplayEnd = Math.min(reviewTo + 1, reviewTotalRows);
+  const visiblePipelineReviewRows = pipelineReviewRows.slice(reviewFrom, reviewTo + 1);
+
   const recycleActivitiesResult = isOwner
     ? await supabase
         .from('prospecting_activities')
@@ -1389,6 +1564,271 @@ export default async function ProspectingAdminPage({ searchParams }: { searchPar
         <StatCard label="Emails Sent" value={reportMetrics.emails.toLocaleString()} detail="Email activities logged on the visible lead page." />
         <StatCard label="Interested Results" value={reportMetrics.interested.toLocaleString()} detail="Activities where the canned result indicated interest." />
         <StatCard label="Sample Requests" value={reportMetrics.samples.toLocaleString()} detail="Activities where a sample was requested." />
+      </section>
+
+      <section className="space-y-4">
+        <div className="card space-y-4">
+          <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Pipeline Review</p>
+              <h2 className="mt-2 text-xl font-semibold tracking-tight text-slate-950">
+                {selectedReviewRep ? `${profileLabel(selectedReviewRep)} pipeline` : 'Rep pipeline'}
+              </h2>
+              <p className="mt-1 max-w-3xl text-sm leading-6 text-slate-500">
+                Assigned open leads by stage, with call and email touches counted across the full rep pipeline.
+              </p>
+            </div>
+            <form className="grid gap-3 sm:grid-cols-[minmax(14rem,1fr)_minmax(12rem,0.8fr)_8rem_auto] sm:items-end" action={PROSPECTING_ADMIN_PATH}>
+              <input type="hidden" name="bucket" value={bucket} />
+              <input type="hidden" name="list" value={selectedListId} />
+              <input type="hidden" name="rep" value={selectedRepId} />
+              <input type="hidden" name="priority" value={selectedPriority} />
+              <input type="hidden" name="stage" value={selectedStage} />
+              <input type="hidden" name="state" value={selectedStateKey} />
+              <input type="hidden" name="q" value={q} />
+              <input type="hidden" name="page" value={page} />
+              <input type="hidden" name="page_size" value={pageSize} />
+              <input type="hidden" name="recycle_page" value={recyclePage} />
+              <input type="hidden" name="recycle_page_size" value={recyclePageSize} />
+              <input type="hidden" name="review_page" value="1" />
+              <label className="text-sm font-semibold text-slate-700">
+                Sales rep
+                <select className="input mt-2" name="review_rep" defaultValue={selectedReviewRepId} required>
+                  {!salesRepsRows.length ? <option value="">No reps available</option> : null}
+                  {salesRepsRows.map((rep) => <option key={rep.id} value={rep.id}>{profileLabel(rep)}</option>)}
+                </select>
+              </label>
+              <label className="text-sm font-semibold text-slate-700">
+                Stage
+                <select className="input mt-2" name="review_stage" defaultValue={selectedReviewStage}>
+                  <option value="">All review stages</option>
+                  {PIPELINE_REVIEW_STAGES.map((stage) => <option key={stage} value={stage}>{stageLabel(stage)}</option>)}
+                </select>
+              </label>
+              <label className="text-sm font-semibold text-slate-700">
+                Rows
+                <select className="input mt-2" name="review_page_size" defaultValue={reviewPageSize}>
+                  {PROSPECTING_PAGE_SIZES.map((size) => <option key={size} value={size}>{size}</option>)}
+                </select>
+              </label>
+              <button className="btn-primary h-11" type="submit">Review</button>
+            </form>
+          </div>
+          {pipelineReviewErrors.length ? (
+            <StatusToast message="Pipeline review is waiting on the latest prospecting data to load." tone="error" />
+          ) : null}
+        </div>
+
+        <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+          <StatCard label="Assigned Open" value={pipelineReview.metrics.totalOpen.toLocaleString()} detail="Assigned, unarchived leads in review stages." />
+          <StatCard label="Untouched" value={pipelineReview.metrics.untouched.toLocaleString()} detail="No logged call or email yet." />
+          <StatCard label="Stale 14+ Days" value={pipelineReview.metrics.stale14Days.toLocaleString()} detail="Untouched or no call/email in 14+ days." />
+          <StatCard label="Overdue Follow-Ups" value={pipelineReview.metrics.overdueFollowUps.toLocaleString()} detail="Next follow-up date is before today." />
+          <StatCard label="Due Today" value={pipelineReview.metrics.dueToday.toLocaleString()} detail="Next follow-up date is today." />
+          <StatCard label="High Priority" value={pipelineReview.metrics.highPriority.toLocaleString()} detail="Assigned open leads marked high priority." />
+          <StatCard label="Handoff / Action" value={pipelineReview.metrics.handoffOrActionNeeded.toLocaleString()} detail="Interested or samples waiting on follow-up or HubSpot export." />
+          <StatCard label="Data Gaps" value={pipelineReview.metrics.dataGaps.toLocaleString()} detail="Missing phone, email, state, or contact." />
+        </section>
+
+        <div className="card space-y-4">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+            <div>
+              <h3 className="text-lg font-semibold tracking-tight text-slate-950">Stage review</h3>
+              <p className="mt-1 text-sm text-slate-500">
+                Showing {reviewDisplayStart.toLocaleString()}-{reviewDisplayEnd.toLocaleString()} of {reviewTotalRows.toLocaleString()} leads
+              </p>
+            </div>
+            <div className="flex gap-2">
+              <Link
+                className={`btn-secondary inline-flex ${reviewPage <= 1 ? 'pointer-events-none opacity-50' : ''}`}
+                href={prospectingHref({
+                  bucket,
+                  list: selectedListId,
+                  page,
+                  pageSize,
+                  priority: selectedPriority,
+                  q,
+                  recyclePage,
+                  recyclePageSize,
+                  rep: selectedRepId,
+                  reviewPage: Math.max(1, reviewPage - 1),
+                  reviewPageSize,
+                  reviewRep: selectedReviewRepId,
+                  reviewStage: selectedReviewStage,
+                  stage: selectedStage,
+                  state: selectedStateKey,
+                })}
+              >
+                Previous
+              </Link>
+              <Link
+                className={`btn-secondary inline-flex ${reviewPage >= reviewTotalPages ? 'pointer-events-none opacity-50' : ''}`}
+                href={prospectingHref({
+                  bucket,
+                  list: selectedListId,
+                  page,
+                  pageSize,
+                  priority: selectedPriority,
+                  q,
+                  recyclePage,
+                  recyclePageSize,
+                  rep: selectedRepId,
+                  reviewPage: Math.min(reviewTotalPages, reviewPage + 1),
+                  reviewPageSize,
+                  reviewRep: selectedReviewRepId,
+                  reviewStage: selectedReviewStage,
+                  stage: selectedStage,
+                  state: selectedStateKey,
+                })}
+              >
+                Next
+              </Link>
+            </div>
+          </div>
+
+          <nav className="grid gap-2 md:grid-cols-3 xl:grid-cols-7">
+            <Link
+              className={`rounded-lg border px-3 py-2 text-sm font-semibold ${!selectedReviewStage ? 'border-teal-200 bg-teal-50 text-teal-900' : 'border-slate-200 bg-white/70 text-slate-700'}`}
+              href={prospectingHref({
+                bucket,
+                list: selectedListId,
+                page,
+                pageSize,
+                priority: selectedPriority,
+                q,
+                recyclePage,
+                recyclePageSize,
+                rep: selectedRepId,
+                reviewPage: 1,
+                reviewPageSize,
+                reviewRep: selectedReviewRepId,
+                state: selectedStateKey,
+                stage: selectedStage,
+              })}
+            >
+              <span className="block">All Stages</span>
+              <span className="mt-1 block text-xs font-medium opacity-75">{pipelineReview.metrics.totalOpen.toLocaleString()} leads</span>
+            </Link>
+            {pipelineReview.stageSummaries.map((stageSummary) => {
+              const staleInStage = pipelineReview.leadSummaries.filter((summary) => {
+                const sameStage = normalizeStage(summary.lead.stage) === stageSummary.stage;
+                return sameStage && (summary.totalTouches === 0 || (summary.daysSinceLastTouch !== null && summary.daysSinceLastTouch >= 14));
+              }).length;
+              const overdueInStage = pipelineReview.leadSummaries.filter((summary) => {
+                const followUp = String(summary.lead.next_follow_up_at ?? '').slice(0, 10);
+                return normalizeStage(summary.lead.stage) === stageSummary.stage && Boolean(followUp) && followUp < new Date().toISOString().slice(0, 10);
+              }).length;
+              return (
+                <Link
+                  key={stageSummary.stage}
+                  className={`rounded-lg border px-3 py-2 text-sm font-semibold ${selectedReviewStage === stageSummary.stage ? 'border-teal-200 bg-teal-50 text-teal-900' : 'border-slate-200 bg-white/70 text-slate-700'}`}
+                  href={prospectingHref({
+                    bucket,
+                    list: selectedListId,
+                    page,
+                    pageSize,
+                    priority: selectedPriority,
+                    q,
+                    recyclePage,
+                    recyclePageSize,
+                    rep: selectedRepId,
+                    reviewPage: 1,
+                    reviewPageSize,
+                    reviewRep: selectedReviewRepId,
+                    reviewStage: stageSummary.stage,
+                    stage: selectedStage,
+                    state: selectedStateKey,
+                  })}
+                >
+                  <span className="block">{stageLabel(stageSummary.stage)}</span>
+                  <span className="mt-1 block text-xs font-medium opacity-75">
+                    {stageSummary.count.toLocaleString()} leads - {staleInStage} stale - {overdueInStage} overdue
+                  </span>
+                </Link>
+              );
+            })}
+          </nav>
+
+          {pipelineReview.resultMix.length ? (
+            <div className="flex flex-wrap gap-2">
+              {pipelineReview.resultMix.slice(0, 8).map((item) => (
+                <span key={item.result} className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700">
+                  {item.result}: {item.count}
+                </span>
+              ))}
+            </div>
+          ) : null}
+
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[86rem] border-separate border-spacing-y-2 text-left text-sm">
+              <thead>
+                <tr className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+                  <th className="px-3 py-2">Lead</th>
+                  <th className="px-3 py-2">Stage</th>
+                  <th className="px-3 py-2">Priority</th>
+                  <th className="px-3 py-2">Contact</th>
+                  <th className="px-3 py-2">Last Result</th>
+                  <th className="px-3 py-2">Next Follow-Up</th>
+                  <th className="px-3 py-2">Touches</th>
+                  <th className="px-3 py-2">Last Touch</th>
+                  <th className="px-3 py-2">List / Source</th>
+                  <th className="px-3 py-2">Open</th>
+                </tr>
+              </thead>
+              <tbody>
+                {visiblePipelineReviewRows.map((summary) => {
+                  const lead = summary.lead;
+                  const cityState = [lead.city, lead.state_key || lead.state].filter(Boolean).join(', ') || 'Missing city/state';
+                  const listLabels = reviewListLabelsByLead.get(lead.id) ?? [];
+                  const followUp = String(lead.next_follow_up_at ?? '').slice(0, 10);
+                  const today = new Date().toISOString().slice(0, 10);
+                  const followUpTone = followUp && followUp < today ? 'text-rose-700' : followUp === today ? 'text-amber-700' : 'text-slate-700';
+                  return (
+                    <tr key={lead.id} className="bg-white/70">
+                      <td className="rounded-l-lg px-3 py-3">
+                        <p className="font-semibold text-slate-950">{lead.company_name}</p>
+                        <p className="mt-1 text-slate-500">{cityState}</p>
+                      </td>
+                      <td className="px-3 py-3"><LeadStageBadge stage={lead.stage} /></td>
+                      <td className="px-3 py-3 text-slate-700">{priorityLabel(lead.priority)}</td>
+                      <td className="px-3 py-3 text-slate-700">
+                        <p>{lead.phone || 'Missing phone'}</p>
+                        <p className="mt-1 text-slate-500">{lead.company_email || 'Missing email'}</p>
+                      </td>
+                      <td className="px-3 py-3 text-slate-700">{lead.last_result || 'No result logged'}</td>
+                      <td className={`px-3 py-3 font-semibold ${followUpTone}`}>{formatDate(lead.next_follow_up_at)}</td>
+                      <td className="px-3 py-3 text-slate-700">
+                        <p className="font-semibold text-slate-950">{summary.totalTouches.toLocaleString()} total</p>
+                        <p className="mt-1 text-slate-500">{summary.calls} calls, {summary.emails} emails</p>
+                        <p className="mt-1 text-slate-500">{summary.recentTouches} in last 30 days</p>
+                      </td>
+                      <td className="px-3 py-3 text-slate-700">
+                        <p className="font-semibold text-slate-950">{summary.lastTouchAt ? formatDate(summary.lastTouchAt) : 'Untouched'}</p>
+                        <p className="mt-1 text-slate-500">
+                          {summary.daysSinceLastTouch === null ? 'No call/email yet' : `${summary.daysSinceLastTouch} days ago`}
+                        </p>
+                      </td>
+                      <td className="px-3 py-3 text-slate-700">
+                        <p>{listLabels.slice(0, 2).join(', ') || 'No list'}</p>
+                        {summary.hasDataGap ? <p className="mt-1 text-xs font-semibold text-amber-700">Data gap</p> : null}
+                      </td>
+                      <td className="rounded-r-lg px-3 py-3">
+                        <Link className="font-semibold text-teal-800" href={leadDetailHref(lead.id, selectedStateKey)}>Open Lead</Link>
+                      </td>
+                    </tr>
+                  );
+                })}
+                {!visiblePipelineReviewRows.length ? (
+                  <tr>
+                    <td colSpan={10} className="rounded-lg border border-dashed border-slate-200 px-3 py-8 text-center text-sm text-slate-500">
+                      No assigned open leads match this pipeline review.
+                    </td>
+                  </tr>
+                ) : null}
+              </tbody>
+            </table>
+          </div>
+        </div>
       </section>
 
       {isOwner ? (
@@ -1741,6 +2181,10 @@ export default async function ProspectingAdminPage({ searchParams }: { searchPar
 
         <form className="grid gap-3 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,0.8fr)_minmax(0,1fr)_minmax(0,1fr)_9rem_auto] lg:items-end">
           <input type="hidden" name="bucket" value={bucket} />
+          <input type="hidden" name="review_rep" value={selectedReviewRepId} />
+          <input type="hidden" name="review_stage" value={selectedReviewStage} />
+          <input type="hidden" name="review_page" value={reviewPage} />
+          <input type="hidden" name="review_page_size" value={reviewPageSize} />
           <label className="text-sm font-semibold text-slate-700">
             Search
             <input className="input mt-2" name="q" defaultValue={q} placeholder="Company, phone, city, email" />
