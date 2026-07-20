@@ -44,6 +44,7 @@ import {
   parseCsv,
   postgrestIlikePattern,
   priorityLabel,
+  prospectingContactPayloadsFromCsv,
   stageLabel,
   totalPageCount,
   type ProspectingPriority,
@@ -367,26 +368,6 @@ function leadPayloadFromCsv(row: Record<string, string>, createdBy: string, sale
     state_key: normalizeStateKey(state),
     updated_by: createdBy,
   };
-}
-
-function contactPayloadsFromCsv(row: Record<string, string>, leadId: string, createdBy: string) {
-  return [1, 2].flatMap((index) => {
-    const fullName = cleanText(row[`key_contact_${index}_name`]);
-    const title = cleanText(row[`key_contact_${index}_title`]);
-    const email = cleanText(row[`key_contact_${index}_email`]);
-    const phone = cleanText(row[`key_contact_${index}_phone`]);
-    if (!fullName && !title && !email && !phone) return [];
-    return [{
-      created_by: createdBy,
-      email,
-      full_name: fullName,
-      is_primary: index === 1,
-      lead_id: leadId,
-      phone,
-      title,
-      updated_by: createdBy,
-    }];
-  });
 }
 
 function mergeMissingFields(existing: LeadRow, incoming: ReturnType<typeof leadPayloadFromCsv>, actorId: string) {
@@ -774,7 +755,7 @@ async function importLeadCsv(formData: FormData) {
     if (error) errors.push('Some lead list memberships could not be saved.');
   }
 
-  const contactRows = successfulItems.flatMap(({ item, leadId }) => contactPayloadsFromCsv(item.row, leadId, current.profile.id));
+  const contactRows = successfulItems.flatMap(({ item, leadId }) => prospectingContactPayloadsFromCsv(item.row, leadId, current.profile.id));
   for (const batch of chunkArray(contactRows, 500)) {
     const { error } = await supabase.from('prospecting_contacts').insert(batch);
     if (error) errors.push('Some key contacts could not be saved.');
@@ -2132,7 +2113,7 @@ export default async function ProspectingAdminPage({ searchParams }: { searchPar
               </label>
             </div>
             <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white/60 p-3">
-              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">Required Headers</p>
+              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">Supported Lead + Key Contact Headers</p>
               <code className="mt-2 block min-w-[62rem] text-xs text-slate-700">{PROSPECTING_CSV_HEADERS.join(', ')}</code>
             </div>
             <PendingSubmitButton className="btn-primary w-full sm:w-auto" disabled={!canEdit} disabledLabel="No edit access" label="Import Leads" pendingLabel="Importing..." />

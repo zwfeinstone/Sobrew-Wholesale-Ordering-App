@@ -14,7 +14,7 @@ export type ProspectingStage = (typeof PROSPECTING_STAGES)[number]['id'];
 
 export const ACTIVE_PROSPECTING_STAGES: ProspectingStage[] = ['new', 'working', 'follow_up', 'recycle_try_later'];
 export const HUBSPOT_QUEUE_STAGES: ProspectingStage[] = ['interested', 'sample_requested'];
-export const REP_PIPELINE_STAGES: ProspectingStage[] = [...ACTIVE_PROSPECTING_STAGES, ...HUBSPOT_QUEUE_STAGES];
+export const REP_PIPELINE_STAGES: ProspectingStage[] = [...ACTIVE_PROSPECTING_STAGES, 'interested'];
 export const MAINTENANCE_PROSPECTING_STAGES: ProspectingStage[] = ['not_a_fit', 'lost'];
 
 export const PROSPECTING_PRIORITIES = [
@@ -164,8 +164,16 @@ const CSV_HEADER_ALIASES: Record<string, string> = {
   contact_2_name: 'key_contact_2_name',
   contact_2_phone: 'key_contact_2_phone',
   contact_2_title: 'key_contact_2_title',
+  contact_email: 'key_contact_1_email',
+  contact_name: 'key_contact_1_name',
+  contact_phone: 'key_contact_1_phone',
+  contact_title: 'key_contact_1_title',
   email: 'company_email',
   facility_name: 'company_name',
+  key_contact_email: 'key_contact_1_email',
+  key_contact_name: 'key_contact_1_name',
+  key_contact_phone: 'key_contact_1_phone',
+  key_contact_title: 'key_contact_1_title',
   main_phone: 'company_phone',
   organization_name: 'company_name',
   phone: 'company_phone',
@@ -440,6 +448,30 @@ export function prospectingQueueRequiresFollowUp(context: ProspectingQueueContex
   return context.tab === 'tasks';
 }
 
+export function prospectingQueueOrderFields(context: ProspectingQueueContext) {
+  if (context.tab === 'tasks') {
+    return [
+      { column: 'next_follow_up_at', ascending: true },
+      { column: 'last_activity_at', ascending: true },
+      { column: 'created_at', ascending: true },
+      { column: 'id', ascending: true },
+    ];
+  }
+  if (context.tab === 'pipeline') {
+    return [
+      { column: 'stage', ascending: true },
+      { column: 'updated_at', ascending: false },
+      { column: 'created_at', ascending: true },
+      { column: 'id', ascending: true },
+    ];
+  }
+  return [
+    { column: 'last_activity_at', ascending: true },
+    { column: 'created_at', ascending: true },
+    { column: 'id', ascending: true },
+  ];
+}
+
 export function paginationRange(page: number, pageSize: number) {
   const from = Math.max(0, (page - 1) * pageSize);
   return { from, to: from + pageSize - 1 };
@@ -488,6 +520,41 @@ export function stageFromResult(result: string | null | undefined): ProspectingS
   if (['call back later', 'requested info', 'follow-up sent', 'intro sent', 'out of office', 'left voicemail'].includes(normalized)) return 'follow_up';
   if (['reached decision maker', 'reached gatekeeper'].includes(normalized)) return 'working';
   return null;
+}
+
+export function resolveActivityStage({
+  currentStage,
+  explicitStage,
+  result,
+}: {
+  currentStage: string | null | undefined;
+  explicitStage?: string | null;
+  result?: string | null;
+}): ProspectingStage {
+  const normalizedResult = String(result ?? '').trim().toLowerCase();
+  if (['do not contact', 'unsubscribed', 'wrong number', 'bounced'].includes(normalizedResult)) return 'not_a_fit';
+  const requestedStage = String(explicitStage ?? '').trim();
+  return requestedStage ? normalizeStage(requestedStage) : normalizeStage(currentStage);
+}
+
+export function prospectingContactPayloadsFromCsv(row: Record<string, string>, leadId: string, createdBy: string) {
+  return [1, 2].flatMap((index) => {
+    const fullName = cleanText(row[`key_contact_${index}_name`]);
+    const title = cleanText(row[`key_contact_${index}_title`]);
+    const email = cleanText(row[`key_contact_${index}_email`]);
+    const phone = cleanText(row[`key_contact_${index}_phone`]);
+    if (!fullName && !title && !email && !phone) return [];
+    return [{
+      created_by: createdBy,
+      email,
+      full_name: fullName,
+      is_primary: index === 1,
+      lead_id: leadId,
+      phone,
+      title,
+      updated_by: createdBy,
+    }];
+  });
 }
 
 export function isHubspotQueueStage(stage: string | null | undefined) {

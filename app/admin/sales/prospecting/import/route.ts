@@ -10,6 +10,7 @@ import {
   normalizeStateKey,
   normalizeTextKey,
   parseCsv,
+  prospectingContactPayloadsFromCsv,
   type ProspectingPriority,
   type ProspectingStage,
 } from '@/lib/prospecting';
@@ -87,26 +88,6 @@ function leadPayloadFromCsv(row: Record<string, string>, createdBy: string, sale
     state_key: normalizeStateKey(state),
     updated_by: createdBy,
   };
-}
-
-function contactPayloadsFromCsv(row: Record<string, string>, leadId: string, createdBy: string) {
-  return [1, 2].flatMap((index) => {
-    const fullName = cleanText(row[`key_contact_${index}_name`]);
-    const title = cleanText(row[`key_contact_${index}_title`]);
-    const email = cleanText(row[`key_contact_${index}_email`]);
-    const phone = cleanText(row[`key_contact_${index}_phone`]);
-    if (!fullName && !title && !email && !phone) return [];
-    return [{
-      created_by: createdBy,
-      email,
-      full_name: fullName,
-      is_primary: index === 1,
-      lead_id: leadId,
-      phone,
-      title,
-      updated_by: createdBy,
-    }];
-  });
 }
 
 function mergeMissingFields(existing: LeadRow, incoming: ReturnType<typeof leadPayloadFromCsv>, actorId: string) {
@@ -319,7 +300,7 @@ export async function POST(request: NextRequest) {
     if (error) errors.push('Some lead list memberships could not be saved.');
   }
 
-  const contactRows = successfulItems.flatMap(({ item, leadId }) => contactPayloadsFromCsv(item.row, leadId, current.profile.id));
+  const contactRows = successfulItems.flatMap(({ item, leadId }) => prospectingContactPayloadsFromCsv(item.row, leadId, current.profile.id));
   for (const batch of chunkArray(contactRows, 500)) {
     const { error } = await supabase.from('prospecting_contacts').insert(batch);
     if (error) errors.push('Some key contacts could not be saved.');

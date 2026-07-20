@@ -31,9 +31,10 @@ import {
   prospectingPath,
   prospectingQueueContextFromParams,
   prospectingQueueHiddenFields,
+  prospectingQueueOrderFields,
   prospectingQueueRequiresFollowUp,
   prospectingQueueStageFilter,
-  stageFromResult,
+  resolveActivityStage,
   stageLabel,
   type ProspectingActivityType,
   type ProspectingQueueContext,
@@ -167,12 +168,27 @@ function QueueContextFields({ context }: { context: ProspectingQueueContext }) {
   );
 }
 
+function repLeadLeavesCurrentQueue({
+  nextFollowUp,
+  queueContext,
+  savedStage,
+  today,
+}: {
+  nextFollowUp: string | null;
+  queueContext: ProspectingQueueContext;
+  savedStage: ProspectingStage;
+  today: string;
+}) {
+  if (!prospectingQueueStageFilter(queueContext).includes(savedStage)) return true;
+  return prospectingQueueRequiresFollowUp(queueContext) && (!nextFollowUp || nextFollowUp > today);
+}
+
 async function loadLeadForMutation(supabase: Awaited<ReturnType<typeof createClient>>, leadId: string, current: Awaited<ReturnType<typeof requireAdminSectionEdit>>) {
   let query = supabase
     .from('prospecting_leads')
     .select('id,assigned_profile_id,stage,hubspot_status,company_name,notes')
     .eq('id', leadId);
-  if (!current.isOwner) query = query.eq('assigned_profile_id', current.profile.id);
+  if (!current.isOwner) query = query.eq('assigned_profile_id', current.profile.id).neq('stage', 'sample_requested');
   const { data } = await query.maybeSingle();
   return data as { assigned_profile_id: string | null; company_name: string; hubspot_status: string | null; id: string; notes: string | null; stage: string | null } | null;
 }
@@ -274,9 +290,16 @@ async function saveLeadDetails(formData: FormData) {
   const savedStage = doNotContact ? 'not_a_fit' : nextStage;
   const shouldRecycle = savedStage === 'recycle_try_later';
   const shouldMoveToMaintenance = isMaintenanceStage(savedStage);
+  const shouldMoveToSampleReview = savedStage === 'sample_requested';
   const shouldUnassign = shouldRecycle || shouldMoveToMaintenance;
   const assignedProfileId = shouldUnassign ? null : current.isOwner ? selectedRepId || null : before.assigned_profile_id;
   const nextFollowUp = shouldUnassign ? null : safeDateInput(formData.get('next_follow_up_at'));
+  const shouldLeaveCurrentQueue = !current.isOwner && repLeadLeavesCurrentQueue({
+    nextFollowUp,
+    queueContext,
+    savedStage,
+    today: formatCentralDateInput(new Date()),
+  });
   const state = cleanText(formData.get('state'));
 
   const { error, data } = await supabaseAdmin
@@ -340,13 +363,13 @@ async function saveLeadDetails(formData: FormData) {
   const { error: activityError } = await supabaseAdmin.from('prospecting_activities').insert(activityRows);
   if (activityError) redirect(leadHref(leadId, 'save_error', queueContext));
 
-  if ((shouldRecycle || shouldMoveToMaintenance) && !current.isOwner) {
+  if ((shouldRecycle || shouldMoveToMaintenance || shouldMoveToSampleReview || shouldLeaveCurrentQueue) && !current.isOwner) {
     redirect(await shuckedRepRedirectHref({
       current,
       nextRecordId,
       previousRecordId,
       queueContext,
-      toast: shouldRecycle ? 'lead_recycled' : 'lead_reviewed',
+      toast: shouldRecycle ? 'lead_recycled' : shouldMoveToSampleReview ? 'sample_requested' : shouldMoveToMaintenance ? 'lead_reviewed' : 'lead_saved',
     }));
   }
   redirect(leadHref(leadId, 'lead_saved', queueContext));
@@ -506,14 +529,20 @@ async function logLeadActivity(formData: FormData) {
   const result = cleanText(formData.get('result'));
   const body = cleanText(formData.get('body'));
   const explicitStage = String(formData.get('next_stage') ?? '');
-  const nextStage = explicitStage ? normalizeStage(explicitStage) : stageFromResult(result) ?? normalizeStage(before.stage);
   const nextFollowUp = safeDateInput(formData.get('next_follow_up_at'));
-  const doNotContact = ['Do not contact', 'Unsubscribed', 'Wrong number', 'Bounced'].includes(result ?? '');
-  const savedStage = doNotContact ? 'not_a_fit' : nextStage;
+  const savedStage = resolveActivityStage({ currentStage: before.stage, explicitStage, result });
+  const doNotContact = savedStage === 'not_a_fit' && ['Do not contact', 'Unsubscribed', 'Wrong number', 'Bounced'].includes(result ?? '');
   const shouldRecycle = savedStage === 'recycle_try_later';
   const shouldMoveToMaintenance = isMaintenanceStage(savedStage);
+  const shouldMoveToSampleReview = savedStage === 'sample_requested';
   const shouldUnassign = shouldRecycle || shouldMoveToMaintenance;
   const now = new Date().toISOString();
+  const shouldLeaveCurrentQueue = !current.isOwner && repLeadLeavesCurrentQueue({
+    nextFollowUp: shouldUnassign ? null : nextFollowUp,
+    queueContext,
+    savedStage,
+    today: formatCentralDateInput(new Date()),
+  });
 
   const { error } = await supabaseAdmin.from('prospecting_activities').insert({
     activity_type: activityType,
@@ -579,13 +608,13 @@ async function logLeadActivity(formData: FormData) {
     if (assignmentError) redirect(leadHref(leadId, 'activity_error', queueContext));
   }
 
-  if ((shouldRecycle || shouldMoveToMaintenance) && !current.isOwner) {
+  if ((shouldRecycle || shouldMoveToMaintenance || shouldMoveToSampleReview || shouldLeaveCurrentQueue) && !current.isOwner) {
     redirect(await shuckedRepRedirectHref({
       current,
       nextRecordId,
       previousRecordId,
       queueContext,
-      toast: shouldRecycle ? 'lead_recycled' : 'lead_reviewed',
+      toast: shouldRecycle ? 'lead_recycled' : shouldMoveToSampleReview ? 'sample_requested' : shouldMoveToMaintenance ? 'lead_reviewed' : 'activity_saved',
     }));
   }
 
@@ -608,6 +637,7 @@ function Toasts({ toast }: { toast: string }) {
     notes_error: { message: 'Unable to save lead notes.', tone: 'error' },
     notes_saved: { message: 'Lead notes saved.', tone: 'success' },
     save_error: { message: 'Unable to save this lead. Check for duplicate company and phone values.', tone: 'error' },
+    sample_requested: { message: 'Sample requested. Moved to the next record.', tone: 'success' },
   };
   const match = messages[toast];
   return match ? <StatusToast message={match.message} tone={match.tone} /> : null;
@@ -709,7 +739,9 @@ export default async function LeadDetailPage({
 
   const lead = leadData as LeadRow;
   const isOwner = current.isOwner;
-  if (!isOwner && lead.assigned_profile_id !== current.profile.id) redirect('/admin/sales/prospecting?toast=missing_lead');
+  if (!isOwner && (lead.assigned_profile_id !== current.profile.id || normalizeStage(lead.stage) === 'sample_requested')) {
+    redirect('/admin/sales/prospecting?toast=missing_lead');
+  }
 
   const contacts = (contactsData ?? []) as ContactRow[];
   const activities = (activitiesData ?? []) as ActivityRow[];
@@ -763,12 +795,8 @@ export default async function LeadDetailPage({
       `last_result.ilike.${search}`,
     ].join(','));
   }
-  if (queueContext.tab === 'tasks') {
-    nextQueueQuery = nextQueueQuery.order('next_follow_up_at', { ascending: true }).order('last_activity_at', { ascending: true });
-  } else if (queueContext.tab === 'pipeline') {
-    nextQueueQuery = nextQueueQuery.order('stage', { ascending: true }).order('updated_at', { ascending: false });
-  } else {
-    nextQueueQuery = nextQueueQuery.order('last_activity_at', { ascending: true }).order('created_at', { ascending: true });
+  for (const order of prospectingQueueOrderFields(queueContext)) {
+    nextQueueQuery = nextQueueQuery.order(order.column, { ascending: order.ascending });
   }
   const { data: nextQueueData } = await nextQueueQuery;
   const queueIds = ((nextQueueData ?? []) as unknown as Array<{ id: string | null }>).map((row) => row.id).filter(Boolean) as string[];
@@ -909,7 +937,7 @@ export default async function LeadDetailPage({
           </Field>
           <Field label="Move stage">
             <select className="input" name="next_stage" defaultValue="">
-              <option value="">Auto from result</option>
+              <option value="">Keep current stage</option>
               {PROSPECTING_STAGES.map((stage) => <option key={stage.id} value={stage.id}>{stage.label}</option>)}
             </select>
           </Field>

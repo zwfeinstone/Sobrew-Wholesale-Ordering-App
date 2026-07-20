@@ -21,6 +21,7 @@ import {
   prospectingLeadPath,
   prospectingPath,
   prospectingQueueContextFromParams,
+  prospectingQueueOrderFields,
   prospectingQueueRequiresFollowUp,
   prospectingQueueStageFilter,
   stageLabel,
@@ -281,12 +282,8 @@ export default async function ProspectingPage({ searchParams }: { searchParams?:
   leadsQuery = leadsQuery.in('stage', prospectingQueueStageFilter(queueContext));
   if (prospectingQueueRequiresFollowUp(queueContext)) leadsQuery = leadsQuery.not('next_follow_up_at', 'is', null).lte('next_follow_up_at', today);
 
-  if (tab === 'tasks') {
-    leadsQuery = leadsQuery.order('next_follow_up_at', { ascending: true }).order('last_activity_at', { ascending: true });
-  } else if (tab === 'pipeline') {
-    leadsQuery = leadsQuery.order('stage', { ascending: true }).order('updated_at', { ascending: false });
-  } else {
-    leadsQuery = leadsQuery.order('last_activity_at', { ascending: true }).order('created_at', { ascending: true });
+  for (const order of prospectingQueueOrderFields(queueContext)) {
+    leadsQuery = leadsQuery.order(order.column, { ascending: order.ascending });
   }
 
   const { data: leadsData, error: leadsError, count: leadCount } = await leadsQuery.range(from, to);
@@ -295,7 +292,6 @@ export default async function ProspectingPage({ searchParams }: { searchParams?:
     { count: assignedCount },
     { count: activeCount },
     { count: followUpsDue },
-    { count: samplesRequested },
     { count: callsToday },
     { count: callsThisWeek },
     ...stageCountResults
@@ -303,7 +299,6 @@ export default async function ProspectingPage({ searchParams }: { searchParams?:
     assignedLeadQuery(supabase, current.profile.id, q, selectedPriority, selectedStateKey, selectedListId, 'id', { count: 'exact', head: true }),
     assignedLeadQuery(supabase, current.profile.id, q, selectedPriority, selectedStateKey, selectedListId, 'id', { count: 'exact', head: true }).in('stage', ACTIVE_PROSPECTING_STAGES),
     assignedLeadQuery(supabase, current.profile.id, q, selectedPriority, selectedStateKey, selectedListId, 'id', { count: 'exact', head: true }).not('next_follow_up_at', 'is', null).lte('next_follow_up_at', today),
-    assignedLeadQuery(supabase, current.profile.id, q, selectedPriority, selectedStateKey, selectedListId, 'id', { count: 'exact', head: true }).eq('stage', 'sample_requested'),
     supabase
       .from('prospecting_activities')
       .select('id', { count: 'exact', head: true })
@@ -393,7 +388,7 @@ export default async function ProspectingPage({ searchParams }: { searchParams?:
         </div>
       </section>
 
-      <section className="grid gap-4 md:grid-cols-4">
+      <section className="grid gap-4 md:grid-cols-3">
         <div className="stat-card">
           <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">My Leads</p>
           <p className="mt-3 text-3xl font-semibold tracking-tight text-slate-950">{(assignedCount ?? 0).toLocaleString()}</p>
@@ -405,10 +400,6 @@ export default async function ProspectingPage({ searchParams }: { searchParams?:
         <div className="stat-card">
           <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Follow-Up Due</p>
           <p className="mt-3 text-3xl font-semibold tracking-tight text-slate-950">{(followUpsDue ?? 0).toLocaleString()}</p>
-        </div>
-        <div className="stat-card">
-          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Samples Requested</p>
-          <p className="mt-3 text-3xl font-semibold tracking-tight text-slate-950">{(samplesRequested ?? 0).toLocaleString()}</p>
         </div>
       </section>
 
