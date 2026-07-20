@@ -178,6 +178,13 @@ describe('prospecting queue filtering rules', () => {
       { column: 'id', ascending: true },
     ]);
   });
+
+  it('keeps stage-filtered pipeline queues stable after saving activity', () => {
+    expect(prospectingQueueOrderFields(prospectingQueueContextFromParams({ stage: 'new', tab: 'pipeline' }))).toEqual([
+      { column: 'created_at', ascending: true },
+      { column: 'id', ascending: true },
+    ]);
+  });
 });
 
 describe('prospecting activity stage resolution', () => {

@@ -458,6 +458,12 @@ export function prospectingQueueOrderFields(context: ProspectingQueueContext) {
     ];
   }
   if (context.tab === 'pipeline') {
+    if (context.stage) {
+      return [
+        { column: 'created_at', ascending: true },
+        { column: 'id', ascending: true },
+      ];
+    }
     return [
       { column: 'stage', ascending: true },
       { column: 'updated_at', ascending: false },
