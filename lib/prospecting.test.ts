@@ -169,6 +169,15 @@ describe('prospecting queue filtering rules', () => {
       { column: 'id', ascending: true },
     ]);
   });
+
+  it('sorts selected lead lists by state, city, then company for rep list view', () => {
+    expect(prospectingQueueOrderFields(prospectingQueueContextFromParams({ list: LIST_ID, tab: 'list' }))).toEqual([
+      { column: 'state_key', ascending: true },
+      { column: 'city', ascending: true },
+      { column: 'company_name', ascending: true },
+      { column: 'id', ascending: true },
+    ]);
+  });
 });
 
 describe('prospecting activity stage resolution', () => {

@@ -465,6 +465,14 @@ export function prospectingQueueOrderFields(context: ProspectingQueueContext) {
       { column: 'id', ascending: true },
     ];
   }
+  if (context.listId) {
+    return [
+      { column: 'state_key', ascending: true },
+      { column: 'city', ascending: true },
+      { column: 'company_name', ascending: true },
+      { column: 'id', ascending: true },
+    ];
+  }
   return [
     { column: 'last_activity_at', ascending: true },
     { column: 'created_at', ascending: true },
