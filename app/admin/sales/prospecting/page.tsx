@@ -23,6 +23,7 @@ import {
   prospectingQueueContextFromParams,
   prospectingQueueOrderFields,
   prospectingQueueRequiresFollowUp,
+  prospectingQueueSkipsTouchedToday,
   prospectingQueueStageFilter,
   stageLabel,
   totalPageCount,
@@ -281,6 +282,7 @@ export default async function ProspectingPage({ searchParams }: { searchParams?:
   let leadsQuery = assignedLeadQuery(supabase, current.profile.id, q, selectedPriority, selectedStateKey, selectedListId, '*', { count: 'exact' });
   leadsQuery = leadsQuery.in('stage', prospectingQueueStageFilter(queueContext));
   if (prospectingQueueRequiresFollowUp(queueContext)) leadsQuery = leadsQuery.not('next_follow_up_at', 'is', null).lte('next_follow_up_at', today);
+  if (prospectingQueueSkipsTouchedToday(queueContext)) leadsQuery = leadsQuery.or(`last_activity_at.is.null,last_activity_at.lt.${todayStart.toISOString()}`);
 
   for (const order of prospectingQueueOrderFields(queueContext)) {
     leadsQuery = leadsQuery.order(order.column, { ascending: order.ascending });

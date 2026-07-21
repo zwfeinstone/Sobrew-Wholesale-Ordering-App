@@ -6,7 +6,7 @@ import StatusToast from '@/components/status-toast';
 import { requireAdminSectionEdit, requireAdminSectionView } from '@/lib/admin-permissions';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { createClient } from '@/lib/supabase/server';
-import { formatCentralDateInput } from '@/lib/time-clock';
+import { formatCentralDateInput, parseCentralDateInput } from '@/lib/time-clock';
 import {
   CALL_RESULTS,
   EMAIL_RESULTS,
@@ -33,6 +33,7 @@ import {
   prospectingQueueHiddenFields,
   prospectingQueueOrderFields,
   prospectingQueueRequiresFollowUp,
+  prospectingQueueSkipsTouchedToday,
   prospectingQueueStageFilter,
   resolveActivityStage,
   stageLabel,
@@ -173,13 +174,16 @@ function repLeadLeavesCurrentQueue({
   queueContext,
   savedStage,
   today,
+  workedNow = false,
 }: {
   nextFollowUp: string | null;
   queueContext: ProspectingQueueContext;
   savedStage: ProspectingStage;
   today: string;
+  workedNow?: boolean;
 }) {
   if (!prospectingQueueStageFilter(queueContext).includes(savedStage)) return true;
+  if (workedNow && prospectingQueueSkipsTouchedToday(queueContext)) return true;
   return prospectingQueueRequiresFollowUp(queueContext) && (!nextFollowUp || nextFollowUp > today);
 }
 
@@ -236,6 +240,7 @@ async function shuckedRepRedirectHref({
 
   const supabase = await createClient();
   const today = formatCentralDateInput(new Date());
+  const todayStart = parseCentralDateInput(today) ?? new Date();
   const selectColumns = queueContext.listId ? 'id,prospecting_list_leads!inner(list_id)' : 'id';
   let query = supabase
     .from('prospecting_leads')
@@ -246,6 +251,7 @@ async function shuckedRepRedirectHref({
 
   query = query.in('stage', prospectingQueueStageFilter(queueContext));
   if (prospectingQueueRequiresFollowUp(queueContext)) query = query.not('next_follow_up_at', 'is', null).lte('next_follow_up_at', today);
+  if (prospectingQueueSkipsTouchedToday(queueContext)) query = query.or(`last_activity_at.is.null,last_activity_at.lt.${todayStart.toISOString()}`);
   if (queueContext.priority) query = query.eq('priority', queueContext.priority);
   if (queueContext.state === MISSING_STATE_FILTER) query = query.is('state_key', null);
   else if (queueContext.state) query = query.eq('state_key', queueContext.state);
@@ -542,6 +548,7 @@ async function logLeadActivity(formData: FormData) {
     queueContext,
     savedStage,
     today: formatCentralDateInput(new Date()),
+    workedNow: true,
   });
 
   const { error } = await supabaseAdmin.from('prospecting_activities').insert({
@@ -765,6 +772,7 @@ export default async function LeadDetailPage({
   const salesReps = ((salesRepsData ?? []) as ProfileRow[]).sort((a, b) => profileLabel(a).localeCompare(profileLabel(b)));
   const assignedProfile = assignedProfileResult.data as ProfileRow | null;
   const today = formatCentralDateInput(new Date());
+  const todayStart = parseCentralDateInput(today) ?? new Date();
   const queueProfileId = isOwner
     ? queueContext.repId || lead.assigned_profile_id || null
     : current.profile.id;
@@ -780,6 +788,7 @@ export default async function LeadDetailPage({
   if (!isOwner) nextQueueQuery = nextQueueQuery.eq('assigned_profile_id', current.profile.id);
   nextQueueQuery = nextQueueQuery.in('stage', prospectingQueueStageFilter(queueContext));
   if (prospectingQueueRequiresFollowUp(queueContext)) nextQueueQuery = nextQueueQuery.not('next_follow_up_at', 'is', null).lte('next_follow_up_at', today);
+  if (prospectingQueueSkipsTouchedToday(queueContext)) nextQueueQuery = nextQueueQuery.or(`last_activity_at.is.null,last_activity_at.lt.${todayStart.toISOString()}`);
   if (queueContext.priority) nextQueueQuery = nextQueueQuery.eq('priority', queueContext.priority);
   if (queueContext.state === MISSING_STATE_FILTER) nextQueueQuery = nextQueueQuery.is('state_key', null);
   else if (queueContext.state) nextQueueQuery = nextQueueQuery.eq('state_key', queueContext.state);

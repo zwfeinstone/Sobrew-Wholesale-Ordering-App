@@ -8,6 +8,7 @@ import {
   prospectingQueueHiddenFields,
   prospectingQueueOrderFields,
   prospectingQueueRequiresFollowUp,
+  prospectingQueueSkipsTouchedToday,
   prospectingQueueStageFilter,
   parseCsv,
   prospectingContactPayloadsFromCsv,
@@ -184,6 +185,13 @@ describe('prospecting queue filtering rules', () => {
       { column: 'created_at', ascending: true },
       { column: 'id', ascending: true },
     ]);
+  });
+
+  it('skips leads touched today only when reps are working the New pipeline queue', () => {
+    expect(prospectingQueueSkipsTouchedToday(prospectingQueueContextFromParams({ stage: 'new', tab: 'pipeline' }))).toBe(true);
+    expect(prospectingQueueSkipsTouchedToday(prospectingQueueContextFromParams({ stage: 'working', tab: 'pipeline' }))).toBe(false);
+    expect(prospectingQueueSkipsTouchedToday(prospectingQueueContextFromParams({ tab: 'tasks' }))).toBe(false);
+    expect(prospectingQueueSkipsTouchedToday(prospectingQueueContextFromParams({ list: LIST_ID, tab: 'list' }))).toBe(false);
   });
 });
 
