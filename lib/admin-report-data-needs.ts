@@ -3,6 +3,7 @@ export type AdminReportId =
   | 'centers'
   | 'items'
   | 'margin'
+  | 'recent_order_gpm'
   | 'simulator'
   | 'production'
   | 'inventory'

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildNormalizedMarginBridge,
   buildProfitabilityDashboard,
+  buildRecentOrderGpmRows,
   type ProfitabilityOrderItemRow,
   type ProfitabilityOrderRow,
   type ProfitabilityTotals,
@@ -236,6 +237,41 @@ describe('margin leak ranking', () => {
     expect(dashboard.marginHealth.productLeaks[0]?.status).toBe('new');
     expect(dashboard.marginHealth.productLeaks[0]?.marginPointChange).toBeNull();
     expect(dashboard.marginHealth.productLeaks[0]?.estimatedImpactCents).toBe(0);
+  });
+});
+
+describe('recent order GPM rows', () => {
+  it('returns the newest shipped orders with gross profit dollars and margin percent', () => {
+    const orders = [
+      shippedOrder('older', '2026-07-01T12:00:00.000Z'),
+      shippedOrder('newer', '2026-07-03T12:00:00.000Z'),
+      { ...shippedOrder('unshipped', '2026-07-04T12:00:00.000Z'), shipped_at: null, status: 'New' },
+    ];
+    const orderItems = [
+      shippedLine({ grossProfitCents: 4000, id: 'older-line', orderId: 'older', productId: 'coffee', productName: 'Coffee', revenueCents: 10000 }),
+      shippedLine({ grossProfitCents: 15000, id: 'newer-line', orderId: 'newer', productId: 'coffee', productName: 'Coffee', revenueCents: 30000 }),
+      shippedLine({ grossProfitCents: 9000, id: 'unshipped-line', orderId: 'unshipped', productId: 'coffee', productName: 'Coffee', revenueCents: 10000 }),
+    ];
+
+    const rows = buildRecentOrderGpmRows({
+      centers: [{ id: 'center-1', name: 'Center 1' }],
+      limit: 10,
+      orderItems,
+      orders,
+      products: [{ id: 'coffee', name: 'Coffee', sku: 'COFFEE' }],
+      productionRuns: [],
+    });
+
+    expect(rows.map((row) => row.id)).toEqual(['newer', 'older']);
+    expect(rows[0]).toMatchObject({
+      centerName: 'Center 1',
+      estimatedLineCount: 0,
+      grossProfitCents: 15000,
+      lineCount: 1,
+      marginPercent: 50,
+      revenueCents: 30000,
+      totalCogsCents: 15000,
+    });
   });
 });
 

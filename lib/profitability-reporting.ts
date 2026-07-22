@@ -81,6 +81,19 @@ export type ProfitabilityItemRow = {
   estimatedLineCount: number;
 };
 
+export type RecentOrderGpmRow = {
+  id: string;
+  centerName: string;
+  orderDate: Date;
+  revenueCents: number;
+  totalCogsCents: number;
+  grossProfitCents: number;
+  marginPercent: number;
+  lineCount: number;
+  snapshotLineCount: number;
+  estimatedLineCount: number;
+};
+
 export type ProfitabilityTotals = {
   revenueCents: number;
   materialCents: number;
@@ -684,6 +697,56 @@ function buildItemRows(lines: NormalizedLine[], recipes: RecipeRow[]) {
       estimatedLineCount: totals.estimatedLineCount,
     };
   }).sort((a, b) => b.grossProfitAfterShippingCents - a.grossProfitAfterShippingCents || b.revenueCents - a.revenueCents || a.name.localeCompare(b.name));
+}
+
+export function buildRecentOrderGpmRows({
+  centerId,
+  centers,
+  limit = 10,
+  orderItems,
+  orders,
+  productId,
+  products,
+  productionRuns,
+}: {
+  centerId?: string;
+  centers: CenterRow[];
+  limit?: number;
+  orderItems: ProfitabilityOrderItemRow[];
+  orders: ProfitabilityOrderRow[];
+  productId?: string;
+  products: ProductRow[];
+  productionRuns: ProductionRunRow[];
+}): RecentOrderGpmRow[] {
+  const centerById = new Map(centers.map((center) => [center.id, center]));
+  const orderById = new Map(orders.map((order) => [order.id, order]));
+  const grouped = new Map<string, NormalizedLine[]>();
+
+  for (const line of normalizeLines({ orderItems, orders, products, productionRuns })) {
+    if (centerId && line.centerId !== centerId) continue;
+    if (productId && line.productId !== productId) continue;
+    grouped.set(line.orderId, [...(grouped.get(line.orderId) ?? []), line]);
+  }
+
+  return [...grouped.entries()]
+    .map(([orderId, lines]) => {
+      const order = orderById.get(orderId);
+      const totals = totalsForLines(lines);
+      return {
+        id: orderId,
+        centerName: centerName(centerById.get(order?.center_id ?? '')),
+        orderDate: validDate(order?.shipped_at) ?? validDate(order?.created_at) ?? lines[0]?.date ?? new Date(0),
+        revenueCents: totals.revenueCents,
+        totalCogsCents: totals.totalCogsCents,
+        grossProfitCents: totals.grossProfitCents,
+        marginPercent: totals.marginPercent,
+        lineCount: lines.length,
+        snapshotLineCount: totals.snapshotLineCount,
+        estimatedLineCount: totals.estimatedLineCount,
+      };
+    })
+    .sort((a, b) => b.orderDate.getTime() - a.orderDate.getTime() || b.id.localeCompare(a.id))
+    .slice(0, Math.max(0, limit));
 }
 
 function buildMarginBridge(current: ProfitabilityTotals, previous: ProfitabilityTotals): MarginBridgeRow[] {

@@ -30,8 +30,10 @@ import {
 } from '@/lib/gross-profit-simulator';
 import {
   buildProfitabilityDashboard,
+  buildRecentOrderGpmRows,
   type ProfitabilityOrderItemRow,
   type ProfitabilityOrderRow,
+  type RecentOrderGpmRow,
 } from '@/lib/profitability-reporting';
 import {
   centralDateInput,
@@ -86,6 +88,7 @@ const REPORTS = [
   { id: 'centers', label: 'Center Profitability' },
   { id: 'items', label: 'Item Profitability' },
   { id: 'margin', label: 'Margin Health' },
+  { id: 'recent_order_gpm', label: 'Recent Order GPM' },
   { id: 'ai_qa', label: 'AI Q/A About Business' },
   { id: 'ai_overview', label: 'AI Overview' },
   { id: 'simulator', label: 'Gross Profit Simulator' },
@@ -1673,6 +1676,47 @@ function MarginValue({ value }: { value: number }) {
   return <span className={value >= 0 ? 'text-teal-800' : 'text-rose-700'}>{percent(value).replace('+', '')}</span>;
 }
 
+function RecentOrderGpmTable({ rows }: { rows: RecentOrderGpmRow[] }) {
+  if (!rows.length) return <EmptyState message="No shipped orders with COGS are available yet." />;
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full min-w-[54rem] border-separate border-spacing-y-2 text-left text-sm">
+        <thead>
+          <tr className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+            <th className="px-4 py-2">Order</th>
+            <th className="px-4 py-2">Customer</th>
+            <th className="px-4 py-2">Shipped</th>
+            <th className="px-4 py-2 text-right">Revenue</th>
+            <th className="px-4 py-2 text-right">COGS</th>
+            <th className="px-4 py-2 text-right">GPM $</th>
+            <th className="px-4 py-2 text-right">GPM %</th>
+            <th className="px-4 py-2 text-right">Lines</th>
+            <th className="px-4 py-2 text-right">Estimated</th>
+          </tr>
+        </thead>
+        <tbody className="align-top">
+          {rows.map((row) => (
+            <tr key={row.id} className="bg-white/65">
+              <td className="rounded-l-xl px-4 py-3 font-semibold text-slate-950">
+                <Link className="underline-offset-4 hover:underline" href={`/admin/orders/${row.id}`}>{row.id.slice(0, 8)}</Link>
+              </td>
+              <td className="px-4 py-3 text-slate-700">{row.centerName}</td>
+              <td className="px-4 py-3 text-slate-700">{dateLabel(row.orderDate)}</td>
+              <td className="px-4 py-3 text-right text-slate-700">{money(row.revenueCents)}</td>
+              <td className="px-4 py-3 text-right text-slate-700">{money(row.totalCogsCents)}</td>
+              <td className={`px-4 py-3 text-right font-semibold ${row.grossProfitCents >= 0 ? 'text-teal-800' : 'text-rose-700'}`}>{money(row.grossProfitCents)}</td>
+              <td className="px-4 py-3 text-right font-semibold"><MarginValue value={row.marginPercent} /></td>
+              <td className="px-4 py-3 text-right text-slate-700">{number(row.lineCount)}</td>
+              <td className="rounded-r-xl px-4 py-3 text-right text-slate-700">{number(row.estimatedLineCount)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 function CogsSplitGrid({ current }: { current: ReturnType<typeof buildProfitabilityDashboard>['current'] }) {
   return (
     <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
@@ -3170,6 +3214,18 @@ export default async function AdminReportsPage({
     recipes: !dataNeeds.productRecipes || recipeResult.error ? [] : ((recipeResult.data ?? []) as any[]),
     shortageMovements: !dataNeeds.shortageMovements || shortageMovementsResult.error ? [] : ((shortageMovementsResult.data ?? []) as any[]),
   });
+  const recentOrderGpmRows = activeReport === 'recent_order_gpm'
+    ? buildRecentOrderGpmRows({
+      centerId,
+      centers,
+      limit: 10,
+      orderItems: (orderItemsResult.data ?? []) as ProfitabilityOrderItemRow[],
+      orders: (ordersResult.data ?? []) as ProfitabilityOrderRow[],
+      productId,
+      products,
+      productionRuns: productionRunsResult.error ? [] : ((productionRunsResult.data ?? []) as any[]),
+    })
+    : [];
   const inventoryAdjustmentReport = buildInventoryAdjustmentReport(
     dataNeeds.inventoryAdjustments ? (inventoryAdjustmentsResult.data ?? []) as InventoryAdjustmentRow[] : []
   );
@@ -3407,6 +3463,8 @@ export default async function AdminReportsPage({
                 ? `${REPORTS.find((report) => report.id === activeReport)?.label}. Using ${dateLabel(rangeStart)} through ${dateLabel(addDays(rangeEndExclusive, -1))}.`
                 : activeReport === 'inventory_adjustments'
                   ? `${REPORTS.find((report) => report.id === activeReport)?.label}. Using ${dateLabel(rangeStart)} through ${dateLabel(addDays(rangeEndExclusive, -1))}.`
+                : activeReport === 'recent_order_gpm'
+                  ? `${REPORTS.find((report) => report.id === activeReport)?.label}. Showing the last 10 shipped orders with saved or estimated COGS.`
                 : activeReport === 'margin'
                   ? `${REPORTS.find((report) => report.id === activeReport)?.label}. Using ${dateLabel(rangeStart)} through ${dateLabel(addDays(rangeEndExclusive, -1))}; normalized against trailing 8 weeks and the previous equal-length range.`
                   : `${REPORTS.find((report) => report.id === activeReport)?.label}. Using ${dateLabel(rangeStart)} through ${dateLabel(addDays(rangeEndExclusive, -1))}; sales comparisons still compare ${monthLabel(selectedMonth)} with ${monthLabel(dashboard.previousMonthStart)}.`}
@@ -3708,6 +3766,17 @@ export default async function AdminReportsPage({
             <SectionHeading eyebrow="COGS timing" title="Is timing hiding the answer?" subtitle="Compares COGS recognized on shipments, COGS created in production, and value still sitting in finished-good inventory." />
             <CogsTimingGrid centerId={centerId} productId={productId} summary={profitabilityDashboard.marginHealth.cogsTiming} />
           </div>
+        </section>
+      ) : null}
+
+      {activeReport === 'recent_order_gpm' ? (
+        <section className="card space-y-5">
+          <SectionHeading
+            eyebrow="Recent Order GPM"
+            title="Last 10 shipped orders"
+            subtitle="Gross profit margin is revenue minus product, shipping, processing, and donation COGS, shown in dollars and as a percent of revenue."
+          />
+          <RecentOrderGpmTable rows={recentOrderGpmRows} />
         </section>
       ) : null}
 
