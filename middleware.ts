@@ -1,6 +1,5 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { createServerClient, type CookieOptions } from '@supabase/ssr';
-import { hasSuperadminAccess } from './lib/admin-permission-definitions';
 import { isAuthSessionMissing, logAuthProfileIssue } from './lib/auth-diagnostics';
 
 type CookieToSet = { name: string; value: string; options: CookieOptions };
@@ -32,7 +31,6 @@ export async function middleware(request: NextRequest) {
 
   const { data: claimsData, error: claimsError } = await supabase.auth.getClaims();
   const userId = typeof claimsData?.claims.sub === 'string' ? claimsData.claims.sub : null;
-  const userEmail = typeof claimsData?.claims.email === 'string' ? claimsData.claims.email : null;
 
   const isProtected = request.nextUrl.pathname.startsWith('/portal') || request.nextUrl.pathname.startsWith('/admin');
   if (isProtected && claimsError) {
@@ -44,30 +42,6 @@ export async function middleware(request: NextRequest) {
 
   if (isProtected && !userId) {
     return redirectWithRefreshedCookies(new URL('/login', request.url));
-  }
-
-  if (userId && request.nextUrl.pathname.startsWith('/admin')) {
-    const { data: profile, error: profileError } = await supabase
-      .from('profiles')
-      .select('id,email,is_admin,is_superadmin,is_active')
-      .eq('id', userId)
-      .maybeSingle();
-    if (profileError || !profile) {
-      logAuthProfileIssue('Middleware profile lookup failed', profileError, userId);
-      await supabase.auth.signOut();
-      return redirectWithRefreshedCookies(new URL('/login?error=profile', request.url));
-    }
-
-    const ownerAdmin = hasSuperadminAccess(userEmail || profile.email, profile.is_superadmin);
-    if (profile.is_active !== true && !ownerAdmin) {
-      await supabase.auth.signOut();
-      return redirectWithRefreshedCookies(new URL('/login?inactive=1', request.url));
-    }
-
-    if (!profile.is_admin) {
-      return redirectWithRefreshedCookies(new URL('/portal', request.url));
-    }
-
   }
 
   return response;

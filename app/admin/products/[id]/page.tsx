@@ -24,7 +24,9 @@ import { createClient } from '@/lib/supabase/server';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { usd } from '@/lib/utils';
 
+const RAW_COFFEE_ROWS = 4;
 const EXTRA_COMPONENT_ROWS = 4;
+const RAW_COFFEE_UNITS: InventoryUnit[] = ['oz', 'lb'];
 
 type InventoryItemRow = {
   id: string;
@@ -41,6 +43,7 @@ type RecipeComponentRow = {
   quantity: number | string;
   unit: InventoryUnit;
   component_role: string | null;
+  sort_order: number | null;
   notes: string | null;
   inventory_items?: InventoryItemRow | InventoryItemRow[] | null;
 };
@@ -143,8 +146,8 @@ async function saveRecipe(formData: FormData) {
   const brandingLabelQty = Math.max(0, Number.parseFloat(String(formData.get('branding_label_qty') ?? '0')) || 0);
   const componentMap = new Map<string, { inventory_item_id: string; quantity: number; unit: string; component_role: string; sort_order: number; notes: string | null }>();
 
-  function addComponent(inventoryItemId: string, quantity: number, unit: string, componentRole: string, sortOrder: number, notes?: string) {
-    if (!inventoryItemId || quantity <= 0 || !INVENTORY_UNITS.some((inventoryUnit) => inventoryUnit.value === unit)) return;
+  function addComponent(inventoryItemId: string, quantity: number, unit: string, componentRole: string, sortOrder: number, notes?: string, allowedUnits = INVENTORY_UNITS.map((inventoryUnit) => inventoryUnit.value)) {
+    if (!inventoryItemId || quantity <= 0 || !allowedUnits.includes(unit as InventoryUnit)) return;
     const key = `${componentRole}:${inventoryItemId}:${unit}`;
     const existing = componentMap.get(key);
     componentMap.set(key, {
@@ -157,14 +160,17 @@ async function saveRecipe(formData: FormData) {
     });
   }
 
-  addComponent(
-    String(formData.get('raw_coffee_item_id') ?? ''),
-    parsePositiveNumber(formData.get('raw_coffee_qty')),
-    String(formData.get('raw_coffee_unit') ?? 'oz'),
-    'raw_coffee',
-    0,
-    'Raw coffee'
-  );
+  for (let index = 0; index < RAW_COFFEE_ROWS; index += 1) {
+    addComponent(
+      String(formData.get(`raw_coffee_item_id_${index}`) ?? ''),
+      parsePositiveNumber(formData.get(`raw_coffee_qty_${index}`)),
+      String(formData.get(`raw_coffee_unit_${index}`) ?? 'oz'),
+      'raw_coffee',
+      index,
+      'Raw coffee',
+      RAW_COFFEE_UNITS
+    );
+  }
   try {
     addComponent(String(formData.get('fraction_bag_item_id') ?? ''), parseWholeCountNumber(formData.get('fraction_bag_qty')), 'each', 'fraction_bag', 10, 'Fraction bag');
     addComponent(String(formData.get('box_item_id') ?? ''), parseWholeCountNumber(formData.get('box_qty')), 'each', 'box', 20, 'Box');
@@ -251,14 +257,19 @@ export default async function ProductPage({
               : '';
   const [{ data: items }, { data: recipeData }, { data: lots }] = await Promise.all([
     supabase.from('inventory_items').select('id,name,sku,item_type,base_unit,active').neq('item_type', 'finished_good').eq('active', true).order('name', { ascending: true }),
-    supabase.from('product_recipes').select('id,product_id,output_qty,waste_percent,labor_minutes,labor_rate_cents,shipping_label_qty,branding_label_qty,notes,product_recipe_components(id,inventory_item_id,quantity,unit,component_role,notes,inventory_items(id,name,sku,item_type,base_unit,active))').eq('product_id', params.id).maybeSingle(),
+    supabase.from('product_recipes').select('id,product_id,output_qty,waste_percent,labor_minutes,labor_rate_cents,shipping_label_qty,branding_label_qty,notes,product_recipe_components(id,inventory_item_id,quantity,unit,component_role,sort_order,notes,inventory_items(id,name,sku,item_type,base_unit,active))').eq('product_id', params.id).maybeSingle(),
     supabase.from('inventory_lots').select('inventory_item_id,quantity_remaining,unit_cost_cents').limit(50000),
   ]);
   const inventoryItems = (items ?? []) as InventoryItemRow[];
   const rawCoffeeItems = inventoryItems.filter((item) => item.item_type === 'raw_coffee');
   const materialItems = inventoryItems.filter((item) => item.item_type === 'material_supply');
   const recipe = recipeData as RecipeRow | null;
-  const recipeComponents = (recipe?.product_recipe_components ?? []).sort((a, b) => (a.component_role ?? '').localeCompare(b.component_role ?? '') || (a.notes ?? '').localeCompare(b.notes ?? ''));
+  const recipeComponents = (recipe?.product_recipe_components ?? []).sort((a, b) => {
+    const sortOrderA = Number.isFinite(Number(a.sort_order)) ? Number(a.sort_order) : Number.MAX_SAFE_INTEGER;
+    const sortOrderB = Number.isFinite(Number(b.sort_order)) ? Number(b.sort_order) : Number.MAX_SAFE_INTEGER;
+    return sortOrderA - sortOrderB || (a.component_role ?? '').localeCompare(b.component_role ?? '') || (a.notes ?? '').localeCompare(b.notes ?? '');
+  });
+  const rawCoffeeComponents = recipeComponents.filter((component) => component.component_role === 'raw_coffee');
   const componentByRole = new Map(recipeComponents.map((component) => [component.component_role ?? '', component]));
   const lotSummaryByItem = new Map<string, { remaining: number; avgCostCents: number }>();
   for (const item of inventoryItems) {
@@ -362,16 +373,22 @@ export default async function ProductPage({
 
           <div className="rounded-2xl border border-slate-200 bg-white/60 p-4">
             <p className="text-sm font-semibold text-slate-950">Raw coffee used for this recipe output</p>
-            <div className="mt-3 grid gap-3 md:grid-cols-[minmax(0,1fr)_10rem_8rem]">
-              <select className="input" name="raw_coffee_item_id" defaultValue={componentByRole.get('raw_coffee')?.inventory_item_id ?? ''}>
-                <option value="">Select raw coffee</option>
-                {rawCoffeeItems.map((item) => <option key={item.id} value={item.id}>{itemDisplayName(item)} - {formatInventoryQuantity(lotSummaryByItem.get(item.id)?.remaining ?? 0, item.base_unit)}</option>)}
-              </select>
-              <input className="input" name="raw_coffee_qty" min="0" step="0.0001" type="number" placeholder="Amount" defaultValue={numericInputValue(componentByRole.get('raw_coffee')?.quantity)} />
-              <select className="input" name="raw_coffee_unit" defaultValue={componentByRole.get('raw_coffee')?.unit ?? 'oz'}>
-                <option value="oz">oz</option>
-                <option value="lb">lb</option>
-              </select>
+            <div className="mt-3 space-y-3">
+              {Array.from({ length: RAW_COFFEE_ROWS }).map((_, index) => {
+                const existing = rawCoffeeComponents[index];
+                return (
+                  <div key={index} className="grid gap-3 md:grid-cols-[minmax(0,1fr)_10rem_8rem]">
+                    <select className="input" name={`raw_coffee_item_id_${index}`} defaultValue={existing?.inventory_item_id ?? ''}>
+                      <option value="">{index === 0 ? 'Select raw coffee' : 'Add another raw coffee'}</option>
+                      {rawCoffeeItems.map((item) => <option key={item.id} value={item.id}>{itemDisplayName(item)} - {formatInventoryQuantity(lotSummaryByItem.get(item.id)?.remaining ?? 0, item.base_unit)}</option>)}
+                    </select>
+                    <input className="input" name={`raw_coffee_qty_${index}`} min="0" step="0.0001" type="number" placeholder="Amount" defaultValue={numericInputValue(existing?.quantity)} />
+                    <select className="input" name={`raw_coffee_unit_${index}`} defaultValue={RAW_COFFEE_UNITS.includes(existing?.unit as InventoryUnit) ? existing?.unit : 'oz'}>
+                      {RAW_COFFEE_UNITS.map((unit) => <option key={unit} value={unit}>{unit}</option>)}
+                    </select>
+                  </div>
+                );
+              })}
             </div>
           </div>
 
