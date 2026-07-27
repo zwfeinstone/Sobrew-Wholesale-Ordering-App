@@ -8,6 +8,7 @@ import {
   prospectingSampleOrderInputFromFormData,
 } from '@/lib/prospecting-sample-orders';
 import { US_STATE_OPTIONS } from '@/lib/prospecting';
+import { getSupabaseAdmin } from '@/lib/supabase/admin';
 import { createClient } from '@/lib/supabase/server';
 
 type SearchParams = Record<string, string | string[] | undefined>;
@@ -77,7 +78,7 @@ async function submitSampleOrder(formData: FormData) {
 
   const leadId = String(formData.get('lead_id') ?? '').trim();
   const current = await requireAdminSectionEdit('prospecting', sampleOrderHref({ leadId, toast: 'admin_write_denied' }));
-  const supabase = await createClient();
+  const supabase = getSupabaseAdmin();
   const result = await createProspectingSampleOrder({
     currentProfileId: current.profile.id,
     input: prospectingSampleOrderInputFromFormData(formData),
