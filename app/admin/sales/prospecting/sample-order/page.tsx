@@ -209,7 +209,7 @@ export default async function ProspectingSampleOrderPage({
                   <label className="text-sm font-semibold text-slate-700">
                     Qty
                     <input type="hidden" name="product_id" value={product.id} />
-                    <input className="input mt-2" name="quantity" type="number" min="0" step="1" defaultValue="0" disabled={!canEdit} />
+                    <input className="input mt-2" name="quantity" type="number" min="0" step="1" defaultValue={lead ? '0' : '1'} disabled={!canEdit} />
                   </label>
                 </div>
               ))}

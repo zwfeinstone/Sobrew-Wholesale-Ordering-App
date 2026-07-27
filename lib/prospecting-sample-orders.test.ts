@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { createProspectingSampleOrder, type ProspectingSampleOrderInput } from '@/lib/prospecting-sample-orders';
+import {
+  createProspectingSampleOrder,
+  prospectingSampleOrderInputFromFormData,
+  type ProspectingSampleOrderInput,
+} from '@/lib/prospecting-sample-orders';
 
 const REP_ID = '11111111-1111-4111-8111-111111111111';
 const LEAD_ID = '22222222-2222-4222-8222-222222222222';
@@ -147,6 +151,27 @@ function sampleProduct(overrides: Row = {}) {
 }
 
 describe('createProspectingSampleOrder', () => {
+  it('parses standalone home-page sample order form data without a lead', () => {
+    const formData = new FormData();
+    formData.set('lead_id', '');
+    formData.set('center_name', 'Standalone Center');
+    formData.set('attention_name', 'Sam Receiver');
+    formData.set('address1', '123 Sample St');
+    formData.set('city', 'Chicago');
+    formData.set('state', 'il');
+    formData.set('zip', '60601');
+    formData.append('product_id', SAMPLE_PRODUCT_ID);
+    formData.append('quantity', '1');
+
+    expect(prospectingSampleOrderInputFromFormData(formData)).toMatchObject({
+      attentionName: 'Sam Receiver',
+      centerName: 'Standalone Center',
+      items: [{ productId: SAMPLE_PRODUCT_ID, quantity: 1 }],
+      leadId: null,
+      state: 'IL',
+    });
+  });
+
   it('rejects missing address fields', async () => {
     const supabase = new FakeSupabase({ products: [sampleProduct()] });
     const result = await createProspectingSampleOrder({
