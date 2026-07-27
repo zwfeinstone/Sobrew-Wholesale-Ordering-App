@@ -146,6 +146,12 @@ function leadHref(leadId: string, toast?: string, queueContext: ProspectingQueue
   return prospectingLeadPath(leadId, queueContext, { includePageSize: true, toast });
 }
 
+function sampleOrderHref(leadId: string, toast?: string) {
+  const params = new URLSearchParams({ lead: leadId });
+  if (toast) params.set('toast', toast);
+  return `/admin/sales/prospecting/sample-order?${params.toString()}`;
+}
+
 function prospectingBackHref(queueContext: ProspectingQueueContext) {
   return prospectingPath(queueContext, { includePageSize: true });
 }
@@ -369,13 +375,17 @@ async function saveLeadDetails(formData: FormData) {
   const { error: activityError } = await supabaseAdmin.from('prospecting_activities').insert(activityRows);
   if (activityError) redirect(leadHref(leadId, 'save_error', queueContext));
 
-  if ((shouldRecycle || shouldMoveToMaintenance || shouldMoveToSampleReview || shouldLeaveCurrentQueue) && !current.isOwner) {
+  if (shouldMoveToSampleReview) {
+    redirect(sampleOrderHref(leadId, 'sample_requested'));
+  }
+
+  if ((shouldRecycle || shouldMoveToMaintenance || shouldLeaveCurrentQueue) && !current.isOwner) {
     redirect(await shuckedRepRedirectHref({
       current,
       nextRecordId,
       previousRecordId,
       queueContext,
-      toast: shouldRecycle ? 'lead_recycled' : shouldMoveToSampleReview ? 'sample_requested' : shouldMoveToMaintenance ? 'lead_reviewed' : 'lead_saved',
+      toast: shouldRecycle ? 'lead_recycled' : shouldMoveToMaintenance ? 'lead_reviewed' : 'lead_saved',
     }));
   }
   redirect(leadHref(leadId, 'lead_saved', queueContext));
@@ -615,13 +625,17 @@ async function logLeadActivity(formData: FormData) {
     if (assignmentError) redirect(leadHref(leadId, 'activity_error', queueContext));
   }
 
-  if ((shouldRecycle || shouldMoveToMaintenance || shouldMoveToSampleReview || shouldLeaveCurrentQueue) && !current.isOwner) {
+  if (shouldMoveToSampleReview) {
+    redirect(sampleOrderHref(leadId, 'sample_requested'));
+  }
+
+  if ((shouldRecycle || shouldMoveToMaintenance || shouldLeaveCurrentQueue) && !current.isOwner) {
     redirect(await shuckedRepRedirectHref({
       current,
       nextRecordId,
       previousRecordId,
       queueContext,
-      toast: shouldRecycle ? 'lead_recycled' : shouldMoveToSampleReview ? 'sample_requested' : shouldMoveToMaintenance ? 'lead_reviewed' : 'activity_saved',
+      toast: shouldRecycle ? 'lead_recycled' : shouldMoveToMaintenance ? 'lead_reviewed' : 'activity_saved',
     }));
   }
 

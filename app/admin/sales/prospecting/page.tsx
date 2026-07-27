@@ -359,7 +359,7 @@ export default async function ProspectingPage({ searchParams }: { searchParams?:
             <span className="eyebrow">Prospecting</span>
             <h1 className="page-title mt-4">Work your assigned leads</h1>
             <p className="page-subtitle mt-3">
-              Open a lead, log the call or email, then move straight to the next record in your queue.
+              Open a lead, log the call or email, or create a standalone sample shipment from this page.
             </p>
           </div>
           <div className="flex flex-col gap-2 sm:flex-row lg:justify-end">

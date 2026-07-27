@@ -68,6 +68,7 @@ function toastMessage(toast: string) {
     invalid_product: { message: 'Choose only active sample boxes with saved recipes.', tone: 'error' },
     lead_error: { message: 'Unable to update the linked prospecting lead.', tone: 'error' },
     missing_fields: { message: 'Enter the center, attention name, and full shipping address.', tone: 'error' },
+    sample_requested: { message: 'Sample request saved. Choose the sample box quantity to create the production order.', tone: 'success' },
     unauthorized: { message: 'That lead is not assigned to you.', tone: 'error' },
   };
   return messages[toast];
@@ -147,7 +148,9 @@ export default async function ProspectingSampleOrderPage({
           <div>
             <span className="eyebrow">Prospecting</span>
             <h1 className="page-title mt-4">Order sample</h1>
-            <p className="page-subtitle mt-3">Create a free sample-box order for production to fill from the normal order queue.</p>
+            <p className="page-subtitle mt-3">
+              {lead ? 'Review the lead details, choose sample boxes, and send the order to production.' : 'Enter the shipment details, choose sample boxes, and send a standalone order to production.'}
+            </p>
           </div>
           <Link className="btn-secondary w-full sm:w-auto" href="/admin/sales/prospecting">Back to Prospecting</Link>
         </div>
