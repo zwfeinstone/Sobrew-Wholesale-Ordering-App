@@ -57,6 +57,10 @@ function fulfillmentLabel(value: unknown) {
   return value === 'local_delivery' ? 'Local delivery' : 'Carrier shipping';
 }
 
+function orderCustomerLabel(order: any) {
+  return order.centers?.name || cleanText(order.shipping_company) || cleanText(order.shipping_name) || 'Unknown center';
+}
+
 function isMissingFulfillmentMethodColumn(error: unknown) {
   const message = String((error as { message?: unknown } | null)?.message ?? '');
   return message.includes('fulfillment_method') && (
@@ -173,6 +177,7 @@ function easyPostOriginFromSettings(settings: ShippingSettingsRow | null | undef
 
 function easyPostDestinationFromOrder(order: any): EasyPostAddressInput | null {
   const name = cleanText(order.shipping_name);
+  const company = cleanText(order.shipping_company);
   const street1 = cleanText(order.shipping_address1);
   const city = cleanText(order.shipping_city);
   const state = cleanText(order.shipping_state);
@@ -181,6 +186,7 @@ function easyPostDestinationFromOrder(order: any): EasyPostAddressInput | null {
 
   return {
     city,
+    company: company || null,
     country: 'US',
     email: cleanText(order.profiles?.email) || null,
     name,
@@ -464,7 +470,7 @@ async function quoteEasyPostRates(formData: FormData) {
 
   const supabase = await createClient();
   const [{ data: order }, { data: settings }, { data: purchasedLabels }] = await Promise.all([
-    supabase.from('orders').select('id,status,archived_at,shipping_name,shipping_address1,shipping_address2,shipping_city,shipping_state,shipping_zip,profiles(email)').eq('id', id).single(),
+    supabase.from('orders').select('id,status,archived_at,shipping_company,shipping_name,shipping_address1,shipping_address2,shipping_city,shipping_state,shipping_zip,profiles(email)').eq('id', id).single(),
     supabase.from('app_settings').select('*').single(),
     supabase.from('order_shipping_labels').select('id').eq('order_id', id).eq('status', 'purchased'),
   ]);
@@ -822,6 +828,7 @@ export default async function AdminOrderDetail({
       {toast === 'archive_denied' ? <StatusToast message="Only superadmins can archive orders." tone="error" /> : null}
       {toast === 'delete_error' ? <StatusToast message="Unable to delete this order." tone="error" /> : null}
       {toast === 'admin_write_denied' ? <StatusToast message="You do not have permission to edit orders." tone="error" /> : null}
+      {toast === 'sample_order_created' ? <StatusToast message="Sample order created for production." tone="success" /> : null}
       <section className="panel">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <span className="eyebrow">Order Detail</span>
@@ -829,7 +836,7 @@ export default async function AdminOrderDetail({
         </div>
         <h1 className="page-title mt-4">Order overview</h1>
         <p className="page-subtitle mt-3">Update fulfillment status, verify shipping details, and review the ordered products below.</p>
-        <p className="mt-4 break-words text-sm font-medium text-slate-600">Center {order.centers?.name || 'Unknown center'}</p>
+        <p className="mt-4 break-words text-sm font-medium text-slate-600">Center {orderCustomerLabel(order)}</p>
         <p className="mt-1 break-all text-sm font-medium text-slate-600">Submitted by {order.profiles?.email || 'Unknown login'}</p>
         <p className="mt-4 text-sm font-medium text-slate-600">Placed {formatOrderTimestamp(order.created_at)}</p>
         {order.archived_at ? <p className="mt-2 text-sm font-medium text-slate-600">Archived {formatOrderTimestamp(order.archived_at)}</p> : null}
@@ -876,8 +883,11 @@ export default async function AdminOrderDetail({
       </div>
       <div className="card">
         <p className="text-xs uppercase tracking-[0.18em] text-slate-500">Shipping</p>
-        <p className="mt-3 text-lg font-semibold text-slate-950">{order.shipping_name}</p>
-        <p className="mt-2 text-sm text-slate-600">{order.shipping_address1}, {order.shipping_city}</p>
+        <p className="mt-3 text-lg font-semibold text-slate-950">{cleanText(order.shipping_company) || order.shipping_name}</p>
+        {cleanText(order.shipping_company) ? <p className="mt-1 text-sm font-semibold text-slate-700">Attn: {order.shipping_name}</p> : null}
+        <p className="mt-2 text-sm text-slate-600">
+          {[order.shipping_address1, order.shipping_address2].filter(Boolean).join(', ')}, {order.shipping_city}, {order.shipping_state} {order.shipping_zip}
+        </p>
         <p className="mt-3 text-sm font-semibold text-slate-950">Fulfillment: {fulfillmentLabel(fulfillmentMethod)}</p>
         {order.shipping_cost_cents !== null && order.shipping_cost_cents !== undefined ? (
           <p className="mt-2 text-sm font-semibold text-slate-950">Shipping COGS: {usd(Math.round(normalizeInventoryNumber(order.shipping_cost_cents)))}</p>

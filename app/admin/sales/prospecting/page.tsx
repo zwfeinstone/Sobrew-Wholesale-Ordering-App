@@ -207,7 +207,10 @@ function LeadListTable({
                     ) : <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[0.7rem] font-semibold text-emerald-800">Ready</span>}
                   </td>
                   <td className="rounded-r-lg px-3 py-3 text-right">
-                    <Link className="btn-primary inline-flex" href={prospectingLeadPath(lead.id, queueContext, { includePageSize: true })}>Open</Link>
+                    <div className="flex justify-end gap-2">
+                      <Link className="btn-secondary inline-flex" href={`/admin/sales/prospecting/sample-order?lead=${lead.id}`}>Order Sample</Link>
+                      <Link className="btn-primary inline-flex" href={prospectingLeadPath(lead.id, queueContext, { includePageSize: true })}>Open</Link>
+                    </div>
                   </td>
                 </tr>
               );
@@ -360,6 +363,7 @@ export default async function ProspectingPage({ searchParams }: { searchParams?:
             </p>
           </div>
           <div className="flex flex-col gap-2 sm:flex-row lg:justify-end">
+            <Link className="btn-secondary inline-flex" href="/admin/sales/prospecting/sample-order">Order Sample</Link>
             {firstLead ? <Link className="btn-primary inline-flex" href={prospectingLeadPath(firstLead.id, queueContext, { includePageSize: true })}>Start Calling</Link> : null}
             {current.isOwner ? (
               <Link className="btn-secondary inline-flex" href="/admin/sales/prospecting/admin">Prospecting Admin</Link>

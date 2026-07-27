@@ -33,6 +33,7 @@ type InventoryLotRow = {
 
 type ProductRow = {
   active: boolean | null;
+  category?: string | null;
   id: string;
   name: string | null;
   sku: string | null;
@@ -266,7 +267,7 @@ export async function recordSampleBoxRun({
   const productsResult = productIds.size
     ? await supabase
         .from('products')
-        .select('id,name,sku,active')
+        .select('id,name,sku,active,category')
         .in('id', [...productIds])
     : { data: [] as ProductRow[], error: null };
 
@@ -276,7 +277,7 @@ export async function recordSampleBoxRun({
   const finishedItemByProductId = new Map<string, InventoryItemRow>();
   for (const productId of productIds) {
     const product = productsById.get(productId);
-    if (!product || product.active === false) return { error: 'config_error' };
+    if (!product || product.active === false || product.category !== 'sample_boxes') return { error: 'config_error' };
     const finishedItem = await ensureFinishedInventoryItem({ product, supabase });
     if (!finishedItem) return { error: 'inventory_error' };
     finishedItemByProductId.set(productId, finishedItem);

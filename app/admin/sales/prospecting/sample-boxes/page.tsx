@@ -42,6 +42,7 @@ type InventoryItemRow = {
 
 type ProductRow = {
   active: boolean | null;
+  category?: string | null;
   id: string;
   name: string | null;
   sku: string | null;
@@ -253,6 +254,17 @@ async function addTemplateItem(formData: FormData) {
     redirect(sampleBoxesHref('add_item_error', templateId));
   }
 
+  if (itemKind === 'product') {
+    const { data: product } = await supabase
+      .from('products')
+      .select('id,active,category')
+      .eq('id', payload.product_id)
+      .maybeSingle();
+    if (!product || product.active === false || product.category !== 'sample_boxes') {
+      redirect(sampleBoxesHref('add_item_error', templateId));
+    }
+  }
+
   const { error } = await supabase.from('sample_box_template_items').insert(payload);
   redirect(sampleBoxesHref(error ? 'add_item_error' : 'item_added', templateId));
 }
@@ -322,6 +334,21 @@ async function recordSampleBox(formData: FormData) {
     const productId = String(formData.get(`add_on_product_id_${index}`) ?? '').trim();
     const quantity = parsePositiveNumber(formData.get(`add_on_quantity_${index}`));
     if (productId && quantity > 0) addOns.push({ productId, quantity });
+  }
+  if (addOns.length) {
+    const addOnProductIds = [...new Set(addOns.map((addOn) => addOn.productId))];
+    const { data: addOnProducts } = await supabase
+      .from('products')
+      .select('id,active,category')
+      .in('id', addOnProductIds);
+    const validProductIds = new Set(
+      (addOnProducts ?? [])
+        .filter((product: any) => product.active !== false && product.category === 'sample_boxes')
+        .map((product: any) => product.id)
+    );
+    if (validProductIds.size !== addOnProductIds.length) {
+      redirect(sampleBoxesHref('record_config_error', templateId));
+    }
   }
 
   const sentAtDate = String(formData.get('sent_at') ?? '').trim();
@@ -402,7 +429,7 @@ export default async function SampleBoxesPage({
       .select('id,key,name,fixed_shipping_cents,fixed_misc_cents,active,notes,sample_box_template_items(id,item_kind,inventory_item_id,product_id,quantity,unit,label,sort_order,inventory_items(id,name,sku,item_type,base_unit,product_id,active),products(id,name,sku,active))')
       .order('created_at', { ascending: true }),
     supabase.from('inventory_items').select('id,name,sku,item_type,base_unit,product_id,active').eq('active', true).order('name', { ascending: true }),
-    supabase.from('products').select('id,name,sku,active').eq('active', true).order('name', { ascending: true }),
+    supabase.from('products').select('id,name,sku,active,category').eq('active', true).eq('category', 'sample_boxes').order('name', { ascending: true }),
     scopeCentersForAdmin(
       supabase.from('centers').select('id,name,is_active').order('name', { ascending: true }),
       centerScope

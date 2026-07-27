@@ -47,6 +47,10 @@ function nextActionForStatus(status: string | null | undefined) {
   return { label: 'Open order', helper: 'Needs review' };
 }
 
+function orderCustomerLabel(order: any) {
+  return order.centers?.name || order.shipping_company || order.shipping_name || 'Unknown center';
+}
+
 async function updateStatus(formData: FormData) {
   'use server';
   const id = String(formData.get('id') ?? '').trim();
@@ -164,7 +168,7 @@ export default async function AdminOrdersPage({ searchParams }: { searchParams: 
   const status = isOrderStatus(statusParam) ? statusParam : '';
   const q = typeof searchParams.q === 'string' ? searchParams.q.trim() : '';
   const toast = typeof searchParams.toast === 'string' ? searchParams.toast : '';
-  let query = supabase.from('orders').select('id,status,created_at,subtotal_cents,profiles(email),centers(name)').is('archived_at', null).order('created_at', { ascending: false });
+  let query = supabase.from('orders').select('id,status,order_kind,shipping_company,shipping_name,created_at,subtotal_cents,profiles(email),centers(name)').is('archived_at', null).order('created_at', { ascending: false });
   if (status) query = query.eq('status', status);
 
   const [ordersResult, ...statusCountResults] = await Promise.all([
@@ -207,6 +211,8 @@ export default async function AdminOrdersPage({ searchParams }: { searchParams: 
           order.id,
           order.status,
           order.centers?.name,
+          order.shipping_company,
+          order.shipping_name,
           order.profiles?.email,
           ...(itemLabelsByOrderId.get(order.id) ?? []),
         ]
@@ -350,11 +356,12 @@ export default async function AdminOrdersPage({ searchParams }: { searchParams: 
                   <Link href={`/admin/orders/${order.id}`} className="block min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
                       <OrderStatusBadge status={order.status} />
+                      {order.order_kind === 'prospecting_sample' ? <span className="rounded-full bg-indigo-50 px-2.5 py-1 text-xs font-semibold text-indigo-800">Sample</span> : null}
                       <span className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">{action.helper}</span>
                     </div>
                     <p className="mt-3 break-words text-base font-semibold text-slate-950">{labels.join(', ')}</p>
                     <div className="mt-3 grid gap-1 text-sm text-slate-600 md:grid-cols-3">
-                      <p className="font-medium text-slate-700">{order.centers?.name || 'Unknown center'}</p>
+                      <p className="font-medium text-slate-700">{orderCustomerLabel(order)}</p>
                       <p className="break-all">{order.profiles?.email || 'No login email on file'}</p>
                       <p>Placed {formatOrderTimestamp(order.created_at)}</p>
                     </div>
