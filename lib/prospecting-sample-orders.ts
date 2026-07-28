@@ -82,8 +82,8 @@ function normalizeItems(items: ProspectingSampleOrderItemInput[]) {
   for (const item of items) {
     const productId = cleanText(item.productId);
     const quantity = positiveInteger(item.quantity);
-    if (!productId && quantity <= 0) continue;
-    if (!UUID_PATTERN.test(productId) || quantity <= 0) return null;
+    if (quantity <= 0) continue;
+    if (!UUID_PATTERN.test(productId)) return null;
     quantityByProductId.set(productId, (quantityByProductId.get(productId) ?? 0) + quantity);
   }
   return [...quantityByProductId.entries()].map(([productId, quantity]) => ({ productId, quantity }));

@@ -53,7 +53,10 @@ describe.skipIf(!RUN_LIVE)('createProspectingSampleOrder live Supabase', () => {
         attentionName: 'Codex Test Receiver',
         centerName: 'Codex Standalone Sample Test',
         city: 'Chicago',
-        items: [{ productId: sampleProduct!.id, quantity: 1 }],
+        items: (products ?? []).map((product) => ({
+          productId: product.id,
+          quantity: product.id === sampleProduct!.id ? 1 : 0,
+        })),
         notes: 'Codex live verification, safe to delete.',
         state: 'IL',
         zip: '60601',

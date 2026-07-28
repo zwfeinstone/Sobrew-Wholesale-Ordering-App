@@ -198,6 +198,33 @@ describe('createProspectingSampleOrder', () => {
     expect(supabase.tables.orders).toHaveLength(0);
   });
 
+  it('ignores zero-quantity sample box rows when another sample box is selected', async () => {
+    const supabase = new FakeSupabase({
+      products: [
+        sampleProduct(),
+        sampleProduct({ id: OTHER_PRODUCT_ID, name: 'Sample Box w/ Kcups', sku: 'SAMPLE-KCUPS' }),
+      ],
+    });
+    const result = await createProspectingSampleOrder({
+      currentProfileId: REP_ID,
+      input: validInput({
+        items: [
+          { productId: SAMPLE_PRODUCT_ID, quantity: 1 },
+          { productId: OTHER_PRODUCT_ID, quantity: 0 },
+        ],
+      }),
+      isOwner: false,
+      supabase,
+    });
+
+    expect(result.error).toBeNull();
+    expect(supabase.tables.order_items).toHaveLength(1);
+    expect(supabase.tables.order_items[0]).toMatchObject({
+      product_id: SAMPLE_PRODUCT_ID,
+      qty: 1,
+    });
+  });
+
   it('rejects non-sample-box products', async () => {
     const supabase = new FakeSupabase({ products: [sampleProduct({ category: 'retail' })] });
     const result = await createProspectingSampleOrder({
