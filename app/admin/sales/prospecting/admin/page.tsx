@@ -5,6 +5,14 @@ import PendingSubmitButton from '@/components/pending-submit-button';
 import ProspectingBulkSelectionControls from '@/components/prospecting-bulk-selection-controls';
 import StatusToast from '@/components/status-toast';
 import { adminCanEdit, requireAdminSectionEdit, requireAdminSectionView } from '@/lib/admin-permissions';
+import { env } from '@/lib/env';
+import {
+  canPushProspectingHubSpot,
+  hubSpotRecordUrl,
+  pushProspectingLeadToHubSpot,
+  type HubSpotProspectingContact,
+  type HubSpotProspectingLead,
+} from '@/lib/hubspot-prospecting';
 import {
   PIPELINE_REVIEW_STAGES,
   summarizePipelineReview,
@@ -69,6 +77,10 @@ type LeadRow = {
   country: string | null;
   created_at: string | null;
   do_not_contact: boolean | null;
+  hubspot_company_id?: string | null;
+  hubspot_contact_id?: string | null;
+  hubspot_last_push_attempt_at?: string | null;
+  hubspot_last_push_error?: string | null;
   hubspot_status: string | null;
   id: string;
   last_activity_at: string | null;
@@ -88,8 +100,10 @@ type LeadRow = {
 type ContactSummary = {
   email: string | null;
   full_name: string | null;
+  is_primary?: boolean | null;
   lead_id: string;
   phone: string | null;
+  title?: string | null;
 };
 
 type ListRow = {
@@ -189,6 +203,7 @@ type LeadFilterState = {
 };
 
 const PROSPECTING_ADMIN_PATH = '/admin/sales/prospecting/admin';
+const HUBSPOT_PUSH_BATCH_LIMIT = 10;
 
 const BUCKETS = [
   { id: 'active', label: 'Active Leads' },
@@ -510,7 +525,7 @@ async function fetchPipelineReviewLeads(supabase: Awaited<ReturnType<typeof crea
 async function fetchPipelineReviewContacts(supabase: Awaited<ReturnType<typeof createClient>>, leadIds: string[]) {
   const contacts: ContactSummary[] = [];
   for (const batch of chunkArray(leadIds, 500)) {
-    const { data, error } = await supabase.from('prospecting_contacts').select('lead_id,full_name,email,phone').in('lead_id', batch);
+    const { data, error } = await supabase.from('prospecting_contacts').select('lead_id,full_name,email,phone,title,is_primary').in('lead_id', batch);
     if (error) return { contacts, error };
     contacts.push(...((data ?? []) as ContactSummary[]));
   }
@@ -1032,6 +1047,166 @@ async function markHubspotExported(formData: FormData) {
   redirect(`${PROSPECTING_ADMIN_PATH}?bucket=hubspot&toast=${error ? 'hubspot_error' : 'hubspot_exported'}`);
 }
 
+function hubspotPushRedirect(toast: string) {
+  return `${PROSPECTING_ADMIN_PATH}?bucket=hubspot&toast=${toast}`;
+}
+
+function hubspotPushErrorMessage(error: unknown) {
+  if (error && typeof error === 'object' && 'message' in error && typeof error.message === 'string') {
+    return error.message.trim().slice(0, 500) || 'Unable to push lead to HubSpot.';
+  }
+  const message = error instanceof Error ? error.message : 'Unable to push lead to HubSpot.';
+  return message.trim().slice(0, 500) || 'Unable to push lead to HubSpot.';
+}
+
+function hubspotLeadPayload(lead: LeadRow): HubSpotProspectingLead {
+  return {
+    address_line_1: lead.address_line_1,
+    address_line_2: lead.address_line_2,
+    city: lead.city,
+    company_name: lead.company_name,
+    company_website: lead.company_website,
+    country: lead.country,
+    id: lead.id,
+    phone: lead.phone,
+    postal_code: lead.postal_code,
+    state: lead.state,
+  };
+}
+
+async function pushSelectedHubspotLeads(formData: FormData) {
+  'use server';
+
+  const current = await requireAdminSectionEdit('prospecting', hubspotPushRedirect('admin_write_denied'));
+  if (!canPushProspectingHubSpot(current)) redirect(hubspotPushRedirect('admin_write_denied'));
+  if (!env.hubspotAccessToken) redirect(hubspotPushRedirect('hubspot_push_missing_config'));
+
+  const selectedLeadIds = [...new Set(formData.getAll('lead_id').map(String).filter(Boolean))];
+  if (!selectedLeadIds.length) redirect(hubspotPushRedirect('bulk_missing'));
+  if (selectedLeadIds.length > HUBSPOT_PUSH_BATCH_LIMIT) redirect(hubspotPushRedirect('hubspot_push_limit'));
+
+  const supabase = await createClient();
+  const { data: selectedLeadsData, error: leadsError } = await supabase
+    .from('prospecting_leads')
+    .select('id,company_name,company_website,phone,address_line_1,address_line_2,city,state,postal_code,country,stage,hubspot_status')
+    .is('archived_at', null)
+    .eq('hubspot_status', 'queued')
+    .in('stage', HUBSPOT_QUEUE_STAGES)
+    .in('id', selectedLeadIds);
+
+  if (leadsError) redirect(hubspotPushRedirect('hubspot_push_error'));
+
+  const selectedLeads = (selectedLeadsData ?? []) as unknown as LeadRow[];
+  if (!selectedLeads.length) redirect(hubspotPushRedirect('hubspot_push_missing'));
+
+  const { data: selectedContactsData, error: contactsError } = await supabase
+    .from('prospecting_contacts')
+    .select('lead_id,full_name,email,phone,title,is_primary')
+    .in('lead_id', selectedLeads.map((lead) => lead.id));
+
+  if (contactsError) redirect(hubspotPushRedirect('hubspot_push_error'));
+
+  const contactsByLead = new Map<string, HubSpotProspectingContact[]>();
+  for (const contact of (selectedContactsData ?? []) as ContactSummary[]) {
+    contactsByLead.set(contact.lead_id, [...(contactsByLead.get(contact.lead_id) ?? []), contact]);
+  }
+
+  let exportedCount = 0;
+  let partialCount = 0;
+  let errorCount = 0;
+
+  for (const lead of selectedLeads) {
+    const attemptAt = new Date().toISOString();
+    try {
+      const result = await pushProspectingLeadToHubSpot({
+        accessToken: env.hubspotAccessToken,
+        contacts: contactsByLead.get(lead.id) ?? [],
+        lead: hubspotLeadPayload(lead),
+      });
+
+      const leadUpdate = {
+        hubspot_company_id: result.companyId,
+        hubspot_contact_id: result.contactId,
+        hubspot_last_push_attempt_at: attemptAt,
+        hubspot_last_push_error: result.status === 'partial' ? result.message : null,
+        updated_at: attemptAt,
+        updated_by: current.profile.id,
+      };
+
+      if (result.status === 'exported') {
+        const { error } = await supabase
+          .from('prospecting_leads')
+          .update({
+            ...leadUpdate,
+            hubspot_exported_at: attemptAt,
+            hubspot_exported_by: current.profile.id,
+            hubspot_status: 'exported',
+          })
+          .eq('id', lead.id);
+        if (error) throw error;
+
+        await supabase
+          .from('prospecting_hubspot_queue')
+          .update({
+            exported_at: attemptAt,
+            exported_by: current.profile.id,
+            notes: result.message,
+            status: 'exported',
+          })
+          .eq('lead_id', lead.id);
+        await supabase.from('prospecting_activities').insert({
+          activity_type: 'hubspot_export',
+          body: result.message,
+          created_by: current.profile.id,
+          lead_id: lead.id,
+          result: 'Exported',
+        });
+        exportedCount += 1;
+      } else {
+        const { error } = await supabase.from('prospecting_leads').update(leadUpdate).eq('id', lead.id);
+        if (error) throw error;
+        await supabase
+          .from('prospecting_hubspot_queue')
+          .update({ notes: result.message })
+          .eq('lead_id', lead.id)
+          .eq('status', 'queued');
+        await supabase.from('prospecting_activities').insert({
+          activity_type: 'hubspot_export',
+          body: result.message,
+          created_by: current.profile.id,
+          lead_id: lead.id,
+          result: 'Partial',
+        });
+        partialCount += 1;
+      }
+    } catch (error) {
+      const message = hubspotPushErrorMessage(error);
+      errorCount += 1;
+      await supabase
+        .from('prospecting_leads')
+        .update({
+          hubspot_last_push_attempt_at: attemptAt,
+          hubspot_last_push_error: message,
+          updated_at: attemptAt,
+          updated_by: current.profile.id,
+        })
+        .eq('id', lead.id);
+      await supabase
+        .from('prospecting_hubspot_queue')
+        .update({ notes: message })
+        .eq('lead_id', lead.id)
+        .eq('status', 'queued');
+    }
+  }
+
+  const toast = exportedCount && !partialCount && !errorCount
+    ? 'hubspot_push_success'
+    : exportedCount || partialCount
+      ? 'hubspot_push_partial'
+      : 'hubspot_push_error';
+  redirect(hubspotPushRedirect(toast));
+}
+
 type MaintenanceLeadForAction = {
   assigned_profile_id: string | null;
   do_not_contact: boolean | null;
@@ -1145,6 +1320,12 @@ function Toasts({ toast }: { toast: string }) {
     bulk_saved: { message: 'Lead assignments updated.', tone: 'success' },
     hubspot_error: { message: 'Unable to mark those leads exported.', tone: 'error' },
     hubspot_exported: { message: 'Selected leads were marked exported.', tone: 'success' },
+    hubspot_push_error: { message: 'Unable to push those leads to HubSpot. Review the row warnings and try again.', tone: 'error' },
+    hubspot_push_limit: { message: 'Push up to 10 HubSpot leads at a time.', tone: 'error' },
+    hubspot_push_missing: { message: 'Those selected leads are no longer queued for HubSpot.', tone: 'error' },
+    hubspot_push_missing_config: { message: 'HubSpot push is missing the server access token.', tone: 'error' },
+    hubspot_push_partial: { message: 'HubSpot push finished with items that still need review.', tone: 'error' },
+    hubspot_push_success: { message: 'Selected leads were pushed to HubSpot.', tone: 'success' },
     import_complete: { message: 'CSV import complete. Review the import history for details.', tone: 'success' },
     import_empty: { message: 'That CSV only has headers or blank rows. Add lead rows and upload it again.', tone: 'error' },
     import_error: { message: 'Unable to import that CSV.', tone: 'error' },
@@ -1291,7 +1472,7 @@ export default async function ProspectingAdminPage({ searchParams }: { searchPar
     { count: metricFollowUps },
     { data: reportActivitiesData },
   ] = await Promise.all([
-    leadIds.length ? supabase.from('prospecting_contacts').select('lead_id,full_name,email,phone').in('lead_id', leadIds) : Promise.resolve({ data: [] }),
+    leadIds.length ? supabase.from('prospecting_contacts').select('lead_id,full_name,email,phone,title,is_primary').in('lead_id', leadIds) : Promise.resolve({ data: [] }),
     leadIds.length ? supabase.from('prospecting_list_leads').select('lead_id,list_id,prospecting_lists(name)').in('lead_id', leadIds) : Promise.resolve({ data: [] }),
     filteredLeadQuery(supabase, metricFilters, 'id', { count: 'exact', head: true }),
     filteredLeadQuery(supabase, { ...metricFilters, bucket: 'active' }, 'id', { count: 'exact', head: true }),
@@ -2258,14 +2439,20 @@ export default async function ProspectingAdminPage({ searchParams }: { searchPar
         {bucket === 'hubspot' && isOwner && leadRows.length ? (
           <form action={markHubspotExported} className="rounded-lg border border-teal-100 bg-teal-50/70 p-3">
             <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-              <p className="text-sm font-semibold text-teal-900">Select exported leads after adding them to HubSpot.</p>
-              <PendingSubmitButton className="btn-primary w-full md:w-auto" label="Mark Exported" pendingLabel="Saving..." />
+              <p className="text-sm font-semibold text-teal-900">Select queued leads to push directly to HubSpot, or mark manual CSV work exported.</p>
+              <div className="flex flex-col gap-2 sm:flex-row">
+                <button className="btn-primary w-full md:w-auto" formAction={pushSelectedHubspotLeads} type="submit">Push Selected to HubSpot</button>
+                <PendingSubmitButton className="btn-secondary w-full md:w-auto" label="Mark Exported Manually" pendingLabel="Saving..." />
+              </div>
             </div>
             <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
               {leadRows.map((lead) => (
-                <label key={lead.id} className="flex items-center gap-2 rounded-lg bg-white/80 px-3 py-2 text-sm text-slate-700">
+                <label key={lead.id} className="flex items-start gap-2 rounded-lg bg-white/80 px-3 py-2 text-sm text-slate-700">
                   <input type="checkbox" name="lead_id" value={lead.id} />
-                  <span className="min-w-0 truncate">{lead.company_name}</span>
+                  <span className="min-w-0">
+                    <span className="block truncate">{lead.company_name}</span>
+                    {lead.hubspot_last_push_error ? <span className="mt-1 block text-xs font-semibold text-rose-700">{lead.hubspot_last_push_error}</span> : null}
+                  </span>
                 </label>
               ))}
             </div>
@@ -2394,6 +2581,8 @@ export default async function ProspectingAdminPage({ searchParams }: { searchPar
               const missing = missingLeadFields(lead, leadContacts);
               const lists = listsByLead.get(lead.id) ?? [];
               const assigned = lead.assigned_profile_id ? profileById.get(lead.assigned_profile_id) : null;
+              const hubspotCompanyUrl = hubSpotRecordUrl(env.hubspotPortalId, 'company', lead.hubspot_company_id);
+              const hubspotContactUrl = hubSpotRecordUrl(env.hubspotPortalId, 'contact', lead.hubspot_contact_id);
               return (
                 <article key={lead.id} className="card">
                   <div className="grid gap-4 xl:grid-cols-[auto_minmax(0,1fr)_auto] xl:items-start">
@@ -2424,6 +2613,25 @@ export default async function ProspectingAdminPage({ searchParams }: { searchPar
                         {lists.slice(0, 3).map((name) => <span key={name} className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-700">{name}</span>)}
                       </div>
                       {lead.notes ? <p className="mt-3 line-clamp-2 text-sm leading-6 text-slate-500">{lead.notes}</p> : null}
+                      {bucket === 'hubspot' && (lead.hubspot_company_id || lead.hubspot_contact_id || lead.hubspot_last_push_error) ? (
+                        <div className="mt-3 rounded-lg border border-teal-100 bg-teal-50/70 px-3 py-2 text-sm text-slate-700">
+                          <p className="font-semibold text-teal-900">HubSpot Push Status</p>
+                          <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1">
+                            {lead.hubspot_company_id ? (
+                              hubspotCompanyUrl
+                                ? <Link className="font-semibold text-teal-800 underline" href={hubspotCompanyUrl}>Company {lead.hubspot_company_id}</Link>
+                                : <span>Company {lead.hubspot_company_id}</span>
+                            ) : null}
+                            {lead.hubspot_contact_id ? (
+                              hubspotContactUrl
+                                ? <Link className="font-semibold text-teal-800 underline" href={hubspotContactUrl}>Contact {lead.hubspot_contact_id}</Link>
+                                : <span>Contact {lead.hubspot_contact_id}</span>
+                            ) : null}
+                          </div>
+                          {lead.hubspot_last_push_error ? <p className="mt-1 font-semibold text-rose-700">{lead.hubspot_last_push_error}</p> : null}
+                          {lead.hubspot_last_push_attempt_at ? <p className="mt-1 text-xs text-slate-500">Last push attempt {formatDateTime(lead.hubspot_last_push_attempt_at)}</p> : null}
+                        </div>
+                      ) : null}
                     </div>
                     <div className="grid gap-2 text-sm text-slate-600 sm:grid-cols-3 xl:w-80 xl:grid-cols-1">
                       <div className="rounded-lg bg-white/70 px-3 py-2">

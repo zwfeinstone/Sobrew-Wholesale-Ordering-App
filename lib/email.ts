@@ -6,6 +6,7 @@ import { usd } from '@/lib/utils';
 const RESEND_FROM = 'Sobrew Wholesale <orders@orders.sobrew.com>';
 const ADMIN_EMAIL = 'hello@sobrew.com';
 const PORTAL_URL = 'https://app.sobrew.com';
+const WELCOME_EMAIL_CC = ['haskins@sobrew.com', 'zach@sobrew.com'];
 
 let resendClient: Resend | null | undefined;
 
@@ -161,6 +162,7 @@ export async function sendCustomerWelcomeEmail(payload: WelcomeEmailPayload): Pr
     const response = await resend.emails.send({
       from: RESEND_FROM,
       to: payload.email,
+      cc: WELCOME_EMAIL_CC,
       subject: 'Welcome to Sobrew Wholesale Ordering',
       html,
       text,
