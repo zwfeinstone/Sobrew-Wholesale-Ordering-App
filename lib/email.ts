@@ -5,6 +5,7 @@ import { usd } from '@/lib/utils';
 
 const RESEND_FROM = 'Sobrew Wholesale <orders@orders.sobrew.com>';
 const ADMIN_EMAIL = 'hello@sobrew.com';
+const PORTAL_URL = 'https://app.sobrew.com';
 
 let resendClient: Resend | null | undefined;
 
@@ -23,6 +24,7 @@ export function getResend() {
 type Line = { name: string; qty: number; price: number; line: number };
 type ShippedLine = { name: string; qty: number };
 type TrackingLine = { carrier?: string | null; service?: string | null; trackingCode: string };
+type SendEmailResult = { ok: true } | { error: unknown; ok: false };
 
 type OrderEmailPayload = {
   customerEmail: string | string[];
@@ -32,6 +34,96 @@ type OrderEmailPayload = {
   items: Line[];
   subtotalCents: number;
 };
+
+type WelcomeEmailPayload = {
+  email: string;
+  fullName?: string | null;
+  password: string;
+};
+
+function escapeHtml(value: string) {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function titleCaseWord(value: string) {
+  if (!value) return value;
+  return `${value.charAt(0).toUpperCase()}${value.slice(1).toLowerCase()}`;
+}
+
+function fallbackNameFromEmail(email: string) {
+  const prefix = email.split('@')[0] ?? '';
+  const [firstPart] = prefix.split(/[._-]+/).filter(Boolean);
+  return titleCaseWord(firstPart || 'there');
+}
+
+function welcomeGreetingName(fullName: string | null | undefined, email: string) {
+  const [firstName] = (fullName ?? '').trim().split(/\s+/).filter(Boolean);
+  return firstName || fallbackNameFromEmail(email);
+}
+
+export function buildCustomerWelcomeEmailContent(payload: WelcomeEmailPayload) {
+  const greetingName = welcomeGreetingName(payload.fullName, payload.email);
+  const safeName = escapeHtml(greetingName);
+  const safeEmail = escapeHtml(payload.email);
+  const safePassword = escapeHtml(payload.password);
+
+  const html = `
+    <p>Hi ${safeName},</p>
+    <p>We are excited to work with y'all!</p>
+    <p>I've set up your account in our new wholesale ordering portal so you can get started right away:</p>
+    <h2>Login Details</h2>
+    <p><strong>Portal:</strong> <a href="${PORTAL_URL}">app.sobrew.com</a></p>
+    <p><strong>Email:</strong> ${safeEmail}</p>
+    <p><strong>Password:</strong> ${safePassword}</p>
+    <p>We built this to make ordering as simple and hands-off as possible. Most of our partners love the ability to <strong>set it and forget it</strong>:</p>
+    <ul>
+      <li>Set up <strong>recurring orders</strong> so you never run out</li>
+      <li><strong>Adjust frequency or quantities anytime</strong> as your needs change</li>
+      <li><strong>Reorder in seconds</strong> from past purchases</li>
+      <li>Access your <strong>full catalog of products</strong> in one place</li>
+    </ul>
+    <p>No more last-minute orders or back-and-forth; just consistent delivery, on your terms.</p>
+    <p>If you'd like a quick walkthrough or have any questions, I'm always happy to help.</p>
+    <p>Thanks again for your partnership and for the work you do every day.</p>
+    <p>Best,<br />The Sobrew Team</p>
+  `.trim();
+
+  const text = [
+    `Hi ${greetingName},`,
+    '',
+    "We are excited to work with y'all!",
+    '',
+    "I've set up your account in our new wholesale ordering portal so you can get started right away:",
+    '',
+    'Login Details',
+    `Portal: ${PORTAL_URL}`,
+    `Email: ${payload.email}`,
+    `Password: ${payload.password}`,
+    '',
+    'We built this to make ordering as simple and hands-off as possible. Most of our partners love the ability to set it and forget it:',
+    '',
+    '- Set up recurring orders so you never run out',
+    '- Adjust frequency or quantities anytime as your needs change',
+    '- Reorder in seconds from past purchases',
+    '- Access your full catalog of products in one place',
+    '',
+    'No more last-minute orders or back-and-forth; just consistent delivery, on your terms.',
+    '',
+    "If you'd like a quick walkthrough or have any questions, I'm always happy to help.",
+    '',
+    'Thanks again for your partnership and for the work you do every day.',
+    '',
+    'Best,',
+    'The Sobrew Team',
+  ].join('\n');
+
+  return { html, text };
+}
 
 function buildOrderHtml(payload: OrderEmailPayload) {
   const rows = payload.items
@@ -47,6 +139,38 @@ function buildCustomerOrderHtml(payload: OrderEmailPayload) {
     .join('');
 
   return `<p>Thank you for your order!</p><p>Items purchased:</p><ul>${itemRows}</ul><p>Total: ${usd(payload.subtotalCents)}</p>`;
+}
+
+export async function sendCustomerWelcomeEmail(payload: WelcomeEmailPayload): Promise<SendEmailResult> {
+  const resend = getResend();
+  if (!resend) {
+    const error = new Error('Resend disabled: missing RESEND_API_KEY');
+    console.error(error.message);
+    return { error, ok: false };
+  }
+
+  if (!payload.email) {
+    const error = new Error('Welcome email skipped: missing recipient');
+    console.error(error.message);
+    return { error, ok: false };
+  }
+
+  const { html, text } = buildCustomerWelcomeEmailContent(payload);
+
+  try {
+    const response = await resend.emails.send({
+      from: RESEND_FROM,
+      to: payload.email,
+      subject: 'Welcome to Sobrew Wholesale Ordering',
+      html,
+      text,
+    });
+    console.log('Customer welcome email sent', response);
+    return { ok: true };
+  } catch (error) {
+    console.error('Failed to send customer welcome email', error);
+    return { error, ok: false };
+  }
 }
 
 export async function sendAdminNotificationEmail(payload: OrderEmailPayload) {

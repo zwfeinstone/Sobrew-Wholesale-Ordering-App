@@ -1,6 +1,7 @@
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { requireAdminSectionEdit } from '@/lib/admin-permissions';
 import { recordAdminAuditLog } from '@/lib/admin-audit';
+import { sendCustomerWelcomeEmail } from '@/lib/email';
 import { toCents } from '@/lib/utils';
 import { NextResponse } from 'next/server';
 
@@ -104,5 +105,13 @@ export async function POST(request: Request) {
     supabase: supabaseAdmin,
     targetProfileId: adminProfile.id,
   });
-  return NextResponse.redirect(new URL(`/admin/users/${center.id}`, request.url));
+  const welcomeResult = await sendCustomerWelcomeEmail({
+    email,
+    fullName: full_name,
+    password,
+  });
+  const redirectPath = welcomeResult.ok
+    ? `/admin/users/${center.id}?success=center_created`
+    : `/admin/users/${center.id}?success=center_created&warning=welcome_email_failed`;
+  return NextResponse.redirect(new URL(redirectPath, request.url));
 }

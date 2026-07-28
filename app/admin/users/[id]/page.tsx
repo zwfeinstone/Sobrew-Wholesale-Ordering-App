@@ -7,6 +7,7 @@ import { isOwnerEmail } from '@/lib/admin-permission-definitions';
 import { loadSavedAdminPermissions, parseAdminPermissionsForm, saveAdminPermissions, serializePermissionSnapshot } from '@/lib/admin-permission-save';
 import { requireAdminSectionView, requireManageAdmins } from '@/lib/admin-permissions';
 import { requireAdminWriteAccess } from '@/lib/admin-write-access';
+import { sendCustomerWelcomeEmail } from '@/lib/email';
 import { productCategoryGroupKey, productCategoryLabel, productCategorySortRank, type ProductCategoryGroup } from '@/lib/product-categories';
 import { createClient } from '@/lib/supabase/server';
 import { supabaseAdmin } from '@/lib/supabase/admin';
@@ -255,7 +256,7 @@ async function addCenterLogin(formData: FormData) {
     redirect(`/admin/users/${centerId}?error=login_create_failed`);
   }
 
-  await supabaseAdmin.from('profiles').upsert(
+  const profileResult = await supabaseAdmin.from('profiles').upsert(
     {
       id: created.data.user.id,
       email,
@@ -266,8 +267,21 @@ async function addCenterLogin(formData: FormData) {
     },
     { onConflict: 'id' }
   );
+  if (profileResult.error) {
+    await supabaseAdmin.auth.admin.deleteUser(created.data.user.id);
+    redirect(`/admin/users/${centerId}?error=login_create_failed`);
+  }
 
-  redirect(`/admin/users/${centerId}?success=login_added`);
+  const welcomeResult = await sendCustomerWelcomeEmail({
+    email,
+    fullName: full_name,
+    password,
+  });
+
+  redirect(welcomeResult.ok
+    ? `/admin/users/${centerId}?success=login_added`
+    : `/admin/users/${centerId}?success=login_added&warning=welcome_email_failed`
+  );
 }
 
 async function updateCenterLogin(formData: FormData) {
@@ -417,6 +431,7 @@ export default async function UserDetailPage({
   const supabase = await createClient();
   const success = typeof searchParams?.success === 'string' ? searchParams.success : '';
   const error = typeof searchParams?.error === 'string' ? searchParams.error : '';
+  const warning = typeof searchParams?.warning === 'string' ? searchParams.warning : '';
 
   const { data: center } = await supabase.from('centers').select('*').eq('id', params.id).maybeSingle();
 
@@ -450,6 +465,7 @@ export default async function UserDetailPage({
 
     return (
       <div className="space-y-6">
+        {success === 'center_created' ? <div className="card text-sm text-green-700">Center created and first login added.</div> : null}
         {success === 'center_saved' ? <div className="card text-sm text-green-700">Center settings saved.</div> : null}
         {success === 'login_added' ? <div className="card text-sm text-green-700">Login added to center.</div> : null}
         {success === 'login_saved' ? <div className="card text-sm text-green-700">Login updated.</div> : null}
@@ -457,6 +473,7 @@ export default async function UserDetailPage({
         {success === 'location_added' ? <div className="card text-sm text-green-700">Delivery location added.</div> : null}
         {success === 'location_saved' ? <div className="card text-sm text-green-700">Delivery location updated.</div> : null}
         {success === 'location_removed' ? <div className="card text-sm text-green-700">Delivery location removed.</div> : null}
+        {warning === 'welcome_email_failed' ? <div className="card text-sm text-amber-700">The login was created, but the welcome email could not be sent. Send the login details manually.</div> : null}
         {error ? <div className="card text-sm text-red-700">{adminActionErrorMessage(error)}</div> : null}
 
         <section className="panel">
