@@ -218,12 +218,47 @@ const BUCKETS = [
 
 type Bucket = (typeof BUCKETS)[number]['id'];
 
+const PROSPECTING_ADMIN_TABS = [
+  { id: 'overview', label: 'Overview' },
+  { id: 'pipeline', label: 'Pipeline Review' },
+  { id: 'recycle', label: 'Recycle Report' },
+  { id: 'add', label: 'Add & Import' },
+  { id: 'leads', label: 'Lead Workspace' },
+  { id: 'hubspot', label: 'HubSpot Tools' },
+] as const;
+
+type ProspectingAdminTab = (typeof PROSPECTING_ADMIN_TABS)[number]['id'];
+
 function stringParam(value: string | string[] | undefined) {
   return typeof value === 'string' ? value : '';
 }
 
 function normalizeBucket(value: string | string[] | undefined): Bucket {
   return BUCKETS.some((bucket) => bucket.id === value) ? value as Bucket : 'active';
+}
+
+function normalizeAdminTab(value: string | string[] | undefined): ProspectingAdminTab {
+  return PROSPECTING_ADMIN_TABS.some((tab) => tab.id === value) ? value as ProspectingAdminTab : 'overview';
+}
+
+function defaultAdminTab(searchParams: SearchParams | undefined): ProspectingAdminTab {
+  if (searchParams?.tab) return normalizeAdminTab(searchParams.tab);
+  if (searchParams?.review_rep || searchParams?.review_stage || searchParams?.review_page || searchParams?.review_page_size) return 'pipeline';
+  if (searchParams?.recycle_page || searchParams?.recycle_page_size) return 'recycle';
+  if (
+    searchParams?.bucket
+    || searchParams?.list
+    || searchParams?.page
+    || searchParams?.page_size
+    || searchParams?.priority
+    || searchParams?.q
+    || searchParams?.rep
+    || searchParams?.stage
+    || searchParams?.state
+  ) {
+    return 'leads';
+  }
+  return 'overview';
 }
 
 function isMaintenanceBucket(bucket: Bucket) {
@@ -252,6 +287,7 @@ function prospectingHref(params: {
   reviewStage?: string;
   stage?: string;
   state?: string;
+  tab?: ProspectingAdminTab;
   toast?: string;
 }) {
   const query = new URLSearchParams();
@@ -281,6 +317,7 @@ function adminFilterHref(filters: LeadFilterState, params: { page?: number; page
     rep: filters.repId,
     stage: filters.stage,
     state: filters.stateKey,
+    tab: 'leads',
     toast: params.toast,
   });
 }
@@ -296,6 +333,7 @@ function assignmentRedirectFromForm(formData: FormData, toast: string) {
     rep: String(formData.get('rep') ?? '').trim(),
     stage: String(formData.get('stage') ?? '').trim(),
     state: normalizeStateFilter(String(formData.get('state') ?? '')),
+    tab: normalizeAdminTab(String(formData.get('tab') ?? 'leads')),
     toast,
   });
 }
@@ -416,7 +454,7 @@ function mergeMissingFields(existing: LeadRow, incoming: ReturnType<typeof leadP
   return next;
 }
 
-async function requireProspectingOwner(redirectTo = `${PROSPECTING_ADMIN_PATH}?toast=admin_write_denied`) {
+async function requireProspectingOwner(redirectTo = prospectingHref({ tab: 'add', toast: 'admin_write_denied' })) {
   const current = await requireAdminSectionEdit('prospecting', redirectTo);
   if (!current.isOwner) redirect(redirectTo);
   return current;
@@ -616,13 +654,13 @@ async function importLeadCsv(formData: FormData) {
   const requestedListId = String(formData.get('existing_list_id') ?? '').trim();
   const listNameInput = String(formData.get('list_name') ?? '').trim();
 
-  if (!file || !file.size) redirect(`${PROSPECTING_ADMIN_PATH}?toast=import_missing`);
-  if (file.size > PROSPECTING_IMPORT_MAX_BYTES) redirect(`${PROSPECTING_ADMIN_PATH}?toast=import_too_large`);
+  if (!file || !file.size) redirect(prospectingHref({ tab: 'add', toast: 'import_missing' }));
+  if (file.size > PROSPECTING_IMPORT_MAX_BYTES) redirect(prospectingHref({ tab: 'add', toast: 'import_too_large' }));
   const parsed = parseCsv(await file.text());
-  if (parsed.errors.length) redirect(`${PROSPECTING_ADMIN_PATH}?toast=import_parse_error`);
-  if (parsed.rows.length > PROSPECTING_IMPORT_MAX_ROWS) redirect(`${PROSPECTING_ADMIN_PATH}?toast=import_too_many_rows`);
-  if (!parsed.rows.length) redirect(`${PROSPECTING_ADMIN_PATH}?toast=import_empty`);
-  if (!parsed.rows.some((row) => cleanText(row.company_name))) redirect(`${PROSPECTING_ADMIN_PATH}?toast=import_no_company`);
+  if (parsed.errors.length) redirect(prospectingHref({ tab: 'add', toast: 'import_parse_error' }));
+  if (parsed.rows.length > PROSPECTING_IMPORT_MAX_ROWS) redirect(prospectingHref({ tab: 'add', toast: 'import_too_many_rows' }));
+  if (!parsed.rows.length) redirect(prospectingHref({ tab: 'add', toast: 'import_empty' }));
+  if (!parsed.rows.some((row) => cleanText(row.company_name))) redirect(prospectingHref({ tab: 'add', toast: 'import_no_company' }));
 
   const firstListName = parsed.rows.map((row) => cleanText(row.list_name)).find(Boolean);
   let listId = requestedListId;
@@ -638,7 +676,7 @@ async function importLeadCsv(formData: FormData) {
       })
       .select('id')
       .single();
-    if (listError || !createdList) redirect(`${PROSPECTING_ADMIN_PATH}?toast=import_error`);
+    if (listError || !createdList) redirect(prospectingHref({ tab: 'add', toast: 'import_error' }));
     listId = createdList.id;
   }
 
@@ -652,7 +690,7 @@ async function importLeadCsv(formData: FormData) {
     })
     .select('id')
     .single();
-  if (importError || !importRow) redirect(`${PROSPECTING_ADMIN_PATH}?toast=import_error`);
+  if (importError || !importRow) redirect(prospectingHref({ tab: 'add', toast: 'import_error' }));
 
   const salesReps = await loadSalesReps(supabase);
   const repByEmail = new Map(salesReps.map((rep) => [String(rep.email ?? '').trim().toLowerCase(), rep.id]));
@@ -666,7 +704,7 @@ async function importLeadCsv(formData: FormData) {
   const existingRows: LeadRow[] = [];
   for (const keyBatch of chunkArray(companyKeys, 400)) {
     const { data, error } = await supabase.from('prospecting_leads').select('*').in('company_name_key', keyBatch);
-    if (error) redirect(`${PROSPECTING_ADMIN_PATH}?toast=import_error`);
+    if (error) redirect(prospectingHref({ tab: 'add', toast: 'import_error' }));
     existingRows.push(...((data ?? []) as LeadRow[]));
   }
   const exactByKey = new Map(existingRows.map((lead) => [`${lead.company_name_key}:${lead.phone_key ?? ''}`, lead]));
@@ -808,7 +846,7 @@ async function importLeadCsv(formData: FormData) {
     })
     .eq('id', importRow.id);
 
-  redirect(prospectingHref({ bucket: 'active', list: listId, toast: 'import_complete' }));
+  redirect(prospectingHref({ bucket: 'active', list: listId, tab: 'leads', toast: 'import_complete' }));
 }
 
 async function createSingleLead(formData: FormData) {
@@ -817,7 +855,7 @@ async function createSingleLead(formData: FormData) {
   const current = await requireProspectingOwner();
   const supabase = await createClient();
   const companyName = cleanText(formData.get('company_name'));
-  if (!companyName) redirect(`${PROSPECTING_ADMIN_PATH}?toast=single_company_required`);
+  if (!companyName) redirect(prospectingHref({ tab: 'add', toast: 'single_company_required' }));
 
   const salesProfileId = String(formData.get('assigned_profile_id') ?? '').trim() || null;
   if (salesProfileId) {
@@ -827,7 +865,7 @@ async function createSingleLead(formData: FormData) {
       .eq('profile_id', salesProfileId)
       .eq('is_sales_rep', true)
       .maybeSingle();
-    if (!data) redirect(`${PROSPECTING_ADMIN_PATH}?toast=invalid_rep`);
+    if (!data) redirect(prospectingHref({ tab: 'add', toast: 'invalid_rep' }));
   }
 
   const requestedListId = String(formData.get('existing_list_id') ?? '').trim();
@@ -845,7 +883,7 @@ async function createSingleLead(formData: FormData) {
       })
       .select('id')
       .single();
-    if (listError || !createdList) redirect(`${PROSPECTING_ADMIN_PATH}?toast=single_error`);
+    if (listError || !createdList) redirect(prospectingHref({ tab: 'add', toast: 'single_error' }));
     listId = createdList.id;
   }
 
@@ -883,13 +921,13 @@ async function createSingleLead(formData: FormData) {
     .from('prospecting_leads')
     .select('*')
     .eq('company_name_key', companyNameKey);
-  if (existingError) redirect(`${PROSPECTING_ADMIN_PATH}?toast=single_error`);
+  if (existingError) redirect(prospectingHref({ tab: 'add', toast: 'single_error' }));
 
   const existingRows = (existingData ?? []) as LeadRow[];
   const exact = existingRows.find((lead) => `${lead.company_name_key}:${lead.phone_key ?? ''}` === `${companyNameKey}:${phoneKey}`);
   const sameCompanyDifferentPhone = existingRows.find((lead) => (lead.phone_key ?? '') !== phoneKey);
   if (!exact && sameCompanyDifferentPhone) {
-    redirect(`${PROSPECTING_ADMIN_PATH}?toast=single_duplicate_review`);
+    redirect(prospectingHref({ tab: 'add', toast: 'single_duplicate_review' }));
   }
 
   let leadId = exact?.id ?? '';
@@ -900,7 +938,7 @@ async function createSingleLead(formData: FormData) {
     if (!exact.last_result && payload.last_result) updates.last_result = payload.last_result;
     if (Object.keys(updates).length) {
       const { error } = await supabase.from('prospecting_leads').update(updates).eq('id', exact.id);
-      if (error) redirect(`${PROSPECTING_ADMIN_PATH}?toast=single_error`);
+      if (error) redirect(prospectingHref({ tab: 'add', toast: 'single_error' }));
     }
     wasMerge = true;
   } else {
@@ -909,7 +947,7 @@ async function createSingleLead(formData: FormData) {
       .insert(payload)
       .select('id')
       .single();
-    if (error || !createdLead) redirect(`${PROSPECTING_ADMIN_PATH}?toast=single_error`);
+    if (error || !createdLead) redirect(prospectingHref({ tab: 'add', toast: 'single_error' }));
     leadId = createdLead.id;
   }
 
@@ -919,7 +957,7 @@ async function createSingleLead(formData: FormData) {
       lead_id: leadId,
       list_id: listId,
     }, { onConflict: 'list_id,lead_id' });
-    if (error) redirect(`${PROSPECTING_ADMIN_PATH}?toast=single_error`);
+    if (error) redirect(prospectingHref({ tab: 'add', toast: 'single_error' }));
   }
 
   const contactFullName = cleanText(formData.get('contact_full_name'));
@@ -937,7 +975,7 @@ async function createSingleLead(formData: FormData) {
       title: contactTitle,
       updated_by: current.profile.id,
     });
-    if (error) redirect(`${PROSPECTING_ADMIN_PATH}?toast=single_error`);
+    if (error) redirect(prospectingHref({ tab: 'add', toast: 'single_error' }));
   }
 
   await supabase.from('prospecting_activities').insert({
@@ -953,6 +991,7 @@ async function createSingleLead(formData: FormData) {
   redirect(prospectingHref({
     bucket: stage === 'sample_requested' ? 'sample_requested' : stage === 'interested' ? 'interested' : ACTIVE_PROSPECTING_STAGES.includes(stage) ? 'active' : 'all',
     list: listId,
+    tab: 'leads',
     toast: wasMerge ? 'single_merged' : 'single_created',
   }));
 }
@@ -1009,10 +1048,10 @@ async function bulkAssignLeads(formData: FormData) {
 async function markHubspotExported(formData: FormData) {
   'use server';
 
-  const current = await requireProspectingOwner(`${PROSPECTING_ADMIN_PATH}?bucket=hubspot&toast=admin_write_denied`);
+  const current = await requireProspectingOwner(prospectingHref({ bucket: 'hubspot', tab: 'leads', toast: 'admin_write_denied' }));
   const supabase = await createClient();
   const leadIds = [...new Set(formData.getAll('lead_id').map(String).filter(Boolean))];
-  if (!leadIds.length) redirect(`${PROSPECTING_ADMIN_PATH}?bucket=hubspot&toast=bulk_missing`);
+  if (!leadIds.length) redirect(prospectingHref({ bucket: 'hubspot', tab: 'leads', toast: 'bulk_missing' }));
 
   const now = new Date().toISOString();
   const { error } = await supabase
@@ -1044,11 +1083,11 @@ async function markHubspotExported(formData: FormData) {
     })));
   }
 
-  redirect(`${PROSPECTING_ADMIN_PATH}?bucket=hubspot&toast=${error ? 'hubspot_error' : 'hubspot_exported'}`);
+  redirect(prospectingHref({ bucket: 'hubspot', tab: 'leads', toast: error ? 'hubspot_error' : 'hubspot_exported' }));
 }
 
 function hubspotPushRedirect(toast: string) {
-  return `${PROSPECTING_ADMIN_PATH}?bucket=hubspot&toast=${toast}`;
+  return prospectingHref({ bucket: 'hubspot', tab: 'leads', toast });
 }
 
 function hubspotPushErrorMessage(error: unknown) {
@@ -1413,6 +1452,7 @@ export default async function ProspectingAdminPage({ searchParams }: { searchPar
   const { from: reviewFrom, to: reviewTo } = paginationRange(reviewPage, reviewPageSize);
   const q = stringParam(searchParams?.q).trim();
   const toast = stringParam(searchParams?.toast);
+  const activeTab = defaultAdminTab(searchParams);
 
   const [salesReps, { data: listsData }] = await Promise.all([
     isOwner ? loadSalesReps(supabase) : Promise.resolve([current.profile as ProfileRow]),
@@ -1428,6 +1468,24 @@ export default async function ProspectingAdminPage({ searchParams }: { searchPar
   const selectedReviewRepId = salesRepsRows.some((rep) => rep.id === requestedReviewRepId) ? requestedReviewRepId : salesRepsRows[0]?.id ?? '';
   const selectedReviewStage = PIPELINE_REVIEW_STAGES.some((stage) => stage === requestedReviewStage) ? requestedReviewStage as ProspectingStage : '';
   const selectedReviewRep = selectedReviewRepId ? salesRepsRows.find((rep) => rep.id === selectedReviewRepId) ?? null : null;
+  const adminTabHref = (tab: ProspectingAdminTab) => prospectingHref({
+    bucket,
+    list: selectedListId,
+    page,
+    pageSize,
+    priority: selectedPriority,
+    q,
+    recyclePage,
+    recyclePageSize,
+    rep: selectedRepId,
+    reviewPage,
+    reviewPageSize,
+    reviewRep: selectedReviewRepId,
+    reviewStage: selectedReviewStage,
+    stage: selectedStage,
+    state: selectedStateKey,
+    tab,
+  });
 
   const filters: LeadFilterState = {
     bucket,
@@ -1710,24 +1768,47 @@ export default async function ProspectingAdminPage({ searchParams }: { searchPar
         </div>
       </section>
 
-      <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-        <StatCard label="Active" value={metrics.active.toLocaleString()} detail="New, working, and follow-up leads still in the calling queue." />
-        <StatCard label="Unassigned" value={metrics.unassigned.toLocaleString()} detail="Leads that still need a sales rep assigned." />
-        <StatCard label="Interested" value={metrics.interested.toLocaleString()} detail="Leads that left the active list for the interested bucket." />
-        <StatCard label="Samples" value={metrics.samples.toLocaleString()} detail="Leads ready for sample handling and HubSpot review." />
-        <StatCard label="Not a Fit Review" value={metrics.notAFit.toLocaleString()} detail="Owner-only leads waiting for delete or recycle review." />
-        <StatCard label="Lost Review" value={metrics.lost.toLocaleString()} detail="Lost leads waiting for owner maintenance." />
-        <StatCard label="HubSpot Queue" value={metrics.hubspot.toLocaleString()} detail="Interested or sample leads waiting for export." />
-        <StatCard label="Follow-Ups" value={metrics.followUps.toLocaleString()} detail="Leads with a next follow-up date scheduled." />
+      <section className="card">
+        <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-6">
+          {PROSPECTING_ADMIN_TABS.map((tab) => (
+            <Link
+              key={tab.id}
+              className={`rounded-xl border px-4 py-3 text-sm font-semibold transition-all duration-200 ${
+                activeTab === tab.id
+                  ? 'border-teal-200 bg-teal-50 text-teal-900'
+                  : 'border-slate-200 bg-white/70 text-slate-700 hover:border-teal-200 hover:text-teal-800'
+              }`}
+              href={adminTabHref(tab.id)}
+            >
+              {tab.label}
+            </Link>
+          ))}
+        </div>
       </section>
 
-      <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-        <StatCard label="Calls Made" value={reportMetrics.calls.toLocaleString()} detail="Call activities logged on the visible lead page." />
-        <StatCard label="Emails Sent" value={reportMetrics.emails.toLocaleString()} detail="Email activities logged on the visible lead page." />
-        <StatCard label="Interested Results" value={reportMetrics.interested.toLocaleString()} detail="Activities where the canned result indicated interest." />
-        <StatCard label="Sample Requests" value={reportMetrics.samples.toLocaleString()} detail="Activities where a sample was requested." />
-      </section>
+      {activeTab === 'overview' ? (
+        <>
+          <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+            <StatCard label="Active" value={metrics.active.toLocaleString()} detail="New, working, and follow-up leads still in the calling queue." />
+            <StatCard label="Unassigned" value={metrics.unassigned.toLocaleString()} detail="Leads that still need a sales rep assigned." />
+            <StatCard label="Interested" value={metrics.interested.toLocaleString()} detail="Leads that left the active list for the interested bucket." />
+            <StatCard label="Samples" value={metrics.samples.toLocaleString()} detail="Leads ready for sample handling and HubSpot review." />
+            <StatCard label="Not a Fit Review" value={metrics.notAFit.toLocaleString()} detail="Owner-only leads waiting for delete or recycle review." />
+            <StatCard label="Lost Review" value={metrics.lost.toLocaleString()} detail="Lost leads waiting for owner maintenance." />
+            <StatCard label="HubSpot Queue" value={metrics.hubspot.toLocaleString()} detail="Interested or sample leads waiting for export." />
+            <StatCard label="Follow-Ups" value={metrics.followUps.toLocaleString()} detail="Leads with a next follow-up date scheduled." />
+          </section>
 
+          <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+            <StatCard label="Calls Made" value={reportMetrics.calls.toLocaleString()} detail="Call activities logged on the visible lead page." />
+            <StatCard label="Emails Sent" value={reportMetrics.emails.toLocaleString()} detail="Email activities logged on the visible lead page." />
+            <StatCard label="Interested Results" value={reportMetrics.interested.toLocaleString()} detail="Activities where the canned result indicated interest." />
+            <StatCard label="Sample Requests" value={reportMetrics.samples.toLocaleString()} detail="Activities where a sample was requested." />
+          </section>
+        </>
+      ) : null}
+
+      {activeTab === 'pipeline' ? (
       <section className="space-y-4">
         <div className="card space-y-4">
           <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
@@ -1741,6 +1822,7 @@ export default async function ProspectingAdminPage({ searchParams }: { searchPar
               </p>
             </div>
             <form className="grid gap-3 sm:grid-cols-[minmax(14rem,1fr)_minmax(12rem,0.8fr)_8rem_auto] sm:items-end" action={PROSPECTING_ADMIN_PATH}>
+              <input type="hidden" name="tab" value="pipeline" />
               <input type="hidden" name="bucket" value={bucket} />
               <input type="hidden" name="list" value={selectedListId} />
               <input type="hidden" name="rep" value={selectedRepId} />
@@ -1819,6 +1901,7 @@ export default async function ProspectingAdminPage({ searchParams }: { searchPar
                   reviewStage: selectedReviewStage,
                   stage: selectedStage,
                   state: selectedStateKey,
+                  tab: 'pipeline',
                 })}
               >
                 Previous
@@ -1841,6 +1924,7 @@ export default async function ProspectingAdminPage({ searchParams }: { searchPar
                   reviewStage: selectedReviewStage,
                   stage: selectedStage,
                   state: selectedStateKey,
+                  tab: 'pipeline',
                 })}
               >
                 Next
@@ -1866,6 +1950,7 @@ export default async function ProspectingAdminPage({ searchParams }: { searchPar
                 reviewRep: selectedReviewRepId,
                 state: selectedStateKey,
                 stage: selectedStage,
+                tab: 'pipeline',
               })}
             >
               <span className="block">All Stages</span>
@@ -1900,6 +1985,7 @@ export default async function ProspectingAdminPage({ searchParams }: { searchPar
                     reviewStage: stageSummary.stage,
                     stage: selectedStage,
                     state: selectedStateKey,
+                    tab: 'pipeline',
                   })}
                 >
                   <span className="block">{stageLabel(stageSummary.stage)}</span>
@@ -1992,8 +2078,9 @@ export default async function ProspectingAdminPage({ searchParams }: { searchPar
           </div>
         </div>
       </section>
+      ) : null}
 
-      {isOwner ? (
+      {activeTab === 'recycle' && isOwner ? (
         <section className="card space-y-4">
           <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
             <div>
@@ -2016,11 +2103,13 @@ export default async function ProspectingAdminPage({ searchParams }: { searchPar
                   rep: selectedRepId,
                   state: selectedStateKey,
                   stage: 'recycle_try_later',
+                  tab: 'leads',
                 })}
               >
                 View Current Recycle Leads
               </Link>
               <form className="flex items-end gap-2" action={PROSPECTING_ADMIN_PATH}>
+                <input type="hidden" name="tab" value="recycle" />
                 <input type="hidden" name="bucket" value={bucket} />
                 <input type="hidden" name="list" value={selectedListId} />
                 <input type="hidden" name="rep" value={selectedRepId} />
@@ -2065,6 +2154,7 @@ export default async function ProspectingAdminPage({ searchParams }: { searchPar
                   recyclePageSize,
                   stage: selectedStage,
                   state: selectedStateKey,
+                  tab: 'recycle',
                 })}
               >
                 Previous
@@ -2083,6 +2173,7 @@ export default async function ProspectingAdminPage({ searchParams }: { searchPar
                   recyclePageSize,
                   stage: selectedStage,
                   state: selectedStateKey,
+                  tab: 'recycle',
                 })}
               >
                 Next
@@ -2145,7 +2236,7 @@ export default async function ProspectingAdminPage({ searchParams }: { searchPar
         </section>
       ) : null}
 
-      {isOwner ? (
+      {activeTab === 'add' && isOwner ? (
         <section className="space-y-5">
           <form action={createSingleLead} className="card space-y-5">
             <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
@@ -2322,6 +2413,7 @@ export default async function ProspectingAdminPage({ searchParams }: { searchPar
         </section>
       ) : null}
 
+      {activeTab === 'leads' ? (
       <section className="card space-y-4">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
           <div>
@@ -2342,6 +2434,7 @@ export default async function ProspectingAdminPage({ searchParams }: { searchPar
         </div>
 
         <form className="grid gap-3 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,0.8fr)_minmax(0,1fr)_minmax(0,1fr)_9rem_auto] lg:items-end">
+          <input type="hidden" name="tab" value="leads" />
           <input type="hidden" name="bucket" value={bucket} />
           <input type="hidden" name="review_rep" value={selectedReviewRepId} />
           <input type="hidden" name="review_stage" value={selectedReviewStage} />
@@ -2459,8 +2552,9 @@ export default async function ProspectingAdminPage({ searchParams }: { searchPar
           </form>
         ) : null}
       </section>
+      ) : null}
 
-      {leadRows.length && isMaintenanceBucket(bucket) ? (
+      {activeTab === 'leads' && leadRows.length && isMaintenanceBucket(bucket) ? (
         <section className="space-y-3">
           {leadRows.map((lead) => {
             const leadContacts = contactsByLead.get(lead.id) ?? [];
@@ -2504,6 +2598,7 @@ export default async function ProspectingAdminPage({ searchParams }: { searchPar
                     </div>
                     <Link className="btn-secondary w-full" href={leadDetailHref(lead.id, selectedStateKey)}>Open Lead</Link>
                     <form action={recycleMaintenanceLead}>
+                      <input type="hidden" name="tab" value="leads" />
                       <input type="hidden" name="lead_id" value={lead.id} />
                       <input type="hidden" name="bucket" value={bucket} />
                       <input type="hidden" name="list" value={selectedListId} />
@@ -2517,6 +2612,7 @@ export default async function ProspectingAdminPage({ searchParams }: { searchPar
                       <PendingSubmitButton className="btn-primary w-full" disabled={Boolean(lead.do_not_contact)} disabledLabel="Clear Do Not Contact First" label="Recycle Later" pendingLabel="Recycling..." />
                     </form>
                     <form action={archiveMaintenanceLead}>
+                      <input type="hidden" name="tab" value="leads" />
                       <input type="hidden" name="lead_id" value={lead.id} />
                       <input type="hidden" name="bucket" value={bucket} />
                       <input type="hidden" name="list" value={selectedListId} />
@@ -2535,8 +2631,9 @@ export default async function ProspectingAdminPage({ searchParams }: { searchPar
             );
           })}
         </section>
-      ) : leadRows.length ? (
+      ) : activeTab === 'leads' && leadRows.length ? (
         <form id="prospecting-bulk-assignment" action={bulkAssignLeads} className="space-y-3">
+          <input type="hidden" name="tab" value="leads" />
           <input type="hidden" name="bucket" value={bucket} />
           <input type="hidden" name="list" value={selectedListId} />
           <input type="hidden" name="rep" value={selectedRepId} />
@@ -2650,14 +2747,14 @@ export default async function ProspectingAdminPage({ searchParams }: { searchPar
             })}
           </section>
         </form>
-      ) : (
+      ) : activeTab === 'leads' ? (
         <div className="card border-dashed py-12 text-center">
           <h2 className="text-xl font-semibold text-slate-950">No leads found</h2>
           <p className="mt-2 text-sm text-slate-500">Try another bucket, clear filters, or import a CSV list.</p>
         </div>
-      )}
+      ) : null}
 
-      {isOwner && duplicateReviews.length ? (
+      {activeTab === 'hubspot' && isOwner && duplicateReviews.length ? (
         <section className="card space-y-4">
           <div>
             <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Duplicate Review</p>
@@ -2690,12 +2787,14 @@ export default async function ProspectingAdminPage({ searchParams }: { searchPar
         </section>
       ) : null}
 
+      {activeTab === 'hubspot' ? (
       <section className="card space-y-3">
         <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">HubSpot Export Fields</p>
         <code className="block overflow-x-auto rounded-lg bg-white/70 p-3 text-xs text-slate-700">
           {csvLine(['company_name', 'company_phone', 'company_email', 'address_line_1', 'city', 'state', 'postal_code', 'primary_contact_name', 'primary_contact_email', 'primary_contact_phone', 'assigned_rep', 'stage', 'last_result', 'notes'])}
         </code>
       </section>
+      ) : null}
     </div>
   );
 }

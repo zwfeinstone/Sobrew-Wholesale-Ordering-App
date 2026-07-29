@@ -55,6 +55,7 @@ const PROSPECTING_ADMIN_PATH = '/admin/sales/prospecting/admin';
 function redirectTo(request: NextRequest, toast: string, params: Record<string, string> = {}) {
   const url = new URL(PROSPECTING_ADMIN_PATH, request.url);
   url.searchParams.set('toast', toast);
+  url.searchParams.set('tab', params.tab || (toast === 'import_complete' ? 'leads' : 'add'));
   for (const [key, value] of Object.entries(params)) {
     if (value) url.searchParams.set(key, value);
   }
@@ -135,7 +136,7 @@ async function loadSalesReps(supabase: Awaited<ReturnType<typeof createClient>>)
 }
 
 export async function POST(request: NextRequest) {
-  const current = await requireAdminSectionEdit('prospecting', `${PROSPECTING_ADMIN_PATH}?toast=admin_write_denied`);
+  const current = await requireAdminSectionEdit('prospecting', `${PROSPECTING_ADMIN_PATH}?tab=add&toast=admin_write_denied`);
   if (!current.isOwner) {
     return redirectTo(request, 'admin_write_denied');
   }

@@ -38,9 +38,10 @@ type ProfileRow = {
 };
 
 export async function GET() {
-  const current = await requireAdminSectionEdit('prospecting', '/admin/sales/prospecting/admin?bucket=hubspot&toast=admin_write_denied');
+  const deniedRedirect = '/admin/sales/prospecting/admin?tab=leads&bucket=hubspot&toast=admin_write_denied';
+  const current = await requireAdminSectionEdit('prospecting', deniedRedirect);
   if (!current.isOwner) {
-    return NextResponse.redirect('/admin/sales/prospecting/admin?bucket=hubspot&toast=admin_write_denied');
+    return NextResponse.redirect(deniedRedirect);
   }
 
   const supabase = await createClient();
