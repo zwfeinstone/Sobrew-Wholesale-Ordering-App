@@ -32,6 +32,7 @@ import {
   prospectingQueueContextFromParams,
   prospectingQueueHiddenFields,
   prospectingQueueOrderFields,
+  prospectingQueueQueryString,
   prospectingQueueRequiresFollowUp,
   prospectingQueueSkipsTouchedToday,
   prospectingQueueStageFilter,
@@ -146,8 +147,23 @@ function leadHref(leadId: string, toast?: string, queueContext: ProspectingQueue
   return prospectingLeadPath(leadId, queueContext, { includePageSize: true, toast });
 }
 
-function sampleOrderHref(leadId: string, toast?: string) {
-  const params = new URLSearchParams({ lead: leadId });
+function sampleOrderHref({
+  leadId,
+  nextRecordId,
+  previousRecordId,
+  queueContext,
+  toast,
+}: {
+  leadId: string;
+  nextRecordId?: string;
+  previousRecordId?: string;
+  queueContext: ProspectingQueueContext;
+  toast?: string;
+}) {
+  const params = new URLSearchParams(prospectingQueueQueryString(queueContext, { includePageSize: true }));
+  params.set('lead', leadId);
+  if (nextRecordId) params.set('next_record_id', nextRecordId);
+  if (previousRecordId) params.set('previous_record_id', previousRecordId);
   if (toast) params.set('toast', toast);
   return `/admin/sales/prospecting/sample-order?${params.toString()}`;
 }
@@ -376,7 +392,7 @@ async function saveLeadDetails(formData: FormData) {
   if (activityError) redirect(leadHref(leadId, 'save_error', queueContext));
 
   if (shouldMoveToSampleReview) {
-    redirect(sampleOrderHref(leadId, 'sample_requested'));
+    redirect(sampleOrderHref({ leadId, nextRecordId, previousRecordId, queueContext, toast: 'sample_requested' }));
   }
 
   if ((shouldRecycle || shouldMoveToMaintenance || shouldLeaveCurrentQueue) && !current.isOwner) {
@@ -626,7 +642,7 @@ async function logLeadActivity(formData: FormData) {
   }
 
   if (shouldMoveToSampleReview) {
-    redirect(sampleOrderHref(leadId, 'sample_requested'));
+    redirect(sampleOrderHref({ leadId, nextRecordId, previousRecordId, queueContext, toast: 'sample_requested' }));
   }
 
   if ((shouldRecycle || shouldMoveToMaintenance || shouldLeaveCurrentQueue) && !current.isOwner) {
@@ -658,6 +674,7 @@ function Toasts({ toast }: { toast: string }) {
     notes_error: { message: 'Unable to save lead notes.', tone: 'error' },
     notes_saved: { message: 'Lead notes saved.', tone: 'success' },
     save_error: { message: 'Unable to save this lead. Check for duplicate company and phone values.', tone: 'error' },
+    sample_order_created: { message: 'Sample order created. Moved to the next record.', tone: 'success' },
     sample_requested: { message: 'Sample requested. Moved to the next record.', tone: 'success' },
   };
   const match = messages[toast];

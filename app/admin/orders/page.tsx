@@ -51,6 +51,10 @@ function orderCustomerLabel(order: any) {
   return order.centers?.name || order.shipping_company || order.shipping_name || 'Unknown center';
 }
 
+function orderSpecialNotes(order: any) {
+  return typeof order.notes === 'string' ? order.notes.trim() : '';
+}
+
 async function updateStatus(formData: FormData) {
   'use server';
   const id = String(formData.get('id') ?? '').trim();
@@ -168,7 +172,7 @@ export default async function AdminOrdersPage({ searchParams }: { searchParams: 
   const status = isOrderStatus(statusParam) ? statusParam : '';
   const q = typeof searchParams.q === 'string' ? searchParams.q.trim() : '';
   const toast = typeof searchParams.toast === 'string' ? searchParams.toast : '';
-  let query = supabase.from('orders').select('id,status,order_kind,shipping_company,shipping_name,created_at,subtotal_cents,profiles(email),centers(name)').is('archived_at', null).order('created_at', { ascending: false });
+  let query = supabase.from('orders').select('id,status,order_kind,shipping_company,shipping_name,created_at,subtotal_cents,notes,profiles(email),centers(name)').is('archived_at', null).order('created_at', { ascending: false });
   if (status) query = query.eq('status', status);
 
   const [ordersResult, ...statusCountResults] = await Promise.all([
@@ -213,6 +217,7 @@ export default async function AdminOrdersPage({ searchParams }: { searchParams: 
           order.centers?.name,
           order.shipping_company,
           order.shipping_name,
+          orderSpecialNotes(order),
           order.profiles?.email,
           ...(itemLabelsByOrderId.get(order.id) ?? []),
         ]
@@ -324,6 +329,7 @@ export default async function AdminOrdersPage({ searchParams }: { searchParams: 
           orders.map((order: any) => {
             const action = nextActionForStatus(order.status);
             const labels = itemLabelsByOrderId.get(order.id) ?? ['Unknown product'];
+            const specialNotes = orderSpecialNotes(order);
             const primaryAction =
               order.status === 'New' ? (
                 <form action={updateStatus} className="w-full md:w-auto">
@@ -360,6 +366,12 @@ export default async function AdminOrdersPage({ searchParams }: { searchParams: 
                       <span className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">{action.helper}</span>
                     </div>
                     <p className="mt-3 break-words text-base font-semibold text-slate-950">{labels.join(', ')}</p>
+                    {specialNotes ? (
+                      <div className="mt-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm font-bold leading-6 text-red-700">
+                        <span className="uppercase tracking-[0.14em]">Special notes:</span>{' '}
+                        <span className="whitespace-pre-wrap">{specialNotes}</span>
+                      </div>
+                    ) : null}
                     <div className="mt-3 grid gap-1 text-sm text-slate-600 md:grid-cols-3">
                       <p className="font-medium text-slate-700">{orderCustomerLabel(order)}</p>
                       <p className="break-all">{order.profiles?.email || 'No login email on file'}</p>

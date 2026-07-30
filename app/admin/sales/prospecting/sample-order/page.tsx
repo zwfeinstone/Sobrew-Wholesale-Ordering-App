@@ -7,9 +7,24 @@ import {
   createProspectingSampleOrder,
   prospectingSampleOrderInputFromFormData,
 } from '@/lib/prospecting-sample-orders';
-import { US_STATE_OPTIONS } from '@/lib/prospecting';
+import {
+  MISSING_STATE_FILTER,
+  US_STATE_OPTIONS,
+  postgrestIlikePattern,
+  prospectingLeadPath,
+  prospectingPath,
+  prospectingQueueContextFromParams,
+  prospectingQueueHiddenFields,
+  prospectingQueueOrderFields,
+  prospectingQueueQueryString,
+  prospectingQueueRequiresFollowUp,
+  prospectingQueueSkipsTouchedToday,
+  prospectingQueueStageFilter,
+  type ProspectingQueueContext,
+} from '@/lib/prospecting';
 import { getSupabaseAdmin } from '@/lib/supabase/admin';
 import { createClient } from '@/lib/supabase/server';
+import { formatCentralDateInput, parseCentralDateInput } from '@/lib/time-clock';
 
 type SearchParams = Record<string, string | string[] | undefined>;
 type Related<T> = T | T[] | null | undefined;
@@ -39,12 +54,102 @@ type ProductRow = {
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-function sampleOrderHref({ leadId, toast }: { leadId?: string | null; toast?: string }) {
-  const params = new URLSearchParams();
+function sampleOrderHref({
+  leadId,
+  nextRecordId,
+  previousRecordId,
+  queueContext,
+  toast,
+}: {
+  leadId?: string | null;
+  nextRecordId?: string;
+  previousRecordId?: string;
+  queueContext?: ProspectingQueueContext;
+  toast?: string;
+}) {
+  const params = new URLSearchParams(queueContext ? prospectingQueueQueryString(queueContext, { includePageSize: true }) : undefined);
   if (leadId) params.set('lead', leadId);
+  if (nextRecordId) params.set('next_record_id', nextRecordId);
+  if (previousRecordId) params.set('previous_record_id', previousRecordId);
   if (toast) params.set('toast', toast);
   const query = params.toString();
   return `/admin/sales/prospecting/sample-order${query ? `?${query}` : ''}`;
+}
+
+function cleanRecordId(value: FormDataEntryValue | string | string[] | null | undefined) {
+  const text = typeof value === 'string' ? value.trim() : '';
+  return UUID_PATTERN.test(text) ? text : '';
+}
+
+function QueueContextFields({ context }: { context: ProspectingQueueContext }) {
+  return (
+    <>
+      {prospectingQueueHiddenFields(context).map((field) => (
+        <input key={field.name} type="hidden" name={field.name} value={field.value} />
+      ))}
+    </>
+  );
+}
+
+async function sampleOrderCompletionHref({
+  currentProfileId,
+  isOwner,
+  nextRecordId,
+  previousRecordId,
+  queueContext,
+}: {
+  currentProfileId: string;
+  isOwner: boolean;
+  nextRecordId: string;
+  previousRecordId: string;
+  queueContext: ProspectingQueueContext;
+}) {
+  const candidateIds = [nextRecordId, previousRecordId].filter(Boolean);
+  if (!candidateIds.length) return prospectingPath(queueContext, { includePageSize: true, toast: 'sample_order_created' });
+
+  const supabase = getSupabaseAdmin();
+  const today = formatCentralDateInput(new Date());
+  const todayStart = parseCentralDateInput(today) ?? new Date();
+  const selectColumns = queueContext.listId ? 'id,prospecting_list_leads!inner(list_id)' : 'id';
+  let query = supabase
+    .from('prospecting_leads')
+    .select(selectColumns)
+    .in('id', candidateIds)
+    .is('archived_at', null);
+
+  if (isOwner) {
+    if (queueContext.repId) query = query.eq('assigned_profile_id', queueContext.repId);
+  } else {
+    query = query.eq('assigned_profile_id', currentProfileId);
+  }
+  query = query.in('stage', prospectingQueueStageFilter(queueContext));
+  if (prospectingQueueRequiresFollowUp(queueContext)) query = query.not('next_follow_up_at', 'is', null).lte('next_follow_up_at', today);
+  if (prospectingQueueSkipsTouchedToday(queueContext)) query = query.or(`last_activity_at.is.null,last_activity_at.lt.${todayStart.toISOString()}`);
+  if (queueContext.priority) query = query.eq('priority', queueContext.priority);
+  if (queueContext.state === MISSING_STATE_FILTER) query = query.is('state_key', null);
+  else if (queueContext.state) query = query.eq('state_key', queueContext.state);
+  if (queueContext.listId) query = query.eq('prospecting_list_leads.list_id', queueContext.listId);
+  if (queueContext.q) {
+    const search = postgrestIlikePattern(queueContext.q);
+    query = query.or([
+      `company_name.ilike.${search}`,
+      `phone.ilike.${search}`,
+      `company_email.ilike.${search}`,
+      `city.ilike.${search}`,
+      `state.ilike.${search}`,
+      `last_result.ilike.${search}`,
+    ].join(','));
+  }
+  for (const order of prospectingQueueOrderFields(queueContext)) {
+    query = query.order(order.column, { ascending: order.ascending });
+  }
+
+  const { data } = await query;
+  const validIds = new Set(((data ?? []) as unknown as Array<{ id: string | null }>).map((row) => row.id).filter(Boolean));
+  const destinationId = candidateIds.find((id) => validIds.has(id));
+  return destinationId
+    ? prospectingLeadPath(destinationId, queueContext, { includePageSize: true, toast: 'sample_order_created' })
+    : prospectingPath(queueContext, { includePageSize: true, toast: 'sample_order_created' });
 }
 
 function productLabel(product: ProductRow) {
@@ -78,6 +183,9 @@ async function submitSampleOrder(formData: FormData) {
   'use server';
 
   const leadId = String(formData.get('lead_id') ?? '').trim();
+  const queueContext = prospectingQueueContextFromParams(formData);
+  const nextRecordId = cleanRecordId(formData.get('next_record_id'));
+  const previousRecordId = cleanRecordId(formData.get('previous_record_id'));
   const current = await requireAdminSectionEdit('prospecting', sampleOrderHref({ leadId, toast: 'admin_write_denied' }));
   const supabase = getSupabaseAdmin();
   const result = await createProspectingSampleOrder({
@@ -88,7 +196,17 @@ async function submitSampleOrder(formData: FormData) {
   });
 
   if (result.error || !result.orderId) {
-    redirect(sampleOrderHref({ leadId, toast: result.error ?? 'insert_error' }));
+    redirect(sampleOrderHref({ leadId, nextRecordId, previousRecordId, queueContext, toast: result.error ?? 'insert_error' }));
+  }
+
+  if (leadId) {
+    redirect(await sampleOrderCompletionHref({
+      currentProfileId: current.profile.id,
+      isOwner: current.isOwner,
+      nextRecordId,
+      previousRecordId,
+      queueContext,
+    }));
   }
 
   redirect(`/admin/orders/${result.orderId}?toast=sample_order_created`);
@@ -103,9 +221,12 @@ export default async function ProspectingSampleOrderPage({
   const canEdit = current.isOwner || adminCanEdit(current.access, 'prospecting');
   const supabase = await createClient();
   const toast = typeof searchParams?.toast === 'string' ? searchParams.toast : '';
+  const queueContext = prospectingQueueContextFromParams(searchParams);
   const requestedLeadId = typeof searchParams?.lead === 'string' && UUID_PATTERN.test(searchParams.lead)
     ? searchParams.lead
     : '';
+  const nextRecordId = cleanRecordId(searchParams?.next_record_id);
+  const previousRecordId = cleanRecordId(searchParams?.previous_record_id);
 
   let leadQuery = requestedLeadId
     ? supabase
@@ -152,12 +273,15 @@ export default async function ProspectingSampleOrderPage({
               {lead ? 'Review the lead details, choose sample boxes, and send the order to production.' : 'Enter the shipment details, choose sample boxes, and send a standalone order to production.'}
             </p>
           </div>
-          <Link className="btn-secondary w-full sm:w-auto" href="/admin/sales/prospecting">Back to Prospecting</Link>
+          <Link className="btn-secondary w-full sm:w-auto" href={prospectingPath(queueContext, { includePageSize: true })}>Back to Prospecting</Link>
         </div>
       </section>
 
       <form action={submitSampleOrder} className="card space-y-5">
         <input type="hidden" name="lead_id" value={lead?.id ?? ''} />
+        <QueueContextFields context={queueContext} />
+        <input type="hidden" name="next_record_id" value={nextRecordId} />
+        <input type="hidden" name="previous_record_id" value={previousRecordId} />
         <div className="grid gap-3 md:grid-cols-2">
           <label className="text-sm font-semibold text-slate-700">
             Center name

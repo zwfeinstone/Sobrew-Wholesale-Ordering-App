@@ -116,6 +116,7 @@ async function updateProduct(formData: FormData) {
     description: String(formData.get('description') ?? ''),
     category,
     active: formData.get('active') === 'on',
+    receivable_finished_good: formData.get('receivable_finished_good') === 'on',
     shipping_box_count_required: formData.get('shipping_box_count_required') === 'on',
     ...(image_url ? { image_url } : {})
   }).eq('id', id);
@@ -328,6 +329,7 @@ export default async function ProductPage({
         <textarea className="input min-h-28" name="description" defaultValue={product.description ?? ''} />
         <label className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-white/60 px-4 py-3 text-sm font-medium text-slate-700"><input type="checkbox" name="active" defaultChecked={product.active} /> Active</label>
         <label className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-white/60 px-4 py-3 text-sm font-medium text-slate-700"><input type="checkbox" name="shipping_box_count_required" defaultChecked={Boolean(product.shipping_box_count_required)} /> Box count required at shipping</label>
+        <label className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-white/60 px-4 py-3 text-sm font-medium text-slate-700"><input type="checkbox" name="receivable_finished_good" defaultChecked={Boolean(product.receivable_finished_good)} /> Can be received as purchased finished good</label>
         <label className="space-y-2 text-sm font-medium text-slate-700">
           Product image
           <input className="input" type="file" name="image" accept={IMAGE_UPLOAD_ACCEPT} />

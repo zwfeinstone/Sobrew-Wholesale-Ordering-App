@@ -351,6 +351,7 @@ export default async function ProspectingPage({ searchParams }: { searchParams?:
       {toast === 'missing_lead' ? <StatusToast message="That lead could not be found." tone="error" /> : null}
       {toast === 'lead_recycled' ? <StatusToast message="Lead recycled to the unassigned pool." tone="success" /> : null}
       {toast === 'lead_reviewed' ? <StatusToast message="Lead moved to superadmin review." tone="success" /> : null}
+      {toast === 'sample_order_created' ? <StatusToast message="Sample order created." tone="success" /> : null}
       {leadsError ? <StatusToast message="Prospecting leads are not ready yet." tone="error" /> : null}
 
       <section className="panel">

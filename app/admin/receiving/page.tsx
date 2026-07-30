@@ -26,6 +26,7 @@ type InventoryItemRow = {
   item_type: string;
   base_unit: InventoryUnit;
   active: boolean;
+  products?: { receivable_finished_good: boolean | null } | Array<{ receivable_finished_good: boolean | null }> | null;
 };
 
 function receivingHref(toast: string) {
@@ -40,6 +41,12 @@ function itemDisplayName(item: InventoryItemRow | undefined | null) {
 function relatedOne<T>(value: T | T[] | null | undefined): T | null {
   if (Array.isArray(value)) return value[0] ?? null;
   return value ?? null;
+}
+
+function canReceiveInventoryItem(item: InventoryItemRow | null | undefined) {
+  if (!item) return false;
+  if (item.item_type !== 'finished_good') return true;
+  return Boolean(relatedOne(item.products)?.receivable_finished_good);
 }
 
 function parsePositiveNumber(value: FormDataEntryValue | null, fallback = 0) {
@@ -96,13 +103,14 @@ async function receiveInventory(formData: FormData) {
   const freightCents = centsFromDollars(String(formData.get('freight_cost') ?? '0'));
   const otherCostCents = centsFromDollars(String(formData.get('other_cost') ?? '0'));
 
-  const { data: item } = await supabase
+  const { data: itemResult } = await supabase
     .from('inventory_items')
-    .select('id,name,sku,base_unit,item_type')
+    .select('id,name,sku,base_unit,item_type,products(receivable_finished_good)')
     .eq('id', itemId)
     .single();
+  const item = itemResult as InventoryItemRow | null;
 
-  if (!item || item.item_type === 'finished_good' || quantity <= 0) redirect(receivingHref('receipt_error'));
+  if (!item || !canReceiveInventoryItem(item) || quantity <= 0) redirect(receivingHref('receipt_error'));
 
   const landedUnitCostCents = ((quantity * itemUnitCostCents) + freightCents + otherCostCents) / quantity;
   const receivedAt = String(formData.get('received_at') ?? '') || new Date().toISOString();
@@ -175,13 +183,14 @@ async function adjustInventory(formData: FormData) {
   const unitCostCents = centsFromDollars(String(formData.get('unit_cost') ?? '0'));
   const notes = String(formData.get('notes') ?? '').trim() || null;
 
-  const { data: item } = await supabase
+  const { data: itemResult } = await supabase
     .from('inventory_items')
-    .select('id,name,sku,base_unit,item_type')
+    .select('id,name,sku,base_unit,item_type,products(receivable_finished_good)')
     .eq('id', itemId)
     .single();
+  const item = itemResult as InventoryItemRow | null;
 
-  if (!item || item.item_type === 'finished_good' || quantity <= 0 || !isInventoryAdjustmentType(adjustmentType)) {
+  if (!item || !canReceiveInventoryItem(item) || quantity <= 0 || !isInventoryAdjustmentType(adjustmentType)) {
     redirect(receivingHref('adjustment_error'));
   }
 
@@ -319,11 +328,11 @@ export default async function ReceivingPage({
   const supabase = await createClient();
   const toast = typeof searchParams?.toast === 'string' ? searchParams.toast : '';
   const [{ data: items }, { data: receipts }, { data: expenses }] = await Promise.all([
-    supabase.from('inventory_items').select('id,name,sku,item_type,base_unit,active').neq('item_type', 'finished_good').eq('active', true).order('name', { ascending: true }),
+    supabase.from('inventory_items').select('id,name,sku,item_type,base_unit,active,products(receivable_finished_good)').eq('active', true).order('name', { ascending: true }),
     supabase.from('inventory_receipts').select('id,inventory_item_id,quantity,unit,landed_unit_cost_cents,received_at,supplier,reversed_at,reversal_reason,inventory_lots(id,lot_code,quantity_remaining)').order('received_at', { ascending: false }).limit(8),
     supabase.from('non_inventory_expenses').select('id,expense_type,vendor,amount_cents,spent_at').order('spent_at', { ascending: false }).limit(8),
   ]);
-  const receivableItems = (items ?? []) as InventoryItemRow[];
+  const receivableItems = ((items ?? []) as InventoryItemRow[]).filter(canReceiveInventoryItem);
   const itemById = new Map(receivableItems.map((item) => [item.id, item]));
 
   return (
@@ -346,8 +355,8 @@ export default async function ReceivingPage({
 
       <section className="panel">
         <span className="eyebrow">Receiving</span>
-        <h1 className="page-title mt-4">Receive inputs and record supply expenses</h1>
-        <p className="page-subtitle mt-3">Create raw coffee or materials/supplies, add stock from purchases or starting counts, and record tape or label spend without tracking those as inventory.</p>
+        <h1 className="page-title mt-4">Receive inventory and record supply expenses</h1>
+        <p className="page-subtitle mt-3">Create raw coffee or materials/supplies, add purchased stock or finished goods, and record tape or label spend without tracking those as inventory.</p>
       </section>
 
       <section className="grid gap-6 xl:grid-cols-2">
@@ -379,8 +388,8 @@ export default async function ReceivingPage({
           <label className="space-y-2 text-sm font-medium text-slate-700">
             Item received
             <select className="input" name="inventory_item_id" required defaultValue="">
-              <option value="" disabled>Select raw coffee or material</option>
-              {receivableItems.map((item) => <option key={item.id} value={item.id}>{itemDisplayName(item)} - {item.base_unit}</option>)}
+              <option value="" disabled>Select inventory item</option>
+              {receivableItems.map((item) => <option key={item.id} value={item.id}>{itemDisplayName(item)} - {inventoryItemTypeLabel(item.item_type)} - {item.base_unit}</option>)}
             </select>
           </label>
           <div className="grid gap-3 sm:grid-cols-2">
@@ -410,7 +419,7 @@ export default async function ReceivingPage({
           </div>
           <select className="input" name="inventory_item_id" required defaultValue="">
             <option value="" disabled>Select item</option>
-            {receivableItems.map((item) => <option key={item.id} value={item.id}>{itemDisplayName(item)} - {item.base_unit}</option>)}
+            {receivableItems.map((item) => <option key={item.id} value={item.id}>{itemDisplayName(item)} - {inventoryItemTypeLabel(item.item_type)} - {item.base_unit}</option>)}
           </select>
           <div className="grid gap-3 sm:grid-cols-2">
             <select className="input" name="adjustment_type" defaultValue="starting_count">
