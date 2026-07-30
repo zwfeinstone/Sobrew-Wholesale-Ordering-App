@@ -151,12 +151,13 @@ export async function snapshotOrderCommissionForShipment({
 
   const orderResult = await supabase
     .from('orders')
-    .select('id,center_id,subtotal_cents,shipping_cost_cents,processing_fee_cents,donation_cogs_cents')
+    .select('id,center_id,subtotal_cents,shipping_cost_cents,processing_fee_cents,donation_cogs_cents,order_kind')
     .eq('id', orderId)
     .maybeSingle();
 
   if (orderResult.error) return { error: orderResult.error };
   const order = orderResult.data;
+  if ((order as any)?.order_kind === 'prospecting_sample') return { skipped: true };
   if (!order?.center_id) return { skipped: true };
 
   const assignmentResult = await supabase
@@ -291,6 +292,7 @@ export async function snapshotMissingCommissionOrdersForSalesProfileMonth({
     .from('orders')
     .select('id,center_id,created_at,shipped_at,shipping_cost_cents')
     .eq('status', 'Shipped')
+    .neq('order_kind', 'prospecting_sample')
     .in('center_id', scopedCenterIds)
     .limit(50000);
 

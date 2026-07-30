@@ -41,9 +41,8 @@ function ordersToastHref(statusFilter: string, toast: string, qFilter = '') {
 }
 
 function nextActionForStatus(status: string | null | undefined) {
-  if (status === 'New') return { label: 'Start processing', helper: 'Waiting for review' };
-  if (status === 'Processing') return { label: 'Ship order', helper: 'Shipping COGS needed' };
   if (status === 'Shipped') return { label: 'View order', helper: 'Completed' };
+  if (status === 'New' || status === 'Processing') return { label: 'Ship order', helper: 'Ready for fulfillment' };
   return { label: 'Open order', helper: 'Needs review' };
 }
 
@@ -331,15 +330,7 @@ export default async function AdminOrdersPage({ searchParams }: { searchParams: 
             const labels = itemLabelsByOrderId.get(order.id) ?? ['Unknown product'];
             const specialNotes = orderSpecialNotes(order);
             const primaryAction =
-              order.status === 'New' ? (
-                <form action={updateStatus} className="w-full md:w-auto">
-                  <input type="hidden" name="id" value={order.id} />
-                  <input type="hidden" name="status" value="Processing" />
-                  <input type="hidden" name="statusFilter" value={status} />
-                  <input type="hidden" name="qFilter" value={q} />
-                  <PendingSubmitButton className="btn-primary w-full md:w-auto" label={action.label} pendingLabel="Starting..." />
-                </form>
-              ) : order.status === 'Processing' ? (
+              order.status === 'New' || order.status === 'Processing' ? (
                 <Link className="btn-primary w-full md:w-auto" href={`/admin/orders/${order.id}`}>{action.label}</Link>
               ) : (
                 <Link className="btn-secondary w-full md:w-auto" href={`/admin/orders/${order.id}`}>{action.label}</Link>

@@ -379,6 +379,7 @@ async function loadAiBusinessSnapshotForReports({
     supabase
       .from('orders')
       .select('id,center_id,status,subtotal_cents,shipping_cost_cents,processing_fee_cents,donation_cogs_cents,created_at,shipped_at')
+      .neq('order_kind', 'prospecting_sample')
       .or(`created_at.gte.${orderHistoryStart.toISOString()},shipped_at.gte.${orderHistoryStart.toISOString()}`)
       .lt('created_at', asOfEndExclusive.toISOString())
       .order('created_at', { ascending: false })
@@ -638,6 +639,7 @@ async function generateAiOverviewReport(formData: FormData) {
     supabase
       .from('orders')
       .select('id,center_id,status,subtotal_cents,shipping_cost_cents,processing_fee_cents,donation_cogs_cents,created_at,shipped_at')
+      .neq('order_kind', 'prospecting_sample')
       .or(`created_at.gte.${orderHistoryStart.toISOString()},shipped_at.gte.${orderHistoryStart.toISOString()}`)
       .lt('created_at', asOfEndExclusive.toISOString())
       .order('created_at', { ascending: false })
@@ -3044,7 +3046,7 @@ export default async function AdminReportsPage({
   };
 
   const ordersQuery = scopeCenterRelatedQueryForAdmin(
-    supabase.from('orders').select('id,center_id,status,subtotal_cents,shipping_cost_cents,processing_fee_cents,donation_cogs_cents,created_at,shipped_at').order('created_at', { ascending: false }).limit(ADMIN_QUERY_ROW_LIMIT),
+    supabase.from('orders').select('id,center_id,status,subtotal_cents,shipping_cost_cents,processing_fee_cents,donation_cogs_cents,created_at,shipped_at').neq('order_kind', 'prospecting_sample').order('created_at', { ascending: false }).limit(ADMIN_QUERY_ROW_LIMIT),
     'center_id',
     centerScope
   );

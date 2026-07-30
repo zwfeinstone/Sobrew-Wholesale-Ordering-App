@@ -319,6 +319,7 @@ export default async function AdminSalesPage({
     supabase
       .from('orders')
       .select('id,center_id,status,subtotal_cents,created_at')
+      .neq('order_kind', 'prospecting_sample')
       .order('created_at', { ascending: false })
       .limit(10000),
     'center_id',
@@ -328,6 +329,7 @@ export default async function AdminSalesPage({
     supabase
       .from('orders')
       .select('id,center_id,status,subtotal_cents,created_at')
+      .neq('order_kind', 'prospecting_sample')
       .gte('created_at', selectedWeekStart.toISOString())
       .lt('created_at', selectedWeekEnd.toISOString())
       .order('created_at', { ascending: false }),
@@ -335,7 +337,7 @@ export default async function AdminSalesPage({
     centerScope
   );
   const ordersThisWeekQuery = scopeCenterRelatedQueryForAdmin(
-    supabase.from('orders').select('id', { count: 'exact', head: true }).gte('created_at', currentWeekStart.toISOString()),
+    supabase.from('orders').select('id', { count: 'exact', head: true }).neq('order_kind', 'prospecting_sample').gte('created_at', currentWeekStart.toISOString()),
     'center_id',
     centerScope
   );
@@ -343,6 +345,7 @@ export default async function AdminSalesPage({
     supabase
       .from('orders')
       .select('id', { count: 'exact', head: true })
+      .neq('order_kind', 'prospecting_sample')
       .gte('created_at', previousCurrentWeekStart.toISOString())
       .lt('created_at', currentWeekStart.toISOString()),
     'center_id',
