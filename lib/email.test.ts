@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildCustomerWelcomeEmailContent } from '@/lib/email';
+import { adminOrderCcForAssignedSalesEmail, buildCustomerWelcomeEmailContent } from '@/lib/email';
 
 describe('buildCustomerWelcomeEmailContent', () => {
   it('uses the first name from the full name', () => {
@@ -37,5 +37,14 @@ describe('buildCustomerWelcomeEmailContent', () => {
     expect(content.html).toContain('href="https://app.sobrew.com"');
     expect(content.html).toContain('<strong>Email:</strong> orders@example.com');
     expect(content.html).toContain('<strong>Password:</strong> VisiblePass123!');
+  });
+});
+
+describe('adminOrderCcForAssignedSalesEmail', () => {
+  it('adds Haskins only when the assigned sales email matches', () => {
+    expect(adminOrderCcForAssignedSalesEmail('haskins@sobrew.com')).toEqual(['haskins@sobrew.com']);
+    expect(adminOrderCcForAssignedSalesEmail('HASKINS@SOBREW.COM')).toEqual(['haskins@sobrew.com']);
+    expect(adminOrderCcForAssignedSalesEmail('another@sobrew.com')).toEqual([]);
+    expect(adminOrderCcForAssignedSalesEmail(null)).toEqual([]);
   });
 });

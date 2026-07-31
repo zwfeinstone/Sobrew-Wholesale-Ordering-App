@@ -262,6 +262,7 @@ async function runRecurringOrders(req: Request) {
       : [];
 
     emailTasks.push(() => sendOrderEmails({
+      centerId: recurringOrder.center_id,
       customerEmail: centerEmails.length ? centerEmails : recurringProfile?.email ?? '',
       customerName: recurringCenter?.name ?? recurringProfile?.full_name ?? recurringProfile?.email ?? '',
       orderId: generation.order_id,

@@ -555,6 +555,19 @@ export function resolveActivityStage({
   return requestedStage ? normalizeStage(requestedStage) : normalizeStage(currentStage);
 }
 
+export function resolveActivityNextFollowUp({
+  currentNextFollowUp,
+  requestedNextFollowUp,
+  shouldUnassign,
+}: {
+  currentNextFollowUp: string | null | undefined;
+  requestedNextFollowUp: string | null | undefined;
+  shouldUnassign: boolean;
+}) {
+  if (shouldUnassign) return null;
+  return requestedNextFollowUp ?? currentNextFollowUp ?? null;
+}
+
 export function prospectingContactPayloadsFromCsv(row: Record<string, string>, leadId: string, createdBy: string) {
   return [1, 2].flatMap((index) => {
     const fullName = cleanText(row[`key_contact_${index}_name`]);

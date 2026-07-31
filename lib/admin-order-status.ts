@@ -9,7 +9,12 @@ async function loadNewOrderCount() {
     getCurrentAdminAccess(),
   ]);
   const query = scopeCenterRelatedQueryForAdmin(
-    supabase.from('orders').select('id', { count: 'exact', head: true }).eq('status', 'New').is('archived_at', null),
+    supabase
+      .from('orders')
+      .select('id', { count: 'exact', head: true })
+      .eq('status', 'New')
+      .is('archived_at', null)
+      .neq('order_kind', 'prospecting_sample'),
     'center_id',
     current.centerScope,
   );

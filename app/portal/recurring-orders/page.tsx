@@ -210,6 +210,7 @@ async function reactivateRecurringOrderAndCreateOrder({
   const centerEmails = (await getCenterLoginEmails(supabaseAdmin, recurringOrder.center_id)) as string[];
 
   await sendOrderEmails({
+    centerId: recurringOrder.center_id,
     customerEmail: centerEmails.length ? centerEmails : profile.email ?? user.email ?? recurringProfile?.email ?? '',
     customerName: recurringCenter?.name ?? profile.center?.name ?? profile.full_name ?? profile.email ?? user.email ?? '',
     orderId: newOrder.id,

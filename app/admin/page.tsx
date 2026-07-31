@@ -98,6 +98,10 @@ function applyRangeToQuery(query: any, column: string, range: TimeRange, now: Da
   return nextQuery;
 }
 
+function excludeSampleOrders(query: any) {
+  return query.neq('order_kind', 'prospecting_sample');
+}
+
 function buildPredefinedBuckets(range: TimeRange, now: Date): Bucket[] | null {
   if (range === 'week') {
     const start = startOfWeek(now);
@@ -324,7 +328,14 @@ export default async function AdminDashboard({
   const usersRange = normalizeTimeRange(searchParams?.usersRange);
 
   const ordersMetricQuery = scopeCenterRelatedQueryForAdmin(
-    applyRangeToQuery(supabase.from('orders').select('created_at,center_id,subtotal_cents'), 'created_at', ordersRange, now),
+    excludeSampleOrders(
+      applyRangeToQuery(
+        supabase.from('orders').select('created_at,center_id,subtotal_cents'),
+        'created_at',
+        ordersRange,
+        now
+      )
+    ),
     'center_id',
     centerScope
   ).limit(ADMIN_QUERY_ROW_LIMIT);
@@ -332,7 +343,14 @@ export default async function AdminDashboard({
   const revenueMetricQuery = sharesOrderMetricRange
     ? Promise.resolve({ data: null as MetricRow[] | null, error: null })
     : scopeCenterRelatedQueryForAdmin(
-      applyRangeToQuery(supabase.from('orders').select('created_at,center_id,subtotal_cents'), 'created_at', revenueRange, now),
+      excludeSampleOrders(
+        applyRangeToQuery(
+          supabase.from('orders').select('created_at,center_id,subtotal_cents'),
+          'created_at',
+          revenueRange,
+          now
+        )
+      ),
       'center_id',
       centerScope
     ).limit(ADMIN_QUERY_ROW_LIMIT);
@@ -342,28 +360,54 @@ export default async function AdminDashboard({
     centerScope
   ).limit(ADMIN_QUERY_ROW_LIMIT);
   const processingOrdersQuery = scopeCenterRelatedQueryForAdmin(
-    supabase.from('orders').select('id', { head: true, count: 'exact' }).eq('status', 'Processing').is('archived_at', null),
+    excludeSampleOrders(
+      supabase
+        .from('orders')
+        .select('id', { head: true, count: 'exact' })
+        .eq('status', 'Processing')
+        .is('archived_at', null)
+    ),
     'center_id',
     centerScope
   );
   const shippedOrdersQuery = scopeCenterRelatedQueryForAdmin(
-    applyRangeToQuery(supabase.from('orders').select('id,center_id,created_at', { head: true, count: 'exact' }).eq('status', 'Shipped').is('archived_at', null), 'created_at', ordersRange, now),
+    excludeSampleOrders(
+      applyRangeToQuery(
+        supabase
+          .from('orders')
+          .select('id,center_id,created_at', { head: true, count: 'exact' })
+          .eq('status', 'Shipped')
+          .is('archived_at', null),
+        'created_at',
+        ordersRange,
+        now
+      )
+    ),
     'center_id',
     centerScope
   );
   const workQueueQuery = scopeCenterRelatedQueryForAdmin(
-    supabase
-      .from('orders')
-      .select('id,status,created_at,center_id,subtotal_cents,profiles(email),centers(name)')
-      .in('status', ['New', 'Processing'])
-      .is('archived_at', null)
-      .order('created_at', { ascending: true })
-      .limit(PAGE_SIZE),
+    excludeSampleOrders(
+      supabase
+        .from('orders')
+        .select('id,status,created_at,center_id,subtotal_cents,profiles(email),centers(name)')
+        .in('status', ['New', 'Processing'])
+        .is('archived_at', null)
+        .order('created_at', { ascending: true })
+        .limit(PAGE_SIZE)
+    ),
     'center_id',
     centerScope
   );
   const recentOrdersQuery = scopeCenterRelatedQueryForAdmin(
-    supabase.from('orders').select('id,status,created_at,center_id,subtotal_cents,profiles(email),centers(name)').is('archived_at', null).order('created_at', { ascending: false }).limit(PAGE_SIZE),
+    excludeSampleOrders(
+      supabase
+        .from('orders')
+        .select('id,status,created_at,center_id,subtotal_cents,profiles(email),centers(name)')
+        .is('archived_at', null)
+        .order('created_at', { ascending: false })
+        .limit(PAGE_SIZE)
+    ),
     'center_id',
     centerScope
   );

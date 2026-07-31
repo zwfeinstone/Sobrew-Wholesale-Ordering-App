@@ -29,6 +29,12 @@ import {
   type GrossProfitSimulatorProductRow,
 } from '@/lib/gross-profit-simulator';
 import {
+  buildLaborPaidGpmSummary,
+  type LaborPaidGpmAllocationRow,
+  type LaborPaidGpmSalaryPaymentRow,
+  type LaborPaidGpmTimeEntryRow,
+} from '@/lib/labor-paid-gpm-reporting';
+import {
   buildProfitabilityDashboard,
   buildRecentOrderGpmRows,
   type ProfitabilityOrderItemRow,
@@ -89,6 +95,7 @@ const REPORTS = [
   { id: 'items', label: 'Item Profitability' },
   { id: 'margin', label: 'Margin Health' },
   { id: 'recent_order_gpm', label: 'Recent Order GPM' },
+  { id: 'labor_paid_gpm', label: 'Labor Paid GPM' },
   { id: 'ai_qa', label: 'AI Q/A About Business' },
   { id: 'ai_overview', label: 'AI Overview' },
   { id: 'simulator', label: 'Gross Profit Simulator' },
@@ -2048,6 +2055,100 @@ function CogsTimingGrid({
   );
 }
 
+function LaborPaidGpmReport({ summary }: { summary: ReturnType<typeof buildLaborPaidGpmSummary> }) {
+  const gpmDelta = summary.actualLaborGpmPercent - summary.shippedGpmPercent;
+  const gpmDeltaLabel = `${gpmDelta > 0 ? '+' : ''}${number(gpmDelta, 1)}`;
+  const reviewCount = summary.unlockedProductionEntryCount + summary.unapprovedProductionEntryCount;
+  const comparisonRows = [
+    {
+      label: 'Revenue',
+      shipped: money(summary.revenueCents),
+      actual: money(summary.revenueCents),
+    },
+    {
+      label: 'COGS before labor',
+      shipped: money(summary.totalCogsBeforeLaborCents),
+      actual: money(summary.totalCogsBeforeLaborCents),
+    },
+    {
+      label: 'Labor',
+      shipped: money(summary.shippedLaborCogsCents),
+      actual: money(summary.actualLaborPaidCents),
+    },
+    {
+      label: 'Total COGS',
+      shipped: money(summary.shippedTotalCogsCents),
+      actual: money(summary.actualTotalCogsCents),
+    },
+    {
+      label: 'Gross profit',
+      shipped: money(summary.shippedGrossProfitCents),
+      actual: money(summary.actualGrossProfitCents),
+    },
+    {
+      label: 'GPM',
+      shipped: `${number(summary.shippedGpmPercent, 1)}%`,
+      actual: `${number(summary.actualLaborGpmPercent, 1)}%`,
+    },
+  ];
+
+  return (
+    <section className="space-y-6">
+      <SectionHeading
+        eyebrow="Labor paid GPM"
+        title="Actual labor paid margin"
+        subtitle="Compares normal shipped-order GPM with a version that replaces shipped labor COGS with Production-tagged payroll labor paid in the selected range."
+      />
+
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+        <StatTile label="Revenue" value={money(summary.revenueCents)} detail="Shipped order revenue in the selected range." />
+        <StatTile label="Shipped-COGS GPM" value={`${number(summary.shippedGpmPercent, 1)}%`} detail={`${money(summary.shippedGrossProfitCents)} gross profit using order-line COGS.`} />
+        <StatTile label="Labor-Paid GPM" value={`${number(summary.actualLaborGpmPercent, 1)}%`} detail={`${gpmDeltaLabel} points versus shipped-COGS GPM.`} />
+        <StatTile label="Actual Labor Paid" value={money(summary.actualLaborPaidCents)} detail={`${money(summary.hourlyLaborPaidCents)} hourly and ${money(summary.salaryLaborPaidCents)} salary.`} />
+      </div>
+
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+        <StatTile label="Shipped Labor COGS" value={money(summary.shippedLaborCogsCents)} detail="Labor already recognized on shipped order lines." />
+        <StatTile label="Labor Difference" value={signedMoney(summary.laborDifferenceCents)} detail="Actual Production-tagged payroll labor minus shipped labor COGS." />
+        <StatTile label="Production Hours" value={`${number(summary.productionHours, 2)} hrs`} detail={`${number(summary.hourlyEntryCount)} completed Production-tagged time entr${summary.hourlyEntryCount === 1 ? 'y' : 'ies'}.`} />
+        <StatTile label="Production Run Labor" value={money(summary.productionRunLaborCogsCents)} detail="Actual labor stored on production runs in the range." />
+      </div>
+
+      {reviewCount ? (
+        <div className="rounded-xl border border-amber-200 bg-amber-50/70 p-4 text-sm leading-6 text-amber-900">
+          {summary.unlockedProductionEntryCount ? `${number(summary.unlockedProductionEntryCount)} Production time entr${summary.unlockedProductionEntryCount === 1 ? 'y is' : 'ies are'} not locked. ` : ''}
+          {summary.unapprovedProductionEntryCount ? `${number(summary.unapprovedProductionEntryCount)} Production time entr${summary.unapprovedProductionEntryCount === 1 ? 'y is' : 'ies are'} not approved or locked. ` : ''}
+          Review payroll if this period should be final.
+        </div>
+      ) : null}
+
+      <section className="card space-y-4">
+        <h2 className="text-xl font-semibold text-slate-950">GPM comparison</h2>
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[42rem] border-separate border-spacing-y-2 text-left text-sm">
+            <thead>
+              <tr className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+                <th className="px-4 py-2">Line</th>
+                <th className="px-4 py-2 text-right">Normal reports GPM</th>
+                <th className="px-4 py-2 text-right">Labor paid GPM</th>
+              </tr>
+            </thead>
+            <tbody>
+              {comparisonRows.map((row) => (
+                <tr key={row.label} className="bg-white/70">
+                  <td className="rounded-l-xl px-4 py-3 font-semibold text-slate-950">{row.label}</td>
+                  <td className="px-4 py-3 text-right text-slate-700">{row.shipped}</td>
+                  <td className="rounded-r-xl px-4 py-3 text-right font-semibold text-slate-950">{row.actual}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </section>
+  );
+}
+
 function ProductionCogsTable({ rows }: { rows: ReturnType<typeof buildProfitabilityDashboard>['productionRows'] }) {
   if (!rows.length) return <EmptyState message="No production runs found for the selected range." />;
 
@@ -2990,7 +3091,11 @@ export default async function AdminReportsPage({
   const supabase = await createClient();
   const canViewSalesReports = adminCanView(currentAccess.access, 'reports_sales');
   const canViewProfitabilityReports = adminCanView(currentAccess.access, 'reports_profitability');
-  const allowedReports = REPORTS.filter((report) => (reportIsProfitability(report.id) ? canViewProfitabilityReports : canViewSalesReports));
+  const canViewLaborPaidGpmReport = canViewProfitabilityReports && adminCanView(currentAccess.access, 'payroll');
+  const allowedReports = REPORTS.filter((report) => {
+    if (report.id === 'labor_paid_gpm') return canViewLaborPaidGpmReport;
+    return reportIsProfitability(report.id) ? canViewProfitabilityReports : canViewSalesReports;
+  });
   if (!allowedReports.length) {
     redirect('/admin/access-denied?section=reports');
   }
@@ -3020,7 +3125,7 @@ export default async function AdminReportsPage({
     : { data: [], error: null };
   const salesReps = ((salesRepsResult.data ?? []) as AdminRow[]).sort((a, b) => adminLabel(a).localeCompare(adminLabel(b)));
   const requestedSalesRepId = stringParam(searchParams?.sales_rep);
-  const selectedSalesRepId = currentAccess.isOwner && salesReps.some((admin) => admin.id === requestedSalesRepId) ? requestedSalesRepId : '';
+  const selectedSalesRepId = currentAccess.isOwner && activeReport !== 'labor_paid_gpm' && salesReps.some((admin) => admin.id === requestedSalesRepId) ? requestedSalesRepId : '';
   const centerScope = await getSalesScopedCenterIdsForAdmin({ current: currentAccess, selectedSalesProfileId: selectedSalesRepId, supabase });
 
   const now = new Date();
@@ -3157,6 +3262,55 @@ export default async function AdminReportsPage({
     prospectingReportQuery,
   ]);
 
+  let laborPaidTimeEntries: LaborPaidGpmTimeEntryRow[] = [];
+  let laborPaidAllocations: LaborPaidGpmAllocationRow[] = [];
+  let laborPaidSalaryPayments: LaborPaidGpmSalaryPaymentRow[] = [];
+  let laborPaidLoadError: string | null = null;
+
+  if (dataNeeds.laborPaidGpm) {
+    const payrollSupabase = getSupabaseAdmin();
+    const rangeEndInput = formatDateInput(addDays(rangeEndExclusive, -1));
+    const [timeEntriesResult, salaryPaymentsResult] = await Promise.all([
+      payrollSupabase
+        .from('admin_time_entries')
+        .select('id,profile_id,clock_in_at,clock_out_at,hourly_rate_cents_snapshot,status,locked_at,work_type,admin_time_breaks(break_start_at,break_end_at,status)')
+        .gte('clock_in_at', rangeStart.toISOString())
+        .lt('clock_in_at', rangeEndExclusive.toISOString())
+        .limit(ADMIN_QUERY_ROW_LIMIT),
+      payrollSupabase
+        .from('admin_salary_payroll_payments')
+        .select('id,paid_at,period_start_date,period_end_date,salary_labor_work_type,salary_pay_cents')
+        .not('paid_at', 'is', null)
+        .lte('period_start_date', rangeEndInput)
+        .gte('period_end_date', formatDateInput(rangeStart))
+        .limit(ADMIN_QUERY_ROW_LIMIT),
+    ]);
+
+    if (timeEntriesResult.error || salaryPaymentsResult.error) {
+      laborPaidLoadError = 'The Labor Paid GPM report could not load payroll records.';
+    } else {
+      laborPaidTimeEntries = (timeEntriesResult.data ?? []) as LaborPaidGpmTimeEntryRow[];
+      laborPaidSalaryPayments = (salaryPaymentsResult.data ?? []) as LaborPaidGpmSalaryPaymentRow[];
+      const entryIds = laborPaidTimeEntries.map((entry) => entry.id);
+      if (entryIds.length) {
+        const allocationsResult = await payrollSupabase
+          .from('admin_time_entry_allocations')
+          .select('time_entry_id,work_type,minutes,wage_cents')
+          .in('time_entry_id', entryIds)
+          .limit(ADMIN_QUERY_ROW_LIMIT);
+        if (allocationsResult.error) {
+          laborPaidLoadError = 'The Labor Paid GPM report could not load payroll allocations.';
+        } else {
+          laborPaidAllocations = (allocationsResult.data ?? []) as LaborPaidGpmAllocationRow[];
+        }
+      }
+    }
+  }
+
+  if (laborPaidLoadError) {
+    return <CriticalReportError message={laborPaidLoadError} />;
+  }
+
   if (ordersResult.error || orderItemsResult.error || centersResult.error || productsResult.error) {
     return (
       <CriticalReportError
@@ -3178,8 +3332,8 @@ export default async function AdminReportsPage({
   const products = (productsResult.data ?? []) as ReportingProductRow[];
   const selectedProductId = stringParam(searchParams?.product);
   const selectedCenterId = stringParam(searchParams?.center);
-  const productId = products.some((product) => product.id === selectedProductId) ? selectedProductId : undefined;
-  const centerId = centers.some((center) => center.id === selectedCenterId) ? selectedCenterId : undefined;
+  const productId = activeReport !== 'labor_paid_gpm' && products.some((product) => product.id === selectedProductId) ? selectedProductId : undefined;
+  const centerId = activeReport !== 'labor_paid_gpm' && centers.some((center) => center.id === selectedCenterId) ? selectedCenterId : undefined;
   const inventoryUnavailable = Boolean(dataNeeds.inventoryValuation && (inventoryItemsResult.error || inventoryLotsResult.error));
   const dashboard = buildReportingDashboard({
     centers,
@@ -3215,6 +3369,14 @@ export default async function AdminReportsPage({
     rangeStart,
     recipes: !dataNeeds.productRecipes || recipeResult.error ? [] : ((recipeResult.data ?? []) as any[]),
     shortageMovements: !dataNeeds.shortageMovements || shortageMovementsResult.error ? [] : ((shortageMovementsResult.data ?? []) as any[]),
+  });
+  const laborPaidGpmSummary = buildLaborPaidGpmSummary({
+    allocations: dataNeeds.laborPaidGpm ? laborPaidAllocations : [],
+    current: profitabilityDashboard.current,
+    entries: dataNeeds.laborPaidGpm ? laborPaidTimeEntries : [],
+    productionRunLaborCogsCents: profitabilityDashboard.productionSummary.laborCostCents,
+    productionRuns: dataNeeds.laborPaidGpm && !productionRunsResult.error ? (productionRunsResult.data ?? []) as any[] : [],
+    salaryPayments: dataNeeds.laborPaidGpm ? laborPaidSalaryPayments : [],
   });
   const recentOrderGpmRows = activeReport === 'recent_order_gpm'
     ? buildRecentOrderGpmRows({
@@ -3422,7 +3584,7 @@ export default async function AdminReportsPage({
                 Range end
                 <input className="input" name="rangeEnd" type="date" defaultValue={rangeEndInput} />
               </label>
-              {activeReport !== 'prospecting' && activeReport !== 'ai_overview' && activeReport !== 'ai_qa' && activeReport !== 'inventory_adjustments' ? (
+              {activeReport !== 'prospecting' && activeReport !== 'ai_overview' && activeReport !== 'ai_qa' && activeReport !== 'inventory_adjustments' && activeReport !== 'labor_paid_gpm' ? (
                 <>
                   <label className="space-y-2 text-sm font-medium text-slate-700">
                     Product
@@ -3444,7 +3606,7 @@ export default async function AdminReportsPage({
                   </label>
                 </>
               ) : null}
-              {currentAccess.isOwner ? (
+              {currentAccess.isOwner && activeReport !== 'labor_paid_gpm' ? (
                 <label className="space-y-2 text-sm font-medium text-slate-700 sm:col-span-2">
                   Sales rep
                   <select className="input" name="sales_rep" defaultValue={selectedSalesRepId}>
@@ -3467,6 +3629,8 @@ export default async function AdminReportsPage({
                   ? `${REPORTS.find((report) => report.id === activeReport)?.label}. Using ${dateLabel(rangeStart)} through ${dateLabel(addDays(rangeEndExclusive, -1))}.`
                 : activeReport === 'recent_order_gpm'
                   ? `${REPORTS.find((report) => report.id === activeReport)?.label}. Showing the last 10 shipped orders with saved or estimated COGS.`
+                : activeReport === 'labor_paid_gpm'
+                  ? `${REPORTS.find((report) => report.id === activeReport)?.label}. Using ${dateLabel(rangeStart)} through ${dateLabel(addDays(rangeEndExclusive, -1))}; payroll labor is date-range based.`
                 : activeReport === 'margin'
                   ? `${REPORTS.find((report) => report.id === activeReport)?.label}. Using ${dateLabel(rangeStart)} through ${dateLabel(addDays(rangeEndExclusive, -1))}; normalized against trailing 8 weeks and the previous equal-length range.`
                   : `${REPORTS.find((report) => report.id === activeReport)?.label}. Using ${dateLabel(rangeStart)} through ${dateLabel(addDays(rangeEndExclusive, -1))}; sales comparisons still compare ${monthLabel(selectedMonth)} with ${monthLabel(dashboard.previousMonthStart)}.`}
@@ -3780,6 +3944,10 @@ export default async function AdminReportsPage({
           />
           <RecentOrderGpmTable rows={recentOrderGpmRows} />
         </section>
+      ) : null}
+
+      {activeReport === 'labor_paid_gpm' ? (
+        <LaborPaidGpmReport summary={laborPaidGpmSummary} />
       ) : null}
 
       {activeReport === 'simulator' ? (

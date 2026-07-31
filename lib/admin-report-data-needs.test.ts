@@ -7,6 +7,7 @@ describe('dataNeedsForReport', () => {
       coreCommerce: false,
       inventoryAdjustments: false,
       inventoryValuation: false,
+      laborPaidGpm: false,
       nonInventoryExpenses: false,
       productionInputs: false,
       productionRuns: false,
@@ -57,6 +58,7 @@ describe('dataNeedsForReport', () => {
       coreCommerce: false,
       inventoryAdjustments: false,
       inventoryValuation: false,
+      laborPaidGpm: false,
       nonInventoryExpenses: false,
       productionInputs: false,
       productionRuns: false,
@@ -74,6 +76,7 @@ describe('dataNeedsForReport', () => {
       coreCommerce: false,
       inventoryAdjustments: false,
       inventoryValuation: false,
+      laborPaidGpm: false,
       nonInventoryExpenses: false,
       productionInputs: false,
       productionRuns: false,
@@ -91,6 +94,7 @@ describe('dataNeedsForReport', () => {
       coreCommerce: false,
       inventoryAdjustments: true,
       inventoryValuation: true,
+      laborPaidGpm: false,
       nonInventoryExpenses: false,
       productionInputs: false,
       productionRuns: false,
@@ -101,5 +105,14 @@ describe('dataNeedsForReport', () => {
       salesDashboard: false,
       shortageMovements: false,
     });
+  });
+
+  it('loads commerce and payroll-specific data for labor paid GPM', () => {
+    const needs = dataNeedsForReport('labor_paid_gpm');
+    expect(needs.coreCommerce).toBe(true);
+    expect(needs.productionRuns).toBe(true);
+    expect(needs.laborPaidGpm).toBe(true);
+    expect(needs.productionInputs).toBe(false);
+    expect(needs.productRecipes).toBe(false);
   });
 });

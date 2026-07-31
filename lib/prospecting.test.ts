@@ -12,6 +12,7 @@ import {
   prospectingQueueStageFilter,
   parseCsv,
   prospectingContactPayloadsFromCsv,
+  resolveActivityNextFollowUp,
   resolveActivityStage,
 } from '@/lib/prospecting';
 
@@ -223,6 +224,32 @@ describe('prospecting activity stage resolution', () => {
       explicitStage: '',
       result: 'Do not contact',
     })).toBe('not_a_fit');
+  });
+});
+
+describe('prospecting activity follow-up resolution', () => {
+  it('preserves the existing follow-up date when an activity is saved without a new date', () => {
+    expect(resolveActivityNextFollowUp({
+      currentNextFollowUp: '2026-07-31',
+      requestedNextFollowUp: null,
+      shouldUnassign: false,
+    })).toBe('2026-07-31');
+  });
+
+  it('uses a newly entered follow-up date when one is provided', () => {
+    expect(resolveActivityNextFollowUp({
+      currentNextFollowUp: '2026-07-31',
+      requestedNextFollowUp: '2026-08-07',
+      shouldUnassign: false,
+    })).toBe('2026-08-07');
+  });
+
+  it('clears the follow-up date when the lead is unassigned from the rep queue', () => {
+    expect(resolveActivityNextFollowUp({
+      currentNextFollowUp: '2026-07-31',
+      requestedNextFollowUp: '2026-08-07',
+      shouldUnassign: true,
+    })).toBeNull();
   });
 });
 

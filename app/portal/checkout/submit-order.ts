@@ -210,6 +210,7 @@ export async function submitPortalOrderWithContext({
   }
 
   waitUntil(sendOrderEmails({
+    centerId: profile?.center_id,
     customerEmail: profile?.email ?? user.email ?? '',
     customerName: profile?.center?.name ?? profile?.full_name ?? profile?.email ?? user.email ?? '',
     orderId: order.order_id,

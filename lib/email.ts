@@ -1,10 +1,12 @@
 import 'server-only';
 
 import { Resend } from 'resend';
+import { supabaseAdmin } from '@/lib/supabase/admin';
 import { usd } from '@/lib/utils';
 
 const RESEND_FROM = 'Sobrew Wholesale <orders@orders.sobrew.com>';
 const ADMIN_EMAIL = 'hello@sobrew.com';
+const HASKINS_EMAIL = 'haskins@sobrew.com';
 const PORTAL_URL = 'https://app.sobrew.com';
 const WELCOME_EMAIL_CC = ['haskins@sobrew.com', 'zach@sobrew.com'];
 
@@ -28,6 +30,7 @@ type TrackingLine = { carrier?: string | null; service?: string | null; tracking
 type SendEmailResult = { ok: true } | { error: unknown; ok: false };
 
 type OrderEmailPayload = {
+  centerId?: string | null;
   customerEmail: string | string[];
   customerName: string;
   orderId: string;
@@ -65,6 +68,41 @@ function fallbackNameFromEmail(email: string) {
 function welcomeGreetingName(fullName: string | null | undefined, email: string) {
   const [firstName] = (fullName ?? '').trim().split(/\s+/).filter(Boolean);
   return firstName || fallbackNameFromEmail(email);
+}
+
+export function adminOrderCcForAssignedSalesEmail(email: string | null | undefined) {
+  return String(email ?? '').trim().toLowerCase() === HASKINS_EMAIL ? [HASKINS_EMAIL] : [];
+}
+
+async function adminOrderCcForCenter(centerId: string | null | undefined) {
+  if (!centerId) return [];
+
+  const { data: assignment, error: assignmentError } = await supabaseAdmin
+    .from('center_sales_assignments')
+    .select('sales_profile_id')
+    .eq('center_id', centerId)
+    .maybeSingle();
+
+  if (assignmentError) {
+    console.error('Failed to load sales assignment for order email CC', assignmentError);
+    return [];
+  }
+
+  const salesProfileId = assignment?.sales_profile_id;
+  if (!salesProfileId) return [];
+
+  const { data: profile, error: profileError } = await supabaseAdmin
+    .from('profiles')
+    .select('email')
+    .eq('id', salesProfileId)
+    .maybeSingle();
+
+  if (profileError) {
+    console.error('Failed to load assigned sales profile for order email CC', profileError);
+    return [];
+  }
+
+  return adminOrderCcForAssignedSalesEmail(profile?.email);
 }
 
 export function buildCustomerWelcomeEmailContent(payload: WelcomeEmailPayload) {
@@ -183,11 +221,13 @@ export async function sendAdminNotificationEmail(payload: OrderEmailPayload) {
   }
 
   const html = buildOrderHtml(payload);
+  const cc = await adminOrderCcForCenter(payload.centerId);
 
   try {
     const response = await resend.emails.send({
       from: RESEND_FROM,
       to: ADMIN_EMAIL,
+      ...(cc.length ? { cc } : {}),
       subject: `New Order ${payload.orderId}`,
       html,
     });

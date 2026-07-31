@@ -4,6 +4,7 @@ export type AdminReportId =
   | 'items'
   | 'margin'
   | 'recent_order_gpm'
+  | 'labor_paid_gpm'
   | 'simulator'
   | 'production'
   | 'inventory'
@@ -17,6 +18,7 @@ export type ReportDataNeeds = {
   coreCommerce: boolean;
   inventoryAdjustments: boolean;
   inventoryValuation: boolean;
+  laborPaidGpm: boolean;
   nonInventoryExpenses: boolean;
   productionInputs: boolean;
   productionRuns: boolean;
@@ -35,6 +37,7 @@ export function dataNeedsForReport(report: AdminReportId): ReportDataNeeds {
   const inventory = report === 'inventory';
   const items = report === 'items';
   const margin = report === 'margin';
+  const laborPaidGpm = report === 'labor_paid_gpm';
   const production = report === 'production';
   const simulator = report === 'simulator';
   const aiReport = report === 'ai_overview' || report === 'ai_qa';
@@ -44,6 +47,7 @@ export function dataNeedsForReport(report: AdminReportId): ReportDataNeeds {
     coreCommerce: !prospecting && !aiReport && !inventoryAdjustments,
     inventoryAdjustments,
     inventoryValuation: inventoryAdjustments || inventory || margin || simulator || salesDashboard,
+    laborPaidGpm,
     nonInventoryExpenses: inventory,
     productionInputs: production,
     productionRuns: profitability,

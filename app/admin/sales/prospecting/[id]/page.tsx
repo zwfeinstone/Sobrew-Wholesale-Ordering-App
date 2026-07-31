@@ -36,6 +36,7 @@ import {
   prospectingQueueRequiresFollowUp,
   prospectingQueueSkipsTouchedToday,
   prospectingQueueStageFilter,
+  resolveActivityNextFollowUp,
   resolveActivityStage,
   stageLabel,
   type ProspectingActivityType,
@@ -191,32 +192,14 @@ function QueueContextFields({ context }: { context: ProspectingQueueContext }) {
   );
 }
 
-function repLeadLeavesCurrentQueue({
-  nextFollowUp,
-  queueContext,
-  savedStage,
-  today,
-  workedNow = false,
-}: {
-  nextFollowUp: string | null;
-  queueContext: ProspectingQueueContext;
-  savedStage: ProspectingStage;
-  today: string;
-  workedNow?: boolean;
-}) {
-  if (!prospectingQueueStageFilter(queueContext).includes(savedStage)) return true;
-  if (workedNow && prospectingQueueSkipsTouchedToday(queueContext)) return true;
-  return prospectingQueueRequiresFollowUp(queueContext) && (!nextFollowUp || nextFollowUp > today);
-}
-
 async function loadLeadForMutation(supabase: Awaited<ReturnType<typeof createClient>>, leadId: string, current: Awaited<ReturnType<typeof requireAdminSectionEdit>>) {
   let query = supabase
     .from('prospecting_leads')
-    .select('id,assigned_profile_id,stage,hubspot_status,company_name,notes')
+    .select('id,assigned_profile_id,stage,hubspot_status,company_name,notes,next_follow_up_at')
     .eq('id', leadId);
   if (!current.isOwner) query = query.eq('assigned_profile_id', current.profile.id).neq('stage', 'sample_requested');
   const { data } = await query.maybeSingle();
-  return data as { assigned_profile_id: string | null; company_name: string; hubspot_status: string | null; id: string; notes: string | null; stage: string | null } | null;
+  return data as { assigned_profile_id: string | null; company_name: string; hubspot_status: string | null; id: string; next_follow_up_at: string | null; notes: string | null; stage: string | null } | null;
 }
 
 async function syncHubspotQueue({
@@ -322,12 +305,6 @@ async function saveLeadDetails(formData: FormData) {
   const shouldUnassign = shouldRecycle || shouldMoveToMaintenance;
   const assignedProfileId = shouldUnassign ? null : current.isOwner ? selectedRepId || null : before.assigned_profile_id;
   const nextFollowUp = shouldUnassign ? null : safeDateInput(formData.get('next_follow_up_at'));
-  const shouldLeaveCurrentQueue = !current.isOwner && repLeadLeavesCurrentQueue({
-    nextFollowUp,
-    queueContext,
-    savedStage,
-    today: formatCentralDateInput(new Date()),
-  });
   const state = cleanText(formData.get('state'));
 
   const { error, data } = await supabaseAdmin
@@ -395,7 +372,7 @@ async function saveLeadDetails(formData: FormData) {
     redirect(sampleOrderHref({ leadId, nextRecordId, previousRecordId, queueContext, toast: 'sample_requested' }));
   }
 
-  if ((shouldRecycle || shouldMoveToMaintenance || shouldLeaveCurrentQueue) && !current.isOwner) {
+  if ((shouldRecycle || shouldMoveToMaintenance) && !current.isOwner) {
     redirect(await shuckedRepRedirectHref({
       current,
       nextRecordId,
@@ -569,12 +546,10 @@ async function logLeadActivity(formData: FormData) {
   const shouldMoveToSampleReview = savedStage === 'sample_requested';
   const shouldUnassign = shouldRecycle || shouldMoveToMaintenance;
   const now = new Date().toISOString();
-  const shouldLeaveCurrentQueue = !current.isOwner && repLeadLeavesCurrentQueue({
-    nextFollowUp: shouldUnassign ? null : nextFollowUp,
-    queueContext,
-    savedStage,
-    today: formatCentralDateInput(new Date()),
-    workedNow: true,
+  const savedNextFollowUp = resolveActivityNextFollowUp({
+    currentNextFollowUp: before.next_follow_up_at,
+    requestedNextFollowUp: nextFollowUp,
+    shouldUnassign,
   });
 
   const { error } = await supabaseAdmin.from('prospecting_activities').insert({
@@ -599,7 +574,7 @@ async function logLeadActivity(formData: FormData) {
       assigned_profile_id: shouldUnassign ? null : undefined,
       last_activity_at: now,
       last_result: result,
-      next_follow_up_at: shouldUnassign ? null : nextFollowUp,
+      next_follow_up_at: savedNextFollowUp,
       stage: savedStage,
       updated_at: now,
       updated_by: current.profile.id,
@@ -645,7 +620,7 @@ async function logLeadActivity(formData: FormData) {
     redirect(sampleOrderHref({ leadId, nextRecordId, previousRecordId, queueContext, toast: 'sample_requested' }));
   }
 
-  if ((shouldRecycle || shouldMoveToMaintenance || shouldLeaveCurrentQueue) && !current.isOwner) {
+  if ((shouldRecycle || shouldMoveToMaintenance) && !current.isOwner) {
     redirect(await shuckedRepRedirectHref({
       current,
       nextRecordId,
