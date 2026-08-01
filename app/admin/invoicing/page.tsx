@@ -129,6 +129,12 @@ type ProductSyncRow = {
   sku: string | null;
 };
 
+type QuickBooksResetStatusRow = {
+  quickbooks_product_reset_error: string | null;
+  quickbooks_product_reset_error_at: string | null;
+  quickbooks_product_reset_last_result: Record<string, unknown> | null;
+};
+
 function relatedOne<T>(value: T | T[] | null | undefined): T | null {
   if (Array.isArray(value)) return value[0] ?? null;
   return value ?? null;
@@ -207,6 +213,12 @@ function invoicingHref(toast?: string) {
   return `/admin/invoicing?${new URLSearchParams({ toast }).toString()}`;
 }
 
+function productsInvoicingHref(toast: string, error?: string) {
+  const params = new URLSearchParams({ toast, view: 'products' });
+  if (error) params.set('error', error.slice(0, 500));
+  return `/admin/invoicing?${params.toString()}`;
+}
+
 function invoicingViewParam(value: string | string[] | undefined): InvoicingView {
   return INVOICING_VIEWS.some((view) => view.id === value) ? value as InvoicingView : 'queue';
 }
@@ -279,10 +291,32 @@ async function resetQuickBooksProducts(formData: FormData) {
   let toast: 'product_reset_saved' | 'product_reset_with_errors' = 'product_reset_saved';
   try {
     const result = await resetQuickBooksProductsFromPortal(products ?? []);
+    await supabase
+      .from('app_settings')
+      .update({
+        quickbooks_product_reset_error: null,
+        quickbooks_product_reset_error_at: null,
+        quickbooks_product_reset_last_result: {
+          createdCount: result.createdCount,
+          inactivatedCount: result.inactivatedCount,
+          productErrorCount: result.productErrorCount,
+          ranAt: new Date().toISOString(),
+        },
+      })
+      .neq('id', '00000000-0000-0000-0000-000000000000');
     toast = result.productErrorCount ? 'product_reset_with_errors' : 'product_reset_saved';
   } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unable to reset QuickBooks products.';
     console.error('[invoicing] product reset failed', error);
-    redirect('/admin/invoicing?view=products&toast=product_reset_failed');
+    await supabase
+      .from('app_settings')
+      .update({
+        quickbooks_product_reset_error: message,
+        quickbooks_product_reset_error_at: new Date().toISOString(),
+        quickbooks_product_reset_last_result: null,
+      })
+      .neq('id', '00000000-0000-0000-0000-000000000000');
+    redirect(productsInvoicingHref('product_reset_failed', message));
   }
   redirect(`/admin/invoicing?view=products&toast=${toast}`);
 }
@@ -357,10 +391,11 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
   const canInvoice = adminCanEdit(current.access, 'invoicing');
   const activeView = invoicingViewParam(searchParams?.view);
   const toast = typeof searchParams?.toast === 'string' ? searchParams.toast : '';
+  const errorDetail = typeof searchParams?.error === 'string' ? searchParams.error : '';
   const selectedToast = toastMessage(toast);
   const startIso = todayStartIso();
   const supabase = await createClient();
-  const [quickBooksStatus, quickBooksCompanyInfo, quickBooksProductSummary, quickBooksItemsResult, salesTaxSettings, ordersResult, productsResult] = await Promise.all([
+  const [quickBooksStatus, quickBooksCompanyInfo, quickBooksProductSummary, quickBooksItemsResult, salesTaxSettings, ordersResult, productsResult, resetStatusResult] = await Promise.all([
     getQuickBooksConnectionStatus(),
     activeView === 'products' ? getQuickBooksCompanyInfo() : Promise.resolve({ companyName: null, email: null, error: null, legalName: null, realmId: null }),
     activeView === 'products' ? getQuickBooksProductSummary() : Promise.resolve({ activeItemCount: null, error: null }),
@@ -382,10 +417,18 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
           .order('active', { ascending: false })
           .order('name', { ascending: true })
       : Promise.resolve({ data: [], error: null }),
+    activeView === 'products'
+      ? supabase
+          .from('app_settings')
+          .select('quickbooks_product_reset_error,quickbooks_product_reset_error_at,quickbooks_product_reset_last_result')
+          .limit(1)
+          .maybeSingle()
+      : Promise.resolve({ data: null, error: null }),
   ]);
   const orders = (ordersResult.data ?? []) as InvoiceQueueOrder[];
   const products = (productsResult.data ?? []) as ProductSyncRow[];
   const quickBooksItems = quickBooksItemsResult.items;
+  const resetStatus = resetStatusResult.data as QuickBooksResetStatusRow | null;
   const readyOrders = orders.filter((order) => order.invoice_status !== 'invoicing');
   const totalReadyCents = readyOrders.reduce((sum, order) => sum + Math.max(0, numericValue(order.subtotal_cents)), 0);
   const waitingCount = orders.filter((order) => order.invoice_status === 'invoicing').length;
@@ -511,6 +554,22 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
           {quickBooksProductSummary.error && quickBooksStatus.connected ? (
             <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-900">
               {quickBooksProductSummary.error}
+            </div>
+          ) : null}
+          {errorDetail ? (
+            <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-medium text-rose-900">
+              {errorDetail}
+            </div>
+          ) : null}
+          {resetStatus?.quickbooks_product_reset_error ? (
+            <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-medium text-rose-900">
+              <p>Last reset error{resetStatus.quickbooks_product_reset_error_at ? ` (${formatTimestamp(resetStatus.quickbooks_product_reset_error_at)})` : ''}:</p>
+              <p className="mt-1">{resetStatus.quickbooks_product_reset_error}</p>
+            </div>
+          ) : null}
+          {resetStatus?.quickbooks_product_reset_last_result ? (
+            <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-medium text-emerald-900">
+              Last reset: {String(resetStatus.quickbooks_product_reset_last_result.inactivatedCount ?? 0)} QuickBooks items inactivated, {String(resetStatus.quickbooks_product_reset_last_result.createdCount ?? 0)} portal products created, {String(resetStatus.quickbooks_product_reset_last_result.productErrorCount ?? 0)} product errors.
             </div>
           ) : null}
           {quickBooksItemsResult.error && quickBooksStatus.connected ? (

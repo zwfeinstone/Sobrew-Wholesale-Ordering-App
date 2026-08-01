@@ -822,7 +822,12 @@ export async function resetQuickBooksProductsFromPortal(products: QuickBooksPort
 
   const itemsToArchive = existingItemsResult.items.filter((item) => item.type !== 'Category');
   for (const item of itemsToArchive) {
-    await archiveQuickBooksItem(connection, item, archivedAt);
+    try {
+      await archiveQuickBooksItem(connection, item, archivedAt);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown QuickBooks archive error.';
+      throw new Error(`Unable to inactivate QuickBooks item "${item.name}" (${item.id}): ${message}`);
+    }
   }
 
   await supabase
