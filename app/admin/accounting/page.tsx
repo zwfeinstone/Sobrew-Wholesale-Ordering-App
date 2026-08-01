@@ -32,11 +32,13 @@ const BULK_ACCOUNTING_REVIEW_FORM_ID = 'bulk-accounting-review-form';
 const ACCOUNTING_VIEWS = [
   { id: 'overview', label: 'Overview' },
   { id: 'upload', label: 'Upload' },
+  { id: 'business_review', label: 'Business Review' },
   { id: 'review', label: 'Review Transactions' },
   { id: 'pnl', label: 'P&L' },
   { id: 'categories', label: 'Categories' },
   { id: 'imports', label: 'Imports' },
 ] as const;
+const BUSINESS_REVIEW_NOTE = 'Included in Sales Revenue per owner reconciliation review on 2026-08-01.';
 
 type AccountingView = (typeof ACCOUNTING_VIEWS)[number]['id'];
 
@@ -49,6 +51,16 @@ const PNL_DETAIL_SECTIONS = [
   { id: 'other_income', label: 'Other Income' },
   { id: 'other_expenses', label: 'Other Expenses' },
 ] as const;
+
+type LastKnownAccountingTransaction = {
+  account_name: string | null;
+  account_type: AccountingAccountType | string;
+  amount_cents: number | string;
+  created_at: string | null;
+  merchant_name: string | null;
+  original_description: string;
+  transaction_date: string;
+};
 
 function accountingHref(
   toast: string,
@@ -108,6 +120,11 @@ function addOneDay(dateInput: string) {
   const date = new Date(`${dateInput}T00:00:00.000Z`);
   date.setUTCDate(date.getUTCDate() + 1);
   return date.toISOString().slice(0, 10);
+}
+
+function lastDayOfCurrentMonth() {
+  const today = new Date(`${todayInput()}T00:00:00.000Z`);
+  return new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth() + 1, 0)).toISOString().slice(0, 10);
 }
 
 function formatDate(value: string | null | undefined) {
@@ -189,6 +206,41 @@ function isStandaloneAccountingFlag(flag: any) {
   return flag?.flagType !== 'inventory_overlap' && flag?.recommendedAction !== 'approve_inventory_match';
 }
 
+function transactionSummary(transaction: LastKnownAccountingTransaction | null) {
+  if (!transaction) return 'No transactions uploaded yet.';
+  return transaction.merchant_name || transaction.original_description;
+}
+
+function uploadStartLabel(transaction: LastKnownAccountingTransaction | null) {
+  if (!transaction) return 'Download full history for the first upload.';
+  return `Start the next download on ${formatDate(addOneDay(transaction.transaction_date))}.`;
+}
+
+function LastKnownTransactionCard({
+  label,
+  transaction,
+}: {
+  label: string;
+  transaction: LastKnownAccountingTransaction | null;
+}) {
+  return (
+    <div className="rounded-xl border border-amber-200 bg-white/70 p-4">
+      <p className="text-xs font-semibold uppercase tracking-[0.14em] text-amber-700">{label}</p>
+      <p className="mt-2 text-lg font-semibold text-slate-950">{transaction ? formatDate(transaction.transaction_date) : 'No date yet'}</p>
+      <p className="mt-1 truncate text-sm font-medium text-slate-700">{transactionSummary(transaction)}</p>
+      {transaction ? (
+        <p className="mt-1 text-sm text-slate-500">
+          {accountingAccountTypeLabel(transaction.account_type)}
+          {transaction.account_name ? ` - ${transaction.account_name}` : ''}
+          {' - '}
+          {money(transaction.amount_cents)}
+        </p>
+      ) : null}
+      <p className="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-900">{uploadStartLabel(transaction)}</p>
+    </div>
+  );
+}
+
 async function serverOpenAiApiKey() {
   if (process.env.OPENAI_API_KEY) return process.env.OPENAI_API_KEY;
 
@@ -223,7 +275,7 @@ function AccountingNav({
 }) {
   return (
     <section className="card">
-      <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-6">
+      <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-7">
         {ACCOUNTING_VIEWS.map((view) => (
           <Link
             key={view.id}
@@ -621,6 +673,9 @@ export default async function AccountingPage({
     transactionsResult,
     pnlTransactionsResult,
     batchesResult,
+    latestBankTransactionResult,
+    latestCreditCardTransactionResult,
+    businessReviewTransactionsResult,
   ] = await Promise.all([
     supabase.from('accounting_categories').select('id,name,category_type,pnl_section,active').eq('active', true).order('display_order', { ascending: true }).order('name', { ascending: true }),
     supabase
@@ -638,15 +693,43 @@ export default async function AccountingPage({
       .order('transaction_date', { ascending: false })
       .limit(PNL_TRANSACTION_LIMIT),
     supabase.from('accounting_upload_batches').select('id,source_type,account_name,account_type,file_name,transaction_count,total_outflow_cents,total_inflow_cents,created_at').order('created_at', { ascending: false }).limit(6),
+    supabase
+      .from('accounting_transactions')
+      .select('account_name,account_type,transaction_date,merchant_name,original_description,amount_cents,created_at')
+      .in('account_type', ['bank', 'debit_card'])
+      .order('transaction_date', { ascending: false })
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+    supabase
+      .from('accounting_transactions')
+      .select('account_name,account_type,transaction_date,merchant_name,original_description,amount_cents,created_at')
+      .eq('account_type', 'credit_card')
+      .order('transaction_date', { ascending: false })
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+    supabase
+      .from('accounting_transactions')
+      .select('id,transaction_date,account_name,account_type,merchant_name,original_description,amount_cents,status,review_notes,accounting_categories(id,name,category_type,pnl_section)')
+      .eq('review_notes', BUSINESS_REVIEW_NOTE)
+      .order('transaction_date', { ascending: true }),
   ]);
 
   const categories = (categoriesResult.data ?? []) as AccountingCategoryRow[];
   const transactions = (transactionsResult.data ?? []) as any[];
+  const businessReviewTransactions = (businessReviewTransactionsResult.data ?? []) as any[];
+  const latestBankTransaction = (latestBankTransactionResult.data ?? null) as LastKnownAccountingTransaction | null;
+  const latestCreditCardTransaction = (latestCreditCardTransactionResult.data ?? null) as LastKnownAccountingTransaction | null;
+  const monthEndDate = lastDayOfCurrentMonth();
   const transactionTotal = transactionsResult.count ?? transactions.length;
   const hasPreviousReviewPage = reviewPage > 1;
   const hasNextReviewPage = reviewFrom + transactions.length < transactionTotal;
   const pnlTransactions = (pnlTransactionsResult.data ?? []) as any[];
   const batches = batchesResult.data ?? [];
+  const businessReviewTotalCents = businessReviewTransactions.reduce((sum, transaction) => (
+    sum - normalizeAccountingNumber(transaction.amount_cents)
+  ), 0);
   const pnl = buildAccountingPnlTotals({
     transactions: pnlTransactions as any[],
   });
@@ -687,27 +770,45 @@ export default async function AccountingPage({
       {aiReviewErrorMessage(searchParams?.ai_error) ? <StatusToast message={aiReviewErrorMessage(searchParams?.ai_error) ?? ''} tone="error" /> : null}
 
       <section className="panel">
-        <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
-          <div>
+        <div className="flex flex-col gap-5 xl:flex-row xl:items-end xl:justify-between">
+          <div className="min-w-0">
             <span className="eyebrow">Accounting</span>
             <h1 className="page-title mt-4">Accounting workspace</h1>
             <p className="page-subtitle mt-3 max-w-3xl">Upload bank and card activity, review possible duplicates, and track the numbers that feed your P&amp;L.</p>
           </div>
-          <form className="grid gap-3 rounded-xl border border-slate-200 bg-white/60 p-3 sm:grid-cols-[1fr_1fr_auto]" action="/admin/accounting">
-            <input name="view" type="hidden" value={activeView} />
-            <input className="input" name="start" type="date" defaultValue={start} />
-            <input className="input" name="end" type="date" defaultValue={end} />
-            <button className="btn-primary" type="submit">Update</button>
-          </form>
-          <form action={runAiAccountingReview} className="rounded-xl border border-slate-200 bg-white/60 p-3">
-            <input name="start" type="hidden" value={start} />
-            <input name="end" type="hidden" value={end} />
-            <PendingSubmitButton className="btn-primary w-full" label="Run AI review" pendingLabel="Reviewing..." />
-          </form>
+          <div className="flex w-full min-w-0 flex-col gap-3 lg:flex-row lg:flex-wrap lg:items-end lg:justify-end xl:w-auto">
+            <form className="grid w-full min-w-0 gap-3 rounded-xl border border-slate-200 bg-white/60 p-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] lg:w-auto" action="/admin/accounting">
+              <input name="view" type="hidden" value={activeView} />
+              <input className="input min-w-0" name="start" type="date" defaultValue={start} />
+              <input className="input min-w-0" name="end" type="date" defaultValue={end} />
+              <button className="btn-primary w-full sm:w-auto" type="submit">Update</button>
+            </form>
+            <form action={runAiAccountingReview} className="w-full rounded-xl border border-slate-200 bg-white/60 p-3 sm:w-auto">
+              <input name="start" type="hidden" value={start} />
+              <input name="end" type="hidden" value={end} />
+              <PendingSubmitButton className="btn-primary w-full sm:w-auto" label="Run AI review" pendingLabel="Reviewing..." />
+            </form>
+          </div>
         </div>
       </section>
 
       <AccountingNav activeView={activeView} end={end} start={start} />
+
+      <section className="rounded-xl border border-amber-200 bg-amber-50/80 p-4 shadow-sm">
+        <div className="flex flex-col gap-2 lg:flex-row lg:items-end lg:justify-between">
+          <div>
+            <span className="text-xs font-semibold uppercase tracking-[0.14em] text-amber-700">Month-end alert</span>
+            <h2 className="mt-2 text-xl font-semibold tracking-tight text-slate-950">Reconcile accounting data by {formatDate(monthEndDate)}</h2>
+          </div>
+          <p className="max-w-2xl text-sm font-medium text-amber-900">
+            Download each statement after the last uploaded transaction date below, then upload the new file so the accounting records do not overlap.
+          </p>
+        </div>
+        <div className="mt-4 grid gap-3 lg:grid-cols-2">
+          <LastKnownTransactionCard label="Last known bank transaction recorded" transaction={latestBankTransaction} />
+          <LastKnownTransactionCard label="Last known credit card transaction reported" transaction={latestCreditCardTransaction} />
+        </div>
+      </section>
 
       {activeView === 'overview' ? <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
         <div className="stat-card">
@@ -780,6 +881,47 @@ export default async function AccountingPage({
           <input className="input" name="account_name" placeholder="Account name" />
           <PendingSubmitButton className="btn-primary w-full sm:w-auto" label="Add transaction" pendingLabel="Adding..." />
         </form>
+      </section> : null}
+
+      {activeView === 'business_review' ? <section className="card space-y-4">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+          <div>
+            <span className="eyebrow">Business Review</span>
+            <h2 className="mt-3 text-2xl font-semibold tracking-tight text-slate-950">Owner-reviewed revenue items</h2>
+          </div>
+          <div className="rounded-xl border border-teal-100 bg-teal-50 px-4 py-3">
+            <p className="text-xs font-semibold uppercase tracking-[0.14em] text-teal-700">Included Revenue</p>
+            <p className="mt-1 text-2xl font-semibold text-teal-950">{money(businessReviewTotalCents)}</p>
+          </div>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="min-w-full text-sm">
+            <thead>
+              <tr className="text-left text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">
+                <th className="px-3 py-2">Date</th>
+                <th className="px-3 py-2">Description</th>
+                <th className="px-3 py-2">Account</th>
+                <th className="px-3 py-2">Category</th>
+                <th className="px-3 py-2 text-right">Amount</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {businessReviewTransactions.map((transaction) => (
+                <tr key={transaction.id} className="bg-white/60">
+                  <td className="px-3 py-3 font-medium text-slate-700">{formatDate(transaction.transaction_date)}</td>
+                  <td className="px-3 py-3 text-slate-950">
+                    <p className="font-semibold">{transaction.merchant_name || transaction.original_description}</p>
+                    {transaction.merchant_name ? <p className="mt-1 text-xs text-slate-500">{transaction.original_description}</p> : null}
+                  </td>
+                  <td className="px-3 py-3 text-slate-700">{transaction.account_name || accountingAccountTypeLabel(transaction.account_type)}</td>
+                  <td className="px-3 py-3 text-slate-700">{categoryLabel(transaction.accounting_categories)}</td>
+                  <td className="px-3 py-3 text-right font-semibold text-emerald-700">{money(-normalizeAccountingNumber(transaction.amount_cents))}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        {!businessReviewTransactions.length ? <p className="text-sm text-slate-500">No business review items yet.</p> : null}
       </section> : null}
 
       {activeView === 'pnl' ? <section className="grid gap-6 xl:grid-cols-[1fr_1fr]">
