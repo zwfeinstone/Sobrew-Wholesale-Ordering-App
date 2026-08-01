@@ -3,9 +3,11 @@ import {
   buildHubSpotCompanyProperties,
   buildHubSpotContactProperties,
   buildHubSpotDealProperties,
+  buildHubSpotActivityNoteBody,
   buildHubSpotProspectingNoteBody,
   canPushProspectingHubSpot,
   extractHubSpotDomain,
+  hubSpotContactsWithEmail,
   lookupHubSpotOwnerIdByEmail,
   normalizeHubSpotWebsite,
   pushProspectingLeadToHubSpot,
@@ -131,6 +133,38 @@ describe('HubSpot prospecting mapping', () => {
       { full_name: 'Blank Contact', notes: '  ' },
     ])).toBe('<strong>Maya Patel</strong><br>Decision maker<br>Likes espresso.<br><br><strong>ops@example.com</strong><br>Use &lt;main&gt; address.');
   });
+
+  it('builds HubSpot note bodies from Sobrew timeline activities', () => {
+    expect(buildHubSpotActivityNoteBody({
+      activity_type: 'call',
+      body: 'lvm and he did not call back',
+      created_at: '2026-08-01T16:15:00.000Z',
+      id: 'activity-1',
+      result: 'Left voicemail',
+    })).toBe('<strong>Sobrew Call</strong><br><strong>Result:</strong> Left voicemail<br>lvm and he did not call back');
+
+    expect(buildHubSpotActivityNoteBody({
+      activity_type: 'enrichment',
+      body: 'Manual single-lead entry created.',
+      id: 'activity-2',
+      next_follow_up_at: '2026-08-01',
+      next_stage: 'sample_requested',
+      previous_stage: 'new',
+      result: 'Manual add',
+    })).toBe('<strong>Sobrew Enrichment</strong><br><strong>Result:</strong> Manual add<br><strong>Stage:</strong> New to Sample Requested<br><strong>Next follow-up:</strong> 2026-08-01<br>Manual single-lead entry created.');
+  });
+
+  it('keeps one HubSpot contact per email address', () => {
+    expect(hubSpotContactsWithEmail([
+      { email: 'Maya@Example.com', full_name: 'Maya Patel' },
+      { email: 'maya@example.com', full_name: 'Duplicate Maya' },
+      { email: '', full_name: 'No Email' },
+      { email: 'james@example.com', full_name: 'James Winger' },
+    ])).toEqual([
+      { email: 'Maya@Example.com', full_name: 'Maya Patel' },
+      { email: 'james@example.com', full_name: 'James Winger' },
+    ]);
+  });
 });
 
 describe('HubSpot prospecting push', () => {
@@ -163,10 +197,12 @@ describe('HubSpot prospecting push', () => {
       lead,
       ownerEmail: 'maya@example.com',
     })).resolves.toEqual({
+      activityNoteIds: {},
       companyId: 'company-1',
       contactId: 'contact-1',
+      contactIds: ['contact-1'],
       dealId: 'deal-1',
-      message: 'Company, primary contact, and deal pushed to HubSpot.',
+      message: 'Company, contacts, and deal pushed to HubSpot.',
       noteId: null,
       status: 'exported',
     });
@@ -250,6 +286,161 @@ describe('HubSpot prospecting push', () => {
     expect(calls.find((call) => call.url.endsWith('/crm/v3/objects/companies'))?.body).toEqual({ properties: expect.objectContaining({ hubspot_owner_id: 'owner-1' }) });
   });
 
+  it('syncs Sobrew timeline activities as HubSpot notes on every pushed record', async () => {
+    const { calls, fetchImpl } = mockHubSpotFetch([
+      { results: [{ archived: false, email: 'maya@example.com', id: 'owner-1' }] },
+      { results: [] },
+      { results: [] },
+      { results: [] },
+      { results: [] },
+      { id: 'company-1' },
+      { results: [] },
+      { id: 'contact-primary' },
+      {},
+      { results: [] },
+      { id: 'contact-james' },
+      {},
+      { id: 'deal-1' },
+      { id: 'activity-note-call' },
+      { id: 'activity-note-stage' },
+    ]);
+
+    const result = await pushProspectingLeadToHubSpot({
+      accessToken: 'token',
+      activities: [
+        {
+          activity_type: 'call',
+          body: 'lvm and he did not call back',
+          created_at: '2026-08-01T16:15:00.000Z',
+          id: 'activity-call',
+          result: 'Left voicemail',
+        },
+        {
+          activity_type: 'enrichment',
+          body: 'Manual single-lead entry created.',
+          created_at: '2026-08-01T16:14:00.000Z',
+          id: 'activity-stage',
+          next_follow_up_at: '2026-08-01',
+          next_stage: 'sample_requested',
+          previous_stage: 'new',
+          result: 'Manual add',
+        },
+      ],
+      contacts: [
+        { email: 'zach@example.com', full_name: 'Zach Feinstone', is_primary: true },
+        { email: 'james@example.com', full_name: 'James Winger' },
+      ],
+      dealPipeline: 'default',
+      dealStage: 'appointmentscheduled',
+      fetchImpl,
+      lead,
+      ownerEmail: 'maya@example.com',
+    });
+
+    expect(result.activityNoteIds).toEqual({
+      'activity-call': 'activity-note-call',
+      'activity-stage': 'activity-note-stage',
+    });
+    const noteCreates = calls.filter((call) => call.url.endsWith('/crm/v3/objects/notes') && call.method === 'POST');
+    expect(noteCreates).toHaveLength(2);
+    expect(noteCreates[0].body).toEqual({
+      associations: [
+        { to: { id: 'company-1' }, types: [{ associationCategory: 'HUBSPOT_DEFINED', associationTypeId: 190 }] },
+        { to: { id: 'contact-primary' }, types: [{ associationCategory: 'HUBSPOT_DEFINED', associationTypeId: 202 }] },
+        { to: { id: 'contact-james' }, types: [{ associationCategory: 'HUBSPOT_DEFINED', associationTypeId: 202 }] },
+        { to: { id: 'deal-1' }, types: [{ associationCategory: 'HUBSPOT_DEFINED', associationTypeId: 214 }] },
+      ],
+      properties: {
+        hs_note_body: '<strong>Sobrew Call</strong><br><strong>Result:</strong> Left voicemail<br>lvm and he did not call back',
+        hs_timestamp: '2026-08-01T16:15:00.000Z',
+        hubspot_owner_id: 'owner-1',
+      },
+    });
+    expect(noteCreates[1].body).toEqual({
+      associations: [
+        { to: { id: 'company-1' }, types: [{ associationCategory: 'HUBSPOT_DEFINED', associationTypeId: 190 }] },
+        { to: { id: 'contact-primary' }, types: [{ associationCategory: 'HUBSPOT_DEFINED', associationTypeId: 202 }] },
+        { to: { id: 'contact-james' }, types: [{ associationCategory: 'HUBSPOT_DEFINED', associationTypeId: 202 }] },
+        { to: { id: 'deal-1' }, types: [{ associationCategory: 'HUBSPOT_DEFINED', associationTypeId: 214 }] },
+      ],
+      properties: {
+        hs_note_body: '<strong>Sobrew Enrichment</strong><br><strong>Result:</strong> Manual add<br><strong>Stage:</strong> New to Sample Requested<br><strong>Next follow-up:</strong> 2026-08-01<br>Manual single-lead entry created.',
+        hs_timestamp: '2026-08-01T16:14:00.000Z',
+        hubspot_owner_id: 'owner-1',
+      },
+    });
+  });
+
+  it('creates and associates every prospecting contact that has an email', async () => {
+    const { calls, fetchImpl } = mockHubSpotFetch([
+      { results: [{ archived: false, email: 'maya@example.com', id: 'owner-1' }] },
+      { results: [] },
+      { results: [] },
+      { results: [] },
+      { results: [] },
+      { id: 'company-1' },
+      { results: [] },
+      { id: 'contact-primary' },
+      {},
+      { results: [] },
+      { id: 'contact-james' },
+      {},
+      { id: 'deal-1' },
+      { id: 'note-1' },
+    ]);
+
+    const result = await pushProspectingLeadToHubSpot({
+      accessToken: 'token',
+      contacts: [
+        { email: 'zach@example.com', full_name: 'Zach Feinstone', is_primary: true, notes: 'Primary contact.' },
+        { email: 'james@example.com', full_name: 'James Winger', notes: 'Second contact.' },
+      ],
+      dealPipeline: 'default',
+      dealStage: 'appointmentscheduled',
+      fetchImpl,
+      lead,
+      ownerEmail: 'maya@example.com',
+    });
+
+    expect(result).toMatchObject({
+      contactId: 'contact-primary',
+      contactIds: ['contact-primary', 'contact-james'],
+      dealId: 'deal-1',
+      noteId: 'note-1',
+      status: 'exported',
+    });
+    expect(calls.filter((call) => call.url.endsWith('/crm/v3/objects/contacts') && call.method === 'POST')).toHaveLength(2);
+    expect(calls.filter((call) => call.body && typeof call.body === 'object' && 'inputs' in call.body)).toHaveLength(2);
+    const dealCreate = calls.find((call) => call.url.endsWith('/crm/v3/objects/deals') && call.method === 'POST');
+    expect(dealCreate?.body).toEqual({
+      associations: [
+        { to: { id: 'company-1' }, types: [{ associationCategory: 'HUBSPOT_DEFINED', associationTypeId: 5 }] },
+        { to: { id: 'contact-primary' }, types: [{ associationCategory: 'HUBSPOT_DEFINED', associationTypeId: 3 }] },
+        { to: { id: 'contact-james' }, types: [{ associationCategory: 'HUBSPOT_DEFINED', associationTypeId: 3 }] },
+      ],
+      properties: {
+        dealname: 'Sobrew Recovery',
+        dealstage: 'appointmentscheduled',
+        hs_priority: 'medium',
+        hubspot_owner_id: 'owner-1',
+        pipeline: 'default',
+      },
+    });
+    const noteCreate = calls.find((call) => call.url.endsWith('/crm/v3/objects/notes') && call.method === 'POST');
+    expect(noteCreate?.body).toEqual({
+      associations: [
+        { to: { id: 'company-1' }, types: [{ associationCategory: 'HUBSPOT_DEFINED', associationTypeId: 190 }] },
+        { to: { id: 'contact-primary' }, types: [{ associationCategory: 'HUBSPOT_DEFINED', associationTypeId: 202 }] },
+        { to: { id: 'contact-james' }, types: [{ associationCategory: 'HUBSPOT_DEFINED', associationTypeId: 202 }] },
+        { to: { id: 'deal-1' }, types: [{ associationCategory: 'HUBSPOT_DEFINED', associationTypeId: 214 }] },
+      ],
+      properties: expect.objectContaining({
+        hs_note_body: '<strong>Zach Feinstone</strong><br>Primary contact.<br><br><strong>James Winger</strong><br>Second contact.',
+        hubspot_owner_id: 'owner-1',
+      }),
+    });
+  });
+
   it('updates a stored HubSpot deal instead of creating a duplicate', async () => {
     const { calls, fetchImpl } = mockHubSpotFetch([
       { results: [{ archived: false, email: 'maya@example.com', id: 'owner-1' }] },
@@ -308,10 +499,12 @@ describe('HubSpot prospecting push', () => {
       lead,
       ownerEmail: 'maya@example.com',
     })).resolves.toEqual({
+      activityNoteIds: {},
       companyId: 'company-3',
       contactId: null,
+      contactIds: [],
       dealId: null,
-      message: 'Company pushed; missing primary contact email.',
+      message: 'Company pushed; no prospecting contacts have an email.',
       noteId: null,
       status: 'partial',
     });

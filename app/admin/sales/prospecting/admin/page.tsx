@@ -10,6 +10,7 @@ import {
   canPushProspectingHubSpot,
   hubSpotRecordUrl,
   pushProspectingLeadToHubSpot,
+  type HubSpotProspectingActivity,
   type HubSpotProspectingContact,
   type HubSpotProspectingLead,
 } from '@/lib/hubspot-prospecting';
@@ -107,6 +108,19 @@ type ContactSummary = {
   notes?: string | null;
   phone: string | null;
   title?: string | null;
+};
+
+type HubSpotActivitySummary = {
+  activity_type: string | null;
+  body: string | null;
+  created_at: string | null;
+  hubspot_note_id?: string | null;
+  id: string;
+  lead_id: string;
+  next_follow_up_at: string | null;
+  next_stage: string | null;
+  previous_stage: string | null;
+  result: string | null;
 };
 
 type ListRow = {
@@ -1223,12 +1237,18 @@ async function pushSelectedHubspotLeads(formData: FormData) {
   const assignedProfileIds = [...new Set(selectedLeads.map((lead) => lead.assigned_profile_id).filter(Boolean))] as string[];
   const [
     { data: selectedContactsData, error: contactsError },
+    { data: selectedActivitiesData, error: activitiesError },
     { data: assignedProfilesData, error: assignedProfilesError },
   ] = await Promise.all([
     supabase
       .from('prospecting_contacts')
       .select('lead_id,full_name,email,phone,title,is_primary,notes')
       .in('lead_id', selectedLeadIdsForPush),
+    supabase
+      .from('prospecting_activities')
+      .select('id,lead_id,activity_type,result,body,previous_stage,next_stage,next_follow_up_at,created_at,hubspot_note_id')
+      .in('lead_id', selectedLeadIdsForPush)
+      .order('created_at', { ascending: true }),
     assignedProfileIds.length
       ? supabase
           .from('profiles')
@@ -1237,11 +1257,15 @@ async function pushSelectedHubspotLeads(formData: FormData) {
       : Promise.resolve({ data: [], error: null }),
   ]);
 
-  if (contactsError || assignedProfilesError) redirect(hubspotPushRedirect('hubspot_push_error'));
+  if (contactsError || activitiesError || assignedProfilesError) redirect(hubspotPushRedirect('hubspot_push_error'));
 
   const contactsByLead = new Map<string, HubSpotProspectingContact[]>();
   for (const contact of (selectedContactsData ?? []) as ContactSummary[]) {
     contactsByLead.set(contact.lead_id, [...(contactsByLead.get(contact.lead_id) ?? []), contact]);
+  }
+  const activitiesByLead = new Map<string, HubSpotProspectingActivity[]>();
+  for (const activity of (selectedActivitiesData ?? []) as HubSpotActivitySummary[]) {
+    activitiesByLead.set(activity.lead_id, [...(activitiesByLead.get(activity.lead_id) ?? []), activity]);
   }
   const assignedProfilesById = new Map(((assignedProfilesData ?? []) as ProfileRow[]).map((profile) => [profile.id, profile]));
 
@@ -1254,6 +1278,7 @@ async function pushSelectedHubspotLeads(formData: FormData) {
     try {
       const result = await pushProspectingLeadToHubSpot({
         accessToken: env.hubspotAccessToken,
+        activities: activitiesByLead.get(lead.id) ?? [],
         contacts: contactsByLead.get(lead.id) ?? [],
         dealPipeline: env.hubspotDealPipeline,
         dealStage: env.hubspotSampleRequestedDealStage,
@@ -1271,6 +1296,7 @@ async function pushSelectedHubspotLeads(formData: FormData) {
         updated_at: attemptAt,
         updated_by: current.profile.id,
       };
+      const activityNoteEntries = Object.entries(result.activityNoteIds);
 
       if (result.status === 'exported') {
         const { error } = await supabase
@@ -1283,6 +1309,14 @@ async function pushSelectedHubspotLeads(formData: FormData) {
           })
           .eq('id', lead.id);
         if (error) throw error;
+        for (const [activityId, hubspotNoteId] of activityNoteEntries) {
+          const { error: activityNoteError } = await supabase
+            .from('prospecting_activities')
+            .update({ hubspot_note_id: hubspotNoteId })
+            .eq('id', activityId)
+            .eq('lead_id', lead.id);
+          if (activityNoteError) throw activityNoteError;
+        }
 
         await supabase
           .from('prospecting_hubspot_queue')
@@ -1304,6 +1338,14 @@ async function pushSelectedHubspotLeads(formData: FormData) {
       } else {
         const { error } = await supabase.from('prospecting_leads').update(leadUpdate).eq('id', lead.id);
         if (error) throw error;
+        for (const [activityId, hubspotNoteId] of activityNoteEntries) {
+          const { error: activityNoteError } = await supabase
+            .from('prospecting_activities')
+            .update({ hubspot_note_id: hubspotNoteId })
+            .eq('id', activityId)
+            .eq('lead_id', lead.id);
+          if (activityNoteError) throw activityNoteError;
+        }
         await supabase
           .from('prospecting_hubspot_queue')
           .update({ notes: result.message })

@@ -23,6 +23,19 @@ export type HubSpotProspectingContact = {
   title?: string | null;
 };
 
+export type HubSpotProspectingActivity = {
+  activity_type?: string | null;
+  body?: string | null;
+  created_at?: string | null;
+  hubspot_note_id?: string | null;
+  id: string;
+  lead_id?: string | null;
+  next_follow_up_at?: string | null;
+  next_stage?: string | null;
+  previous_stage?: string | null;
+  result?: string | null;
+};
+
 type HubSpotObject = {
   id: string;
   properties?: Record<string, string | null | undefined>;
@@ -52,8 +65,10 @@ type FetchLike = (input: string, init?: RequestInit) => Promise<{
 }>;
 
 export type HubSpotPushResult = {
+  activityNoteIds: Record<string, string>;
   companyId: string | null;
   contactId: string | null;
+  contactIds: string[];
   dealId: string | null;
   message: string;
   noteId: string | null;
@@ -195,6 +210,59 @@ export function buildHubSpotProspectingNoteBody(contacts: HubSpotProspectingCont
   return noteBlocks.join('<br><br>');
 }
 
+const PROSPECTING_STAGE_LABELS: Record<string, string> = {
+  converted: 'Converted',
+  follow_up: 'Follow-up Needed',
+  interested: 'Interested',
+  lost: 'Lost',
+  new: 'New',
+  not_a_fit: 'Not a Fit',
+  recycle_try_later: 'Recycle / Try Later',
+  sample_requested: 'Sample Requested',
+  working: 'Working',
+};
+
+const PROSPECTING_ACTIVITY_LABELS: Record<string, string> = {
+  assignment: 'Assignment',
+  call: 'Call',
+  email: 'Email',
+  enrichment: 'Enrichment',
+  hubspot_export: 'HubSpot Export',
+  note: 'Note',
+  stage_change: 'Stage Change',
+};
+
+function prospectingStageLabel(stage?: string | null) {
+  const key = String(stage ?? '').trim();
+  return PROSPECTING_STAGE_LABELS[key] ?? key;
+}
+
+function prospectingActivityLabel(activityType?: string | null) {
+  const key = String(activityType ?? '').trim();
+  return PROSPECTING_ACTIVITY_LABELS[key] ?? (key || 'Activity');
+}
+
+function validHubSpotTimestamp(value?: string | null) {
+  const timestamp = String(value ?? '').trim();
+  if (!timestamp) return new Date().toISOString();
+  const parsed = Date.parse(timestamp);
+  return Number.isFinite(parsed) ? new Date(parsed).toISOString() : new Date().toISOString();
+}
+
+export function buildHubSpotActivityNoteBody(activity: HubSpotProspectingActivity) {
+  const parts: string[] = [`<strong>Sobrew ${escapeHubSpotNoteHtml(prospectingActivityLabel(activity.activity_type))}</strong>`];
+  const result = String(activity.result ?? '').trim();
+  if (result) parts.push(`<strong>Result:</strong> ${escapeHubSpotNoteHtml(result)}`);
+  if (activity.previous_stage || activity.next_stage) {
+    parts.push(`<strong>Stage:</strong> ${escapeHubSpotNoteHtml(prospectingStageLabel(activity.previous_stage))} to ${escapeHubSpotNoteHtml(prospectingStageLabel(activity.next_stage))}`);
+  }
+  const followUp = String(activity.next_follow_up_at ?? '').trim();
+  if (followUp) parts.push(`<strong>Next follow-up:</strong> ${escapeHubSpotNoteHtml(followUp.slice(0, 10))}`);
+  const body = String(activity.body ?? '').trim();
+  if (body) parts.push(escapeHubSpotNoteHtml(body).replace(/\n/g, '<br>'));
+  return parts.join('<br>');
+}
+
 function escapeHubSpotNoteHtml(value: string) {
   return value
     .replace(/&/g, '&amp;')
@@ -206,6 +274,26 @@ function escapeHubSpotNoteHtml(value: string) {
 
 export function primaryHubSpotContact(contacts: HubSpotProspectingContact[]) {
   return contacts.find((contact) => contact.is_primary) ?? contacts[0] ?? null;
+}
+
+function hubSpotContactEmail(contact: HubSpotProspectingContact) {
+  return String(contact.email ?? '').trim().toLowerCase();
+}
+
+export function hubSpotContactsWithEmail(contacts: HubSpotProspectingContact[]) {
+  const seen = new Set<string>();
+  return contacts.filter((contact) => {
+    const email = hubSpotContactEmail(contact);
+    if (!email || seen.has(email)) return false;
+    seen.add(email);
+    return true;
+  });
+}
+
+function primaryHubSpotContactWithEmail(contacts: HubSpotProspectingContact[]) {
+  const contactsWithEmail = hubSpotContactsWithEmail(contacts);
+  const primary = contactsWithEmail.find((contact) => contact.is_primary);
+  return primary ?? contactsWithEmail[0] ?? null;
 }
 
 async function hubSpotRequest<T>(
@@ -341,16 +429,16 @@ async function associateContactToCompany(accessToken: string, contactId: string,
   });
 }
 
-function dealAssociations(companyId: string, contactId: string) {
+function dealAssociations(companyId: string, contactIds: string[]) {
   return [
     {
       to: { id: companyId },
       types: [{ associationCategory: 'HUBSPOT_DEFINED', associationTypeId: 5 }],
     },
-    {
+    ...contactIds.map((contactId) => ({
       to: { id: contactId },
       types: [{ associationCategory: 'HUBSPOT_DEFINED', associationTypeId: 3 }],
-    },
+    })),
   ];
 }
 
@@ -372,7 +460,7 @@ async function associateDealToObject(
 async function upsertHubSpotDeal(options: {
   accessToken: string;
   companyId: string;
-  contactId: string;
+  contactIds: string[];
   existingDealId?: string | null;
   fetchImpl?: FetchLike;
   properties: Record<string, string>;
@@ -385,13 +473,15 @@ async function upsertHubSpotDeal(options: {
       method: 'PATCH',
     });
     await associateDealToObject(options.accessToken, existingDealId, 'companies', options.companyId, 5, options.fetchImpl);
-    await associateDealToObject(options.accessToken, existingDealId, 'contacts', options.contactId, 3, options.fetchImpl);
+    for (const contactId of options.contactIds) {
+      await associateDealToObject(options.accessToken, existingDealId, 'contacts', contactId, 3, options.fetchImpl);
+    }
     return existingDealId;
   }
 
   const created = await hubSpotRequest<HubSpotObjectResponse>('/crm/v3/objects/deals', options.accessToken, {
     body: {
-      associations: dealAssociations(options.companyId, options.contactId),
+      associations: dealAssociations(options.companyId, options.contactIds),
       properties: options.properties,
     },
     fetchImpl: options.fetchImpl,
@@ -399,16 +489,16 @@ async function upsertHubSpotDeal(options: {
   return created.id;
 }
 
-function noteAssociations(companyId: string, contactId: string, dealId: string) {
+function noteAssociations(companyId: string, contactIds: string[], dealId: string) {
   return [
     {
       to: { id: companyId },
       types: [{ associationCategory: 'HUBSPOT_DEFINED', associationTypeId: 190 }],
     },
-    {
+    ...contactIds.map((contactId) => ({
       to: { id: contactId },
       types: [{ associationCategory: 'HUBSPOT_DEFINED', associationTypeId: 202 }],
-    },
+    })),
     {
       to: { id: dealId },
       types: [{ associationCategory: 'HUBSPOT_DEFINED', associationTypeId: 214 }],
@@ -435,12 +525,14 @@ async function associateNoteToRecords(
   accessToken: string,
   noteId: string,
   companyId: string,
-  contactId: string,
+  contactIds: string[],
   dealId: string,
   fetchImpl?: FetchLike,
 ) {
   await associateNoteToObject(accessToken, noteId, 'companies', companyId, 190, fetchImpl);
-  await associateNoteToObject(accessToken, noteId, 'contacts', contactId, 202, fetchImpl);
+  for (const contactId of contactIds) {
+    await associateNoteToObject(accessToken, noteId, 'contacts', contactId, 202, fetchImpl);
+  }
   await associateNoteToObject(accessToken, noteId, 'deals', dealId, 214, fetchImpl);
 }
 
@@ -448,17 +540,18 @@ async function createHubSpotProspectingNote(options: {
   accessToken: string;
   body: string;
   companyId: string;
-  contactId: string;
+  contactIds: string[];
   dealId: string;
   fetchImpl?: FetchLike;
   ownerId: string;
+  timestamp?: string;
 }) {
   const created = await hubSpotRequest<HubSpotObjectResponse>('/crm/v3/objects/notes', options.accessToken, {
     body: {
-      associations: noteAssociations(options.companyId, options.contactId, options.dealId),
+      associations: noteAssociations(options.companyId, options.contactIds, options.dealId),
       properties: {
         hs_note_body: options.body,
-        hs_timestamp: new Date().toISOString(),
+        hs_timestamp: options.timestamp ?? new Date().toISOString(),
         hubspot_owner_id: options.ownerId,
       },
     },
@@ -471,7 +564,7 @@ async function upsertHubSpotProspectingNote(options: {
   accessToken: string;
   body: string;
   companyId: string;
-  contactId: string;
+  contactIds: string[];
   dealId: string;
   existingNoteId?: string | null;
   fetchImpl?: FetchLike;
@@ -491,7 +584,7 @@ async function upsertHubSpotProspectingNote(options: {
       fetchImpl: options.fetchImpl,
       method: 'PATCH',
     });
-    await associateNoteToRecords(options.accessToken, existingNoteId, options.companyId, options.contactId, options.dealId, options.fetchImpl);
+    await associateNoteToRecords(options.accessToken, existingNoteId, options.companyId, options.contactIds, options.dealId, options.fetchImpl);
     return existingNoteId;
   } catch (error) {
     if (error instanceof HubSpotApiError && error.status === 404) {
@@ -501,8 +594,64 @@ async function upsertHubSpotProspectingNote(options: {
   }
 }
 
+async function upsertHubSpotActivityNote(options: {
+  accessToken: string;
+  activity: HubSpotProspectingActivity;
+  companyId: string;
+  contactIds: string[];
+  dealId: string;
+  fetchImpl?: FetchLike;
+  ownerId: string;
+}) {
+  const body = buildHubSpotActivityNoteBody(options.activity);
+  const existingNoteId = String(options.activity.hubspot_note_id ?? '').trim();
+  if (!existingNoteId) {
+    return createHubSpotProspectingNote({
+      accessToken: options.accessToken,
+      body,
+      companyId: options.companyId,
+      contactIds: options.contactIds,
+      dealId: options.dealId,
+      fetchImpl: options.fetchImpl,
+      ownerId: options.ownerId,
+      timestamp: validHubSpotTimestamp(options.activity.created_at),
+    });
+  }
+
+  try {
+    await hubSpotRequest<HubSpotObjectResponse>(`/crm/v3/objects/notes/${existingNoteId}`, options.accessToken, {
+      body: {
+        properties: {
+          hs_note_body: body,
+          hs_timestamp: validHubSpotTimestamp(options.activity.created_at),
+          hubspot_owner_id: options.ownerId,
+        },
+      },
+      fetchImpl: options.fetchImpl,
+      method: 'PATCH',
+    });
+    await associateNoteToRecords(options.accessToken, existingNoteId, options.companyId, options.contactIds, options.dealId, options.fetchImpl);
+    return existingNoteId;
+  } catch (error) {
+    if (error instanceof HubSpotApiError && error.status === 404) {
+      return createHubSpotProspectingNote({
+        accessToken: options.accessToken,
+        body,
+        companyId: options.companyId,
+        contactIds: options.contactIds,
+        dealId: options.dealId,
+        fetchImpl: options.fetchImpl,
+        ownerId: options.ownerId,
+        timestamp: validHubSpotTimestamp(options.activity.created_at),
+      });
+    }
+    throw error;
+  }
+}
+
 export async function pushProspectingLeadToHubSpot(options: {
   accessToken: string;
+  activities?: HubSpotProspectingActivity[];
   contacts: HubSpotProspectingContact[];
   dealPipeline: string;
   dealStage: string;
@@ -518,23 +667,23 @@ export async function pushProspectingLeadToHubSpot(options: {
     'hubspot_owner_id',
     'lifecyclestage',
   ]);
-  const primaryContact = primaryHubSpotContact(options.contacts);
-  const contactEmail = String(primaryContact?.email ?? '').trim();
+  const primaryContact = primaryHubSpotContactWithEmail(options.contacts);
+  const contactsWithEmail = hubSpotContactsWithEmail(options.contacts);
 
-  if (!primaryContact || !contactEmail) {
+  if (!primaryContact || !contactsWithEmail.length) {
     return {
       companyId,
       contactId: null,
+      contactIds: [],
       dealId: null,
-      message: 'Company pushed; missing primary contact email.',
+      activityNoteIds: {},
+      message: 'Company pushed; no prospecting contacts have an email.',
       noteId: null,
       status: 'partial',
     };
   }
 
-  const contactProperties = buildHubSpotContactProperties(options.lead, primaryContact, ownerId);
-  const existingContact = await searchContact(options.accessToken, contactEmail, options.fetchImpl);
-  const contactId = await upsertHubSpotObject(options.accessToken, 'contacts', contactProperties, existingContact, options.fetchImpl, [
+  const contactOverwriteProperties = [
     'address',
     'address2',
     'city',
@@ -546,12 +695,22 @@ export async function pushProspectingLeadToHubSpot(options: {
     'state',
     'website',
     'zip',
-  ]);
-  await associateContactToCompany(options.accessToken, contactId, companyId, options.fetchImpl);
+  ];
+  const contactIds: string[] = [];
+  for (const contact of contactsWithEmail) {
+    const contactProperties = buildHubSpotContactProperties(options.lead, contact, ownerId);
+    const existingContact = await searchContact(options.accessToken, hubSpotContactEmail(contact), options.fetchImpl);
+    const contactId = await upsertHubSpotObject(options.accessToken, 'contacts', contactProperties, existingContact, options.fetchImpl, contactOverwriteProperties);
+    await associateContactToCompany(options.accessToken, contactId, companyId, options.fetchImpl);
+    contactIds.push(contactId);
+  }
+  const primaryContactEmail = hubSpotContactEmail(primaryContact);
+  const primaryContactIndex = contactsWithEmail.findIndex((contact) => hubSpotContactEmail(contact) === primaryContactEmail);
+  const primaryContactId = contactIds[primaryContactIndex >= 0 ? primaryContactIndex : 0] ?? null;
   const dealId = await upsertHubSpotDeal({
     accessToken: options.accessToken,
     companyId,
-    contactId,
+    contactIds,
     existingDealId: options.lead.hubspot_deal_id,
     fetchImpl: options.fetchImpl,
     properties: buildHubSpotDealProperties({
@@ -567,19 +726,34 @@ export async function pushProspectingLeadToHubSpot(options: {
         accessToken: options.accessToken,
         body: noteBody,
         companyId,
-        contactId,
+        contactIds,
         dealId,
         existingNoteId: options.lead.hubspot_note_id,
         fetchImpl: options.fetchImpl,
         ownerId,
       })
     : null;
+  const activityNoteIds: Record<string, string> = {};
+  for (const activity of options.activities ?? []) {
+    const noteId = await upsertHubSpotActivityNote({
+      accessToken: options.accessToken,
+      activity,
+      companyId,
+      contactIds,
+      dealId,
+      fetchImpl: options.fetchImpl,
+      ownerId,
+    });
+    activityNoteIds[activity.id] = noteId;
+  }
 
   return {
+    activityNoteIds,
     companyId,
-    contactId,
+    contactId: primaryContactId,
+    contactIds,
     dealId,
-    message: 'Company, primary contact, and deal pushed to HubSpot.',
+    message: 'Company, contacts, and deal pushed to HubSpot.',
     noteId,
     status: 'exported',
   };
