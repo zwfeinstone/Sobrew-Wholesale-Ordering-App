@@ -13,7 +13,7 @@ const ADMIN_NAV_GROUPS: Array<{ label: string; sections: AdminPermissionKey[] }>
   { label: 'Commerce', sections: ['orders', 'recurring_orders', 'canceled_recurring_orders', 'archived_orders', 'order_form', 'centers', 'products'] },
   { label: 'Operations', sections: ['inventory', 'receiving', 'planning', 'production'] },
   { label: 'Growth', sections: ['sales', 'sales_admin', 'prospecting', 'marketing', 'commission'] },
-  { label: 'Finance & team', sections: ['accounting', 'reports', 'payroll', 'time_clock', 'week_hours', 'settings'] },
+  { label: 'Finance & team', sections: ['accounting', 'invoicing', 'reports', 'payroll', 'time_clock', 'week_hours', 'settings'] },
 ];
 
 export function AdminShell({

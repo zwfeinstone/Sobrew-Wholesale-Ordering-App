@@ -1,0 +1,326 @@
+import Link from 'next/link';
+import { redirect } from 'next/navigation';
+import PendingSubmitButton from '@/components/pending-submit-button';
+import StatusToast from '@/components/status-toast';
+import { adminCanEdit, requireAdminSectionView } from '@/lib/admin-permissions';
+import { requireAdminWriteAccess } from '@/lib/admin-write-access';
+import {
+  createQuickBooksInvoiceForOrder,
+  getQuickBooksConnectionStatus,
+  QuickBooksConfigurationError,
+} from '@/lib/quickbooks';
+import { getSupabaseAdmin } from '@/lib/supabase/admin';
+import { createClient } from '@/lib/supabase/server';
+import { usd } from '@/lib/utils';
+
+const INVOICING_TIME_ZONE = 'America/Chicago';
+
+type SearchParams = Record<string, string | string[] | undefined>;
+
+type InvoiceQueueOrder = {
+  centers?: { name: string | null } | { name: string | null }[] | null;
+  created_at: string | null;
+  id: string;
+  invoice_error: string | null;
+  invoice_status: string | null;
+  order_items?: Array<{
+    line_total_cents: number | string | null;
+    product_name_snapshot: string | null;
+    products?: { name: string | null; sku: string | null } | { name: string | null; sku: string | null }[] | null;
+    qty: number | string | null;
+  }> | null;
+  profiles?: { email: string | null; full_name: string | null } | { email: string | null; full_name: string | null }[] | null;
+  shipped_at: string | null;
+  shipping_company?: string | null;
+  shipping_name: string | null;
+  subtotal_cents: number | string | null;
+};
+
+function relatedOne<T>(value: T | T[] | null | undefined): T | null {
+  if (Array.isArray(value)) return value[0] ?? null;
+  return value ?? null;
+}
+
+function cleanText(value: unknown) {
+  return String(value ?? '').trim();
+}
+
+function numericValue(value: number | string | null | undefined) {
+  const parsed = Number(value ?? 0);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function timeZoneParts(date: Date, timeZone: string) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    day: '2-digit',
+    hour: '2-digit',
+    hour12: false,
+    minute: '2-digit',
+    month: '2-digit',
+    second: '2-digit',
+    timeZone,
+    year: 'numeric',
+  }).formatToParts(date);
+  const byType = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return {
+    day: Number(byType.day),
+    hour: Number(byType.hour),
+    minute: Number(byType.minute),
+    month: Number(byType.month),
+    second: Number(byType.second),
+    year: Number(byType.year),
+  };
+}
+
+function timeZoneOffsetMs(date: Date, timeZone: string) {
+  const parts = timeZoneParts(date, timeZone);
+  const utcFromLocalParts = Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, parts.second);
+  return utcFromLocalParts - date.getTime();
+}
+
+function todayStartIso(timeZone = INVOICING_TIME_ZONE) {
+  const now = new Date();
+  const parts = timeZoneParts(now, timeZone);
+  const localMidnightAsUtc = Date.UTC(parts.year, parts.month - 1, parts.day, 0, 0, 0);
+  const firstGuess = new Date(localMidnightAsUtc - timeZoneOffsetMs(now, timeZone));
+  const offset = timeZoneOffsetMs(firstGuess, timeZone);
+  return new Date(localMidnightAsUtc - offset).toISOString();
+}
+
+function formatTimestamp(value: string | null) {
+  if (!value) return 'Unknown';
+  return new Date(value).toLocaleString('en-US', {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+    timeZone: INVOICING_TIME_ZONE,
+  });
+}
+
+function customerLabel(order: InvoiceQueueOrder) {
+  return cleanText(relatedOne(order.centers)?.name)
+    || cleanText(order.shipping_company)
+    || cleanText(order.shipping_name)
+    || cleanText(relatedOne(order.profiles)?.full_name)
+    || cleanText(relatedOne(order.profiles)?.email)
+    || 'Unknown customer';
+}
+
+function productLabel(item: NonNullable<InvoiceQueueOrder['order_items']>[number]) {
+  return cleanText(relatedOne(item.products)?.name) || cleanText(item.product_name_snapshot) || 'Product';
+}
+
+function invoicingHref(toast?: string) {
+  if (!toast) return '/admin/invoicing';
+  return `/admin/invoicing?${new URLSearchParams({ toast }).toString()}`;
+}
+
+function toastMessage(toast: string) {
+  const messages: Record<string, { message: string; tone: 'error' | 'success' }> = {
+    admin_write_denied: { message: 'You do not have permission to invoice orders.', tone: 'error' },
+    invoice_already_created: { message: 'That order already has a QuickBooks invoice.', tone: 'success' },
+    invoice_created: { message: 'QuickBooks invoice created.', tone: 'success' },
+    invoice_failed: { message: 'Unable to create that QuickBooks invoice.', tone: 'error' },
+    invoice_not_ready: { message: 'Only shipped orders from today or later can be invoiced here.', tone: 'error' },
+    quickbooks_config_error: { message: 'Add QuickBooks configuration before connecting.', tone: 'error' },
+    quickbooks_connect_error: { message: 'Unable to connect QuickBooks.', tone: 'error' },
+    quickbooks_connected: { message: 'QuickBooks connected.', tone: 'success' },
+    quickbooks_not_connected: { message: 'Connect QuickBooks before creating invoices.', tone: 'error' },
+  };
+  return messages[toast] ?? null;
+}
+
+async function invoiceOrder(formData: FormData) {
+  'use server';
+  const orderId = String(formData.get('order_id') ?? '').trim();
+  await requireAdminWriteAccess(invoicingHref('admin_write_denied'), 'invoicing');
+  if (!orderId) redirect(invoicingHref('invoice_not_ready'));
+
+  const supabase = getSupabaseAdmin();
+  const startIso = todayStartIso();
+  const { data: order } = await supabase
+    .from('orders')
+    .select('id,status,archived_at,created_at,quickbooks_invoice_id,invoice_status')
+    .eq('id', orderId)
+    .single();
+
+  if (!order || order.archived_at || order.status !== 'Shipped' || !order.created_at || new Date(order.created_at) < new Date(startIso)) {
+    redirect(invoicingHref('invoice_not_ready'));
+  }
+  if (order.quickbooks_invoice_id) redirect(invoicingHref('invoice_already_created'));
+
+  const claimResult = await supabase
+    .from('orders')
+    .update({ invoice_error: null, invoice_status: 'invoicing' })
+    .eq('id', orderId)
+    .eq('status', 'Shipped')
+    .is('archived_at', null)
+    .is('quickbooks_invoice_id', null)
+    .in('invoice_status', ['not_invoiced', 'invoice_error'])
+    .select('id')
+    .single();
+
+  if (claimResult.error || !claimResult.data) redirect(invoicingHref('invoice_already_created'));
+
+  try {
+    const invoice = await createQuickBooksInvoiceForOrder(orderId);
+    const { error: updateError } = await supabase
+      .from('orders')
+      .update({
+        invoice_error: null,
+        invoice_status: 'invoiced',
+        invoiced_at: new Date().toISOString(),
+        quickbooks_invoice_doc_number: invoice.docNumber,
+        quickbooks_invoice_id: invoice.id,
+        quickbooks_invoice_url: invoice.url,
+      })
+      .eq('id', orderId);
+    if (updateError) throw updateError;
+  } catch (error) {
+    const message = error instanceof QuickBooksConfigurationError
+      ? error.message
+      : error instanceof Error
+        ? error.message
+        : 'Unable to create QuickBooks invoice.';
+    console.error('[invoicing] invoice failed', { error, orderId });
+    await supabase
+      .from('orders')
+      .update({
+        invoice_error: message,
+        invoice_status: 'invoice_error',
+      })
+      .eq('id', orderId);
+    redirect(invoicingHref(error instanceof QuickBooksConfigurationError ? 'quickbooks_config_error' : 'invoice_failed'));
+  }
+  redirect(invoicingHref('invoice_created'));
+}
+
+export default async function AdminInvoicingPage({ searchParams }: { searchParams?: SearchParams }) {
+  const current = await requireAdminSectionView('invoicing');
+  const canInvoice = adminCanEdit(current.access, 'invoicing');
+  const toast = typeof searchParams?.toast === 'string' ? searchParams.toast : '';
+  const selectedToast = toastMessage(toast);
+  const startIso = todayStartIso();
+  const supabase = await createClient();
+  const [quickBooksStatus, ordersResult] = await Promise.all([
+    getQuickBooksConnectionStatus(),
+    supabase
+      .from('orders')
+      .select('id,created_at,shipped_at,subtotal_cents,shipping_company,shipping_name,invoice_status,invoice_error,profiles(email,full_name),centers(name),order_items(qty,line_total_cents,product_name_snapshot,products(name,sku))')
+      .eq('status', 'Shipped')
+      .is('archived_at', null)
+      .is('quickbooks_invoice_id', null)
+      .gte('created_at', startIso)
+      .order('shipped_at', { ascending: true, nullsFirst: false })
+      .order('created_at', { ascending: true }),
+  ]);
+  const orders = (ordersResult.data ?? []) as InvoiceQueueOrder[];
+  const readyOrders = orders.filter((order) => order.invoice_status !== 'invoicing');
+  const totalReadyCents = readyOrders.reduce((sum, order) => sum + Math.max(0, numericValue(order.subtotal_cents)), 0);
+  const waitingCount = orders.filter((order) => order.invoice_status === 'invoicing').length;
+
+  return (
+    <section className="space-y-6">
+      {selectedToast ? <StatusToast message={selectedToast.message} tone={selectedToast.tone} /> : null}
+
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+        <div>
+          <span className="eyebrow">Finance</span>
+          <h1 className="mt-3 text-3xl font-semibold tracking-tight text-slate-950">Invoicing</h1>
+          <p className="mt-2 max-w-2xl text-sm text-slate-500">Shipped orders from today forward appear here until QuickBooks has an invoice.</p>
+        </div>
+        <div className="flex flex-col gap-2 sm:flex-row">
+          <Link className="btn-secondary text-center" href="/admin/orders">Orders</Link>
+          {quickBooksStatus.connected ? (
+            <span className="inline-flex items-center justify-center rounded-full border border-emerald-200 bg-emerald-50 px-4 py-2.5 text-sm font-semibold text-emerald-800">
+              QuickBooks connected
+            </span>
+          ) : (
+            <a className="btn-primary text-center" href="/api/admin/quickbooks/connect">Connect QuickBooks</a>
+          )}
+        </div>
+      </div>
+
+      <div className="grid gap-4 md:grid-cols-3">
+        <div className="stat-card">
+          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Ready</p>
+          <p className="mt-2 text-3xl font-semibold text-slate-950">{readyOrders.length}</p>
+          <p className="mt-1 text-sm text-slate-500">{usd(totalReadyCents)}</p>
+        </div>
+        <div className="stat-card">
+          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">QuickBooks</p>
+          <p className="mt-2 text-3xl font-semibold text-slate-950">{quickBooksStatus.environment === 'production' ? 'Live' : 'Sandbox'}</p>
+          <p className="mt-1 text-sm text-slate-500">{quickBooksStatus.realmId ?? 'Not connected'}</p>
+        </div>
+        <div className="stat-card">
+          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Working</p>
+          <p className="mt-2 text-3xl font-semibold text-slate-950">{waitingCount}</p>
+          <p className="mt-1 text-sm text-slate-500">Invoice requests in progress.</p>
+        </div>
+      </div>
+
+      {quickBooksStatus.missingConfig.length ? (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-900">
+          Missing {quickBooksStatus.missingConfig.join(', ')}.
+        </div>
+      ) : null}
+
+      <div className="space-y-4">
+        {orders.map((order) => {
+          const isBusy = order.invoice_status === 'invoicing';
+          const hasError = order.invoice_status === 'invoice_error';
+          return (
+            <article key={order.id} className="card space-y-4">
+              <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h2 className="break-words text-xl font-semibold tracking-tight text-slate-950">{customerLabel(order)}</h2>
+                    <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${hasError ? 'bg-rose-100 text-rose-800' : 'bg-emerald-100 text-emerald-800'}`}>
+                      {hasError ? 'Invoice error' : isBusy ? 'Invoicing' : 'Ready to invoice'}
+                    </span>
+                  </div>
+                  <p className="mt-2 text-sm text-slate-500">Shipped {formatTimestamp(order.shipped_at)} · Ordered {formatTimestamp(order.created_at)}</p>
+                  <p className="mt-1 break-all text-sm text-slate-500">Order {order.id}</p>
+                </div>
+                <div className="text-left lg:text-right">
+                  <p className="text-2xl font-semibold text-slate-950">{usd(Math.round(numericValue(order.subtotal_cents)))}</p>
+                  <p className="mt-1 text-sm text-slate-500">{(order.order_items ?? []).length} line items</p>
+                </div>
+              </div>
+
+              <div className="grid gap-2 text-sm text-slate-600 sm:grid-cols-2 lg:grid-cols-3">
+                {(order.order_items ?? []).slice(0, 6).map((item, index) => (
+                  <div key={`${order.id}-${index}`} className="rounded-xl border border-slate-200 bg-white/65 px-3 py-2">
+                    <p className="font-semibold text-slate-950">{productLabel(item)}</p>
+                    <p className="mt-1">Qty {numericValue(item.qty).toLocaleString()} · {usd(Math.round(numericValue(item.line_total_cents)))}</p>
+                  </div>
+                ))}
+              </div>
+
+              {order.invoice_error ? <p className="text-sm font-medium text-rose-700">{order.invoice_error}</p> : null}
+
+              <div className="flex flex-col gap-3 sm:flex-row sm:justify-end">
+                <Link className="btn-secondary text-center" href={`/admin/orders/${order.id}`}>Open order</Link>
+                <form action={invoiceOrder}>
+                  <input type="hidden" name="order_id" value={order.id} />
+                  <PendingSubmitButton
+                    className="btn-primary w-full sm:w-auto"
+                    disabled={!canInvoice || isBusy || !quickBooksStatus.connected || Boolean(quickBooksStatus.missingConfig.length)}
+                    disabledLabel={isBusy ? 'Invoicing...' : 'Invoice'}
+                    label="Invoice"
+                    pendingLabel="Invoicing..."
+                  />
+                </form>
+              </div>
+            </article>
+          );
+        })}
+      </div>
+
+      {!orders.length ? (
+        <div className="card text-sm text-slate-600">
+          No shipped orders are ready to invoice today.
+        </div>
+      ) : null}
+    </section>
+  );
+}

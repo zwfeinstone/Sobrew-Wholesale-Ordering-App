@@ -489,6 +489,19 @@ function categoryAmountForPnlSection(transaction: any, category: AccountingCateg
   return 0;
 }
 
+function isShopifyDepositTransaction(transaction: any) {
+  const category = relatedOne(transaction.accounting_categories);
+  if (!category || category.pnl_section !== 'revenue' || transaction.status === 'excluded') return false;
+  const amountCents = normalizeAccountingNumber(transaction.amount_cents);
+  if (amountCents >= 0) return false;
+  const text = [
+    transaction.account_name,
+    transaction.merchant_name,
+    transaction.original_description,
+  ].filter(Boolean).join(' ').toLowerCase();
+  return text.includes('shopify') || text.includes('shop pay');
+}
+
 function activeProductionRunRatio(run: ProductionRunLaborRow) {
   if (run.status === 'void') return 0;
   const quantityProduced = normalizeAccountingNumber(run.quantity_produced);
@@ -1486,7 +1499,7 @@ export default async function AccountingPage({
       .range(reviewFrom, reviewTo),
     supabase
       .from('accounting_transactions')
-      .select('id,transaction_date,amount_cents,status,ai_review_status,category_id,accounting_categories(id,name,category_type,pnl_section)')
+      .select('id,transaction_date,account_name,merchant_name,original_description,amount_cents,status,ai_review_status,category_id,accounting_categories(id,name,category_type,pnl_section)')
       .gte('transaction_date', start)
       .lt('transaction_date', endExclusive)
       .order('transaction_date', { ascending: false })
@@ -1580,6 +1593,14 @@ export default async function AccountingPage({
   };
   adjustedPnl.operatingIncomeCents = adjustedPnl.grossProfitCents - adjustedPnl.operatingExpenseCents;
   adjustedPnl.netIncomeCents = adjustedPnl.operatingIncomeCents + pnl.otherIncomeCents - pnl.otherExpenseCents;
+  const retailSalesCents = pnlTransactions
+    .filter(isShopifyDepositTransaction)
+    .reduce((sum, transaction) => sum + -normalizeAccountingNumber(transaction.amount_cents), 0);
+  const wholesaleSalesCents = pnl.revenueCents - retailSalesCents;
+  const revenueLineItems = [
+    { id: 'wholesale_sales', label: 'Wholesale Sales', totalCents: wholesaleSalesCents },
+    { id: 'retail_sales', label: 'Retail Sales', totalCents: retailSalesCents },
+  ];
 
   const needsReviewCount = pnlTransactions.filter((transaction) => transaction.status === 'needs_review').length;
   const aiFlaggedCount = pnlTransactions.filter((transaction) => (
@@ -1587,10 +1608,11 @@ export default async function AccountingPage({
   )).length;
   const pnlCategoryBreakdown = PNL_DETAIL_SECTIONS.map((section) => ({
     ...section,
-    rows: categories
+    rows: section.id === 'revenue' ? revenueLineItems : categories
       .filter((category) => category.pnl_section === section.id)
       .map((category) => ({
-        category,
+        id: category.id,
+        label: category.name,
         totalCents: pnlTransactions
           .filter((transaction) => transaction.category_id === category.id && transaction.status === 'categorized')
           .reduce((sum, transaction) => sum + categoryAmountForPnlSection(transaction, category), 0),
@@ -1920,7 +1942,9 @@ export default async function AccountingPage({
           <div className="overflow-x-auto">
             <table className="min-w-full text-sm">
               <tbody className="divide-y divide-slate-100">
-                <tr><td className="py-2 font-medium text-slate-700">Uploaded revenue</td><td className="py-2 text-right font-semibold">{money(pnl.revenueCents)}</td></tr>
+                <tr><td className="py-2 font-medium text-slate-700">Wholesale Sales</td><td className="py-2 text-right font-semibold">{money(wholesaleSalesCents)}</td></tr>
+                <tr><td className="py-2 font-medium text-slate-700">Retail Sales</td><td className="py-2 text-right font-semibold">{money(retailSalesCents)}</td></tr>
+                <tr><td className="py-2 font-semibold text-slate-950">Uploaded revenue</td><td className="py-2 text-right font-semibold text-slate-950">{money(pnl.revenueCents)}</td></tr>
                 <tr><td className="py-2 font-medium text-slate-700">Uploaded COGS</td><td className="py-2 text-right font-semibold">({money(pnl.cardCogsCents)})</td></tr>
                 <tr><td className="py-2 font-medium text-slate-700">Labor COGS adjustment</td><td className="py-2 text-right font-semibold">({money(laborCogsCents)})</td></tr>
                 <tr><td className="py-2 font-semibold text-slate-950">Adjusted COGS</td><td className="py-2 text-right font-semibold text-slate-950">({money(adjustedPnl.cogsCents)})</td></tr>
@@ -2012,8 +2036,8 @@ export default async function AccountingPage({
               <div key={section.id} className="space-y-2">
                 <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">{section.label}</p>
                 {section.rows.map((row) => (
-                  <div key={row.category.id} className="flex items-center justify-between rounded-xl border border-slate-200 bg-white/60 px-3 py-2 text-sm">
-                    <span className="font-medium text-slate-700">{row.category.name}</span>
+                  <div key={row.id} className="flex items-center justify-between rounded-xl border border-slate-200 bg-white/60 px-3 py-2 text-sm">
+                    <span className="font-medium text-slate-700">{row.label}</span>
                     <span className="font-semibold text-slate-950">{money(row.totalCents)}</span>
                   </div>
                 ))}
@@ -2029,6 +2053,20 @@ export default async function AccountingPage({
           <span className="eyebrow">Categories</span>
           <h2 className="mt-3 text-2xl font-semibold tracking-tight text-slate-950">Manage accounting categories</h2>
         </div>
+          <div className="grid gap-3 md:grid-cols-3">
+            <div className="rounded-xl border border-slate-200 bg-white/60 p-3">
+              <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Wholesale Sales</p>
+              <p className="mt-2 text-lg font-semibold text-slate-950">{money(wholesaleSalesCents)}</p>
+            </div>
+            <div className="rounded-xl border border-slate-200 bg-white/60 p-3">
+              <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Retail Sales</p>
+              <p className="mt-2 text-lg font-semibold text-slate-950">{money(retailSalesCents)}</p>
+            </div>
+            <div className="rounded-xl border border-slate-200 bg-white/60 p-3">
+              <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Uploaded Revenue</p>
+              <p className="mt-2 text-lg font-semibold text-slate-950">{money(pnl.revenueCents)}</p>
+            </div>
+          </div>
           <form action={addAccountingCategory} className="grid gap-3 border-t border-slate-100 pt-4 md:grid-cols-[1fr_1fr_1fr_auto]">
             <input className="input" name="name" required placeholder="New category" />
             <select className="input" name="category_type" defaultValue="operating_expense">

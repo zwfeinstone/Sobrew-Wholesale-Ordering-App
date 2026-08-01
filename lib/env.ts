@@ -24,4 +24,11 @@ export const env = {
   hubspotDealPipeline: process.env.HUBSPOT_DEAL_PIPELINE ?? 'default',
   hubspotPortalId: process.env.HUBSPOT_PORTAL_ID ?? '',
   hubspotSampleRequestedDealStage: process.env.HUBSPOT_SAMPLE_REQUESTED_DEAL_STAGE ?? 'appointmentscheduled',
+  quickBooksClientId: process.env.QUICKBOOKS_CLIENT_ID ?? '',
+  quickBooksClientSecret: process.env.QUICKBOOKS_CLIENT_SECRET ?? '',
+  quickBooksDefaultItemId: process.env.QUICKBOOKS_DEFAULT_ITEM_ID ?? '',
+  quickBooksDefaultItemName: process.env.QUICKBOOKS_DEFAULT_ITEM_NAME ?? '',
+  quickBooksEnvironment: process.env.QUICKBOOKS_ENVIRONMENT ?? 'sandbox',
+  quickBooksMinorVersion: process.env.QUICKBOOKS_MINOR_VERSION ?? '75',
+  quickBooksRedirectUri: process.env.QUICKBOOKS_REDIRECT_URI ?? '',
 };
