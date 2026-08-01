@@ -1,4 +1,6 @@
-Date,Description,Amount,Merchant,Account
-2026-07-12,Uline boxes,125.25,Uline,Sobrew Visa
-2026-07-14,Stripe payout,-450.00,Stripe,Sobrew Checking
-2026-07-18,Software subscription,39.00,Accounting Software,Sobrew Visa
+Date,Description,Amount,Merchant,Account,Likely Expense Category
+2026-07-12,Uline boxes,125.25,Uline,Sobrew Visa,Packaging & Shipping Supplies COGS
+2026-07-14,Stripe payout,-450.00,Stripe,Sobrew Checking,Sales Revenue
+2026-07-18,Software subscription,39.00,Accounting Software,Sobrew Visa,Software & Subscriptions
+2026-07-20,USPS postage,18.40,USPS,Sobrew Visa,Shipping & Postage
+2026-07-22,Stripe processing fee,12.75,Stripe,Sobrew Checking,Bank & Processing Fees

@@ -25,12 +25,59 @@ import {
 import { createClient } from '@/lib/supabase/server';
 import { usd } from '@/lib/utils';
 
-const ROW_LIMIT = 80;
+const REVIEW_PAGE_SIZE = 12;
+const PNL_TRANSACTION_LIMIT = 5000;
+const ACCOUNTING_VIEWS = [
+  { id: 'overview', label: 'Overview' },
+  { id: 'upload', label: 'Upload' },
+  { id: 'review', label: 'Review Transactions' },
+  { id: 'pnl', label: 'P&L' },
+  { id: 'categories', label: 'Categories' },
+  { id: 'imports', label: 'Imports' },
+] as const;
+
+type AccountingView = (typeof ACCOUNTING_VIEWS)[number]['id'];
 
 type SearchParams = Record<string, string | string[] | undefined>;
 
+const PNL_DETAIL_SECTIONS = [
+  { id: 'revenue', label: 'Revenue' },
+  { id: 'cogs', label: 'COGS' },
+  { id: 'operating_expenses', label: 'Operating Expenses' },
+  { id: 'other_income', label: 'Other Income' },
+  { id: 'other_expenses', label: 'Other Expenses' },
+] as const;
+
 function accountingHref(toast: string) {
   return `/admin/accounting?toast=${toast}`;
+}
+
+function accountingViewParam(value: string | string[] | undefined): AccountingView {
+  return ACCOUNTING_VIEWS.some((view) => view.id === value) ? value as AccountingView : 'overview';
+}
+
+function positivePageParam(value: string | string[] | undefined) {
+  const parsed = Number.parseInt(typeof value === 'string' ? value : '1', 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 1;
+}
+
+function accountingViewHref({
+  end,
+  page,
+  start,
+  view,
+}: {
+  end: string;
+  page?: number;
+  start: string;
+  view: AccountingView;
+}) {
+  const params = new URLSearchParams();
+  params.set('view', view);
+  params.set('start', start);
+  params.set('end', end);
+  if (page && page > 1) params.set('page', String(page));
+  return `/admin/accounting?${params.toString()}`;
 }
 
 function todayInput() {
@@ -74,17 +121,24 @@ function categoryLabel(category: AccountingCategoryRow | AccountingCategoryRow[]
   return row?.name ?? 'Uncategorized';
 }
 
+function categoryAmountForPnlSection(transaction: any, category: AccountingCategoryRow) {
+  const amountCents = normalizeAccountingNumber(transaction.amount_cents);
+  if (category.pnl_section === 'revenue' || category.pnl_section === 'other_income') {
+    return -amountCents;
+  }
+  if (category.pnl_section === 'cogs' || category.pnl_section === 'operating_expenses' || category.pnl_section === 'other_expenses') {
+    return amountCents;
+  }
+  return 0;
+}
+
 function relatedOne<T>(value: T | T[] | null | undefined): T | null {
   if (Array.isArray(value)) return value[0] ?? null;
   return value ?? null;
 }
 
-function receiptTotalCents(receipt: any) {
-  return (
-    normalizeAccountingNumber(receipt.quantity) * normalizeAccountingNumber(receipt.item_unit_cost_cents) +
-    normalizeAccountingNumber(receipt.freight_cents) +
-    normalizeAccountingNumber(receipt.other_cost_cents)
-  );
+function accountingCategoryImportKey(value: string | null | undefined) {
+  return (value ?? '').trim().toLowerCase().replace(/[^a-z0-9]+/g, ' ');
 }
 
 function transactionTone(status: string) {
@@ -118,6 +172,13 @@ function aiFlagActionLabel(value: string | null | undefined) {
   return 'Review';
 }
 
+function suggestedMatchLabel(targetType: string | null | undefined) {
+  if (targetType === 'inventory_receipt') return 'Possible inventory receipt';
+  if (targetType === 'non_inventory_expense') return 'Possible existing expense';
+  if (targetType === 'payroll') return 'Possible payroll payment';
+  return 'Potential duplicate payment';
+}
+
 async function serverOpenAiApiKey() {
   if (process.env.OPENAI_API_KEY) return process.env.OPENAI_API_KEY;
 
@@ -139,6 +200,36 @@ function aiReviewErrorMessage(code: string | string[] | undefined) {
   if (code === 'generation_failed') return 'AI review could not run right now. Please try again in a few minutes.';
   if (code === 'save_failed') return 'AI review ran, but the flags could not be saved.';
   return null;
+}
+
+function AccountingNav({
+  activeView,
+  end,
+  start,
+}: {
+  activeView: AccountingView;
+  end: string;
+  start: string;
+}) {
+  return (
+    <section className="card">
+      <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-6">
+        {ACCOUNTING_VIEWS.map((view) => (
+          <Link
+            key={view.id}
+            href={accountingViewHref({ end, start, view: view.id })}
+            className={`rounded-xl border px-4 py-3 text-sm font-semibold transition-all duration-200 ${
+              activeView === view.id
+                ? 'border-teal-200 bg-teal-50 text-teal-900'
+                : 'border-slate-200 bg-white/70 text-slate-700 hover:border-teal-200 hover:text-teal-800'
+            }`}
+          >
+            {view.label}
+          </Link>
+        ))}
+      </div>
+    </section>
+  );
 }
 
 async function createSuggestionsForTransactions({
@@ -195,7 +286,8 @@ async function uploadAccountingCsv(formData: FormData) {
   const file = formData.get('file');
   const rawAccountType = String(formData.get('account_type') ?? 'other');
   const accountType: AccountingAccountType = isAccountingAccountType(rawAccountType) ? rawAccountType : 'other';
-  const amountSign = String(formData.get('amount_sign') ?? 'money_out_positive') === 'money_out_negative' ? 'money_out_negative' : 'money_out_positive';
+  const rawAmountSign = String(formData.get('amount_sign') ?? 'auto');
+  const amountSign = rawAmountSign === 'money_out_positive' || rawAmountSign === 'money_out_negative' ? rawAmountSign : 'auto';
   const accountName = String(formData.get('account_name') ?? '').trim() || null;
   const notes = String(formData.get('notes') ?? '').trim() || null;
 
@@ -218,6 +310,13 @@ async function uploadAccountingCsv(formData: FormData) {
   if (!parsed.length) redirect(accountingHref('upload_empty'));
 
   const current = await requireAdminSectionView('accounting');
+  const { data: categories } = await supabase
+    .from('accounting_categories')
+    .select('id,name,category_type,pnl_section')
+    .eq('active', true);
+  const categoryByName = new Map(
+    ((categories ?? []) as AccountingCategoryRow[]).map((category) => [accountingCategoryImportKey(category.name), category]),
+  );
   const outflowCents = parsed.reduce((sum, row) => sum + Math.max(0, row.amountCents), 0);
   const inflowCents = parsed.reduce((sum, row) => sum + Math.max(0, -row.amountCents), 0);
 
@@ -242,6 +341,7 @@ async function uploadAccountingCsv(formData: FormData) {
   const parsedByFingerprint = new Map<string, ParsedAccountingTransaction>();
   const rows = parsed.map((transaction) => {
     const fingerprint = accountingTransactionFingerprint(transaction);
+    const category = categoryByName.get(accountingCategoryImportKey(transaction.categoryName)) ?? null;
     parsedByFingerprint.set(fingerprint, transaction);
     return {
       upload_batch_id: batch.id,
@@ -252,6 +352,10 @@ async function uploadAccountingCsv(formData: FormData) {
       merchant_name: transaction.merchantName,
       original_description: transaction.originalDescription,
       amount_cents: transaction.amountCents,
+      category_id: category?.id ?? null,
+      status: category
+        ? category.category_type === 'excluded' ? 'excluded' : 'categorized'
+        : 'needs_review',
       transaction_fingerprint: fingerprint,
     };
   });
@@ -399,7 +503,11 @@ async function updateAccountingTransaction(formData: FormData) {
     const targetType = String(formData.get('target_type') ?? '');
     if (!matchId) redirect(accountingHref('review_error'));
 
-    const status = targetType === 'inventory_receipt' ? 'matched_inventory' : 'matched_non_inventory_expense';
+    const status = targetType === 'inventory_receipt'
+      ? 'matched_inventory'
+      : targetType === 'non_inventory_expense'
+        ? 'matched_non_inventory_expense'
+        : 'excluded';
     const { error: matchError } = await supabase
       .from('accounting_transaction_matches')
       .update({
@@ -411,14 +519,19 @@ async function updateAccountingTransaction(formData: FormData) {
       .eq('id', matchId)
       .eq('transaction_id', transactionId);
 
+    const transactionUpdate: Record<string, unknown> = {
+      status,
+      reviewed_by: current.profile.id,
+      reviewed_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+    if (status === 'excluded') {
+      transactionUpdate.review_notes = 'Approved as a likely duplicate payment or transfer';
+    }
+
     const { error: transactionError } = await supabase
       .from('accounting_transactions')
-      .update({
-        status,
-        reviewed_by: current.profile.id,
-        reviewed_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      })
+      .update(transactionUpdate)
       .eq('id', transactionId);
 
     redirect(accountingHref(matchError || transactionError ? 'review_error' : 'match_approved'));
@@ -544,93 +657,65 @@ export default async function AccountingPage({
   await requireAdminSectionView('accounting');
   const supabase = await createClient();
   const toast = typeof searchParams?.toast === 'string' ? searchParams.toast : '';
+  const activeView = accountingViewParam(searchParams?.view);
+  const reviewPage = positivePageParam(searchParams?.page);
+  const reviewFrom = (reviewPage - 1) * REVIEW_PAGE_SIZE;
+  const reviewTo = reviewFrom + REVIEW_PAGE_SIZE - 1;
   const { end, endExclusive, start } = normalizeDateRange(searchParams);
 
   const [
     categoriesResult,
     transactionsResult,
+    pnlTransactionsResult,
     batchesResult,
-    receiptsResult,
-    nonInventoryResult,
-    ordersResult,
   ] = await Promise.all([
     supabase.from('accounting_categories').select('id,name,category_type,pnl_section,active').eq('active', true).order('display_order', { ascending: true }).order('name', { ascending: true }),
     supabase
       .from('accounting_transactions')
-      .select('id,transaction_date,account_name,account_type,merchant_name,original_description,amount_cents,status,ai_review_status,ai_review_summary,ai_review_flags,ai_review_model,ai_reviewed_at,review_notes,category_id,accounting_categories(id,name,category_type,pnl_section),accounting_transaction_matches(id,target_type,target_id,confidence,match_status,reason)')
+      .select('id,transaction_date,account_name,account_type,merchant_name,original_description,amount_cents,status,ai_review_status,ai_review_summary,ai_review_flags,ai_review_model,ai_reviewed_at,review_notes,category_id,accounting_categories(id,name,category_type,pnl_section),accounting_transaction_matches(id,target_type,target_id,confidence,match_status,reason)', { count: 'exact' })
       .gte('transaction_date', start)
       .lt('transaction_date', endExclusive)
       .order('transaction_date', { ascending: false })
-      .limit(ROW_LIMIT),
+      .range(reviewFrom, reviewTo),
+    supabase
+      .from('accounting_transactions')
+      .select('id,transaction_date,amount_cents,status,ai_review_status,category_id,accounting_categories(id,name,category_type,pnl_section)')
+      .gte('transaction_date', start)
+      .lt('transaction_date', endExclusive)
+      .order('transaction_date', { ascending: false })
+      .limit(PNL_TRANSACTION_LIMIT),
     supabase.from('accounting_upload_batches').select('id,source_type,account_name,account_type,file_name,transaction_count,total_outflow_cents,total_inflow_cents,created_at').order('created_at', { ascending: false }).limit(6),
-    supabase
-      .from('inventory_receipts')
-      .select('id,supplier,quantity,item_unit_cost_cents,freight_cents,other_cost_cents,received_at,reversed_at')
-      .is('reversed_at', null)
-      .gte('received_at', start)
-      .lt('received_at', endExclusive)
-      .limit(500),
-    supabase
-      .from('non_inventory_expenses')
-      .select('id,expense_type,vendor,amount_cents,spent_at')
-      .gte('spent_at', start)
-      .lt('spent_at', endExclusive)
-      .limit(500),
-    supabase
-      .from('orders')
-      .select('id,status,subtotal_cents,created_at,shipped_at')
-      .eq('status', 'Shipped')
-      .or(`shipped_at.gte.${start},created_at.gte.${start}`)
-      .limit(1000),
   ]);
 
   const categories = (categoriesResult.data ?? []) as AccountingCategoryRow[];
   const transactions = (transactionsResult.data ?? []) as any[];
+  const transactionTotal = transactionsResult.count ?? transactions.length;
+  const hasPreviousReviewPage = reviewPage > 1;
+  const hasNextReviewPage = reviewFrom + transactions.length < transactionTotal;
+  const pnlTransactions = (pnlTransactionsResult.data ?? []) as any[];
   const batches = batchesResult.data ?? [];
-  const receipts = receiptsResult.data ?? [];
-  const nonInventoryExpenses = nonInventoryResult.data ?? [];
-  const orders = ((ordersResult.data ?? []) as any[]).filter((order) => {
-    const date = String(order.shipped_at ?? order.created_at ?? '').slice(0, 10);
-    return date >= start && date < endExclusive;
-  });
-  const orderIds = orders.map((order) => order.id).filter(Boolean);
-  const { data: orderItems } = orderIds.length
-    ? await supabase
-      .from('order_items')
-      .select('order_id,line_total_cents,cogs_total_cents,cogs_product_cents,cogs_shipping_cents,cogs_processing_fee_cents,cogs_donation_cents')
-      .in('order_id', orderIds)
-      .limit(3000)
-    : { data: [] as any[] };
-
-  const orderRevenueCents = orders.reduce((sum, order) => sum + normalizeAccountingNumber(order.subtotal_cents), 0);
-  const orderCogsCents = (orderItems ?? []).reduce((sum: number, item: any) => {
-    const snapshotted = normalizeAccountingNumber(item.cogs_total_cents);
-    return sum + (snapshotted || normalizeAccountingNumber(item.cogs_product_cents) + normalizeAccountingNumber(item.cogs_shipping_cents) + normalizeAccountingNumber(item.cogs_processing_fee_cents) + normalizeAccountingNumber(item.cogs_donation_cents));
-  }, 0);
-  const legacyNonInventoryExpenseCents = nonInventoryExpenses.reduce((sum: number, expense: any) => sum + normalizeAccountingNumber(expense.amount_cents), 0);
-  const inventoryReceiptCents = receipts.reduce((sum: number, receipt: any) => sum + receiptTotalCents(receipt), 0);
   const pnl = buildAccountingPnlTotals({
-    legacyNonInventoryExpenseCents,
-    orderCogsCents,
-    orderRevenueCents,
-    transactions: transactions as any[],
+    transactions: pnlTransactions as any[],
   });
 
-  const needsReviewCount = transactions.filter((transaction) => transaction.status === 'needs_review').length;
-  const aiFlaggedCount = transactions.filter((transaction) => transaction.ai_review_status === 'flagged').length;
-  const matchedInventoryCents = transactions
+  const needsReviewCount = pnlTransactions.filter((transaction) => transaction.status === 'needs_review').length;
+  const aiFlaggedCount = pnlTransactions.filter((transaction) => transaction.ai_review_status === 'flagged').length;
+  const matchedInventoryCents = pnlTransactions
     .filter((transaction) => transaction.status === 'matched_inventory')
     .reduce((sum, transaction) => sum + Math.max(0, normalizeAccountingNumber(transaction.amount_cents)), 0);
-  const cardOperatingExpenseByCategory = categories
-    .filter((category) => category.pnl_section === 'operating_expenses' || category.pnl_section === 'cogs')
-    .map((category) => ({
-      category,
-      totalCents: transactions
-        .filter((transaction) => transaction.category_id === category.id && transaction.status === 'categorized')
-        .reduce((sum, transaction) => sum + Math.max(0, normalizeAccountingNumber(transaction.amount_cents)), 0),
-    }))
-    .filter((row) => row.totalCents > 0)
-    .sort((left, right) => right.totalCents - left.totalCents);
+  const pnlCategoryBreakdown = PNL_DETAIL_SECTIONS.map((section) => ({
+    ...section,
+    rows: categories
+      .filter((category) => category.pnl_section === section.id)
+      .map((category) => ({
+        category,
+        totalCents: pnlTransactions
+          .filter((transaction) => transaction.category_id === category.id && transaction.status === 'categorized')
+          .reduce((sum, transaction) => sum + categoryAmountForPnlSection(transaction, category), 0),
+      }))
+      .filter((row) => row.totalCents > 0)
+      .sort((left, right) => right.totalCents - left.totalCents),
+  })).filter((section) => section.rows.length > 0);
 
   return (
     <div className="space-y-6">
@@ -656,9 +741,10 @@ export default async function AccountingPage({
           <div>
             <span className="eyebrow">Accounting</span>
             <h1 className="page-title mt-4">Accounting workspace</h1>
-            <p className="page-subtitle mt-3 max-w-3xl">Upload card activity, review spend, reconcile inventory purchases, and track the operating numbers that feed your P&amp;L.</p>
+            <p className="page-subtitle mt-3 max-w-3xl">Upload bank and card activity, review possible duplicates, and track the numbers that feed your P&amp;L.</p>
           </div>
           <form className="grid gap-3 rounded-xl border border-slate-200 bg-white/60 p-3 sm:grid-cols-[1fr_1fr_auto]" action="/admin/accounting">
+            <input name="view" type="hidden" value={activeView} />
             <input className="input" name="start" type="date" defaultValue={start} />
             <input className="input" name="end" type="date" defaultValue={end} />
             <button className="btn-primary" type="submit">Update</button>
@@ -671,16 +757,18 @@ export default async function AccountingPage({
         </div>
       </section>
 
-      <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-6">
+      <AccountingNav activeView={activeView} end={end} start={start} />
+
+      {activeView === 'overview' ? <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-6">
         <div className="stat-card">
           <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Revenue</p>
-          <p className="mt-2 text-2xl font-semibold text-slate-950">{money(pnl.orderRevenueCents)}</p>
-          <p className="mt-1 text-sm text-slate-500">Shipped order sales</p>
+          <p className="mt-2 text-2xl font-semibold text-slate-950">{money(pnl.revenueCents)}</p>
+          <p className="mt-1 text-sm text-slate-500">Uploaded revenue</p>
         </div>
         <div className="stat-card">
           <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Gross Profit</p>
           <p className="mt-2 text-2xl font-semibold text-slate-950">{money(pnl.grossProfitCents)}</p>
-          <p className="mt-1 text-sm text-slate-500">After order COGS</p>
+          <p className="mt-1 text-sm text-slate-500">After uploaded COGS</p>
         </div>
         <div className="stat-card">
           <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Net Income</p>
@@ -702,9 +790,9 @@ export default async function AccountingPage({
           <p className="mt-2 text-2xl font-semibold text-slate-950">{money(matchedInventoryCents)}</p>
           <p className="mt-1 text-sm text-slate-500">Excluded from duplicate expense</p>
         </div>
-      </section>
+      </section> : null}
 
-      <section className="grid gap-6 xl:grid-cols-[1.25fr_0.75fr]">
+      {activeView === 'upload' ? <section className="grid gap-6 xl:grid-cols-[1.25fr_0.75fr]">
         <form action={uploadAccountingCsv} className="card space-y-4">
           <div>
             <span className="eyebrow">Upload</span>
@@ -721,10 +809,10 @@ export default async function AccountingPage({
               {ACCOUNTING_ACCOUNT_TYPES.map((type) => <option key={type.value} value={type.value}>{type.label}</option>)}
             </select>
           </div>
-          <select className="input" name="amount_sign" defaultValue="money_out_positive">
-            <option value="money_out_positive">Purchases are positive</option>
-            <option value="money_out_negative">Purchases are negative</option>
-          </select>
+          <input name="amount_sign" type="hidden" value="auto" />
+          <p className="rounded-xl border border-teal-100 bg-teal-50 px-4 py-3 text-sm text-teal-900">
+            Purchase signs are detected automatically from the file.
+          </p>
           <input className="input" name="file" type="file" accept=".csv,text/csv" required />
           <textarea className="input min-h-20" name="notes" placeholder="Batch notes" />
           <PendingSubmitButton className="btn-primary w-full sm:w-auto" label="Upload transactions" pendingLabel="Uploading..." />
@@ -747,9 +835,9 @@ export default async function AccountingPage({
           <input className="input" name="account_name" placeholder="Account name" />
           <PendingSubmitButton className="btn-primary w-full sm:w-auto" label="Add transaction" pendingLabel="Adding..." />
         </form>
-      </section>
+      </section> : null}
 
-      <section className="grid gap-6 xl:grid-cols-[1fr_1fr]">
+      {activeView === 'pnl' ? <section className="grid gap-6 xl:grid-cols-[1fr_1fr]">
         <div className="card space-y-4">
           <div>
             <span className="eyebrow">P&amp;L</span>
@@ -758,12 +846,10 @@ export default async function AccountingPage({
           <div className="overflow-x-auto">
             <table className="min-w-full text-sm">
               <tbody className="divide-y divide-slate-100">
-                <tr><td className="py-2 font-medium text-slate-700">Order revenue</td><td className="py-2 text-right font-semibold">{money(pnl.orderRevenueCents)}</td></tr>
-                <tr><td className="py-2 font-medium text-slate-700">Order COGS</td><td className="py-2 text-right font-semibold">({money(pnl.orderCogsCents)})</td></tr>
-                <tr><td className="py-2 font-medium text-slate-700">Additional card COGS</td><td className="py-2 text-right font-semibold">({money(pnl.cardCogsCents)})</td></tr>
+                <tr><td className="py-2 font-medium text-slate-700">Uploaded revenue</td><td className="py-2 text-right font-semibold">{money(pnl.revenueCents)}</td></tr>
+                <tr><td className="py-2 font-medium text-slate-700">Uploaded COGS</td><td className="py-2 text-right font-semibold">({money(pnl.cardCogsCents)})</td></tr>
                 <tr><td className="py-2 font-semibold text-slate-950">Gross profit</td><td className="py-2 text-right font-semibold text-slate-950">{money(pnl.grossProfitCents)}</td></tr>
-                <tr><td className="py-2 font-medium text-slate-700">Card operating expenses</td><td className="py-2 text-right font-semibold">({money(pnl.cardOperatingExpenseCents)})</td></tr>
-                <tr><td className="py-2 font-medium text-slate-700">Existing non-stock expenses</td><td className="py-2 text-right font-semibold">({money(pnl.legacyNonInventoryExpenseCents)})</td></tr>
+                <tr><td className="py-2 font-medium text-slate-700">Uploaded operating expenses</td><td className="py-2 text-right font-semibold">({money(pnl.cardOperatingExpenseCents)})</td></tr>
                 <tr><td className="py-2 font-semibold text-slate-950">Operating income</td><td className="py-2 text-right font-semibold text-slate-950">{money(pnl.operatingIncomeCents)}</td></tr>
                 <tr><td className="py-2 font-medium text-slate-700">Other income</td><td className="py-2 text-right font-semibold">{money(pnl.otherIncomeCents)}</td></tr>
                 <tr><td className="py-2 font-medium text-slate-700">Other expense</td><td className="py-2 text-right font-semibold">({money(pnl.otherExpenseCents)})</td></tr>
@@ -771,28 +857,45 @@ export default async function AccountingPage({
               </tbody>
             </table>
           </div>
-          <p className="text-sm text-slate-500">Inventory purchases received into stock are tracked below as cash outflow, but they are not counted as operating expense.</p>
         </div>
 
         <div className="card space-y-4">
           <div>
             <span className="eyebrow">Controls</span>
-            <h2 className="mt-3 text-2xl font-semibold tracking-tight text-slate-950">Categories and cash checks</h2>
+            <h2 className="mt-3 text-2xl font-semibold tracking-tight text-slate-950">Uploaded activity</h2>
           </div>
-          <div className="grid gap-3 sm:grid-cols-3">
-            <div className="rounded-xl border border-slate-200 bg-white/60 p-3">
-              <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Inventory Receipts</p>
-              <p className="mt-2 text-lg font-semibold text-slate-950">{money(inventoryReceiptCents)}</p>
-            </div>
-            <div className="rounded-xl border border-slate-200 bg-white/60 p-3">
-              <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Legacy Expenses</p>
-              <p className="mt-2 text-lg font-semibold text-slate-950">{money(legacyNonInventoryExpenseCents)}</p>
-            </div>
+          <div className="grid gap-3 sm:grid-cols-2">
             <div className="rounded-xl border border-slate-200 bg-white/60 p-3">
               <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Imported Rows</p>
-              <p className="mt-2 text-lg font-semibold text-slate-950">{transactions.length}</p>
+              <p className="mt-2 text-lg font-semibold text-slate-950">{transactionTotal}</p>
+            </div>
+            <div className="rounded-xl border border-slate-200 bg-white/60 p-3">
+              <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Needs Review</p>
+              <p className="mt-2 text-lg font-semibold text-slate-950">{needsReviewCount}</p>
             </div>
           </div>
+          <div className="space-y-4">
+            {pnlCategoryBreakdown.map((section) => (
+              <div key={section.id} className="space-y-2">
+                <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">{section.label}</p>
+                {section.rows.map((row) => (
+                  <div key={row.category.id} className="flex items-center justify-between rounded-xl border border-slate-200 bg-white/60 px-3 py-2 text-sm">
+                    <span className="font-medium text-slate-700">{row.category.name}</span>
+                    <span className="font-semibold text-slate-950">{money(row.totalCents)}</span>
+                  </div>
+                ))}
+              </div>
+            ))}
+            {!pnlCategoryBreakdown.length ? <p className="text-sm text-slate-500">No categorized accounting activity in this range yet.</p> : null}
+          </div>
+        </div>
+      </section> : null}
+
+      {activeView === 'categories' ? <section className="card space-y-4">
+        <div>
+          <span className="eyebrow">Categories</span>
+          <h2 className="mt-3 text-2xl font-semibold tracking-tight text-slate-950">Manage accounting categories</h2>
+        </div>
           <form action={addAccountingCategory} className="grid gap-3 border-t border-slate-100 pt-4 md:grid-cols-[1fr_1fr_1fr_auto]">
             <input className="input" name="name" required placeholder="New category" />
             <select className="input" name="category_type" defaultValue="operating_expense">
@@ -812,23 +915,25 @@ export default async function AccountingPage({
             </select>
             <PendingSubmitButton className="btn-secondary" label="Add" pendingLabel="Adding..." />
           </form>
-          <div className="space-y-2">
-            {cardOperatingExpenseByCategory.slice(0, 5).map((row) => (
-              <div key={row.category.id} className="flex items-center justify-between rounded-xl border border-slate-200 bg-white/60 px-3 py-2 text-sm">
-                <span className="font-medium text-slate-700">{row.category.name}</span>
-                <span className="font-semibold text-slate-950">{money(row.totalCents)}</span>
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+            {categories.map((category) => (
+              <div key={category.id} className="rounded-xl border border-slate-200 bg-white/60 p-3">
+                <p className="font-semibold text-slate-950">{category.name}</p>
+                <p className="mt-1 text-sm text-slate-500">{category.category_type.replace(/_/g, ' ')} - {category.pnl_section.replace(/_/g, ' ')}</p>
               </div>
             ))}
-            {!cardOperatingExpenseByCategory.length ? <p className="text-sm text-slate-500">No categorized card expenses in this range yet.</p> : null}
+            {!categories.length ? <p className="text-sm text-slate-500">No categories yet.</p> : null}
           </div>
-        </div>
-      </section>
+      </section> : null}
 
-      <section className="card space-y-4">
+      {activeView === 'review' ? <section className="card space-y-4">
         <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
           <div>
             <span className="eyebrow">Review</span>
             <h2 className="mt-3 text-2xl font-semibold tracking-tight text-slate-950">Transactions</h2>
+            <p className="mt-2 text-sm text-slate-500">
+              Showing {transactionTotal ? reviewFrom + 1 : 0}-{reviewFrom + transactions.length} of {transactionTotal} transactions.
+            </p>
           </div>
           <Link className="btn-secondary w-full sm:w-auto" href="/admin/receiving">Open receiving</Link>
         </div>
@@ -882,7 +987,7 @@ export default async function AccountingPage({
                         <input name="match_id" type="hidden" value={match.id} />
                         <input name="target_type" type="hidden" value={match.target_type} />
                         <div>
-                          <p className="text-sm font-semibold text-amber-950">{match.target_type === 'inventory_receipt' ? 'Possible inventory receipt' : 'Possible existing expense'} - {Math.round(normalizeAccountingNumber(match.confidence))}%</p>
+                          <p className="text-sm font-semibold text-amber-950">{suggestedMatchLabel(match.target_type)} - {Math.round(normalizeAccountingNumber(match.confidence))}%</p>
                           <p className="mt-1 text-xs text-amber-800">{match.reason}</p>
                         </div>
                         <button className="btn-primary" name="action_type" type="submit" value="approve_match">Approve</button>
@@ -913,9 +1018,26 @@ export default async function AccountingPage({
           })}
           {!transactions.length ? <p className="text-sm text-slate-500">No accounting transactions in this range yet.</p> : null}
         </div>
-      </section>
+        <div className="flex flex-col gap-3 border-t border-slate-100 pt-4 sm:flex-row sm:items-center sm:justify-between">
+          <Link
+            className={`btn-secondary ${hasPreviousReviewPage ? '' : 'pointer-events-none opacity-50'}`}
+            href={accountingViewHref({ end, page: reviewPage - 1, start, view: 'review' })}
+            aria-disabled={!hasPreviousReviewPage}
+          >
+            Previous
+          </Link>
+          <p className="text-sm font-medium text-slate-500">Page {reviewPage}</p>
+          <Link
+            className={`btn-secondary ${hasNextReviewPage ? '' : 'pointer-events-none opacity-50'}`}
+            href={accountingViewHref({ end, page: reviewPage + 1, start, view: 'review' })}
+            aria-disabled={!hasNextReviewPage}
+          >
+            Next
+          </Link>
+        </div>
+      </section> : null}
 
-      <section className="card space-y-4">
+      {activeView === 'imports' ? <section className="card space-y-4">
         <div>
           <span className="eyebrow">Imports</span>
           <h2 className="mt-3 text-2xl font-semibold tracking-tight text-slate-950">Recent batches</h2>
@@ -930,7 +1052,7 @@ export default async function AccountingPage({
           ))}
           {!batches.length ? <p className="text-sm text-slate-500">No uploads yet.</p> : null}
         </div>
-      </section>
+      </section> : null}
     </div>
   );
 }

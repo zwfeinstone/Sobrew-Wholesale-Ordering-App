@@ -52,7 +52,36 @@ describe('accounting csv import', () => {
     expect(rows.map((row) => row.amountCents)).toEqual([8250, -1000]);
   });
 
-  it('can invert amount-only exports where purchases are negative', () => {
+  it('auto-detects amount-only exports where purchases are negative', () => {
+    const rows = parseAccountingCsv({
+      accountType: 'credit_card',
+      content: [
+        'Date,Description,Amount',
+        '7/1/2026,Box purchase,-82.50',
+        '7/2/2026,Refund,10.00',
+      ].join('\n'),
+    });
+
+    expect(rows.map((row) => row.amountCents)).toEqual([8250, -1000]);
+  });
+
+  it('parses likely expense categories from upload templates', () => {
+    const rows = parseAccountingCsv({
+      accountType: 'credit_card',
+      content: [
+        'Date,Description,Amount,Likely Expense Category',
+        '7/1/2026,Software subscription,39.00,Software & Subscriptions',
+        '7/2/2026,Permit renewal,22.50,"Taxes, Licenses & Permits"',
+      ].join('\n'),
+    });
+
+    expect(rows.map((row) => row.categoryName)).toEqual([
+      'Software & Subscriptions',
+      'Taxes, Licenses & Permits',
+    ]);
+  });
+
+  it('can still explicitly invert amount-only exports where purchases are negative', () => {
     const rows = parseAccountingCsv({
       accountType: 'credit_card',
       amountSign: 'money_out_negative',
@@ -116,15 +145,46 @@ describe('accounting suggested matches', () => {
     });
     expect(suggestions[0].confidence).toBeGreaterThanOrEqual(90);
   });
+
+  it('flags payment app activity as a potential duplicate payment', () => {
+    const suggestions = buildSuggestedAccountingMatches({
+      expenses: [],
+      receipts: [],
+      transaction: {
+        accountName: 'Sobrew Checking',
+        accountType: 'bank',
+        amountCents: 12500,
+        merchantName: 'Venmo',
+        originalDescription: 'VENMO PAYMENT ZACH',
+        transactionDate: '2026-07-15',
+      },
+    });
+
+    expect(suggestions[0]).toMatchObject({
+      targetId: null,
+      targetLabel: 'Potential duplicate payment',
+      targetType: 'other',
+    });
+    expect(suggestions[0].confidence).toBeGreaterThanOrEqual(70);
+  });
 });
 
 describe('accounting P&L totals', () => {
   it('does not count matched inventory purchases as an expense', () => {
     const totals = buildAccountingPnlTotals({
-      legacyNonInventoryExpenseCents: 5000,
-      orderCogsCents: 60000,
-      orderRevenueCents: 150000,
       transactions: [
+        {
+          accounting_categories: {
+            category_type: 'revenue',
+            id: 'sales',
+            name: 'Sales Revenue',
+            pnl_section: 'revenue',
+          },
+          amount_cents: -150000,
+          category_id: 'sales',
+          status: 'categorized',
+          transaction_date: '2026-07-01',
+        },
         {
           accounting_categories: {
             category_type: 'asset',
@@ -152,9 +212,100 @@ describe('accounting P&L totals', () => {
       ],
     });
 
-    expect(totals.grossProfitCents).toBe(90000);
+    expect(totals.grossProfitCents).toBe(150000);
     expect(totals.cardOperatingExpenseCents).toBe(2000);
-    expect(totals.netIncomeCents).toBe(83000);
+    expect(totals.netIncomeCents).toBe(148000);
+  });
+
+  it('counts uploaded payroll owner-pay rows as operating expense', () => {
+    const totals = buildAccountingPnlTotals({
+      transactions: [
+        {
+          accounting_categories: {
+            category_type: 'revenue',
+            id: 'sales',
+            name: 'Sales Revenue',
+            pnl_section: 'revenue',
+          },
+          amount_cents: -150000,
+          category_id: 'sales',
+          status: 'categorized',
+          transaction_date: '2026-07-01',
+        },
+        {
+          accounting_categories: {
+            category_type: 'operating_expense',
+            id: 'payroll',
+            name: 'Payroll & Owner Pay',
+            pnl_section: 'operating_expenses',
+          },
+          amount_cents: 30000,
+          category_id: 'payroll',
+          status: 'categorized',
+          transaction_date: '2026-07-18',
+        },
+      ],
+    });
+
+    expect(totals.cardOperatingExpenseCents).toBe(30000);
+    expect(totals.netIncomeCents).toBe(120000);
+  });
+
+  it('counts uploaded sales revenue rows as standalone accounting revenue', () => {
+    const totals = buildAccountingPnlTotals({
+      transactions: [
+        {
+          accounting_categories: {
+            category_type: 'revenue',
+            id: 'sales',
+            name: 'Sales Revenue',
+            pnl_section: 'revenue',
+          },
+          amount_cents: -150000,
+          category_id: 'sales',
+          status: 'categorized',
+          transaction_date: '2026-07-18',
+        },
+      ],
+    });
+
+    expect(totals.revenueCents).toBe(150000);
+    expect(totals.otherIncomeCents).toBe(0);
+    expect(totals.netIncomeCents).toBe(150000);
+  });
+
+  it('nets credits against uploaded expense categories', () => {
+    const totals = buildAccountingPnlTotals({
+      transactions: [
+        {
+          accounting_categories: {
+            category_type: 'operating_expense',
+            id: 'auto',
+            name: 'Fuel & Auto',
+            pnl_section: 'operating_expenses',
+          },
+          amount_cents: 34474,
+          category_id: 'auto',
+          status: 'categorized',
+          transaction_date: '2026-07-03',
+        },
+        {
+          accounting_categories: {
+            category_type: 'operating_expense',
+            id: 'auto',
+            name: 'Fuel & Auto',
+            pnl_section: 'operating_expenses',
+          },
+          amount_cents: -8618,
+          category_id: 'auto',
+          status: 'categorized',
+          transaction_date: '2026-07-16',
+        },
+      ],
+    });
+
+    expect(totals.cardOperatingExpenseCents).toBe(25856);
+    expect(totals.netIncomeCents).toBe(-25856);
   });
 });
 

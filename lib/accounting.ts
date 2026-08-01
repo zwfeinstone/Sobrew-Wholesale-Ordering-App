@@ -27,12 +27,13 @@ export type ParsedAccountingTransaction = {
   accountName: string | null;
   accountType: AccountingAccountType;
   amountCents: number;
+  categoryName?: string | null;
   merchantName: string | null;
   originalDescription: string;
   transactionDate: string;
 };
 
-export type AccountingAmountSignMode = 'money_out_positive' | 'money_out_negative';
+export type AccountingAmountSignMode = 'auto' | 'money_out_positive' | 'money_out_negative';
 
 export type AccountingCategoryRow = {
   category_type: string;
@@ -71,22 +72,20 @@ export type AccountingNonInventoryExpenseMatchRow = {
 export type SuggestedAccountingMatch = {
   confidence: number;
   reason: string;
-  targetId: string;
+  targetId: string | null;
   targetLabel: string;
-  targetType: 'inventory_receipt' | 'non_inventory_expense';
+  targetType: 'inventory_receipt' | 'non_inventory_expense' | 'other';
 };
 
 export type AccountingPnlTotals = {
   cardCogsCents: number;
   cardOperatingExpenseCents: number;
   grossProfitCents: number;
-  legacyNonInventoryExpenseCents: number;
   netIncomeCents: number;
   operatingIncomeCents: number;
-  orderCogsCents: number;
-  orderRevenueCents: number;
   otherExpenseCents: number;
   otherIncomeCents: number;
+  revenueCents: number;
 };
 
 export type AiAccountingReviewCandidate = {
@@ -121,6 +120,7 @@ export type AiAccountingReviewResult = {
 const CSV_HEADER_ALIASES = {
   accountName: ['account', 'accountname', 'account_name', 'card', 'cardname'],
   amount: ['amount', 'transactionamount', 'transaction_amount'],
+  category: ['category', 'accountingcategory', 'accounting_category', 'expensecategory', 'expense_category', 'likelyexpensecategory', 'likely_expense_category'],
   credit: ['credit', 'deposit', 'moneyin', 'money_in'],
   date: ['date', 'transactiondate', 'transaction_date', 'posteddate', 'posted_date'],
   debit: ['debit', 'withdrawal', 'charge', 'moneyout', 'money_out'],
@@ -137,6 +137,7 @@ Important accounting rules:
 - Positive amounts are money out. Negative amounts are money in.
 - Inventory purchases that already have an inventory receipt should be matched to inventory and not counted again as operating expense.
 - Credit card payments, account transfers, owner draws, refunds, and deposits should generally be excluded from P&L expense unless the data says otherwise.
+- Cash App, Zelle, and Venmo payments are often payroll, owner-pay, reimbursement, or transfer rows that can duplicate something already recorded elsewhere.
 - Do not invent vendors, receipts, categories, or facts. Use only the supplied JSON.
 - Prefer fewer, higher-confidence flags over noisy guesses.
 
@@ -257,6 +258,54 @@ function parseCsvDate(value: string) {
   return parsed.toISOString().slice(0, 10);
 }
 
+const OUTFLOW_DESCRIPTION_PATTERN = /\b(ach debit|atm|charge|checkcard|debit|fee|freight|inventory|office depot|purchase|shipping|supplies|uline|withdrawal)\b/;
+const INFLOW_DESCRIPTION_PATTERN = /\b(cash back|cashback|deposit|payout|refund|return|reversal)\b/;
+
+function inferAccountingAmountSignMode({
+  accountType,
+  rows,
+}: {
+  accountType: AccountingAccountType;
+  rows: Array<{ rawAmountCents: number; text: string }>;
+}): Exclude<AccountingAmountSignMode, 'auto'> {
+  let moneyOutPositiveScore = 0;
+  let moneyOutNegativeScore = 0;
+  let positiveCount = 0;
+  let negativeCount = 0;
+
+  for (const row of rows) {
+    if (row.rawAmountCents > 0) positiveCount += 1;
+    if (row.rawAmountCents < 0) negativeCount += 1;
+
+    const text = normalizedText(row.text);
+    const looksOutflow = OUTFLOW_DESCRIPTION_PATTERN.test(text);
+    const looksInflow = INFLOW_DESCRIPTION_PATTERN.test(text);
+    if (looksOutflow === looksInflow) continue;
+
+    if (looksOutflow) {
+      if (row.rawAmountCents > 0) moneyOutPositiveScore += 1;
+      if (row.rawAmountCents < 0) moneyOutNegativeScore += 1;
+    }
+
+    if (looksInflow) {
+      if (row.rawAmountCents < 0) moneyOutPositiveScore += 1;
+      if (row.rawAmountCents > 0) moneyOutNegativeScore += 1;
+    }
+  }
+
+  if (Math.abs(moneyOutPositiveScore - moneyOutNegativeScore) >= 2) {
+    return moneyOutPositiveScore > moneyOutNegativeScore ? 'money_out_positive' : 'money_out_negative';
+  }
+
+  if (positiveCount > 0 && negativeCount === 0) return 'money_out_positive';
+  if (negativeCount > 0 && positiveCount === 0) return 'money_out_negative';
+
+  if (positiveCount - negativeCount >= 3 && positiveCount >= negativeCount * 1.75) return 'money_out_positive';
+  if (negativeCount - positiveCount >= 3 && negativeCount >= positiveCount * 1.75) return 'money_out_negative';
+
+  return accountType === 'bank' || accountType === 'debit_card' ? 'money_out_negative' : 'money_out_positive';
+}
+
 export function accountingTransactionFingerprint({
   accountName,
   amountCents,
@@ -281,7 +330,7 @@ export function accountingTransactionFingerprint({
 export function parseAccountingCsv({
   accountName,
   accountType,
-  amountSign = 'money_out_positive',
+  amountSign = 'auto',
   content,
 }: {
   accountName?: string | null;
@@ -301,6 +350,7 @@ export function parseAccountingCsv({
   const descriptionIndex = findHeaderIndex(headers, CSV_HEADER_ALIASES.description);
   const merchantIndex = findHeaderIndex(headers, CSV_HEADER_ALIASES.merchant);
   const amountIndex = findHeaderIndex(headers, CSV_HEADER_ALIASES.amount);
+  const categoryIndex = findHeaderIndex(headers, CSV_HEADER_ALIASES.category);
   const debitIndex = findHeaderIndex(headers, CSV_HEADER_ALIASES.debit);
   const creditIndex = findHeaderIndex(headers, CSV_HEADER_ALIASES.credit);
   const accountIndex = findHeaderIndex(headers, CSV_HEADER_ALIASES.accountName);
@@ -308,6 +358,24 @@ export function parseAccountingCsv({
   if (dateIndex < 0 || descriptionIndex < 0 || (amountIndex < 0 && debitIndex < 0 && creditIndex < 0)) {
     throw new Error('CSV must include date, description, and amount columns.');
   }
+
+  const rawAmountRows = lines.slice(1).flatMap((line) => {
+    const cells = splitCsvLine(line);
+    const transactionDate = parseCsvDate(cells[dateIndex] ?? '');
+    const originalDescription = String(cells[descriptionIndex] ?? '').trim();
+    const rawAmountCents = amountIndex >= 0 ? parseMoneyToCents(cells[amountIndex]) : 0;
+    if (!transactionDate || !originalDescription || !rawAmountCents) return [];
+    return [{
+      rawAmountCents,
+      text: [
+        originalDescription,
+        merchantIndex >= 0 ? cells[merchantIndex] : '',
+      ].join(' '),
+    }];
+  });
+  const resolvedAmountSign = amountSign === 'auto'
+    ? inferAccountingAmountSignMode({ accountType, rows: rawAmountRows })
+    : amountSign;
 
   return lines.slice(1).flatMap((line): ParsedAccountingTransaction[] => {
     const cells = splitCsvLine(line);
@@ -318,15 +386,17 @@ export function parseAccountingCsv({
     const debitCents = debitIndex >= 0 ? Math.abs(parseMoneyToCents(cells[debitIndex])) : 0;
     const creditCents = creditIndex >= 0 ? Math.abs(parseMoneyToCents(cells[creditIndex])) : 0;
     const rawAmountCents = amountIndex >= 0 ? parseMoneyToCents(cells[amountIndex]) : debitCents - creditCents;
-    const amountCents = amountIndex >= 0 && amountSign === 'money_out_negative' ? rawAmountCents * -1 : rawAmountCents;
+    const amountCents = amountIndex >= 0 && resolvedAmountSign === 'money_out_negative' ? rawAmountCents * -1 : rawAmountCents;
     if (!amountCents) return [];
 
     const parsedAccountName = String(accountIndex >= 0 ? cells[accountIndex] : accountName ?? '').trim();
+    const parsedCategoryName = String(categoryIndex >= 0 ? cells[categoryIndex] : '').trim();
 
     return [{
       accountName: parsedAccountName || accountName?.trim() || null,
       accountType,
       amountCents,
+      ...(categoryIndex >= 0 ? { categoryName: parsedCategoryName || null } : {}),
       merchantName: merchantIndex >= 0 ? String(cells[merchantIndex] ?? '').trim() || null : null,
       originalDescription,
       transactionDate,
@@ -362,6 +432,17 @@ function vendorScore(transactionText: string, vendor: string | null | undefined)
   return 0;
 }
 
+const PAYMENT_APP_DUPLICATE_KEYWORDS = [
+  'cash app',
+  'cashapp',
+  'zelle',
+  'venmo',
+];
+
+function paymentAppDuplicateKeyword(transactionText: string) {
+  return PAYMENT_APP_DUPLICATE_KEYWORDS.find((keyword) => transactionText.includes(keyword)) ?? null;
+}
+
 export function buildSuggestedAccountingMatches({
   expenses,
   receipts,
@@ -375,6 +456,17 @@ export function buildSuggestedAccountingMatches({
 
   const transactionText = normalizedText(`${transaction.merchantName ?? ''} ${transaction.originalDescription}`);
   const suggestions: SuggestedAccountingMatch[] = [];
+  const paymentAppKeyword = paymentAppDuplicateKeyword(transactionText);
+
+  if (paymentAppKeyword) {
+    suggestions.push({
+      confidence: 78,
+      reason: `${paymentAppKeyword.replace(/\b\w/g, (char) => char.toUpperCase())} payments can duplicate payroll, owner-pay, reimbursements, or transfers already recorded elsewhere.`,
+      targetId: null,
+      targetLabel: 'Potential duplicate payment',
+      targetType: 'other',
+    });
+  }
 
   for (const receipt of receipts) {
     const receiptTotal = totalReceiptCents(receipt);
@@ -550,20 +642,15 @@ export async function generateAiAccountingReview({
 }
 
 export function buildAccountingPnlTotals({
-  legacyNonInventoryExpenseCents,
-  orderCogsCents,
-  orderRevenueCents,
   transactions,
 }: {
-  legacyNonInventoryExpenseCents: number;
-  orderCogsCents: number;
-  orderRevenueCents: number;
   transactions: AccountingTransactionRow[];
 }): AccountingPnlTotals {
   let cardCogsCents = 0;
   let cardOperatingExpenseCents = 0;
   let otherExpenseCents = 0;
   let otherIncomeCents = 0;
+  let revenueCents = 0;
 
   for (const transaction of transactions) {
     const category = categoryForTransaction(transaction);
@@ -571,17 +658,16 @@ export function buildAccountingPnlTotals({
     const amountCents = normalizeAccountingNumber(transaction.amount_cents);
     if (transaction.status === 'matched_inventory' || transaction.status === 'matched_non_inventory_expense' || transaction.status === 'excluded') continue;
 
-    const spendCents = Math.max(0, amountCents);
-    const inflowCents = Math.max(0, -amountCents);
-    if (category.pnl_section === 'cogs') cardCogsCents += spendCents;
-    if (category.pnl_section === 'operating_expenses') cardOperatingExpenseCents += spendCents;
-    if (category.pnl_section === 'other_expenses') otherExpenseCents += spendCents;
-    if (category.pnl_section === 'other_income' || category.pnl_section === 'revenue') otherIncomeCents += inflowCents;
+    if (category.pnl_section === 'cogs') cardCogsCents += amountCents;
+    if (category.pnl_section === 'operating_expenses') cardOperatingExpenseCents += amountCents;
+    if (category.pnl_section === 'other_expenses') otherExpenseCents += amountCents;
+    if (category.pnl_section === 'revenue') revenueCents += -amountCents;
+    if (category.pnl_section === 'other_income') otherIncomeCents += -amountCents;
   }
 
-  const totalCogsCents = orderCogsCents + cardCogsCents;
-  const totalOperatingExpenseCents = legacyNonInventoryExpenseCents + cardOperatingExpenseCents;
-  const grossProfitCents = orderRevenueCents - totalCogsCents;
+  const totalCogsCents = cardCogsCents;
+  const totalOperatingExpenseCents = cardOperatingExpenseCents;
+  const grossProfitCents = revenueCents - totalCogsCents;
   const operatingIncomeCents = grossProfitCents - totalOperatingExpenseCents;
   const netIncomeCents = operatingIncomeCents + otherIncomeCents - otherExpenseCents;
 
@@ -589,12 +675,10 @@ export function buildAccountingPnlTotals({
     cardCogsCents,
     cardOperatingExpenseCents,
     grossProfitCents,
-    legacyNonInventoryExpenseCents,
     netIncomeCents,
     operatingIncomeCents,
-    orderCogsCents,
-    orderRevenueCents,
     otherExpenseCents,
     otherIncomeCents,
+    revenueCents,
   };
 }
