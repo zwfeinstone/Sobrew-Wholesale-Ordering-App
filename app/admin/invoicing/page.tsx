@@ -281,10 +281,14 @@ function productsInvoicingHref(toast: string, error?: string) {
   return `/admin/invoicing?${params.toString()}`;
 }
 
-function customersInvoicingHref(toast: string, error?: string) {
+function customerRowAnchor(centerId: string) {
+  return centerId ? `#qb-center-${encodeURIComponent(centerId)}` : '';
+}
+
+function customersInvoicingHref(toast: string, error?: string, centerId?: string) {
   const params = new URLSearchParams({ toast, view: 'customers' });
   if (error) params.set('error', error.slice(0, 500));
-  return `/admin/invoicing?${params.toString()}`;
+  return `/admin/invoicing?${params.toString()}${centerId ? customerRowAnchor(centerId) : ''}`;
 }
 
 function invoicingViewParam(value: string | string[] | undefined): InvoicingView {
@@ -350,32 +354,32 @@ async function linkQuickBooksCustomer(formData: FormData) {
   const centerId = String(formData.get('center_id') ?? '').trim();
   const customerId = String(formData.get('quickbooks_customer_id') ?? '').trim();
   const mappingNote = String(formData.get('quickbooks_mapping_note') ?? '').trim();
-  if (!centerId || !customerId) redirect('/admin/invoicing?view=customers&toast=customer_mapping_selection_required');
+  if (!centerId || !customerId) redirect(customersInvoicingHref('customer_mapping_selection_required', undefined, centerId));
 
   try {
     await linkPortalCenterToQuickBooksCustomer({ centerId, customerId, mappingNote });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unable to save QuickBooks customer mapping.';
     console.error('[invoicing] customer mapping failed', { centerId, customerId, error });
-    redirect(customersInvoicingHref('customer_mapping_failed', message));
+    redirect(customersInvoicingHref('customer_mapping_failed', message, centerId));
   }
-  redirect('/admin/invoicing?view=customers&toast=customer_mapping_saved');
+  redirect(customersInvoicingHref('customer_mapping_saved', undefined, centerId));
 }
 
 async function clearQuickBooksCustomerMapping(formData: FormData) {
   'use server';
   await requireAdminWriteAccess('/admin/invoicing?view=customers&toast=admin_write_denied', 'invoicing');
   const centerId = String(formData.get('center_id') ?? '').trim();
-  if (!centerId) redirect('/admin/invoicing?view=customers&toast=customer_mapping_selection_required');
+  if (!centerId) redirect(customersInvoicingHref('customer_mapping_selection_required'));
 
   try {
     await clearPortalCenterQuickBooksCustomer(centerId);
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unable to clear QuickBooks customer mapping.';
     console.error('[invoicing] clear customer mapping failed', { centerId, error });
-    redirect(customersInvoicingHref('customer_mapping_failed', message));
+    redirect(customersInvoicingHref('customer_mapping_failed', message, centerId));
   }
-  redirect('/admin/invoicing?view=customers&toast=customer_mapping_cleared');
+  redirect(customersInvoicingHref('customer_mapping_cleared', undefined, centerId));
 }
 
 async function resetQuickBooksProducts(formData: FormData) {
@@ -738,7 +742,7 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
                       const suggestedCustomer = suggestion?.customer ?? null;
                       const isMapped = Boolean(center.quickbooks_customer_id);
                       return (
-                        <tr key={center.id} className="align-top">
+                        <tr key={center.id} id={`qb-center-${center.id}`} className="scroll-mt-24 align-top">
                           <td className="min-w-[220px] px-3 py-3">
                             <p className="font-semibold text-slate-950">{center.name}</p>
                             {center.legal_name && center.legal_name !== center.name ? <p className="mt-1 text-xs text-slate-500">Legal: {center.legal_name}</p> : null}
