@@ -22,6 +22,8 @@ export const env = {
   cronSecret: process.env.CRON_SECRET ?? '',
   easypostApiKey: process.env.EASYPOST_API_KEY ?? '',
   hubspotAccessToken: process.env.HUBSPOT_ACCESS_TOKEN ?? '',
+  hubspotDealPipeline: process.env.HUBSPOT_DEAL_PIPELINE ?? 'default',
   hubspotPortalId: process.env.HUBSPOT_PORTAL_ID ?? '',
+  hubspotSampleRequestedDealStage: process.env.HUBSPOT_SAMPLE_REQUESTED_DEAL_STAGE ?? 'appointmentscheduled',
   easypostShippingEnabled: process.env.NODE_ENV === 'development' && String(process.env.EASYPOST_SHIPPING_ENABLED ?? '').toLowerCase() === 'true'
 };

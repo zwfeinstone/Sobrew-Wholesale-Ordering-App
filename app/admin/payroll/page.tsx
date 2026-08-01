@@ -40,7 +40,7 @@ import {
 } from '@/lib/time-clock';
 import { usd } from '@/lib/utils';
 
-type PayrollTab = 'review' | 'time' | 'reports' | 'settings' | 'export';
+type PayrollTab = 'review' | 'payments' | 'time' | 'reports' | 'settings' | 'export';
 
 type AdminProfileRow = {
   email: string | null;
@@ -173,8 +173,23 @@ type PayrollLockRow = {
   notes: string | null;
 };
 
+type WeeklyPaymentRow = {
+  approvedEntryCount: number;
+  completedEntryCount: number;
+  entryCount: number;
+  hourlyWageCents: number;
+  lockedEntryCount: number;
+  minutes: number;
+  openEntryCount: number;
+  profile: AdminProfileRow | null | undefined;
+  profileId: string;
+  unapprovedEntryCount: number;
+  unpaidWageCents: number;
+};
+
 const PAYROLL_TABS: Array<{ id: PayrollTab; label: string }> = [
   { id: 'review', label: 'Review' },
+  { id: 'payments', label: 'Payments' },
   { id: 'time', label: 'Time' },
   { id: 'reports', label: 'Reports' },
   { id: 'settings', label: 'Settings' },
@@ -212,6 +227,7 @@ function stringParam(value: string | string[] | undefined) {
 
 function activeTabParam(value: string | string[] | undefined): PayrollTab {
   if (value === 'approvals') return 'review';
+  if (value === 'pay') return 'payments';
   if (value === 'entries' || value === 'breaks' || value === 'manual') return 'time';
   if (value === 'overview' || value === 'labor' || value === 'production' || value === 'employee' || value === 'work-type' || value === 'exceptions') return 'reports';
   return PAYROLL_TABS.some((tab) => tab.id === value) ? value as PayrollTab : 'review';
@@ -291,6 +307,8 @@ function successMessage(success: string) {
   if (success === 'break_voided') return 'Lunch/break voided.';
   if (success === 'range_locked') return 'Payroll week completed.';
   if (success === 'entries_approved') return 'Completed shifts approved.';
+  if (success === 'employee_paid') return 'Employee marked paid for the selected week.';
+  if (success === 'employee_already_paid') return 'Employee was already marked paid for the selected week.';
   if (success === 'salary_paid') return 'Monthly salary approved and marked paid.';
   if (success === 'salary_already_paid') return 'Monthly salary was already marked paid.';
   if (success === 'allocation_added') return 'Labor allocation added.';
@@ -974,6 +992,69 @@ async function approveCompletedWeekEntries(formData: FormData) {
   redirect(`${returnTo}${returnTo.includes('?') ? '&' : '?'}${result.error ? 'error=save_error' : 'success=entries_approved'}`);
 }
 
+async function markEmployeeWeekPaid(formData: FormData) {
+  'use server';
+  const current = await requireAdminSectionEdit('payroll', payrollHref({ error: 'write_denied', tab: 'payments' }));
+  const returnTo = safeReturnHref(formData, payrollHref({ tab: 'payments' }));
+  const lockStart = parseCentralDateInput(String(formData.get('lock_start') ?? ''));
+  const lockEnd = parseCentralDateInput(String(formData.get('lock_end') ?? ''), true);
+  const profileId = String(formData.get('profile_id') ?? '');
+  if (!profileId || !lockStart || !lockEnd || lockEnd < lockStart) redirect(`${returnTo}${returnTo.includes('?') ? '&' : '?'}error=invalid_time`);
+
+  const { data: rows, error: rowsError } = await supabaseAdmin
+    .from('admin_time_entries')
+    .select('id,profile_id,status,clock_out_at')
+    .eq('profile_id', profileId)
+    .gte('clock_in_at', lockStart.toISOString())
+    .lte('clock_in_at', lockEnd.toISOString())
+    .limit(50000);
+  if (rowsError) redirect(`${returnTo}${returnTo.includes('?') ? '&' : '?'}error=save_error`);
+
+  const reviewableRows = ((rows ?? []) as Array<{ clock_out_at: string | null; id: string; profile_id: string; status: string | null }>).filter((entry) => entry.status !== 'void');
+  if (!reviewableRows.length) redirect(`${returnTo}${returnTo.includes('?') ? '&' : '?'}error=invalid_time`);
+  if (reviewableRows.some((entry) => !entry.clock_out_at)) {
+    redirect(`${returnTo}${returnTo.includes('?') ? '&' : '?'}error=open_entries`);
+  }
+  if (reviewableRows.some((entry) => entry.clock_out_at && !['approved', 'locked'].includes(entry.status ?? ''))) {
+    redirect(`${returnTo}${returnTo.includes('?') ? '&' : '?'}error=unapproved_entries`);
+  }
+
+  const lockableEntryIds = reviewableRows.filter((entry) => entry.status === 'approved').map((entry) => entry.id);
+  if (!lockableEntryIds.length) {
+    redirect(`${returnTo}${returnTo.includes('?') ? '&' : '?'}success=employee_already_paid`);
+  }
+
+  const now = new Date().toISOString();
+  const result = await supabaseAdmin
+    .from('admin_time_entries')
+    .update({
+      locked_at: now,
+      locked_by: current.profile.id,
+      status: 'locked',
+      updated_at: now,
+      updated_by: current.profile.id,
+    })
+    .in('id', lockableEntryIds);
+
+  if (!result.error) {
+    await recordAdminAuditLog({
+      action: 'payroll_employee_week_marked_paid',
+      actorProfileId: current.profile.id,
+      after: {
+        count: lockableEntryIds.length,
+        lock_end_at: lockEnd.toISOString(),
+        lock_start_at: lockStart.toISOString(),
+        profile_id: profileId,
+      },
+      sectionKey: 'payroll',
+      supabase: supabaseAdmin,
+      targetProfileId: profileId,
+    });
+  }
+
+  redirect(`${returnTo}${returnTo.includes('?') ? '&' : '?'}${result.error ? 'error=save_error' : 'success=employee_paid'}`);
+}
+
 async function approveEntry(formData: FormData) {
   'use server';
   const current = await requireAdminSectionEdit('payroll', payrollHref({ error: 'write_denied', tab: 'review' }));
@@ -1214,6 +1295,53 @@ function groupSegmentsByWorkType(segments: PayrollSegment[]) {
     grouped.set(segment.workType, row);
   }
   return grouped;
+}
+
+function buildWeeklyPaymentRows(entries: TimeEntry[], segments: PayrollSegment[], adminById: Map<string, AdminProfileRow>) {
+  const grouped = new Map<string, WeeklyPaymentRow>();
+  for (const entry of entries) {
+    if (entry.status === 'void') continue;
+    const row = grouped.get(entry.profile_id) ?? {
+      approvedEntryCount: 0,
+      completedEntryCount: 0,
+      entryCount: 0,
+      hourlyWageCents: 0,
+      lockedEntryCount: 0,
+      minutes: 0,
+      openEntryCount: 0,
+      profile: adminById.get(entry.profile_id),
+      profileId: entry.profile_id,
+      unapprovedEntryCount: 0,
+      unpaidWageCents: 0,
+    };
+    row.entryCount += 1;
+    if (!entry.clock_out_at) {
+      row.openEntryCount += 1;
+    } else {
+      row.completedEntryCount += 1;
+      if (entry.status === 'locked') row.lockedEntryCount += 1;
+      else if (entry.status === 'approved') row.approvedEntryCount += 1;
+      else row.unapprovedEntryCount += 1;
+    }
+    grouped.set(entry.profile_id, row);
+  }
+
+  for (const segment of segments) {
+    const row = grouped.get(segment.entry.profile_id);
+    if (!row) continue;
+    row.minutes += segment.minutes;
+    row.hourlyWageCents += segment.wageCents;
+    if (segment.entry.status !== 'locked') row.unpaidWageCents += segment.wageCents;
+  }
+
+  return [...grouped.values()].sort((a, b) => profileLabel(a.profile).localeCompare(profileLabel(b.profile)));
+}
+
+function paymentStatus(row: WeeklyPaymentRow) {
+  if (row.openEntryCount) return { label: 'Open shift', tone: 'bg-amber-50 text-amber-800 ring-amber-100' };
+  if (row.unapprovedEntryCount) return { label: 'Needs approval', tone: 'bg-rose-50 text-rose-700 ring-rose-100' };
+  if (row.completedEntryCount > 0 && row.lockedEntryCount === row.completedEntryCount) return { label: 'Paid', tone: 'bg-emerald-50 text-emerald-700 ring-emerald-100' };
+  return { label: 'Ready to pay', tone: 'bg-teal-50 text-teal-800 ring-teal-100' };
 }
 
 function buildSalaryRows({
@@ -1588,6 +1716,79 @@ function ManualEntriesPanel({
   );
 }
 
+function PaymentsTable({
+  canEditPayroll,
+  fromInput,
+  payments,
+  returnTo,
+  toInput,
+}: {
+  canEditPayroll: boolean;
+  fromInput: string;
+  payments: WeeklyPaymentRow[];
+  returnTo: string;
+  toInput: string;
+}) {
+  if (!payments.length) return <EmptyState message="No employees have time entries for this week." />;
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full min-w-[64rem] border-separate border-spacing-y-2 text-left text-sm">
+        <thead>
+          <tr className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+            <th className="px-4 py-2">Employee</th>
+            <th className="px-4 py-2 text-right">Shifts</th>
+            <th className="px-4 py-2 text-right">Hours</th>
+            <th className="px-4 py-2 text-right">Amount owed</th>
+            <th className="px-4 py-2">Status</th>
+            <th className="px-4 py-2">Action</th>
+          </tr>
+        </thead>
+        <tbody>
+          {payments.map((row) => {
+            const status = paymentStatus(row);
+            const canMarkPaid = canEditPayroll && row.completedEntryCount > 0 && row.openEntryCount === 0 && row.unapprovedEntryCount === 0 && row.lockedEntryCount < row.completedEntryCount;
+            return (
+              <tr key={row.profileId} className="bg-white/70 align-top">
+                <td className="rounded-l-xl px-4 py-3">
+                  <p className="font-semibold text-slate-950">{profileLabel(row.profile)}</p>
+                  <p className="mt-1 break-all text-xs text-slate-500">{row.profile?.email}</p>
+                </td>
+                <td className="px-4 py-3 text-right text-slate-700">
+                  <p className="font-semibold text-slate-950">{row.completedEntryCount}</p>
+                  {row.openEntryCount ? <p className="mt-1 text-xs text-amber-700">{row.openEntryCount} open</p> : null}
+                </td>
+                <td className="px-4 py-3 text-right font-semibold text-slate-950">{hoursLabel(row.minutes)}</td>
+                <td className="px-4 py-3 text-right font-semibold text-slate-950">{usd(row.unpaidWageCents)}</td>
+                <td className="px-4 py-3">
+                  <span className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ring-1 ${status.tone}`}>{status.label}</span>
+                  {row.unapprovedEntryCount ? <p className="mt-2 text-xs text-rose-700">{row.unapprovedEntryCount} shift{row.unapprovedEntryCount === 1 ? '' : 's'} need approval</p> : null}
+                  {row.lockedEntryCount ? <p className="mt-2 text-xs text-slate-500">{row.lockedEntryCount} already paid</p> : null}
+                </td>
+                <td className="rounded-r-xl px-4 py-3">
+                  <form action={markEmployeeWeekPaid}>
+                    {returnToInput(returnTo)}
+                    <input name="profile_id" type="hidden" value={row.profileId} />
+                    <input name="lock_start" type="hidden" value={fromInput} />
+                    <input name="lock_end" type="hidden" value={toInput} />
+                    <PendingSubmitButton
+                      className="btn-primary w-full"
+                      disabled={!canMarkPaid}
+                      disabledLabel={!canEditPayroll ? 'View Only' : row.openEntryCount ? 'Close Shift First' : row.unapprovedEntryCount ? 'Approve First' : 'Paid'}
+                      label="Paid"
+                      pendingLabel="Saving..."
+                    />
+                  </form>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 export default async function PayrollPage({
   searchParams,
 }: {
@@ -1759,6 +1960,11 @@ export default async function PayrollPage({
   const byWorkType = groupSegmentsByWorkType(segments);
   applySalaryRowsToEmployeeGroups(byEmployee, salaryRows);
   applySalaryRowsToWorkTypeGroups(byWorkType, salaryRows);
+  const weeklyPaymentRows = buildWeeklyPaymentRows(entries, segments, adminById);
+  const weeklyPaymentDueRows = weeklyPaymentRows.filter((row) => row.completedEntryCount > 0 && row.openEntryCount === 0 && row.unapprovedEntryCount === 0 && row.lockedEntryCount < row.completedEntryCount);
+  const weeklyPaymentPaidRows = weeklyPaymentRows.filter((row) => row.completedEntryCount > 0 && row.lockedEntryCount === row.completedEntryCount);
+  const weeklyPaymentHours = weeklyPaymentRows.reduce((sum, row) => sum + row.minutes, 0);
+  const weeklyPaymentOwedCents = weeklyPaymentDueRows.reduce((sum, row) => sum + row.unpaidWageCents, 0);
 
   const totalPaidMinutes = segments.reduce((sum, segment) => sum + segment.minutes, 0);
   const totalHourlyWages = segments.reduce((sum, segment) => sum + segment.wageCents, 0);
@@ -1824,7 +2030,7 @@ export default async function PayrollPage({
         <p className="page-subtitle mt-3">Review weekly hours, manage time entries, and report labor by employee, tag, and production day.</p>
       </section>
 
-      <nav aria-label="Payroll sections" className="grid gap-2 sm:grid-cols-2 xl:grid-cols-5">
+      <nav aria-label="Payroll sections" className="grid gap-2 sm:grid-cols-2 xl:grid-cols-6">
         {PAYROLL_TABS.map((tab) => (
           <Link
             key={tab.id}
@@ -1869,6 +2075,36 @@ export default async function PayrollPage({
           <button className="btn-primary w-full" type="submit">Update</button>
         </div>
       </form>
+
+      {activeTab === 'payments' ? (
+        <section className="space-y-5">
+          <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+            <StatTile label="People to Pay" value={String(weeklyPaymentDueRows.length)} detail="Closed and approved, not yet marked paid." />
+            <StatTile label="Hours Worked" value={hoursLabel(weeklyPaymentHours)} detail="Completed, non-void paid hours in this week." />
+            <StatTile label="Amount Owed" value={usd(weeklyPaymentOwedCents)} detail="Ready-to-pay hourly wages only." />
+            <StatTile label="Paid" value={String(weeklyPaymentPaidRows.length)} detail="People already marked paid for this week." />
+          </section>
+
+          <section className="card space-y-5">
+            <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
+              <div>
+                <h2 className="text-xl font-semibold text-slate-950">Weekly payments</h2>
+                <p className="mt-1 text-sm text-slate-500">
+                  {formatDateInputLabel(fromInput)} to {formatDateInputLabel(toInput)}{selectedAdmin ? ` for ${profileLabel(adminById.get(selectedAdmin))}` : ''}.
+                </p>
+              </div>
+              <Link className="btn-secondary w-full lg:w-auto" href={payrollHref({ ...currentParams, tab: 'review' })}>Review approvals</Link>
+            </div>
+            <PaymentsTable
+              canEditPayroll={canEditPayroll}
+              fromInput={fromInput}
+              payments={weeklyPaymentRows}
+              returnTo={currentUrl}
+              toInput={toInput}
+            />
+          </section>
+        </section>
+      ) : null}
 
       {activeTab === 'reports' ? (
         <section className="space-y-5">

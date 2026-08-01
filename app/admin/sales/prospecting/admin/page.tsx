@@ -79,8 +79,10 @@ type LeadRow = {
   do_not_contact: boolean | null;
   hubspot_company_id?: string | null;
   hubspot_contact_id?: string | null;
+  hubspot_deal_id?: string | null;
   hubspot_last_push_attempt_at?: string | null;
   hubspot_last_push_error?: string | null;
+  hubspot_note_id?: string | null;
   hubspot_status: string | null;
   id: string;
   last_activity_at: string | null;
@@ -102,6 +104,7 @@ type ContactSummary = {
   full_name: string | null;
   is_primary?: boolean | null;
   lead_id: string;
+  notes?: string | null;
   phone: string | null;
   title?: string | null;
 };
@@ -1181,7 +1184,10 @@ function hubspotLeadPayload(lead: LeadRow): HubSpotProspectingLead {
     company_name: lead.company_name,
     company_website: lead.company_website,
     country: lead.country,
+    hubspot_deal_id: lead.hubspot_deal_id,
+    hubspot_note_id: lead.hubspot_note_id,
     id: lead.id,
+    notes: lead.notes,
     phone: lead.phone,
     postal_code: lead.postal_code,
     state: lead.state,
@@ -1202,7 +1208,7 @@ async function pushSelectedHubspotLeads(formData: FormData) {
   const supabase = await createClient();
   const { data: selectedLeadsData, error: leadsError } = await supabase
     .from('prospecting_leads')
-    .select('id,company_name,company_website,phone,address_line_1,address_line_2,city,state,postal_code,country,stage,hubspot_status')
+    .select('id,assigned_profile_id,company_name,company_website,phone,address_line_1,address_line_2,city,state,postal_code,country,hubspot_deal_id,hubspot_note_id,notes,stage,hubspot_status')
     .is('archived_at', null)
     .eq('hubspot_status', 'queued')
     .in('stage', HUBSPOT_QUEUE_STAGES)
@@ -1213,17 +1219,31 @@ async function pushSelectedHubspotLeads(formData: FormData) {
   const selectedLeads = (selectedLeadsData ?? []) as unknown as LeadRow[];
   if (!selectedLeads.length) redirect(hubspotPushRedirect('hubspot_push_missing'));
 
-  const { data: selectedContactsData, error: contactsError } = await supabase
-    .from('prospecting_contacts')
-    .select('lead_id,full_name,email,phone,title,is_primary')
-    .in('lead_id', selectedLeads.map((lead) => lead.id));
+  const selectedLeadIdsForPush = selectedLeads.map((lead) => lead.id);
+  const assignedProfileIds = [...new Set(selectedLeads.map((lead) => lead.assigned_profile_id).filter(Boolean))] as string[];
+  const [
+    { data: selectedContactsData, error: contactsError },
+    { data: assignedProfilesData, error: assignedProfilesError },
+  ] = await Promise.all([
+    supabase
+      .from('prospecting_contacts')
+      .select('lead_id,full_name,email,phone,title,is_primary,notes')
+      .in('lead_id', selectedLeadIdsForPush),
+    assignedProfileIds.length
+      ? supabase
+          .from('profiles')
+          .select('id,email,full_name,is_active')
+          .in('id', assignedProfileIds)
+      : Promise.resolve({ data: [], error: null }),
+  ]);
 
-  if (contactsError) redirect(hubspotPushRedirect('hubspot_push_error'));
+  if (contactsError || assignedProfilesError) redirect(hubspotPushRedirect('hubspot_push_error'));
 
   const contactsByLead = new Map<string, HubSpotProspectingContact[]>();
   for (const contact of (selectedContactsData ?? []) as ContactSummary[]) {
     contactsByLead.set(contact.lead_id, [...(contactsByLead.get(contact.lead_id) ?? []), contact]);
   }
+  const assignedProfilesById = new Map(((assignedProfilesData ?? []) as ProfileRow[]).map((profile) => [profile.id, profile]));
 
   let exportedCount = 0;
   let partialCount = 0;
@@ -1235,14 +1255,19 @@ async function pushSelectedHubspotLeads(formData: FormData) {
       const result = await pushProspectingLeadToHubSpot({
         accessToken: env.hubspotAccessToken,
         contacts: contactsByLead.get(lead.id) ?? [],
+        dealPipeline: env.hubspotDealPipeline,
+        dealStage: env.hubspotSampleRequestedDealStage,
         lead: hubspotLeadPayload(lead),
+        ownerEmail: lead.assigned_profile_id ? assignedProfilesById.get(lead.assigned_profile_id)?.email ?? null : null,
       });
 
       const leadUpdate = {
         hubspot_company_id: result.companyId,
         hubspot_contact_id: result.contactId,
+        hubspot_deal_id: result.dealId ?? lead.hubspot_deal_id ?? null,
         hubspot_last_push_attempt_at: attemptAt,
         hubspot_last_push_error: result.status === 'partial' ? result.message : null,
+        hubspot_note_id: result.noteId ?? lead.hubspot_note_id ?? null,
         updated_at: attemptAt,
         updated_by: current.profile.id,
       };
@@ -2924,6 +2949,7 @@ export default async function ProspectingAdminPage({ searchParams }: { searchPar
               const assigned = lead.assigned_profile_id ? profileById.get(lead.assigned_profile_id) : null;
               const hubspotCompanyUrl = hubSpotRecordUrl(env.hubspotPortalId, 'company', lead.hubspot_company_id);
               const hubspotContactUrl = hubSpotRecordUrl(env.hubspotPortalId, 'contact', lead.hubspot_contact_id);
+              const hubspotDealUrl = hubSpotRecordUrl(env.hubspotPortalId, 'deal', lead.hubspot_deal_id);
               return (
                 <article key={lead.id} className="card">
                   <div className="grid gap-4 xl:grid-cols-[auto_minmax(0,1fr)_auto] xl:items-start">
@@ -2954,7 +2980,7 @@ export default async function ProspectingAdminPage({ searchParams }: { searchPar
                         {lists.slice(0, 3).map((name) => <span key={name} className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-700">{name}</span>)}
                       </div>
                       {lead.notes ? <p className="mt-3 line-clamp-2 text-sm leading-6 text-slate-500">{lead.notes}</p> : null}
-                      {bucket === 'hubspot' && (lead.hubspot_company_id || lead.hubspot_contact_id || lead.hubspot_last_push_error) ? (
+                      {bucket === 'hubspot' && (lead.hubspot_company_id || lead.hubspot_contact_id || lead.hubspot_deal_id || lead.hubspot_last_push_error) ? (
                         <div className="mt-3 rounded-lg border border-teal-100 bg-teal-50/70 px-3 py-2 text-sm text-slate-700">
                           <p className="font-semibold text-teal-900">HubSpot Push Status</p>
                           <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1">
@@ -2967,6 +2993,11 @@ export default async function ProspectingAdminPage({ searchParams }: { searchPar
                               hubspotContactUrl
                                 ? <Link className="font-semibold text-teal-800 underline" href={hubspotContactUrl}>Contact {lead.hubspot_contact_id}</Link>
                                 : <span>Contact {lead.hubspot_contact_id}</span>
+                            ) : null}
+                            {lead.hubspot_deal_id ? (
+                              hubspotDealUrl
+                                ? <Link className="font-semibold text-teal-800 underline" href={hubspotDealUrl}>Deal {lead.hubspot_deal_id}</Link>
+                                : <span>Deal {lead.hubspot_deal_id}</span>
                             ) : null}
                           </div>
                           {lead.hubspot_last_push_error ? <p className="mt-1 font-semibold text-rose-700">{lead.hubspot_last_push_error}</p> : null}
