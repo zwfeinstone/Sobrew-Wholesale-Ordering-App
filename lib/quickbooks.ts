@@ -155,8 +155,10 @@ export type QuickBooksCustomersResult = {
 
 export type QuickBooksPortalCenter = {
   billing_address1?: string | null;
+  billing_address2?: string | null;
   billing_city?: string | null;
   billing_email?: string | null;
+  billing_phone?: string | null;
   billing_state?: string | null;
   billing_zip?: string | null;
   id: string;
@@ -166,6 +168,20 @@ export type QuickBooksPortalCenter = {
   quickbooks_company_name?: string | null;
   quickbooks_customer_id?: string | null;
   quickbooks_display_name?: string | null;
+};
+
+type QuickBooksCenterLocation = {
+  address1: string | null;
+  address2: string | null;
+  city: string | null;
+  is_active: boolean | null;
+  name: string | null;
+  state: string | null;
+  zip: string | null;
+};
+
+type QuickBooksPortalCenterWithLocations = QuickBooksPortalCenter & {
+  center_locations?: QuickBooksCenterLocation[] | null;
 };
 
 export type QuickBooksCustomerMatch = {
@@ -636,7 +652,7 @@ function quickBooksItemType() {
   return ['Service', 'NonInventory'].includes(normalized) ? normalized : 'Service';
 }
 
-function quickBooksLineItemRef(item: QuickBooksOrderItem, fallbackItemRef: QuickBooksRef): QuickBooksRef {
+function quickBooksLineItemRef(item: QuickBooksOrderItem): QuickBooksRef {
   const product = relatedOne(item.products);
   const quickBooksItemId = cleanText(product?.quickbooks_item_id);
   if (quickBooksItemId) {
@@ -645,7 +661,7 @@ function quickBooksLineItemRef(item: QuickBooksOrderItem, fallbackItemRef: Quick
       value: quickBooksItemId,
     };
   }
-  return fallbackItemRef;
+  throw new Error(`Map ${productNameForItem(item)} to QuickBooks before invoicing.`);
 }
 
 async function resolveProductIncomeAccount(connection: QuickBooksConnection): Promise<QuickBooksRef> {
@@ -873,26 +889,62 @@ function centerUpdateFromQuickBooksCustomer(customer: QuickBooksCustomerRecord) 
   };
 }
 
-async function resolveInvoiceItem(connection: QuickBooksConnection): Promise<QuickBooksRef> {
-  if (env.quickBooksDefaultItemId) {
-    return {
-      name: env.quickBooksDefaultItemName || undefined,
-      value: env.quickBooksDefaultItemId,
-    };
-  }
-  if (env.quickBooksDefaultItemName) {
-    const query = `SELECT * FROM Item WHERE Name = '${escapeQueryString(env.quickBooksDefaultItemName)}'`;
-    const existing = await quickBooksQuery(connection, query);
-    const item = existing?.QueryResponse?.Item?.[0];
-    if (item?.Id) return { name: item.Name ?? env.quickBooksDefaultItemName, value: String(item.Id) };
-  }
-  throw new QuickBooksConfigurationError('Set QUICKBOOKS_DEFAULT_ITEM_ID or QUICKBOOKS_DEFAULT_ITEM_NAME before creating QuickBooks invoices.');
+function quickBooksAddressPayload(address: QuickBooksCustomerAddress | undefined) {
+  if (!address) return undefined;
+  const line1 = cleanText(address.line1);
+  const city = cleanText(address.city);
+  const state = cleanText(address.state);
+  const postalCode = cleanText(address.postalCode);
+  if (!line1 && !city && !state && !postalCode) return undefined;
+  return {
+    City: city || undefined,
+    CountrySubDivisionCode: state || undefined,
+    Line1: line1 || undefined,
+    Line2: cleanText(address.line2) || undefined,
+    PostalCode: postalCode || undefined,
+  };
+}
+
+function billingAddressFromPortalCenter(center: QuickBooksPortalCenterWithLocations): QuickBooksCustomerAddress | undefined {
+  const billingAddress: QuickBooksCustomerAddress = {
+    city: cleanText(center.billing_city) || null,
+    line1: cleanText(center.billing_address1) || null,
+    line2: cleanText(center.billing_address2) || null,
+    postalCode: cleanText(center.billing_zip) || null,
+    state: cleanText(center.billing_state) || null,
+  };
+  if (quickBooksAddressPayload(billingAddress)) return billingAddress;
+
+  const fallbackLocation = (center.center_locations ?? []).find((location) => location.is_active !== false) ?? center.center_locations?.[0];
+  if (!fallbackLocation) return undefined;
+  return {
+    city: cleanText(fallbackLocation.city) || null,
+    line1: cleanText(fallbackLocation.address1) || null,
+    line2: cleanText(fallbackLocation.address2) || null,
+    postalCode: cleanText(fallbackLocation.zip) || null,
+    state: cleanText(fallbackLocation.state) || null,
+  };
+}
+
+export function buildQuickBooksCustomerPayloadFromCenter(center: QuickBooksPortalCenterWithLocations) {
+  const displayName = cleanText(center.name) || `Portal center ${center.id.slice(0, 8)}`;
+  const companyName = cleanText(center.legal_name) || displayName;
+  const email = cleanText(center.billing_email);
+  const phone = cleanText(center.billing_phone);
+  const address = quickBooksAddressPayload(billingAddressFromPortalCenter(center));
+  return {
+    BillAddr: address,
+    CompanyName: companyName,
+    DisplayName: displayName,
+    PrimaryEmailAddr: email ? { Address: email } : undefined,
+    PrimaryPhone: phone ? { FreeFormNumber: phone } : undefined,
+    ShipAddr: address,
+  };
 }
 
 export function buildQuickBooksInvoicePayload(
   order: QuickBooksInvoiceOrder,
   customerRef: QuickBooksRef,
-  itemRef: QuickBooksRef,
   options: { taxableStates?: string[] } = {}
 ) {
   const shouldCollectSalesTax = shouldCollectQuickBooksSalesTax(order, options.taxableStates ?? DEFAULT_QUICKBOOKS_SALES_TAX_STATES);
@@ -906,7 +958,7 @@ export function buildQuickBooksInvoicePayload(
       Description: orderLineDescription(item),
       DetailType: 'SalesItemLineDetail',
       SalesItemLineDetail: {
-        ItemRef: quickBooksLineItemRef(item, itemRef),
+        ItemRef: quickBooksLineItemRef(item),
         Qty: qty,
         TaxCodeRef: { value: lineTaxCode },
         UnitPrice: unitPrice,
@@ -993,8 +1045,7 @@ export async function createQuickBooksInvoiceForOrder(orderId: string): Promise<
     throw new Error(`Map these products to QuickBooks before invoicing: ${[...new Set(missingMappedItems)].join(', ')}`);
   }
   const customerRef = quickBooksCustomerRefFromCenter(order as QuickBooksInvoiceOrder);
-  const itemRef = await resolveInvoiceItem(connection);
-  const invoicePayload = buildQuickBooksInvoicePayload(order as QuickBooksInvoiceOrder, customerRef, itemRef, { taxableStates: salesTaxSettings.states });
+  const invoicePayload = buildQuickBooksInvoicePayload(order as QuickBooksInvoiceOrder, customerRef, { taxableStates: salesTaxSettings.states });
   const created = await quickBooksRequest(connection, '/invoice', {
     body: JSON.stringify(invoicePayload),
     method: 'POST',
@@ -1144,6 +1195,38 @@ export async function linkPortalCenterToQuickBooksCustomer({
     })
     .eq('id', centerId);
   if (error) throw new Error(`Unable to save QuickBooks customer mapping: ${error.message}`);
+  return customer;
+}
+
+export async function createQuickBooksCustomerFromPortalCenter(centerId: string) {
+  const connection = await getAuthorizedConnection();
+  const supabase = getSupabaseAdmin();
+  const { data: center, error: centerError } = await supabase
+    .from('centers')
+    .select('id,name,is_active,legal_name,billing_email,billing_phone,billing_address1,billing_address2,billing_city,billing_state,billing_zip,quickbooks_customer_id,center_locations(name,address1,address2,city,state,zip,is_active)')
+    .eq('id', centerId)
+    .single();
+  if (centerError || !center) throw new Error(centerError?.message || 'Portal center not found.');
+  if ((center as QuickBooksPortalCenterWithLocations).quickbooks_customer_id) {
+    throw new Error('This center is already mapped to QuickBooks.');
+  }
+
+  const payload = buildQuickBooksCustomerPayloadFromCenter(center as QuickBooksPortalCenterWithLocations);
+  const created = await quickBooksRequest(connection, '/customer', {
+    body: JSON.stringify(payload),
+    method: 'POST',
+  });
+  const customer = normalizeQuickBooksCustomer(created?.Customer);
+  if (!customer) throw new Error('QuickBooks did not return a customer ID.');
+
+  const { error: updateError } = await supabase
+    .from('centers')
+    .update({
+      ...centerUpdateFromQuickBooksCustomer(customer),
+      quickbooks_mapping_note: 'Created from portal center',
+    })
+    .eq('id', centerId);
+  if (updateError) throw new Error(`QuickBooks customer was created, but the portal mapping could not be saved: ${updateError.message}`);
   return customer;
 }
 

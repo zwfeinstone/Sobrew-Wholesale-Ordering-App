@@ -8,6 +8,7 @@ import { requireAdminWriteAccess } from '@/lib/admin-write-access';
 import {
   buildQuickBooksCustomerMatches,
   clearPortalCenterQuickBooksCustomer,
+  createQuickBooksCustomerFromPortalCenter,
   createQuickBooksInvoiceForOrder,
   disconnectQuickBooksConnection,
   getQuickBooksActiveCustomers,
@@ -270,6 +271,22 @@ function centerBillingAddressLabel(center: CustomerSyncRow) {
   ].map(cleanText).filter(Boolean).join(', ');
 }
 
+function missingOrderProductMappings(order: InvoiceQueueOrder) {
+  return (order.order_items ?? [])
+    .filter((item) => !cleanText(relatedOne(item.products)?.quickbooks_item_id))
+    .map(productLabel);
+}
+
+function missingOrderCustomerMapping(order: InvoiceQueueOrder) {
+  return !cleanText(relatedOne(order.centers)?.quickbooks_customer_id);
+}
+
+function orderIsReadyToInvoice(order: InvoiceQueueOrder) {
+  return order.invoice_status !== 'invoicing'
+    && !missingOrderCustomerMapping(order)
+    && missingOrderProductMappings(order).length === 0;
+}
+
 function invoicingHref(toast?: string) {
   if (!toast) return '/admin/invoicing';
   return `/admin/invoicing?${new URLSearchParams({ toast }).toString()}`;
@@ -306,12 +323,15 @@ function toastMessage(toast: string) {
     invoice_already_created: { message: 'That order already has a QuickBooks invoice.', tone: 'success' },
     invoice_created: { message: 'QuickBooks invoice created.', tone: 'success' },
     invoice_failed: { message: 'Unable to create that QuickBooks invoice.', tone: 'error' },
+    invoice_mapping_required: { message: 'Map the QuickBooks customer and every product before invoicing.', tone: 'error' },
     invoice_not_ready: { message: 'Only shipped orders from today or later can be invoiced here.', tone: 'error' },
     product_reset_confirm_required: { message: 'Confirm the live QuickBooks product reset before running it.', tone: 'error' },
     product_reset_failed: { message: 'Unable to reset QuickBooks products.', tone: 'error' },
     product_reset_saved: { message: 'QuickBooks products reset from portal products.', tone: 'success' },
     product_reset_with_errors: { message: 'QuickBooks product reset finished, but some portal products need review.', tone: 'error' },
     customer_mapping_cleared: { message: 'QuickBooks customer mapping cleared.', tone: 'success' },
+    customer_created: { message: 'QuickBooks customer created and linked.', tone: 'success' },
+    customer_create_failed: { message: 'Unable to create that QuickBooks customer.', tone: 'error' },
     customer_mapping_failed: { message: 'Unable to save that QuickBooks customer mapping.', tone: 'error' },
     customer_mapping_saved: { message: 'QuickBooks customer mapping saved.', tone: 'success' },
     customer_mapping_selection_required: { message: 'Choose a QuickBooks customer to link.', tone: 'error' },
@@ -364,6 +384,22 @@ async function linkQuickBooksCustomer(formData: FormData) {
     redirect(customersInvoicingHref('customer_mapping_failed', message, centerId));
   }
   redirect(customersInvoicingHref('customer_mapping_saved', undefined, centerId));
+}
+
+async function createQuickBooksCustomer(formData: FormData) {
+  'use server';
+  await requireAdminWriteAccess('/admin/invoicing?view=customers&toast=admin_write_denied', 'invoicing');
+  const centerId = String(formData.get('center_id') ?? '').trim();
+  if (!centerId) redirect(customersInvoicingHref('customer_mapping_selection_required'));
+
+  try {
+    await createQuickBooksCustomerFromPortalCenter(centerId);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unable to create QuickBooks customer.';
+    console.error('[invoicing] create QuickBooks customer failed', { centerId, error });
+    redirect(customersInvoicingHref('customer_create_failed', message, centerId));
+  }
+  redirect(customersInvoicingHref('customer_created', undefined, centerId));
 }
 
 async function clearQuickBooksCustomerMapping(formData: FormData) {
@@ -444,7 +480,7 @@ async function invoiceOrder(formData: FormData) {
   const startIso = todayStartIso();
   const { data: order } = await supabase
     .from('orders')
-    .select('id,status,archived_at,created_at,quickbooks_invoice_id,invoice_status')
+    .select('id,status,archived_at,created_at,quickbooks_invoice_id,invoice_status,centers(quickbooks_customer_id),order_items(product_name_snapshot,products(name,quickbooks_item_id))')
     .eq('id', orderId)
     .single();
 
@@ -452,6 +488,12 @@ async function invoiceOrder(formData: FormData) {
     redirect(invoicingHref('invoice_not_ready'));
   }
   if (order.quickbooks_invoice_id) redirect(invoicingHref('invoice_already_created'));
+  const missingCustomerMapping = !cleanText(relatedOne((order as any).centers)?.quickbooks_customer_id);
+  const missingProductMappings = ((order as any).order_items ?? [])
+    .filter((item: any) => !cleanText(relatedOne(item.products)?.quickbooks_item_id));
+  if (missingCustomerMapping || missingProductMappings.length) {
+    redirect(invoicingHref('invoice_mapping_required'));
+  }
 
   const claimResult = await supabase
     .from('orders')
@@ -553,7 +595,8 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
   const quickBooksItems = quickBooksItemsResult.items;
   const quickBooksCustomers = quickBooksCustomersResult.customers;
   const resetStatus = resetStatusResult.data as QuickBooksResetStatusRow | null;
-  const readyOrders = orders.filter((order) => order.invoice_status !== 'invoicing');
+  const readyOrders = orders.filter(orderIsReadyToInvoice);
+  const needsMappingOrders = orders.filter((order) => order.invoice_status !== 'invoicing' && !orderIsReadyToInvoice(order));
   const totalReadyCents = readyOrders.reduce((sum, order) => sum + Math.max(0, numericValue(order.subtotal_cents)), 0);
   const waitingCount = orders.filter((order) => order.invoice_status === 'invoicing').length;
   const activeProducts = products.filter((product) => product.active !== false);
@@ -600,11 +643,16 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
         </div>
       </div>
 
-      <div className="grid gap-4 md:grid-cols-3">
+      <div className="grid gap-4 md:grid-cols-4">
         <div className="stat-card">
           <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Ready</p>
           <p className="mt-2 text-3xl font-semibold text-slate-950">{readyOrders.length}</p>
           <p className="mt-1 text-sm text-slate-500">{usd(totalReadyCents)}</p>
+        </div>
+        <div className="stat-card">
+          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Needs mapping</p>
+          <p className="mt-2 text-3xl font-semibold text-slate-950">{needsMappingOrders.length}</p>
+          <p className="mt-1 text-sm text-slate-500">Customer or product links missing.</p>
         </div>
         <div className="stat-card">
           <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">QuickBooks</p>
@@ -815,7 +863,17 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
                               {(center.quickbooks_sync_status ?? 'unmapped').replaceAll('_', ' ')}
                             </span>
                             {center.quickbooks_sync_error ? <p className="mt-2 text-xs font-medium text-rose-700">{center.quickbooks_sync_error}</p> : null}
-                            {isMapped ? (
+                            {!isMapped ? (
+                              <form action={createQuickBooksCustomer} className="mt-3">
+                                <input type="hidden" name="center_id" value={center.id} />
+                                <PendingSubmitButton
+                                  className="btn-primary w-full"
+                                  disabled={!canInvoice || !quickBooksStatus.connected}
+                                  label="Create in QuickBooks"
+                                  pendingLabel="Creating..."
+                                />
+                              </form>
+                            ) : (
                               <form action={clearQuickBooksCustomerMapping} className="mt-3">
                                 <input type="hidden" name="center_id" value={center.id} />
                                 <PendingSubmitButton
@@ -825,7 +883,7 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
                                   pendingLabel="Clearing..."
                                 />
                               </form>
-                            ) : null}
+                            )}
                           </td>
                         </tr>
                       );
@@ -1037,12 +1095,12 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
         {orders.map((order) => {
           const isBusy = order.invoice_status === 'invoicing';
           const hasError = order.invoice_status === 'invoice_error';
-          const missingMappedProducts = (order.order_items ?? [])
-            .filter((item) => !cleanText(relatedOne(item.products)?.quickbooks_item_id))
-            .map(productLabel);
+          const missingMappedProducts = missingOrderProductMappings(order);
           const isTaxable = shouldCollectQuickBooksSalesTax(order, salesTaxSettings.states);
           const center = relatedOne(order.centers);
-          const missingCustomerMapping = !cleanText(center?.quickbooks_customer_id);
+          const missingCustomerMapping = missingOrderCustomerMapping(order);
+          const mappingBlocked = missingCustomerMapping || missingMappedProducts.length > 0;
+          const readyToInvoice = orderIsReadyToInvoice(order);
           const taxStatus = center?.customer_tax_status === 'for_profit'
             ? 'For-profit'
             : center?.customer_tax_status === 'tax_exempt'
@@ -1054,8 +1112,8 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
                 <div className="min-w-0">
                   <div className="flex flex-wrap items-center gap-2">
                     <h2 className="break-words text-xl font-semibold tracking-tight text-slate-950">{customerLabel(order)}</h2>
-                    <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${hasError ? 'bg-rose-100 text-rose-800' : 'bg-emerald-100 text-emerald-800'}`}>
-                      {hasError ? 'Invoice error' : isBusy ? 'Invoicing' : 'Ready to invoice'}
+                    <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${hasError ? 'bg-rose-100 text-rose-800' : isBusy ? 'bg-slate-100 text-slate-700' : mappingBlocked ? 'bg-amber-100 text-amber-800' : 'bg-emerald-100 text-emerald-800'}`}>
+                      {hasError ? 'Invoice error' : isBusy ? 'Invoicing' : mappingBlocked ? 'Needs mapping' : 'Ready to invoice'}
                     </span>
                     <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${isTaxable ? 'bg-teal-100 text-teal-800' : 'bg-slate-100 text-slate-700'}`}>
                       {isTaxable ? 'Taxable in QuickBooks' : 'Non-taxable in QuickBooks'}
@@ -1100,8 +1158,8 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
                   <input type="hidden" name="order_id" value={order.id} />
                   <PendingSubmitButton
                     className="btn-primary w-full sm:w-auto"
-                    disabled={!canInvoice || isBusy || !quickBooksStatus.connected || Boolean(quickBooksStatus.missingConfig.length) || Boolean(missingMappedProducts.length) || missingCustomerMapping}
-                    disabledLabel={isBusy ? 'Invoicing...' : missingMappedProducts.length || missingCustomerMapping ? 'Needs mapping' : 'Invoice'}
+                    disabled={!canInvoice || !readyToInvoice || !quickBooksStatus.connected || Boolean(quickBooksStatus.missingConfig.length)}
+                    disabledLabel={isBusy ? 'Invoicing...' : mappingBlocked ? 'Needs mapping' : 'Invoice'}
                     label="Invoice"
                     pendingLabel="Invoicing..."
                   />

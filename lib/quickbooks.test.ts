@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildQuickBooksCustomerMatches,
+  buildQuickBooksCustomerPayloadFromCenter,
   buildQuickBooksInvoicePayload,
   normalizeCustomerMatchText,
   scoreQuickBooksCustomerMatch,
@@ -18,7 +19,7 @@ describe('quickbooks invoice payload', () => {
           {
             line_total_cents: 7200,
             product_name_snapshot: 'Cold Brew Case',
-            products: { name: 'Cold Brew Case', sku: 'CB-CASE' },
+            products: { name: 'Cold Brew Case', quickbooks_item_id: '9', quickbooks_item_name: 'Cold Brew Case', sku: 'CB-CASE' },
             qty: 3,
             unit_price_cents: 2400,
           },
@@ -32,8 +33,7 @@ describe('quickbooks invoice payload', () => {
         shipping_state: 'IL',
         shipping_zip: '60601',
       },
-      { name: 'Lakeview Recovery', value: '42' },
-      { name: 'Wholesale Product', value: '9' }
+      { name: 'Lakeview Recovery', value: '42' }
     );
 
     expect(payload.CustomerRef).toEqual({ name: 'Lakeview Recovery', value: '42' });
@@ -44,7 +44,7 @@ describe('quickbooks invoice payload', () => {
         Description: 'Cold Brew Case (CB-CASE)',
         DetailType: 'SalesItemLineDetail',
         SalesItemLineDetail: {
-          ItemRef: { name: 'Wholesale Product', value: '9' },
+          ItemRef: { name: 'Cold Brew Case', value: '9' },
           Qty: 3,
           TaxCodeRef: { value: 'NON' },
           UnitPrice: 24,
@@ -66,7 +66,7 @@ describe('quickbooks invoice payload', () => {
           {
             line_total_cents: 2400,
             product_name_snapshot: 'Cold Brew Case',
-            products: { name: 'Cold Brew Case', sku: 'CB-CASE' },
+            products: { name: 'Cold Brew Case', quickbooks_item_id: '9', quickbooks_item_name: 'Cold Brew Case', sku: 'CB-CASE' },
             qty: 1,
             unit_price_cents: 2400,
           },
@@ -81,7 +81,6 @@ describe('quickbooks invoice payload', () => {
         shipping_zip: '38111',
       },
       { name: 'Memphis Cafe', value: '42' },
-      { name: 'Wholesale Product', value: '9' },
       { taxableStates: ['TN', 'GA'] }
     );
 
@@ -118,8 +117,7 @@ describe('quickbooks invoice payload', () => {
         shipping_state: 'IL',
         shipping_zip: '60601',
       },
-      { name: 'Mapped Center', value: '42' },
-      { name: 'Fallback Item', value: '9' }
+      { name: 'Mapped Center', value: '42' }
     );
 
     expect(payload.Line[0].SalesItemLineDetail.ItemRef).toEqual({
@@ -139,7 +137,7 @@ describe('quickbooks invoice payload', () => {
           {
             line_total_cents: 2400,
             product_name_snapshot: 'Cold Brew Case',
-            products: { name: 'Cold Brew Case', sku: 'CB-CASE' },
+            products: { name: 'Cold Brew Case', quickbooks_item_id: '9', quickbooks_item_name: 'Cold Brew Case', sku: 'CB-CASE' },
             qty: 1,
             unit_price_cents: 2400,
           },
@@ -154,11 +152,39 @@ describe('quickbooks invoice payload', () => {
         shipping_zip: '38111',
       },
       { name: 'Memphis Recovery Nonprofit', value: '42' },
-      { name: 'Wholesale Product', value: '9' },
       { taxableStates: ['TN'] }
     );
 
     expect(payload.Line[0].SalesItemLineDetail.TaxCodeRef).toEqual({ value: 'NON' });
+  });
+
+  it('rejects invoice lines without mapped QuickBooks product IDs', () => {
+    expect(() => buildQuickBooksInvoicePayload(
+      {
+        centers: { name: 'Unmapped Center' },
+        created_at: '2026-08-01T15:00:00.000Z',
+        id: 'order-unmapped-products',
+        notes: null,
+        order_items: [
+          {
+            line_total_cents: 2400,
+            product_name_snapshot: 'Cold Brew Case',
+            products: { name: 'Cold Brew Case', sku: 'CB-CASE' },
+            qty: 1,
+            unit_price_cents: 2400,
+          },
+        ],
+        profiles: { email: 'buyer@example.com', full_name: 'Buyer Name' },
+        shipping_address1: '289 Aurora Circle',
+        shipping_address2: null,
+        shipping_city: 'Memphis',
+        shipping_company: null,
+        shipping_name: 'Unmapped Center',
+        shipping_state: 'TN',
+        shipping_zip: '38111',
+      },
+      { name: 'Unmapped Center', value: '42' }
+    )).toThrow('Map Cold Brew Case to QuickBooks before invoicing.');
   });
 });
 
@@ -215,5 +241,60 @@ describe('quickbooks customer matching', () => {
 
     expect(match.customer?.id).toBe('123');
     expect(match.score).toBe(100);
+  });
+
+  it('builds a QuickBooks customer from portal billing fields', () => {
+    const payload = buildQuickBooksCustomerPayloadFromCenter({
+      billing_address1: '900 Invoice Way',
+      billing_address2: 'Suite 2',
+      billing_city: 'Nashville',
+      billing_email: 'billing@center.example',
+      billing_phone: '615-555-0101',
+      billing_state: 'TN',
+      billing_zip: '37203',
+      id: 'center-1',
+      is_active: true,
+      legal_name: 'Center Legal LLC',
+      name: 'Center DBA',
+    });
+
+    expect(payload.DisplayName).toBe('Center DBA');
+    expect(payload.CompanyName).toBe('Center Legal LLC');
+    expect(payload.PrimaryEmailAddr).toEqual({ Address: 'billing@center.example' });
+    expect(payload.PrimaryPhone).toEqual({ FreeFormNumber: '615-555-0101' });
+    expect(payload.BillAddr).toEqual({
+      City: 'Nashville',
+      CountrySubDivisionCode: 'TN',
+      Line1: '900 Invoice Way',
+      Line2: 'Suite 2',
+      PostalCode: '37203',
+    });
+  });
+
+  it('falls back to the first active portal delivery location when billing address is empty', () => {
+    const payload = buildQuickBooksCustomerPayloadFromCenter({
+      center_locations: [
+        {
+          address1: '100 Delivery Rd',
+          address2: null,
+          city: 'Memphis',
+          is_active: true,
+          name: 'Main location',
+          state: 'TN',
+          zip: '38103',
+        },
+      ],
+      id: 'center-2',
+      is_active: true,
+      name: 'Delivery Center',
+    });
+
+    expect(payload.BillAddr).toEqual({
+      City: 'Memphis',
+      CountrySubDivisionCode: 'TN',
+      Line1: '100 Delivery Rd',
+      Line2: undefined,
+      PostalCode: '38103',
+    });
   });
 });
