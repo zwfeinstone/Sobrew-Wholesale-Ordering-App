@@ -45,6 +45,14 @@ type WelcomeEmailPayload = {
   password: string;
 };
 
+type InvoicePdfEmailPayload = {
+  customerName: string;
+  invoiceNumber: string;
+  orderId: string;
+  pdf: Buffer;
+  to: string;
+};
+
 function escapeHtml(value: string) {
   return value
     .replace(/&/g, '&amp;')
@@ -318,5 +326,64 @@ export async function sendShippedEmail(to: string | string[], items: ShippedLine
     console.log('Shipped email sent', response);
   } catch (error) {
     console.error('Failed to send shipped email', error);
+  }
+}
+
+export async function sendInvoicePdfEmail(payload: InvoicePdfEmailPayload): Promise<SendEmailResult> {
+  const resend = getResend();
+  if (!resend) {
+    const error = new Error('Resend disabled: missing RESEND_API_KEY');
+    console.error(error.message);
+    return { error, ok: false };
+  }
+
+  if (!payload.to) {
+    const error = new Error('Invoice PDF email skipped: missing recipient');
+    console.error(error.message);
+    return { error, ok: false };
+  }
+
+  const safeName = escapeHtml(payload.customerName || 'there');
+  const safeInvoiceNumber = escapeHtml(payload.invoiceNumber);
+  const attachmentInvoiceNumber = payload.invoiceNumber.replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '');
+  const html = `
+    <p>Hi ${safeName},</p>
+    <p>Your Sobrew invoice is attached as a PDF.</p>
+    <p>Please mail checks to Sobrew using the payment details on the invoice.</p>
+    <p>Thank you for your partnership.</p>
+    <p>Best,<br />The Sobrew Team</p>
+  `.trim();
+  const text = [
+    `Hi ${payload.customerName || 'there'},`,
+    '',
+    'Your Sobrew invoice is attached as a PDF.',
+    'Please mail checks to Sobrew using the payment details on the invoice.',
+    '',
+    'Thank you for your partnership.',
+    '',
+    'Best,',
+    'The Sobrew Team',
+  ].join('\n');
+
+  try {
+    const response = await resend.emails.send({
+      attachments: [
+        {
+          content: payload.pdf,
+          contentType: 'application/pdf',
+          filename: `Sobrew-Invoice-${attachmentInvoiceNumber || payload.orderId.slice(0, 8)}.pdf`,
+        },
+      ],
+      from: RESEND_FROM,
+      to: payload.to,
+      subject: `Sobrew Invoice ${payload.invoiceNumber}`,
+      html,
+      text,
+    });
+    console.log('Invoice PDF email sent', response);
+    return { ok: true };
+  } catch (error) {
+    console.error('Failed to send invoice PDF email', error);
+    return { error, ok: false };
   }
 }

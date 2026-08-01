@@ -16,6 +16,7 @@ import {
   getQuickBooksCompanyInfo,
   getQuickBooksConnectionStatus,
   getQuickBooksCustomerSummary,
+  getQuickBooksInvoicePdf,
   getQuickBooksProductSummary,
   getQuickBooksSalesTaxSettings,
   linkPortalCenterToQuickBooksCustomer,
@@ -25,6 +26,7 @@ import {
   saveQuickBooksSalesTaxSettings,
   shouldCollectQuickBooksSalesTax,
 } from '@/lib/quickbooks';
+import { sendInvoicePdfEmail } from '@/lib/email';
 import { getSupabaseAdmin } from '@/lib/supabase/admin';
 import { createClient } from '@/lib/supabase/server';
 import { usd } from '@/lib/utils';
@@ -32,6 +34,7 @@ import { usd } from '@/lib/utils';
 const INVOICING_TIME_ZONE = 'America/Chicago';
 const INVOICING_VIEWS = [
   { id: 'queue', label: 'Ready to Invoice' },
+  { id: 'sent', label: 'Sent Invoices' },
   { id: 'products', label: 'Products' },
   { id: 'customers', label: 'Customers' },
   { id: 'sales-tax', label: 'Sales Tax' },
@@ -107,6 +110,7 @@ type InvoiceQueueOrder = {
   id: string;
   invoice_error: string | null;
   invoice_status: string | null;
+  invoiced_at?: string | null;
   order_items?: Array<{
     line_total_cents: number | string | null;
     product_name_snapshot: string | null;
@@ -122,6 +126,11 @@ type InvoiceQueueOrder = {
     qty: number | string | null;
   }> | null;
   profiles?: { email: string | null; full_name: string | null } | { email: string | null; full_name: string | null }[] | null;
+  quickbooks_invoice_doc_number?: string | null;
+  quickbooks_invoice_email_sent_at?: string | null;
+  quickbooks_invoice_email_to?: string | null;
+  quickbooks_invoice_id?: string | null;
+  quickbooks_invoice_url?: string | null;
   shipped_at: string | null;
   shipping_company?: string | null;
   shipping_name: string | null;
@@ -281,10 +290,15 @@ function missingOrderCustomerMapping(order: InvoiceQueueOrder) {
   return !cleanText(relatedOne(order.centers)?.quickbooks_customer_id);
 }
 
+function invoiceableLineItemCount(order: InvoiceQueueOrder) {
+  return (order.order_items ?? []).filter((item) => numericValue(item.line_total_cents) > 0).length;
+}
+
 function orderIsReadyToInvoice(order: InvoiceQueueOrder) {
   return order.invoice_status !== 'invoicing'
     && !missingOrderCustomerMapping(order)
-    && missingOrderProductMappings(order).length === 0;
+    && missingOrderProductMappings(order).length === 0
+    && invoiceableLineItemCount(order) > 0;
 }
 
 function invoicingHref(toast?: string) {
@@ -317,6 +331,14 @@ function invoicingViewHref(view: InvoicingView) {
   return `/admin/invoicing?${new URLSearchParams({ view }).toString()}`;
 }
 
+function invoiceNumberLabel(order: InvoiceQueueOrder) {
+  return cleanText(order.quickbooks_invoice_doc_number) || cleanText(order.quickbooks_invoice_id) || 'Missing invoice number';
+}
+
+function errorMessage(error: unknown, fallback: string) {
+  return error instanceof Error ? error.message : fallback;
+}
+
 function toastMessage(toast: string) {
   const messages: Record<string, { message: string; tone: 'error' | 'success' }> = {
     admin_write_denied: { message: 'You do not have permission to invoice orders.', tone: 'error' },
@@ -325,7 +347,10 @@ function toastMessage(toast: string) {
     invoice_email_failed: { message: 'QuickBooks invoice was created, but the email was not sent. Fix the billing email or QuickBooks email settings and retry.', tone: 'error' },
     invoice_failed: { message: 'Unable to create that QuickBooks invoice.', tone: 'error' },
     invoice_mapping_required: { message: 'Map the QuickBooks customer and every product before invoicing.', tone: 'error' },
+    invoice_no_line_items: { message: 'This order has no invoiceable line items.', tone: 'error' },
     invoice_not_ready: { message: 'Only shipped orders from today or later can be invoiced here.', tone: 'error' },
+    invoice_pdf_failed: { message: 'QuickBooks invoice was created, but the PDF email was not sent. Check the billing email and email settings, then retry.', tone: 'error' },
+    invoice_pdf_sent: { message: 'QuickBooks invoice created and PDF emailed.', tone: 'success' },
     product_reset_confirm_required: { message: 'Confirm the live QuickBooks product reset before running it.', tone: 'error' },
     product_reset_failed: { message: 'Unable to reset QuickBooks products.', tone: 'error' },
     product_reset_saved: { message: 'QuickBooks products reset from portal products.', tone: 'success' },
@@ -364,7 +389,7 @@ async function disconnectQuickBooks(formData: FormData) {
   'use server';
   await requireAdminWriteAccess(invoicingHref('admin_write_denied'), 'invoicing');
   const rawView = String(formData.get('view') ?? '').trim();
-  const view = rawView === 'products' || rawView === 'customers' || rawView === 'sales-tax' ? rawView : 'queue';
+  const view = rawView === 'sent' || rawView === 'products' || rawView === 'customers' || rawView === 'sales-tax' ? rawView : 'queue';
   await disconnectQuickBooksConnection();
   redirect(`${invoicingViewHref(view)}${view === 'queue' ? '?' : '&'}toast=quickbooks_disconnected`);
 }
@@ -474,6 +499,7 @@ async function resetQuickBooksProducts(formData: FormData) {
 async function invoiceOrder(formData: FormData) {
   'use server';
   const orderId = String(formData.get('order_id') ?? '').trim();
+  const delivery = String(formData.get('delivery') ?? '').trim() === 'pdf' ? 'pdf' : 'quickbooks';
   await requireAdminWriteAccess(invoicingHref('admin_write_denied'), 'invoicing');
   if (!orderId) redirect(invoicingHref('invoice_not_ready'));
 
@@ -481,7 +507,7 @@ async function invoiceOrder(formData: FormData) {
   const startIso = todayStartIso();
   const { data: order } = await supabase
     .from('orders')
-    .select('id,status,archived_at,created_at,quickbooks_invoice_id,invoice_status,centers(quickbooks_customer_id),order_items(product_name_snapshot,products(name,quickbooks_item_id))')
+    .select('id,status,archived_at,created_at,quickbooks_invoice_id,invoice_status,centers(quickbooks_customer_id),order_items(line_total_cents,product_name_snapshot,products(name,quickbooks_item_id))')
     .eq('id', orderId)
     .single();
 
@@ -489,6 +515,16 @@ async function invoiceOrder(formData: FormData) {
     redirect(invoicingHref('invoice_not_ready'));
   }
   if (order.quickbooks_invoice_id && order.invoice_status !== 'invoice_error') redirect(invoicingHref('invoice_already_created'));
+  if (invoiceableLineItemCount(order as any) === 0) {
+    await supabase
+      .from('orders')
+      .update({
+        invoice_error: 'This order has no invoiceable line items.',
+        invoice_status: 'invoice_error',
+      })
+      .eq('id', orderId);
+    redirect(invoicingHref('invoice_no_line_items'));
+  }
   const missingCustomerMapping = !cleanText(relatedOne((order as any).centers)?.quickbooks_customer_id);
   const missingProductMappings = ((order as any).order_items ?? [])
     .filter((item: any) => !cleanText(relatedOne(item.products)?.quickbooks_item_id));
@@ -509,16 +545,39 @@ async function invoiceOrder(formData: FormData) {
 
   if (claimResult.error || !claimResult.data) redirect(invoicingHref('invoice_already_created'));
 
-  let successToast: 'invoice_created' | 'invoice_email_failed' = 'invoice_created';
+  let successToast: 'invoice_created' | 'invoice_email_failed' | 'invoice_pdf_failed' | 'invoice_pdf_sent' = delivery === 'pdf' ? 'invoice_pdf_sent' : 'invoice_created';
   try {
-    const invoice = await createQuickBooksInvoiceForOrder(orderId);
+    const invoice = await createQuickBooksInvoiceForOrder(orderId, { sendQuickBooksEmail: delivery !== 'pdf' });
+    let emailError = invoice.emailError;
+    let emailSentAt = invoice.emailSentAt;
+
+    if (delivery === 'pdf' && !emailError) {
+      if (!invoice.emailTo) {
+        emailError = 'Add a billing email before sending the invoice PDF.';
+      } else {
+        const pdf = await getQuickBooksInvoicePdf(invoice.id);
+        const emailResult = await sendInvoicePdfEmail({
+          customerName: invoice.customerName,
+          invoiceNumber: invoice.docNumber || invoice.id,
+          orderId,
+          pdf,
+          to: invoice.emailTo,
+        });
+        if (emailResult.ok) {
+          emailSentAt = new Date().toISOString();
+        } else {
+          emailError = errorMessage(emailResult.error, 'QuickBooks invoice was created, but the PDF email could not be sent.');
+        }
+      }
+    }
+
     const { error: updateError } = await supabase
       .from('orders')
       .update({
-        invoice_error: null,
-        invoice_status: 'invoiced',
+        invoice_error: emailError,
+        invoice_status: emailError ? 'invoice_error' : 'invoiced',
         invoiced_at: new Date().toISOString(),
-        quickbooks_invoice_email_sent_at: invoice.emailSentAt,
+        quickbooks_invoice_email_sent_at: emailSentAt,
         quickbooks_invoice_email_to: invoice.emailTo,
         quickbooks_invoice_doc_number: invoice.docNumber,
         quickbooks_invoice_id: invoice.id,
@@ -526,16 +585,7 @@ async function invoiceOrder(formData: FormData) {
       })
       .eq('id', orderId);
     if (updateError) throw updateError;
-    if (invoice.emailError) {
-      successToast = 'invoice_email_failed';
-      await supabase
-        .from('orders')
-        .update({
-          invoice_error: invoice.emailError,
-          invoice_status: 'invoice_error',
-        })
-        .eq('id', orderId);
-    }
+    if (emailError) successToast = delivery === 'pdf' ? 'invoice_pdf_failed' : 'invoice_email_failed';
   } catch (error) {
     const message = error instanceof QuickBooksConfigurationError
       ? error.message
@@ -564,9 +614,9 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
   const selectedToast = toastMessage(toast);
   const startIso = todayStartIso();
   const supabase = await createClient();
-  const [quickBooksStatus, quickBooksCompanyInfo, quickBooksProductSummary, quickBooksItemsResult, quickBooksCustomerSummary, quickBooksCustomersResult, salesTaxSettings, ordersResult, productsResult, centersResult, resetStatusResult] = await Promise.all([
+  const [quickBooksStatus, quickBooksCompanyInfo, quickBooksProductSummary, quickBooksItemsResult, quickBooksCustomerSummary, quickBooksCustomersResult, salesTaxSettings, ordersResult, sentInvoicesResult, productsResult, centersResult, resetStatusResult] = await Promise.all([
     getQuickBooksConnectionStatus(),
-    activeView === 'products' || activeView === 'customers' ? getQuickBooksCompanyInfo() : Promise.resolve({ companyName: null, email: null, error: null, legalName: null, realmId: null }),
+    activeView === 'sent' || activeView === 'products' || activeView === 'customers' ? getQuickBooksCompanyInfo() : Promise.resolve({ companyName: null, email: null, error: null, legalName: null, realmId: null }),
     activeView === 'products' ? getQuickBooksProductSummary() : Promise.resolve({ activeItemCount: null, error: null }),
     activeView === 'products' ? getQuickBooksActiveItems() : Promise.resolve({ error: null, items: [], truncated: false }),
     activeView === 'customers' ? getQuickBooksCustomerSummary() : Promise.resolve({ activeCustomerCount: null, error: null }),
@@ -574,13 +624,21 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
     getQuickBooksSalesTaxSettings(),
     supabase
       .from('orders')
-      .select('id,created_at,shipped_at,subtotal_cents,shipping_company,shipping_name,shipping_state,invoice_status,invoice_error,profiles(email,full_name),centers(name,customer_tax_status,quickbooks_customer_id,quickbooks_display_name),order_items(qty,line_total_cents,product_name_snapshot,products(name,sku,quickbooks_item_id))')
+      .select('id,created_at,shipped_at,subtotal_cents,shipping_company,shipping_name,shipping_state,invoice_status,invoice_error,invoiced_at,quickbooks_invoice_id,quickbooks_invoice_doc_number,quickbooks_invoice_url,quickbooks_invoice_email_to,quickbooks_invoice_email_sent_at,profiles(email,full_name),centers(name,customer_tax_status,quickbooks_customer_id,quickbooks_display_name),order_items(qty,line_total_cents,product_name_snapshot,products(name,sku,quickbooks_item_id))')
       .eq('status', 'Shipped')
       .is('archived_at', null)
       .or('quickbooks_invoice_id.is.null,invoice_status.eq.invoice_error')
       .gte('created_at', startIso)
       .order('shipped_at', { ascending: true, nullsFirst: false })
       .order('created_at', { ascending: true }),
+    supabase
+      .from('orders')
+      .select('id,created_at,shipped_at,subtotal_cents,shipping_company,shipping_name,shipping_state,invoice_status,invoice_error,invoiced_at,quickbooks_invoice_id,quickbooks_invoice_doc_number,quickbooks_invoice_url,quickbooks_invoice_email_to,quickbooks_invoice_email_sent_at,profiles(email,full_name),centers(name,customer_tax_status,quickbooks_customer_id,quickbooks_display_name),order_items(qty,line_total_cents,product_name_snapshot,products(name,sku,quickbooks_item_id))')
+      .eq('invoice_status', 'invoiced')
+      .not('quickbooks_invoice_id', 'is', null)
+      .order('quickbooks_invoice_email_sent_at', { ascending: false, nullsFirst: false })
+      .order('invoiced_at', { ascending: false, nullsFirst: false })
+      .limit(100),
     activeView === 'products'
       ? supabase
           .from('products')
@@ -604,6 +662,7 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
       : Promise.resolve({ data: null, error: null }),
   ]);
   const orders = (ordersResult.data ?? []) as InvoiceQueueOrder[];
+  const sentInvoices = (sentInvoicesResult.data ?? []) as InvoiceQueueOrder[];
   const products = (productsResult.data ?? []) as ProductSyncRow[];
   const centers = (centersResult.data ?? []) as CustomerSyncRow[];
   const quickBooksItems = quickBooksItemsResult.items;
@@ -612,6 +671,7 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
   const readyOrders = orders.filter(orderIsReadyToInvoice);
   const needsMappingOrders = orders.filter((order) => order.invoice_status !== 'invoicing' && !orderIsReadyToInvoice(order));
   const totalReadyCents = readyOrders.reduce((sum, order) => sum + Math.max(0, numericValue(order.subtotal_cents)), 0);
+  const sentInvoiceTotalCents = sentInvoices.reduce((sum, order) => sum + Math.max(0, numericValue(order.subtotal_cents)), 0);
   const waitingCount = orders.filter((order) => order.invoice_status === 'invoicing').length;
   const activeProducts = products.filter((product) => product.active !== false);
   const mappedProducts = activeProducts.filter((product) => Boolean(product.quickbooks_item_id));
@@ -657,7 +717,7 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
         </div>
       </div>
 
-      <div className="grid gap-4 md:grid-cols-4">
+      <div className="grid gap-4 md:grid-cols-5">
         <div className="stat-card">
           <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Ready</p>
           <p className="mt-2 text-3xl font-semibold text-slate-950">{readyOrders.length}</p>
@@ -674,6 +734,11 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
           <p className="mt-1 text-sm text-slate-500">{quickBooksCompanyInfo.companyName ?? quickBooksStatus.realmId ?? 'Not connected'}</p>
         </div>
         <div className="stat-card">
+          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Sent</p>
+          <p className="mt-2 text-3xl font-semibold text-slate-950">{sentInvoices.length}</p>
+          <p className="mt-1 text-sm text-slate-500">{usd(sentInvoiceTotalCents)}</p>
+        </div>
+        <div className="stat-card">
           <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Working</p>
           <p className="mt-2 text-3xl font-semibold text-slate-950">{waitingCount}</p>
           <p className="mt-1 text-sm text-slate-500">Invoice requests in progress.</p>
@@ -686,7 +751,7 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
         </div>
       ) : null}
 
-      <nav className="grid gap-2 sm:grid-cols-4" aria-label="Invoicing views">
+      <nav className="grid gap-2 sm:grid-cols-5" aria-label="Invoicing views">
         {INVOICING_VIEWS.map((view) => (
           <Link
             key={view.id}
@@ -698,7 +763,64 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
         ))}
       </nav>
 
-      {activeView === 'sales-tax' ? (
+      {activeView === 'sent' ? (
+        <div className="card space-y-5">
+          <div>
+            <h2 className="text-xl font-semibold tracking-tight text-slate-950">Sent invoice archive</h2>
+            <p className="mt-1 text-sm text-slate-500">Latest QuickBooks invoices created and emailed from the portal.</p>
+          </div>
+
+          {sentInvoices.length ? (
+            <div className="overflow-x-auto">
+              <table className="min-w-full text-left text-sm">
+                <thead className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
+                  <tr>
+                    <th className="px-3 py-2">Invoice</th>
+                    <th className="px-3 py-2">Customer</th>
+                    <th className="px-3 py-2">Amount</th>
+                    <th className="px-3 py-2">Sent</th>
+                    <th className="px-3 py-2">Email</th>
+                    <th className="px-3 py-2">Order</th>
+                    <th className="px-3 py-2">Shipped</th>
+                    <th className="px-3 py-2">Lines</th>
+                    <th className="px-3 py-2 text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-200">
+                  {sentInvoices.map((order) => (
+                    <tr key={order.id} className="align-top">
+                      <td className="px-3 py-3">
+                        <p className="font-mono text-sm font-semibold text-slate-950">{invoiceNumberLabel(order)}</p>
+                        <p className="mt-1 break-all font-mono text-xs text-slate-500">QB {order.quickbooks_invoice_id}</p>
+                      </td>
+                      <td className="px-3 py-3">
+                        <p className="font-semibold text-slate-950">{customerLabel(order)}</p>
+                        <p className="mt-1 text-xs text-slate-500">{relatedOne(order.centers)?.quickbooks_display_name || 'Mapped QuickBooks customer'}</p>
+                      </td>
+                      <td className="px-3 py-3 font-semibold text-slate-950">{usd(Math.round(numericValue(order.subtotal_cents)))}</td>
+                      <td className="px-3 py-3 text-slate-600">{formatTimestamp(order.quickbooks_invoice_email_sent_at ?? order.invoiced_at ?? null)}</td>
+                      <td className="px-3 py-3 text-slate-600">{order.quickbooks_invoice_email_to || relatedOne(order.profiles)?.email || '—'}</td>
+                      <td className="px-3 py-3 text-slate-600">{formatTimestamp(order.created_at)}</td>
+                      <td className="px-3 py-3 text-slate-600">{formatTimestamp(order.shipped_at)}</td>
+                      <td className="px-3 py-3 text-slate-600">{(order.order_items ?? []).length}</td>
+                      <td className="px-3 py-3">
+                        <div className="flex flex-col gap-2 sm:items-end">
+                          <Link className="btn-secondary text-center text-xs" href={`/admin/orders/${order.id}`}>Order</Link>
+                          {order.quickbooks_invoice_url ? (
+                            <a className="btn-secondary text-center text-xs" href={order.quickbooks_invoice_url} target="_blank" rel="noreferrer">QuickBooks</a>
+                          ) : null}
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <p className="text-sm text-slate-500">No sent QuickBooks invoices are archived yet.</p>
+          )}
+        </div>
+      ) : activeView === 'sales-tax' ? (
         <div className="card space-y-5">
           <div>
             <h2 className="text-xl font-semibold tracking-tight text-slate-950">Sales tax collection states</h2>
@@ -1114,6 +1236,7 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
           const center = relatedOne(order.centers);
           const missingCustomerMapping = missingOrderCustomerMapping(order);
           const mappingBlocked = missingCustomerMapping || missingMappedProducts.length > 0;
+          const noInvoiceableItems = invoiceableLineItemCount(order) === 0;
           const readyToInvoice = orderIsReadyToInvoice(order);
           const taxStatus = center?.customer_tax_status === 'for_profit'
             ? 'For-profit'
@@ -1126,8 +1249,8 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
                 <div className="min-w-0">
                   <div className="flex flex-wrap items-center gap-2">
                     <h2 className="break-words text-xl font-semibold tracking-tight text-slate-950">{customerLabel(order)}</h2>
-                    <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${hasError ? 'bg-rose-100 text-rose-800' : isBusy ? 'bg-slate-100 text-slate-700' : mappingBlocked ? 'bg-amber-100 text-amber-800' : 'bg-emerald-100 text-emerald-800'}`}>
-                      {hasError ? 'Invoice error' : isBusy ? 'Invoicing' : mappingBlocked ? 'Needs mapping' : 'Ready to invoice'}
+                    <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${hasError ? 'bg-rose-100 text-rose-800' : isBusy ? 'bg-slate-100 text-slate-700' : mappingBlocked || noInvoiceableItems ? 'bg-amber-100 text-amber-800' : 'bg-emerald-100 text-emerald-800'}`}>
+                      {hasError ? 'Invoice error' : isBusy ? 'Invoicing' : noInvoiceableItems ? 'No invoiceable items' : mappingBlocked ? 'Needs mapping' : 'Ready to invoice'}
                     </span>
                     <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${isTaxable ? 'bg-teal-100 text-teal-800' : 'bg-slate-100 text-slate-700'}`}>
                       {isTaxable ? 'Taxable in QuickBooks' : 'Non-taxable in QuickBooks'}
@@ -1136,6 +1259,11 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
                   <p className="mt-2 text-sm text-slate-500">Shipped {formatTimestamp(order.shipped_at)} · Ordered {formatTimestamp(order.created_at)}</p>
                   <p className="mt-1 text-sm text-slate-500">{taxStatus} · Ship-to state {order.shipping_state || 'missing'}</p>
                   <p className="mt-1 break-all text-sm text-slate-500">Order {order.id}</p>
+                  {order.quickbooks_invoice_id ? (
+                    <p className="mt-1 text-sm text-slate-500">
+                      QuickBooks invoice <span className="font-mono font-semibold text-slate-700">{invoiceNumberLabel(order)}</span>
+                    </p>
+                  ) : null}
                 </div>
                 <div className="text-left lg:text-right">
                   <p className="text-2xl font-semibold text-slate-950">{usd(Math.round(numericValue(order.subtotal_cents)))}</p>
@@ -1173,9 +1301,20 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
                   <PendingSubmitButton
                     className="btn-primary w-full sm:w-auto"
                     disabled={!canInvoice || !readyToInvoice || !quickBooksStatus.connected || Boolean(quickBooksStatus.missingConfig.length)}
-                    disabledLabel={isBusy ? 'Invoicing...' : mappingBlocked ? 'Needs mapping' : 'Invoice'}
+                    disabledLabel={isBusy ? 'Invoicing...' : noInvoiceableItems ? 'No invoiceable items' : mappingBlocked ? 'Needs mapping' : 'Invoice'}
                     label="Invoice"
                     pendingLabel="Invoicing..."
+                  />
+                </form>
+                <form action={invoiceOrder}>
+                  <input type="hidden" name="order_id" value={order.id} />
+                  <input type="hidden" name="delivery" value="pdf" />
+                  <PendingSubmitButton
+                    className="btn-secondary w-full sm:w-auto"
+                    disabled={!canInvoice || !readyToInvoice || !quickBooksStatus.connected || Boolean(quickBooksStatus.missingConfig.length)}
+                    disabledLabel={isBusy ? 'Invoicing...' : noInvoiceableItems ? 'No invoiceable items' : mappingBlocked ? 'Needs mapping' : 'Send PDF'}
+                    label="Create & send PDF"
+                    pendingLabel="Sending PDF..."
                   />
                 </form>
               </div>

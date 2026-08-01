@@ -33,10 +33,12 @@ describe('quickbooks invoice payload', () => {
         shipping_state: 'IL',
         shipping_zip: '60601',
       },
-      { name: 'Lakeview Recovery', value: '42' }
+      { name: 'Lakeview Recovery', value: '42' },
+      { docNumber: 'SO-1272' }
     );
 
     expect(payload.CustomerRef).toEqual({ name: 'Lakeview Recovery', value: '42' });
+    expect(payload.DocNumber).toBe('SO-1272');
     expect(payload.BillEmail).toEqual({ Address: 'buyer@example.com' });
     expect(payload.Line).toEqual([
       {

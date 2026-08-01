@@ -81,6 +81,12 @@ type QuickBooksInvoiceOrder = {
   shipping_zip: string | null;
 };
 
+type QuickBooksInvoiceRecord = {
+  DocNumber?: string | null;
+  Id?: string | number | null;
+  SyncToken?: string | number | null;
+};
+
 export type QuickBooksConnectionStatus = {
   connected: boolean;
   environment: QuickBooksEnvironment;
@@ -97,12 +103,18 @@ export type QuickBooksCompanyInfo = {
 };
 
 export type CreatedQuickBooksInvoice = {
+  customerName: string;
   docNumber: string | null;
   emailError: string | null;
   emailSentAt: string | null;
   emailTo: string | null;
   id: string;
   url: string | null;
+};
+
+export type QuickBooksInvoicePdf = {
+  content: Buffer;
+  filename: string;
 };
 
 export type QuickBooksProductSummary = {
@@ -458,6 +470,25 @@ async function quickBooksRequest(connection: QuickBooksConnection, path: string,
     throw new Error(quickBooksErrorMessage(payload, 'QuickBooks request failed.', response.headers.get('intuit_tid')));
   }
   return payload;
+}
+
+async function quickBooksBinaryRequest(connection: QuickBooksConnection, path: string, init: RequestInit = {}) {
+  const environment = connection.environment === 'production' ? 'production' : 'sandbox';
+  const separator = path.includes('?') ? '&' : '?';
+  const url = `${quickBooksApiBaseUrl(environment)}/v3/company/${encodeURIComponent(connection.realm_id)}${path}${separator}minorversion=${encodeURIComponent(env.quickBooksMinorVersion)}`;
+  const response = await fetch(url, {
+    ...init,
+    headers: {
+      Accept: 'application/pdf',
+      Authorization: `Bearer ${connection.access_token}`,
+      ...init.headers,
+    },
+  });
+  if (!response.ok) {
+    const payload = await parseJsonResponse(response);
+    throw new Error(quickBooksErrorMessage(payload, 'QuickBooks request failed.', response.headers.get('intuit_tid')));
+  }
+  return Buffer.from(await response.arrayBuffer());
 }
 
 function escapeQueryString(value: string) {
@@ -955,7 +986,7 @@ export function buildQuickBooksCustomerPayloadFromCenter(center: QuickBooksPorta
 export function buildQuickBooksInvoicePayload(
   order: QuickBooksInvoiceOrder,
   customerRef: QuickBooksRef,
-  options: { taxableStates?: string[] } = {}
+  options: { docNumber?: string; taxableStates?: string[] } = {}
 ) {
   const shouldCollectSalesTax = shouldCollectQuickBooksSalesTax(order, options.taxableStates ?? DEFAULT_QUICKBOOKS_SALES_TAX_STATES);
   const lineTaxCode = shouldCollectSalesTax ? QUICKBOOKS_LINE_TAXABLE_CODE : QUICKBOOKS_LINE_NON_TAXABLE_CODE;
@@ -989,10 +1020,82 @@ export function buildQuickBooksInvoicePayload(
       value: `Invoice for Sobrew order ${order.id.slice(0, 8)}.`,
     },
     CustomerRef: customerRef,
+    DocNumber: options.docNumber ? cleanText(options.docNumber) : undefined,
     Line: lineItems,
     PrivateNote: privateNoteParts.join('\n'),
     ShipAddr: shippingAddress,
   };
+}
+
+async function getQuickBooksInvoice(connection: QuickBooksConnection, invoiceId: string): Promise<QuickBooksInvoiceRecord | null> {
+  const result = await quickBooksRequest(connection, `/invoice/${encodeURIComponent(invoiceId)}`);
+  return result?.Invoice ?? null;
+}
+
+async function updateQuickBooksInvoiceDocNumber(
+  connection: QuickBooksConnection,
+  invoice: QuickBooksInvoiceRecord,
+  docNumber: string
+) {
+  const invoiceId = cleanText(invoice.Id);
+  const syncToken = cleanText(invoice.SyncToken);
+  if (!invoiceId || !syncToken) throw new Error('QuickBooks invoice is missing the update token needed to add an invoice number.');
+  const result = await quickBooksRequest(connection, '/invoice?operation=update', {
+    body: JSON.stringify({
+      DocNumber: docNumber,
+      Id: invoiceId,
+      SyncToken: syncToken,
+      sparse: true,
+    }),
+    method: 'POST',
+  });
+  return cleanText(result?.Invoice?.DocNumber) || docNumber;
+}
+
+async function ensureQuickBooksInvoiceDocNumber(
+  connection: QuickBooksConnection,
+  invoiceId: string,
+  docNumber: string,
+  invoice?: QuickBooksInvoiceRecord | null
+) {
+  const targetDocNumber = cleanText(docNumber);
+  if (!targetDocNumber) throw new Error('Assign a portal invoice number before creating the QuickBooks invoice.');
+  const existingDocNumber = cleanText(invoice?.DocNumber);
+  if (existingDocNumber === targetDocNumber) return existingDocNumber;
+
+  const loadedInvoice = invoice?.SyncToken ? invoice : await getQuickBooksInvoice(connection, invoiceId);
+  const loadedDocNumber = cleanText(loadedInvoice?.DocNumber);
+  if (loadedDocNumber === targetDocNumber) return loadedDocNumber;
+
+  return updateQuickBooksInvoiceDocNumber(connection, loadedInvoice ?? { Id: invoiceId }, targetDocNumber);
+}
+
+async function tryEnsureQuickBooksInvoiceDocNumber(
+  connection: QuickBooksConnection,
+  invoiceId: string,
+  docNumber: string,
+  invoice?: QuickBooksInvoiceRecord | null
+) {
+  try {
+    return {
+      docNumber: await ensureQuickBooksInvoiceDocNumber(connection, invoiceId, docNumber, invoice),
+      error: null,
+    };
+  } catch (error) {
+    return {
+      docNumber: null,
+      error: error instanceof Error ? error.message : 'QuickBooks invoice was created, but no invoice number could be assigned.',
+    };
+  }
+}
+
+async function assignQuickBooksInvoiceDocNumber(orderId: string) {
+  const supabase = getSupabaseAdmin();
+  const { data, error } = await supabase.rpc('assign_quickbooks_invoice_doc_number', { order_id: orderId });
+  if (error) throw new Error(`Unable to assign QuickBooks invoice number: ${error.message}`);
+  const docNumber = cleanText(data);
+  if (!docNumber) throw new Error('Unable to assign QuickBooks invoice number.');
+  return docNumber;
 }
 
 async function sendQuickBooksInvoiceEmail(connection: QuickBooksConnection, invoiceId: string, sendTo: string) {
@@ -1018,6 +1121,35 @@ async function trySendQuickBooksInvoiceEmail(connection: QuickBooksConnection, i
       emailSentAt: null,
     };
   }
+}
+
+async function downloadQuickBooksInvoicePdf(connection: QuickBooksConnection, invoiceId: string) {
+  return quickBooksBinaryRequest(connection, `/invoice/${encodeURIComponent(invoiceId)}/pdf`);
+}
+
+export async function getQuickBooksInvoicePdf(invoiceId: string): Promise<Buffer> {
+  const cleanInvoiceId = cleanText(invoiceId);
+  if (!cleanInvoiceId) throw new Error('Create the QuickBooks invoice before downloading its PDF.');
+  const connection = await getAuthorizedConnection();
+  return downloadQuickBooksInvoicePdf(connection, cleanInvoiceId);
+}
+
+export async function getQuickBooksInvoicePdfForOrder(orderId: string): Promise<QuickBooksInvoicePdf> {
+  const supabase = getSupabaseAdmin();
+  const { data: order, error } = await supabase
+    .from('orders')
+    .select('id,quickbooks_invoice_id,quickbooks_invoice_doc_number')
+    .eq('id', orderId)
+    .single();
+  if (error || !order) throw new Error(error?.message || 'Order not found.');
+  const invoiceId = cleanText((order as any).quickbooks_invoice_id);
+  if (!invoiceId) throw new Error('Create the QuickBooks invoice before downloading its PDF.');
+  const content = await getQuickBooksInvoicePdf(invoiceId);
+  const invoiceNumber = cleanText((order as any).quickbooks_invoice_doc_number) || invoiceId;
+  return {
+    content,
+    filename: `Sobrew-Invoice-${invoiceNumber}.pdf`,
+  };
 }
 
 export async function getQuickBooksSalesTaxSettings(): Promise<QuickBooksSalesTaxSettings> {
@@ -1058,7 +1190,11 @@ export async function saveQuickBooksSalesTaxSettings(states: string[]): Promise<
   return { states: normalizedStates };
 }
 
-export async function createQuickBooksInvoiceForOrder(orderId: string): Promise<CreatedQuickBooksInvoice> {
+export async function createQuickBooksInvoiceForOrder(
+  orderId: string,
+  options: { sendQuickBooksEmail?: boolean } = {}
+): Promise<CreatedQuickBooksInvoice> {
+  const sendQuickBooksEmailOption = options.sendQuickBooksEmail ?? true;
   const supabase = getSupabaseAdmin();
   const { data: order, error } = await supabase
     .from('orders')
@@ -1071,11 +1207,32 @@ export async function createQuickBooksInvoiceForOrder(orderId: string): Promise<
 
   const connection = await getAuthorizedConnection();
   const environment = connection.environment === 'production' ? 'production' : 'sandbox';
+  const customerName = customerNameForOrder(order as QuickBooksInvoiceOrder);
   const emailTo = invoiceEmailForOrder(order as QuickBooksInvoiceOrder);
   if ((order as any).quickbooks_invoice_id) {
-    const emailResult = await trySendQuickBooksInvoiceEmail(connection, String((order as any).quickbooks_invoice_id), emailTo);
+    const portalDocNumber = await assignQuickBooksInvoiceDocNumber(orderId);
+    const docNumberResult = await tryEnsureQuickBooksInvoiceDocNumber(
+      connection,
+      String((order as any).quickbooks_invoice_id),
+      portalDocNumber
+    );
+    if (!docNumberResult.docNumber) {
+      return {
+        customerName,
+        docNumber: null,
+        emailError: `QuickBooks invoice was not emailed because no invoice number could be assigned. ${docNumberResult.error}`,
+        emailSentAt: null,
+        emailTo,
+        id: String((order as any).quickbooks_invoice_id),
+        url: cleanText((order as any).quickbooks_invoice_url) || quickBooksAppInvoiceUrl(environment, String((order as any).quickbooks_invoice_id)),
+      };
+    }
+    const emailResult = sendQuickBooksEmailOption
+      ? await trySendQuickBooksInvoiceEmail(connection, String((order as any).quickbooks_invoice_id), emailTo)
+      : { emailError: null, emailSentAt: null };
     return {
-      docNumber: (order as any).quickbooks_invoice_doc_number ? String((order as any).quickbooks_invoice_doc_number) : null,
+      customerName,
+      docNumber: docNumberResult.docNumber,
       emailError: emailResult.emailError,
       emailSentAt: emailResult.emailSentAt,
       emailTo,
@@ -1091,17 +1248,36 @@ export async function createQuickBooksInvoiceForOrder(orderId: string): Promise<
   if (missingMappedItems.length) {
     throw new Error(`Map these products to QuickBooks before invoicing: ${[...new Set(missingMappedItems)].join(', ')}`);
   }
+  if (!((order as any).order_items ?? []).some((item: QuickBooksOrderItem) => amountFromCents(item.line_total_cents) > 0)) {
+    throw new Error('This order has no invoiceable line items.');
+  }
   const customerRef = quickBooksCustomerRefFromCenter(order as QuickBooksInvoiceOrder);
-  const invoicePayload = buildQuickBooksInvoicePayload(order as QuickBooksInvoiceOrder, customerRef, { taxableStates: salesTaxSettings.states });
+  const portalDocNumber = await assignQuickBooksInvoiceDocNumber(orderId);
+  const invoicePayload = buildQuickBooksInvoicePayload(order as QuickBooksInvoiceOrder, customerRef, { docNumber: portalDocNumber, taxableStates: salesTaxSettings.states });
   const created = await quickBooksRequest(connection, '/invoice', {
     body: JSON.stringify(invoicePayload),
     method: 'POST',
   });
   const invoice = created?.Invoice;
   if (!invoice?.Id) throw new Error('QuickBooks did not return an invoice ID.');
-  const emailResult = await trySendQuickBooksInvoiceEmail(connection, String(invoice.Id), emailTo);
+  const docNumberResult = await tryEnsureQuickBooksInvoiceDocNumber(connection, String(invoice.Id), portalDocNumber, invoice);
+  if (!docNumberResult.docNumber) {
+    return {
+      customerName,
+      docNumber: null,
+      emailError: `QuickBooks invoice was created, but it was not emailed because no invoice number could be assigned. ${docNumberResult.error}`,
+      emailSentAt: null,
+      emailTo,
+      id: String(invoice.Id),
+      url: quickBooksAppInvoiceUrl(environment, String(invoice.Id)),
+    };
+  }
+  const emailResult = sendQuickBooksEmailOption
+    ? await trySendQuickBooksInvoiceEmail(connection, String(invoice.Id), emailTo)
+    : { emailError: null, emailSentAt: null };
   return {
-    docNumber: invoice.DocNumber ? String(invoice.DocNumber) : null,
+    customerName,
+    docNumber: docNumberResult.docNumber,
     emailError: emailResult.emailError,
     emailSentAt: emailResult.emailSentAt,
     emailTo,
