@@ -36,7 +36,18 @@ type QuickBooksRef = {
 type QuickBooksOrderItem = {
   line_total_cents: number | string;
   product_name_snapshot: string | null;
-  products?: { name: string | null; sku: string | null } | { name: string | null; sku: string | null }[] | null;
+  product_id?: string | null;
+  products?: {
+    name: string | null;
+    quickbooks_item_id?: string | null;
+    quickbooks_item_name?: string | null;
+    sku: string | null;
+  } | Array<{
+    name: string | null;
+    quickbooks_item_id?: string | null;
+    quickbooks_item_name?: string | null;
+    sku: string | null;
+  }> | null;
   qty: number | string;
   unit_price_cents: number | string;
 };
@@ -107,6 +118,20 @@ export type QuickBooksCatalogItemsResult = {
   error: string | null;
   items: QuickBooksCatalogItem[];
   truncated: boolean;
+};
+
+export type QuickBooksPortalProduct = {
+  active: boolean | null;
+  description: string | null;
+  id: string;
+  name: string | null;
+  sku: string | null;
+};
+
+export type QuickBooksProductResetResult = {
+  createdCount: number;
+  inactivatedCount: number;
+  productErrorCount: number;
 };
 
 export type QuickBooksSalesTaxSettings = {
@@ -375,6 +400,116 @@ function normalizeQuickBooksCatalogItem(item: any): QuickBooksCatalogItem | null
   };
 }
 
+function quickBooksItemName(value: unknown) {
+  return cleanText(value)
+    .replace(/[\r\n\t]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .slice(0, 100)
+    || 'Sobrew Product';
+}
+
+function archivedQuickBooksItemName(item: QuickBooksCatalogItem, archivedAt: Date) {
+  const date = archivedAt.toISOString().slice(0, 10).replaceAll('-', '');
+  const suffix = item.id.slice(-8);
+  return quickBooksItemName(`Archived ${date} ${suffix} ${item.name}`);
+}
+
+function quickBooksItemType() {
+  const normalized = cleanText(env.quickBooksProductItemType);
+  return ['Service', 'NonInventory'].includes(normalized) ? normalized : 'Service';
+}
+
+function quickBooksLineItemRef(item: QuickBooksOrderItem, fallbackItemRef: QuickBooksRef): QuickBooksRef {
+  const product = relatedOne(item.products);
+  const quickBooksItemId = cleanText(product?.quickbooks_item_id);
+  if (quickBooksItemId) {
+    return {
+      name: cleanText(product?.quickbooks_item_name) || productNameForItem(item),
+      value: quickBooksItemId,
+    };
+  }
+  return fallbackItemRef;
+}
+
+async function resolveProductIncomeAccount(connection: QuickBooksConnection): Promise<QuickBooksRef> {
+  if (env.quickBooksIncomeAccountId) {
+    return {
+      name: env.quickBooksIncomeAccountName || undefined,
+      value: env.quickBooksIncomeAccountId,
+    };
+  }
+
+  const preferredName = cleanText(env.quickBooksIncomeAccountName);
+  if (preferredName) {
+    const preferredResult = await quickBooksQuery(
+      connection,
+      `SELECT * FROM Account WHERE Name = '${escapeQueryString(preferredName)}' AND Active = true`
+    );
+    const preferredAccount = preferredResult?.QueryResponse?.Account?.[0];
+    if (preferredAccount?.Id) {
+      return {
+        name: cleanText(preferredAccount.Name) || preferredName,
+        value: String(preferredAccount.Id),
+      };
+    }
+  }
+
+  const result = await quickBooksQuery(connection, "SELECT * FROM Account WHERE AccountType = 'Income' AND Active = true MAXRESULTS 100");
+  const accounts = Array.isArray(result?.QueryResponse?.Account) ? result.QueryResponse.Account : [];
+  const account = accounts.find((row: any) => /sales|income/i.test(cleanText(row?.Name))) ?? accounts[0];
+  if (!account?.Id) {
+    throw new QuickBooksConfigurationError('Set QUICKBOOKS_INCOME_ACCOUNT_ID before syncing products. No active QuickBooks income account was found.');
+  }
+  return {
+    name: cleanText(account.Name) || undefined,
+    value: String(account.Id),
+  };
+}
+
+function buildQuickBooksProductPayload(product: QuickBooksPortalProduct, incomeAccountRef: QuickBooksRef) {
+  const name = quickBooksItemName(product.name);
+  const description = cleanText(product.description);
+  const sku = cleanText(product.sku);
+  return {
+    Active: true,
+    Description: description || undefined,
+    IncomeAccountRef: incomeAccountRef,
+    Name: name,
+    Sku: sku || undefined,
+    Type: quickBooksItemType(),
+    UnitPrice: 0,
+  };
+}
+
+async function archiveQuickBooksItem(connection: QuickBooksConnection, item: QuickBooksCatalogItem, archivedAt: Date) {
+  if (!item.syncToken) throw new Error(`QuickBooks item ${item.name} is missing a sync token.`);
+  const updated = await quickBooksRequest(connection, '/item?operation=update', {
+    body: JSON.stringify({
+      Active: false,
+      Id: item.id,
+      Name: archivedQuickBooksItemName(item, archivedAt),
+      SyncToken: item.syncToken,
+      sparse: true,
+    }),
+    method: 'POST',
+  });
+  if (!updated?.Item?.Id) throw new Error(`QuickBooks did not archive ${item.name}.`);
+}
+
+async function createQuickBooksProductItem(connection: QuickBooksConnection, product: QuickBooksPortalProduct, incomeAccountRef: QuickBooksRef) {
+  const created = await quickBooksRequest(connection, '/item', {
+    body: JSON.stringify(buildQuickBooksProductPayload(product, incomeAccountRef)),
+    method: 'POST',
+  });
+  const item = created?.Item;
+  if (!item?.Id) throw new Error(`QuickBooks did not return an item ID for ${product.name ?? product.id}.`);
+  return {
+    id: String(item.Id),
+    name: cleanText(item.Name) || quickBooksItemName(product.name),
+    type: cleanText(item.Type) || quickBooksItemType(),
+  };
+}
+
 function customerNameForOrder(order: QuickBooksInvoiceOrder) {
   return cleanText(relatedOne(order.centers)?.name)
     || cleanText(order.shipping_company)
@@ -468,7 +603,7 @@ export function buildQuickBooksInvoicePayload(
       Description: orderLineDescription(item),
       DetailType: 'SalesItemLineDetail',
       SalesItemLineDetail: {
-        ItemRef: itemRef,
+        ItemRef: quickBooksLineItemRef(item, itemRef),
         Qty: qty,
         TaxCodeRef: { value: lineTaxCode },
         UnitPrice: unitPrice,
@@ -538,7 +673,7 @@ export async function createQuickBooksInvoiceForOrder(orderId: string): Promise<
   const supabase = getSupabaseAdmin();
   const { data: order, error } = await supabase
     .from('orders')
-    .select('id,status,archived_at,created_at,notes,quickbooks_invoice_id,shipping_company,shipping_name,shipping_address1,shipping_address2,shipping_city,shipping_state,shipping_zip,profiles(email,full_name),centers(name,customer_tax_status),order_items(qty,unit_price_cents,line_total_cents,product_name_snapshot,products(name,sku))')
+    .select('id,status,archived_at,created_at,notes,quickbooks_invoice_id,shipping_company,shipping_name,shipping_address1,shipping_address2,shipping_city,shipping_state,shipping_zip,profiles(email,full_name),centers(name,customer_tax_status),order_items(qty,unit_price_cents,line_total_cents,product_id,product_name_snapshot,products(name,sku,quickbooks_item_id,quickbooks_item_name))')
     .eq('id', orderId)
     .single();
   if (error || !order) throw new Error(error?.message || 'Order not found.');
@@ -548,6 +683,12 @@ export async function createQuickBooksInvoiceForOrder(orderId: string): Promise<
 
   const connection = await getAuthorizedConnection();
   const salesTaxSettings = await getQuickBooksSalesTaxSettings();
+  const missingMappedItems = ((order as any).order_items ?? [])
+    .filter((item: QuickBooksOrderItem) => !cleanText(relatedOne(item.products)?.quickbooks_item_id))
+    .map((item: QuickBooksOrderItem) => productNameForItem(item));
+  if (missingMappedItems.length) {
+    throw new Error(`Map these products to QuickBooks before invoicing: ${[...new Set(missingMappedItems)].join(', ')}`);
+  }
   const customerRef = await findOrCreateCustomer(connection, order as QuickBooksInvoiceOrder);
   const itemRef = await resolveInvoiceItem(connection);
   const invoicePayload = buildQuickBooksInvoicePayload(order as QuickBooksInvoiceOrder, customerRef, itemRef, { taxableStates: salesTaxSettings.states });
@@ -568,9 +709,10 @@ export async function createQuickBooksInvoiceForOrder(orderId: string): Promise<
 export async function getQuickBooksConnectionStatus(): Promise<QuickBooksConnectionStatus> {
   const config = getOAuthConfig();
   const connection = await getStoredConnection().catch(() => null);
+  const connectionEnvironment = connection?.environment === 'production' ? 'production' : connection?.environment === 'sandbox' ? 'sandbox' : null;
   return {
     connected: Boolean(connection?.realm_id),
-    environment: config.environment,
+    environment: connectionEnvironment ?? config.environment,
     missingConfig: config.missingConfig,
     realmId: connection?.realm_id ?? null,
   };
@@ -655,4 +797,96 @@ export async function getQuickBooksActiveItems(limit = 500): Promise<QuickBooksC
       truncated: false,
     };
   }
+}
+
+export async function resetQuickBooksProductsFromPortal(products: QuickBooksPortalProduct[]): Promise<QuickBooksProductResetResult> {
+  const activePortalProducts = products
+    .filter((product) => product.active !== false)
+    .map((product) => ({
+      ...product,
+      name: quickBooksItemName(product.name),
+    }));
+  if (!activePortalProducts.length) {
+    throw new Error('No active portal products were found to sync.');
+  }
+
+  const connection = await getAuthorizedConnection();
+  const incomeAccountRef = await resolveProductIncomeAccount(connection);
+  const supabase = getSupabaseAdmin();
+  const archivedAt = new Date();
+  const existingItemsResult = await getQuickBooksActiveItems(5000);
+  if (existingItemsResult.error) throw new Error(existingItemsResult.error);
+  if (existingItemsResult.truncated) {
+    throw new Error('QuickBooks has more than 5,000 active items. Narrow the cleanup before running the product reset.');
+  }
+
+  const itemsToArchive = existingItemsResult.items.filter((item) => item.type !== 'Category');
+  for (const item of itemsToArchive) {
+    await archiveQuickBooksItem(connection, item, archivedAt);
+  }
+
+  await supabase
+    .from('products')
+    .update({
+      quickbooks_item_id: null,
+      quickbooks_item_name: null,
+      quickbooks_item_type: null,
+      quickbooks_sync_error: null,
+      quickbooks_sync_status: 'unmapped',
+      quickbooks_synced_at: null,
+    })
+    .not('quickbooks_item_id', 'is', null);
+
+  let createdCount = 0;
+  let productErrorCount = 0;
+  const syncedAt = new Date().toISOString();
+  for (const product of activePortalProducts) {
+    try {
+      const item = await createQuickBooksProductItem(connection, product, incomeAccountRef);
+      const { error } = await supabase
+        .from('products')
+        .update({
+          quickbooks_item_id: item.id,
+          quickbooks_item_name: item.name,
+          quickbooks_item_type: item.type,
+          quickbooks_sync_error: null,
+          quickbooks_sync_status: 'created',
+          quickbooks_synced_at: syncedAt,
+        })
+        .eq('id', product.id);
+      if (error) throw error;
+      createdCount += 1;
+    } catch (error) {
+      productErrorCount += 1;
+      await supabase
+        .from('products')
+        .update({
+          quickbooks_item_id: null,
+          quickbooks_item_name: null,
+          quickbooks_item_type: null,
+          quickbooks_sync_error: error instanceof Error ? error.message : 'Unable to create QuickBooks item.',
+          quickbooks_sync_status: 'sync_error',
+          quickbooks_synced_at: syncedAt,
+        })
+        .eq('id', product.id);
+    }
+  }
+
+  await supabase
+    .from('products')
+    .update({
+      quickbooks_item_id: null,
+      quickbooks_item_name: null,
+      quickbooks_item_type: null,
+      quickbooks_sync_error: null,
+      quickbooks_sync_status: 'ignored',
+      quickbooks_synced_at: syncedAt,
+    })
+    .eq('active', false);
+
+  return {
+    createdCount,
+    inactivatedCount: itemsToArchive.length,
+    productErrorCount,
+  };
 }

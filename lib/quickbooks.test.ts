@@ -83,6 +83,46 @@ describe('quickbooks invoice payload', () => {
     expect(payload.Line[0].SalesItemLineDetail.TaxCodeRef).toEqual({ value: 'TAX' });
   });
 
+  it('uses mapped product item refs on invoice lines', () => {
+    const payload = buildQuickBooksInvoicePayload(
+      {
+        centers: { name: 'Mapped Center' },
+        created_at: '2026-08-01T15:00:00.000Z',
+        id: 'order-mapped-products',
+        notes: null,
+        order_items: [
+          {
+            line_total_cents: 3600,
+            product_name_snapshot: 'Sweet Tea Case',
+            products: {
+              name: 'Sweet Tea Case',
+              quickbooks_item_id: '73',
+              quickbooks_item_name: 'Sweet Tea Case',
+              sku: 'TEA-SWEET',
+            },
+            qty: 2,
+            unit_price_cents: 1800,
+          },
+        ],
+        profiles: { email: 'buyer@example.com', full_name: 'Buyer Name' },
+        shipping_address1: '123 Main St',
+        shipping_address2: null,
+        shipping_city: 'Chicago',
+        shipping_company: null,
+        shipping_name: 'Mapped Center',
+        shipping_state: 'IL',
+        shipping_zip: '60601',
+      },
+      { name: 'Mapped Center', value: '42' },
+      { name: 'Fallback Item', value: '9' }
+    );
+
+    expect(payload.Line[0].SalesItemLineDetail.ItemRef).toEqual({
+      name: 'Sweet Tea Case',
+      value: '73',
+    });
+  });
+
   it('keeps invoice lines non-taxable for exempt customers in sales tax states', () => {
     const payload = buildQuickBooksInvoicePayload(
       {

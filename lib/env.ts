@@ -29,6 +29,9 @@ export const env = {
   quickBooksDefaultItemId: process.env.QUICKBOOKS_DEFAULT_ITEM_ID ?? '',
   quickBooksDefaultItemName: process.env.QUICKBOOKS_DEFAULT_ITEM_NAME ?? '',
   quickBooksEnvironment: process.env.QUICKBOOKS_ENVIRONMENT ?? 'sandbox',
+  quickBooksIncomeAccountId: process.env.QUICKBOOKS_INCOME_ACCOUNT_ID ?? '',
+  quickBooksIncomeAccountName: process.env.QUICKBOOKS_INCOME_ACCOUNT_NAME ?? 'Sales of Product Income',
   quickBooksMinorVersion: process.env.QUICKBOOKS_MINOR_VERSION ?? '75',
+  quickBooksProductItemType: process.env.QUICKBOOKS_PRODUCT_ITEM_TYPE ?? 'Service',
   quickBooksRedirectUri: process.env.QUICKBOOKS_REDIRECT_URI ?? '',
 };

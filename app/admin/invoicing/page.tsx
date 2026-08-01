@@ -13,6 +13,7 @@ import {
   getQuickBooksProductSummary,
   getQuickBooksSalesTaxSettings,
   QuickBooksConfigurationError,
+  resetQuickBooksProductsFromPortal,
   saveQuickBooksSalesTaxSettings,
   shouldCollectQuickBooksSalesTax,
 } from '@/lib/quickbooks';
@@ -93,7 +94,15 @@ type InvoiceQueueOrder = {
   order_items?: Array<{
     line_total_cents: number | string | null;
     product_name_snapshot: string | null;
-    products?: { name: string | null; sku: string | null } | { name: string | null; sku: string | null }[] | null;
+    products?: {
+      name: string | null;
+      quickbooks_item_id?: string | null;
+      sku: string | null;
+    } | Array<{
+      name: string | null;
+      quickbooks_item_id?: string | null;
+      sku: string | null;
+    }> | null;
     qty: number | string | null;
   }> | null;
   profiles?: { email: string | null; full_name: string | null } | { email: string | null; full_name: string | null }[] | null;
@@ -107,6 +116,7 @@ type InvoiceQueueOrder = {
 type ProductSyncRow = {
   active: boolean | null;
   category: string | null;
+  description: string | null;
   id: string;
   name: string;
   quickbooks_item_id: string | null;
@@ -212,6 +222,10 @@ function toastMessage(toast: string) {
     invoice_created: { message: 'QuickBooks invoice created.', tone: 'success' },
     invoice_failed: { message: 'Unable to create that QuickBooks invoice.', tone: 'error' },
     invoice_not_ready: { message: 'Only shipped orders from today or later can be invoiced here.', tone: 'error' },
+    product_reset_confirm_required: { message: 'Confirm the live QuickBooks product reset before running it.', tone: 'error' },
+    product_reset_failed: { message: 'Unable to reset QuickBooks products.', tone: 'error' },
+    product_reset_saved: { message: 'QuickBooks products reset from portal products.', tone: 'success' },
+    product_reset_with_errors: { message: 'QuickBooks product reset finished, but some portal products need review.', tone: 'error' },
     quickbooks_config_error: { message: 'Add QuickBooks configuration before connecting.', tone: 'error' },
     quickbooks_connect_error: { message: 'Unable to connect QuickBooks.', tone: 'error' },
     quickbooks_connected: { message: 'QuickBooks connected.', tone: 'success' },
@@ -242,6 +256,32 @@ async function disconnectQuickBooks(formData: FormData) {
   const view = String(formData.get('view') ?? '').trim() === 'products' ? 'products' : 'queue';
   await disconnectQuickBooksConnection();
   redirect(`${invoicingViewHref(view)}${view === 'queue' ? '?' : '&'}toast=quickbooks_disconnected`);
+}
+
+async function resetQuickBooksProducts(formData: FormData) {
+  'use server';
+  await requireAdminWriteAccess('/admin/invoicing?view=products&toast=admin_write_denied', 'invoicing');
+  if (formData.get('confirm_product_reset') !== 'on') {
+    redirect('/admin/invoicing?view=products&toast=product_reset_confirm_required');
+  }
+
+  const supabase = getSupabaseAdmin();
+  const { data: products, error } = await supabase
+    .from('products')
+    .select('id,name,sku,description,active')
+    .order('name', { ascending: true });
+  if (error) {
+    console.error('[invoicing] product load failed', error);
+    redirect('/admin/invoicing?view=products&toast=product_reset_failed');
+  }
+
+  try {
+    const result = await resetQuickBooksProductsFromPortal(products ?? []);
+    redirect(`/admin/invoicing?view=products&toast=${result.productErrorCount ? 'product_reset_with_errors' : 'product_reset_saved'}`);
+  } catch (error) {
+    console.error('[invoicing] product reset failed', error);
+    redirect('/admin/invoicing?view=products&toast=product_reset_failed');
+  }
 }
 
 async function invoiceOrder(formData: FormData) {
@@ -325,7 +365,7 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
     getQuickBooksSalesTaxSettings(),
     supabase
       .from('orders')
-      .select('id,created_at,shipped_at,subtotal_cents,shipping_company,shipping_name,shipping_state,invoice_status,invoice_error,profiles(email,full_name),centers(name,customer_tax_status),order_items(qty,line_total_cents,product_name_snapshot,products(name,sku))')
+      .select('id,created_at,shipped_at,subtotal_cents,shipping_company,shipping_name,shipping_state,invoice_status,invoice_error,profiles(email,full_name),centers(name,customer_tax_status),order_items(qty,line_total_cents,product_name_snapshot,products(name,sku,quickbooks_item_id))')
       .eq('status', 'Shipped')
       .is('archived_at', null)
       .is('quickbooks_invoice_id', null)
@@ -335,7 +375,7 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
     activeView === 'products'
       ? supabase
           .from('products')
-          .select('id,name,sku,category,active,quickbooks_item_id,quickbooks_item_name,quickbooks_item_type,quickbooks_sync_status,quickbooks_synced_at,quickbooks_sync_error')
+          .select('id,name,sku,description,category,active,quickbooks_item_id,quickbooks_item_name,quickbooks_item_type,quickbooks_sync_status,quickbooks_synced_at,quickbooks_sync_error')
           .order('active', { ascending: false })
           .order('name', { ascending: true })
       : Promise.resolve({ data: [], error: null }),
@@ -351,6 +391,14 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
   const unmappedProducts = activeProducts.filter((product) => !product.quickbooks_item_id && product.quickbooks_sync_status !== 'ignored');
   const ignoredProducts = activeProducts.filter((product) => product.quickbooks_sync_status === 'ignored');
   const productErrorCount = activeProducts.filter((product) => product.quickbooks_sync_status === 'sync_error').length;
+  const productResetDisabledReasons = [
+    !canInvoice ? 'Your admin account needs edit access for Invoicing.' : '',
+    !quickBooksStatus.connected ? 'QuickBooks is not connected.' : '',
+    quickBooksStatus.missingConfig.length ? `Missing ${quickBooksStatus.missingConfig.join(', ')}.` : '',
+    quickBooksProductSummary.error ? quickBooksProductSummary.error : '',
+    quickBooksItemsResult.error ? quickBooksItemsResult.error : '',
+    !activeProducts.length ? 'There are no active portal products to sync.' : '',
+  ].filter(Boolean);
 
   return (
     <section className="space-y-6">
@@ -484,13 +532,34 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
             <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
               <div>
                 <h2 className="text-xl font-semibold tracking-tight text-slate-950">Product sync</h2>
-                <p className="mt-1 text-sm text-slate-500">Portal products are staged here before the QuickBooks product reset.</p>
+                <p className="mt-1 text-sm text-slate-500">This reset archives active QuickBooks products and creates new QuickBooks items from active portal products.</p>
               </div>
-              <div className="flex flex-col gap-2 sm:flex-row">
-                <button className="btn-secondary opacity-60" type="button" disabled>Preview reset</button>
-                <button className="btn-primary opacity-60" type="button" disabled>Reset QuickBooks products</button>
-              </div>
+              <Link className="btn-secondary text-center" href="/admin/invoicing?view=products">Refresh preview</Link>
             </div>
+
+            <form action={resetQuickBooksProducts} className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3">
+              <div className="space-y-3">
+                <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
+                  <label className="flex items-start gap-3 text-sm font-medium text-rose-950">
+                    <input className="mt-1" type="checkbox" name="confirm_product_reset" />
+                    <span>
+                      I understand this will rename and inactivate active QuickBooks products in the connected {quickBooksStatus.environment === 'production' ? 'live' : 'sandbox'} company, then create {activeProducts.length} new QuickBooks items from active portal products.
+                    </span>
+                  </label>
+                  <PendingSubmitButton
+                    className="rounded-full bg-rose-700 px-4 py-2.5 text-sm font-semibold text-white transition-all duration-200 hover:bg-rose-800 disabled:cursor-not-allowed disabled:opacity-70"
+                    disabled={Boolean(productResetDisabledReasons.length)}
+                    label="Reset QuickBooks Products"
+                    pendingLabel="Resetting..."
+                  />
+                </div>
+                {productResetDisabledReasons.length ? (
+                  <p className="text-sm font-medium text-rose-800">
+                    Reset unavailable: {productResetDisabledReasons.join(' ')}
+                  </p>
+                ) : null}
+              </div>
+            </form>
 
             <div className="overflow-x-auto">
               <table className="min-w-full text-left text-sm">
@@ -601,6 +670,9 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
         {orders.map((order) => {
           const isBusy = order.invoice_status === 'invoicing';
           const hasError = order.invoice_status === 'invoice_error';
+          const missingMappedProducts = (order.order_items ?? [])
+            .filter((item) => !cleanText(relatedOne(item.products)?.quickbooks_item_id))
+            .map(productLabel);
           const isTaxable = shouldCollectQuickBooksSalesTax(order, salesTaxSettings.states);
           const center = relatedOne(order.centers);
           const taxStatus = center?.customer_tax_status === 'for_profit'
@@ -641,6 +713,11 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
               </div>
 
               {order.invoice_error ? <p className="text-sm font-medium text-rose-700">{order.invoice_error}</p> : null}
+              {missingMappedProducts.length ? (
+                <p className="text-sm font-medium text-amber-700">
+                  Needs QuickBooks product mapping: {[...new Set(missingMappedProducts)].join(', ')}
+                </p>
+              ) : null}
 
               <div className="flex flex-col gap-3 sm:flex-row sm:justify-end">
                 <Link className="btn-secondary text-center" href={`/admin/orders/${order.id}`}>Open order</Link>
@@ -648,8 +725,8 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
                   <input type="hidden" name="order_id" value={order.id} />
                   <PendingSubmitButton
                     className="btn-primary w-full sm:w-auto"
-                    disabled={!canInvoice || isBusy || !quickBooksStatus.connected || Boolean(quickBooksStatus.missingConfig.length)}
-                    disabledLabel={isBusy ? 'Invoicing...' : 'Invoice'}
+                    disabled={!canInvoice || isBusy || !quickBooksStatus.connected || Boolean(quickBooksStatus.missingConfig.length) || Boolean(missingMappedProducts.length)}
+                    disabledLabel={isBusy ? 'Invoicing...' : missingMappedProducts.length ? 'Needs mapping' : 'Invoice'}
                     label="Invoice"
                     pendingLabel="Invoicing..."
                   />
