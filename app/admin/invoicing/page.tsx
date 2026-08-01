@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import PendingSubmitButton from '@/components/pending-submit-button';
+import { QuickBooksProductResetForm } from '@/components/quickbooks-product-reset-form';
 import StatusToast from '@/components/status-toast';
 import { adminCanEdit, requireAdminSectionView } from '@/lib/admin-permissions';
 import { requireAdminWriteAccess } from '@/lib/admin-write-access';
@@ -539,29 +540,12 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
               <Link className="btn-secondary text-center" href="/admin/invoicing?view=products">Refresh preview</Link>
             </div>
 
-            <form action={resetQuickBooksProducts} className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3">
-              <div className="space-y-3">
-                <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
-                  <label className="flex items-start gap-3 text-sm font-medium text-rose-950">
-                    <input className="mt-1" type="checkbox" name="confirm_product_reset" />
-                    <span>
-                      I understand this will rename and inactivate active QuickBooks products in the connected {quickBooksStatus.environment === 'production' ? 'live' : 'sandbox'} company, then create {activeProducts.length} new QuickBooks items from active portal products.
-                    </span>
-                  </label>
-                  <PendingSubmitButton
-                    className="rounded-full bg-rose-700 px-4 py-2.5 text-sm font-semibold text-white transition-all duration-200 hover:bg-rose-800 disabled:cursor-not-allowed disabled:opacity-70"
-                    disabled={Boolean(productResetDisabledReasons.length)}
-                    label="Reset QuickBooks Products"
-                    pendingLabel="Resetting..."
-                  />
-                </div>
-                {productResetDisabledReasons.length ? (
-                  <p className="text-sm font-medium text-rose-800">
-                    Reset unavailable: {productResetDisabledReasons.join(' ')}
-                  </p>
-                ) : null}
-              </div>
-            </form>
+            <QuickBooksProductResetForm
+              action={resetQuickBooksProducts}
+              activeProductCount={activeProducts.length}
+              disabledReason={productResetDisabledReasons.join(' ')}
+              environment={quickBooksStatus.environment}
+            />
 
             <div className="overflow-x-auto">
               <table className="min-w-full text-left text-sm">
