@@ -129,6 +129,8 @@ export type QuickBooksPortalProduct = {
 };
 
 export type QuickBooksProductResetResult = {
+  archiveErrorCount: number;
+  archiveErrors: string[];
   createdCount: number;
   inactivatedCount: number;
   productErrorCount: number;
@@ -242,7 +244,11 @@ async function parseJsonResponse(response: Response) {
 
 function quickBooksErrorMessage(payload: any, fallback: string, intuitTid?: string | null) {
   const faultError = payload?.Fault?.Error?.[0];
-  const message = cleanText(faultError?.Message) || cleanText(faultError?.Detail) || cleanText(payload?.error_description) || cleanText(payload?.error) || fallback;
+  const faultMessage = cleanText(faultError?.Message);
+  const faultDetail = cleanText(faultError?.Detail);
+  const message = faultMessage && faultDetail && faultDetail !== faultMessage
+    ? `${faultMessage}: ${faultDetail}`
+    : faultMessage || faultDetail || cleanText(payload?.error_description) || cleanText(payload?.error) || fallback;
   return intuitTid ? `${message} (QuickBooks request ${intuitTid})` : message;
 }
 
@@ -821,12 +827,15 @@ export async function resetQuickBooksProductsFromPortal(products: QuickBooksPort
   }
 
   const itemsToArchive = existingItemsResult.items.filter((item) => item.type !== 'Category');
+  const archiveErrors: string[] = [];
+  let inactivatedCount = 0;
   for (const item of itemsToArchive) {
     try {
       await archiveQuickBooksItem(connection, item, archivedAt);
+      inactivatedCount += 1;
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown QuickBooks archive error.';
-      throw new Error(`Unable to inactivate QuickBooks item "${item.name}" (${item.id}): ${message}`);
+      archiveErrors.push(`Unable to inactivate QuickBooks item "${item.name}" (${item.id}): ${message}`);
     }
   }
 
@@ -890,8 +899,10 @@ export async function resetQuickBooksProductsFromPortal(products: QuickBooksPort
     .eq('active', false);
 
   return {
+    archiveErrorCount: archiveErrors.length,
+    archiveErrors: archiveErrors.slice(0, 10),
     createdCount,
-    inactivatedCount: itemsToArchive.length,
+    inactivatedCount,
     productErrorCount,
   };
 }

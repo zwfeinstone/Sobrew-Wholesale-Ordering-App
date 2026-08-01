@@ -297,6 +297,8 @@ async function resetQuickBooksProducts(formData: FormData) {
         quickbooks_product_reset_error: null,
         quickbooks_product_reset_error_at: null,
         quickbooks_product_reset_last_result: {
+          archiveErrorCount: result.archiveErrorCount,
+          archiveErrors: result.archiveErrors,
           createdCount: result.createdCount,
           inactivatedCount: result.inactivatedCount,
           productErrorCount: result.productErrorCount,
@@ -304,7 +306,7 @@ async function resetQuickBooksProducts(formData: FormData) {
         },
       })
       .neq('id', '00000000-0000-0000-0000-000000000000');
-    toast = result.productErrorCount ? 'product_reset_with_errors' : 'product_reset_saved';
+    toast = result.archiveErrorCount || result.productErrorCount ? 'product_reset_with_errors' : 'product_reset_saved';
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unable to reset QuickBooks products.';
     console.error('[invoicing] product reset failed', error);
@@ -569,7 +571,14 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
           ) : null}
           {resetStatus?.quickbooks_product_reset_last_result ? (
             <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-medium text-emerald-900">
-              Last reset: {String(resetStatus.quickbooks_product_reset_last_result.inactivatedCount ?? 0)} QuickBooks items inactivated, {String(resetStatus.quickbooks_product_reset_last_result.createdCount ?? 0)} portal products created, {String(resetStatus.quickbooks_product_reset_last_result.productErrorCount ?? 0)} product errors.
+              Last reset: {String(resetStatus.quickbooks_product_reset_last_result.inactivatedCount ?? 0)} QuickBooks items inactivated, {String(resetStatus.quickbooks_product_reset_last_result.createdCount ?? 0)} portal products created, {String(resetStatus.quickbooks_product_reset_last_result.archiveErrorCount ?? 0)} archive errors, {String(resetStatus.quickbooks_product_reset_last_result.productErrorCount ?? 0)} product errors.
+              {Array.isArray(resetStatus.quickbooks_product_reset_last_result.archiveErrors) && resetStatus.quickbooks_product_reset_last_result.archiveErrors.length ? (
+                <ul className="mt-2 list-disc space-y-1 pl-5">
+                  {resetStatus.quickbooks_product_reset_last_result.archiveErrors.map((error, index) => (
+                    <li key={`${index}-${String(error).slice(0, 40)}`}>{String(error)}</li>
+                  ))}
+                </ul>
+              ) : null}
             </div>
           ) : null}
           {quickBooksItemsResult.error && quickBooksStatus.connected ? (
