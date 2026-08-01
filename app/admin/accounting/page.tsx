@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
+import AccountingBulkSelectionControls from '@/components/accounting-bulk-selection-controls';
 import PendingSubmitButton from '@/components/pending-submit-button';
 import StatusToast from '@/components/status-toast';
 import { requireAdminSectionView } from '@/lib/admin-permissions';
@@ -27,6 +28,7 @@ import { usd } from '@/lib/utils';
 
 const REVIEW_PAGE_SIZE = 12;
 const PNL_TRANSACTION_LIMIT = 5000;
+const BULK_ACCOUNTING_REVIEW_FORM_ID = 'bulk-accounting-review-form';
 const ACCOUNTING_VIEWS = [
   { id: 'overview', label: 'Overview' },
   { id: 'upload', label: 'Upload' },
@@ -556,6 +558,58 @@ async function updateAccountingTransaction(formData: FormData) {
   redirect(accountingHref('review_error'));
 }
 
+async function bulkUpdateAccountingTransactions(formData: FormData) {
+  'use server';
+  const current = await requireAdminWriteAccess(accountingHref('admin_write_denied'), 'accounting');
+  const supabase = await createClient();
+  const transactionIds = formData
+    .getAll('transaction_id')
+    .map((value) => String(value).trim())
+    .filter(Boolean)
+    .slice(0, REVIEW_PAGE_SIZE);
+  const markAs = String(formData.get('mark_as') ?? '').trim();
+  const note = String(formData.get('review_notes') ?? '').trim();
+
+  if (!transactionIds.length || !markAs) redirect(accountingHref('review_error'));
+
+  const reviewedAt = new Date().toISOString();
+  const update: Record<string, unknown> = {
+    reviewed_by: current.profile.id,
+    reviewed_at: reviewedAt,
+    updated_at: reviewedAt,
+  };
+
+  if (markAs === '__needs_review__') {
+    update.category_id = null;
+    update.status = 'needs_review';
+    if (note) update.review_notes = note;
+  } else if (markAs === '__exclude__') {
+    update.category_id = null;
+    update.status = 'excluded';
+    update.review_notes = note || 'Bulk excluded from accounting reports';
+  } else {
+    const { data: category } = await supabase
+      .from('accounting_categories')
+      .select('id,category_type')
+      .eq('id', markAs)
+      .eq('active', true)
+      .single();
+
+    if (!category) redirect(accountingHref('review_error'));
+
+    update.category_id = category.id;
+    update.status = category.category_type === 'excluded' ? 'excluded' : 'categorized';
+    if (note) update.review_notes = note;
+  }
+
+  const { error } = await supabase
+    .from('accounting_transactions')
+    .update(update)
+    .in('id', transactionIds);
+
+  redirect(accountingHref(error ? 'review_error' : 'transaction_saved'));
+}
+
 async function runAiAccountingReview(formData: FormData) {
   'use server';
   const current = await requireAdminWriteAccess(accountingHref('admin_write_denied'), 'accounting');
@@ -937,6 +991,28 @@ export default async function AccountingPage({
           </div>
           <Link className="btn-secondary w-full sm:w-auto" href="/admin/receiving">Open receiving</Link>
         </div>
+        {transactions.length ? (
+          <form id={BULK_ACCOUNTING_REVIEW_FORM_ID} action={bulkUpdateAccountingTransactions} className="grid gap-3 rounded-xl border border-slate-200 bg-white/70 p-3 lg:grid-cols-[minmax(0,1fr)_minmax(220px,0.8fr)_minmax(220px,0.8fr)_auto] lg:items-end">
+            <div className="space-y-2">
+              <p className="text-sm font-semibold text-slate-950">Bulk review</p>
+              <AccountingBulkSelectionControls formId={BULK_ACCOUNTING_REVIEW_FORM_ID} pageCount={transactions.length} />
+            </div>
+            <label className="space-y-1 text-sm font-medium text-slate-700">
+              Mark selected as
+              <select className="input" name="mark_as" required defaultValue="">
+                <option value="" disabled>Select category or status</option>
+                <option value="__exclude__">Excluded from P&amp;L</option>
+                <option value="__needs_review__">Needs Review</option>
+                {categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}
+              </select>
+            </label>
+            <label className="space-y-1 text-sm font-medium text-slate-700">
+              Notes
+              <input className="input" name="review_notes" placeholder="Optional bulk note" />
+            </label>
+            <PendingSubmitButton className="btn-primary" label="Apply" pendingLabel="Applying..." />
+          </form>
+        ) : null}
         <div className="space-y-3">
           {transactions.map((transaction) => {
             const matches = (transaction.accounting_transaction_matches ?? []).filter((match: any) => match.match_status === 'suggested');
@@ -946,6 +1022,17 @@ export default async function AccountingPage({
                 <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_auto]">
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
+                      <label className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-white/80">
+                        <span className="sr-only">Select transaction</span>
+                        <input
+                          className="h-4 w-4 accent-teal-700"
+                          data-accounting-transaction-select="true"
+                          form={BULK_ACCOUNTING_REVIEW_FORM_ID}
+                          name="transaction_id"
+                          type="checkbox"
+                          value={transaction.id}
+                        />
+                      </label>
                       <p className="font-semibold text-slate-950">{transaction.merchant_name || transaction.original_description}</p>
                       <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ring-1 ${transactionTone(transaction.status)}`}>{accountingStatusLabel(transaction.status)}</span>
                       <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ring-1 ${aiReviewTone(transaction.ai_review_status)}`}>{aiReviewLabel(transaction.ai_review_status)}</span>

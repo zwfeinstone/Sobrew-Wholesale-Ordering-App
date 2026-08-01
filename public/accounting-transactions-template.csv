@@ -1,6 +1,16 @@
 Date,Description,Amount,Merchant,Account,Likely Expense Category
-2026-07-12,Uline boxes,125.25,Uline,Sobrew Visa,Packaging & Shipping Supplies COGS
-2026-07-14,Stripe payout,-450.00,Stripe,Sobrew Checking,Sales Revenue
-2026-07-18,Software subscription,39.00,Accounting Software,Sobrew Visa,Software & Subscriptions
-2026-07-20,USPS postage,18.40,USPS,Sobrew Visa,Shipping & Postage
-2026-07-22,Stripe processing fee,12.75,Stripe,Sobrew Checking,Bank & Processing Fees
+2026-07-14,Intuit deposit,-450.00,Intuit,Sobrew Checking,Sales Revenue
+2026-07-15,Mobile payment thank you,-500.00,American Express,Sobrew Checking,Transfer / Credit Card Payment
+2026-07-16,Pirate Ship postage,236.41,Pirate Ship,Business Amex,Shipping Labels & Postage COGS
+2026-07-17,Uline boxes,146.52,Uline,Business Amex,Packaging & Shipping Supplies COGS
+2026-07-18,Exploradora green coffee,550.00,Exploradora Coffee,Business Amex,Coffee & Ingredients COGS
+2026-07-19,Restaurant Depot ingredients,81.30,Restaurant Depot,Business Amex,Food & Beverage Ingredients COGS
+2026-07-20,Webstaurant equipment,1959.00,Webstaurant Store,Business Amex,Equipment & Smallwares
+2026-07-21,Home Star storage,231.00,Home Star Storage,Business Amex,Storage & Warehousing
+2026-07-22,AT&T internet,56.80,AT&T,Business Amex,Telecom & Internet
+2026-07-23,OpenAI subscription,87.80,OpenAI,Business Amex,AI & Automation Tools
+2026-07-24,Shopify platform fee,42.81,Shopify,Business Amex,Ecommerce Platform Fees
+2026-07-25,Custom Ink branded materials,45.67,Custom Ink,Business Amex,Printing & Branded Materials
+2026-07-26,QuickBooks subscription,126.21,Intuit QuickBooks,Business Amex,Software & Subscriptions
+2026-07-27,Canva design tools,158.04,Canva,Business Amex,Advertising & Marketing
+2026-07-28,Processing fee,12.75,Intuit,Sobrew Checking,Bank & Processing Fees
