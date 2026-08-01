@@ -80,6 +80,7 @@ export const ADMIN_NAV_LINKS: Array<{
   { name: 'Sales Admin', href: '/admin/sales-admin', sectionKey: 'sales_admin' },
   { name: 'Commission', href: '/admin/commission', sectionKey: 'commission' },
   { name: 'Accounting', href: '/admin/accounting', sectionKey: 'accounting' },
+  { name: 'Budgeting', href: '/admin/accounting?view=budgeting', child: true, sectionKey: 'accounting' },
   { name: 'Reports', href: '/admin/reports', sectionKey: 'reports' },
   { name: 'Marketing', href: '/admin/marketing', sectionKey: 'marketing' },
   { name: 'Prospecting', href: '/admin/sales/prospecting', child: true, sectionKey: 'prospecting' },
