@@ -10,6 +10,7 @@ import {
   canPushProspectingHubSpot,
   hubSpotRecordUrl,
   pushProspectingLeadToHubSpot,
+  syncHubSpotProspectingActivityNote,
   type HubSpotProspectingActivity,
   type HubSpotProspectingContact,
   type HubSpotProspectingLead,
@@ -1276,6 +1277,7 @@ async function pushSelectedHubspotLeads(formData: FormData) {
   for (const lead of selectedLeads) {
     const attemptAt = new Date().toISOString();
     try {
+      const ownerEmail = lead.assigned_profile_id ? assignedProfilesById.get(lead.assigned_profile_id)?.email ?? null : null;
       const result = await pushProspectingLeadToHubSpot({
         accessToken: env.hubspotAccessToken,
         activities: activitiesByLead.get(lead.id) ?? [],
@@ -1283,7 +1285,7 @@ async function pushSelectedHubspotLeads(formData: FormData) {
         dealPipeline: env.hubspotDealPipeline,
         dealStage: env.hubspotSampleRequestedDealStage,
         lead: hubspotLeadPayload(lead),
-        ownerEmail: lead.assigned_profile_id ? assignedProfilesById.get(lead.assigned_profile_id)?.email ?? null : null,
+        ownerEmail,
       });
 
       const leadUpdate = {
@@ -1299,15 +1301,7 @@ async function pushSelectedHubspotLeads(formData: FormData) {
       const activityNoteEntries = Object.entries(result.activityNoteIds);
 
       if (result.status === 'exported') {
-        const { error } = await supabase
-          .from('prospecting_leads')
-          .update({
-            ...leadUpdate,
-            hubspot_exported_at: attemptAt,
-            hubspot_exported_by: current.profile.id,
-            hubspot_status: 'exported',
-          })
-          .eq('id', lead.id);
+        const { error } = await supabase.from('prospecting_leads').update(leadUpdate).eq('id', lead.id);
         if (error) throw error;
         for (const [activityId, hubspotNoteId] of activityNoteEntries) {
           const { error: activityNoteError } = await supabase
@@ -1318,6 +1312,49 @@ async function pushSelectedHubspotLeads(formData: FormData) {
           if (activityNoteError) throw activityNoteError;
         }
 
+        const { data: exportActivity, error: exportActivityError } = await supabase
+          .from('prospecting_activities')
+          .insert({
+            activity_type: 'hubspot_export',
+            body: result.message,
+            created_at: attemptAt,
+            created_by: current.profile.id,
+            lead_id: lead.id,
+            result: 'Exported',
+          })
+          .select('id,lead_id,activity_type,result,body,previous_stage,next_stage,next_follow_up_at,created_at,hubspot_note_id')
+          .single();
+        if (exportActivityError) throw exportActivityError;
+        if (exportActivity && result.companyId && result.dealId && result.contactIds.length) {
+          const exportActivityNoteId = await syncHubSpotProspectingActivityNote({
+            accessToken: env.hubspotAccessToken,
+            activity: exportActivity as HubSpotProspectingActivity,
+            companyId: result.companyId,
+            contactIds: result.contactIds,
+            dealId: result.dealId,
+            ownerEmail,
+          });
+          const { error: exportActivityNoteError } = await supabase
+            .from('prospecting_activities')
+            .update({ hubspot_note_id: exportActivityNoteId })
+            .eq('id', exportActivity.id)
+            .eq('lead_id', lead.id);
+          if (exportActivityNoteError) throw exportActivityNoteError;
+        }
+
+        const { error: exportedLeadError } = await supabase
+          .from('prospecting_leads')
+          .update({
+            hubspot_exported_at: attemptAt,
+            hubspot_exported_by: current.profile.id,
+            hubspot_last_push_error: null,
+            hubspot_status: 'exported',
+            updated_at: attemptAt,
+            updated_by: current.profile.id,
+          })
+          .eq('id', lead.id);
+        if (exportedLeadError) throw exportedLeadError;
+
         await supabase
           .from('prospecting_hubspot_queue')
           .update({
@@ -1327,13 +1364,6 @@ async function pushSelectedHubspotLeads(formData: FormData) {
             status: 'exported',
           })
           .eq('lead_id', lead.id);
-        await supabase.from('prospecting_activities').insert({
-          activity_type: 'hubspot_export',
-          body: result.message,
-          created_by: current.profile.id,
-          lead_id: lead.id,
-          result: 'Exported',
-        });
         exportedCount += 1;
       } else {
         const { error } = await supabase.from('prospecting_leads').update(leadUpdate).eq('id', lead.id);

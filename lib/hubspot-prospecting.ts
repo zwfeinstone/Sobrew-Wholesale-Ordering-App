@@ -649,6 +649,27 @@ async function upsertHubSpotActivityNote(options: {
   }
 }
 
+export async function syncHubSpotProspectingActivityNote(options: {
+  accessToken: string;
+  activity: HubSpotProspectingActivity;
+  companyId: string;
+  contactIds: string[];
+  dealId: string;
+  fetchImpl?: FetchLike;
+  ownerEmail?: string | null;
+}) {
+  const ownerId = await lookupHubSpotOwnerIdByEmail(options.accessToken, options.ownerEmail, options.fetchImpl);
+  return upsertHubSpotActivityNote({
+    accessToken: options.accessToken,
+    activity: options.activity,
+    companyId: options.companyId,
+    contactIds: options.contactIds,
+    dealId: options.dealId,
+    fetchImpl: options.fetchImpl,
+    ownerId,
+  });
+}
+
 export async function pushProspectingLeadToHubSpot(options: {
   accessToken: string;
   activities?: HubSpotProspectingActivity[];
