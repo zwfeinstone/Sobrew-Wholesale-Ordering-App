@@ -6,6 +6,7 @@ export const ADMIN_PERMISSION_KEYS = [
   'sales_admin',
   'commission',
   'payroll',
+  'accounting',
   'reports',
   'reports_sales',
   'reports_profitability',
@@ -59,6 +60,7 @@ export const ADMIN_SECTION_LABELS: Record<AdminPermissionKey, string> = {
   sales: 'Sales',
   sales_admin: 'Sales Admin',
   commission: 'Commission',
+  accounting: 'Accounting',
   payroll: 'Payroll',
   settings: 'Settings',
   time_clock: 'Time Clock',
@@ -77,6 +79,7 @@ export const ADMIN_NAV_LINKS: Array<{
   { name: 'Sales Price Guide', href: '/admin/sales-price-guide', sectionKey: 'sales' },
   { name: 'Sales Admin', href: '/admin/sales-admin', sectionKey: 'sales_admin' },
   { name: 'Commission', href: '/admin/commission', sectionKey: 'commission' },
+  { name: 'Accounting', href: '/admin/accounting', sectionKey: 'accounting' },
   { name: 'Reports', href: '/admin/reports', sectionKey: 'reports' },
   { name: 'Marketing', href: '/admin/marketing', sectionKey: 'marketing' },
   { name: 'Prospecting', href: '/admin/sales/prospecting', child: true, sectionKey: 'prospecting' },
@@ -99,7 +102,7 @@ export const ADMIN_NAV_LINKS: Array<{
 
 export const ADMIN_PERMISSION_GROUPS: Array<{ keys: AdminPermissionKey[]; label: string }> = [
   { label: 'Core', keys: ['dashboard', 'orders', 'order_form', 'centers', 'settings', 'manage_admins'] },
-  { label: 'Sales & Reports', keys: ['sales', 'sales_admin', 'commission', 'marketing', 'prospecting', 'reports', 'reports_sales', 'reports_profitability'] },
+  { label: 'Sales & Reports', keys: ['sales', 'sales_admin', 'commission', 'marketing', 'prospecting', 'reports', 'reports_sales', 'reports_profitability', 'accounting'] },
   { label: 'Catalog & Operations', keys: ['products', 'inventory', 'receiving', 'planning', 'production', 'time_clock', 'week_hours', 'payroll'] },
   { label: 'Order History', keys: ['archived_orders', 'recurring_orders', 'canceled_recurring_orders'] },
 ];
@@ -210,6 +213,7 @@ export function enforceOwnerOnlyPermissions(email: string | null | undefined, ac
     normalized.manage_admins = { canEdit: false, canView: false };
     normalized.sales_admin = { canEdit: false, canView: false };
     normalized.payroll = { canEdit: false, canView: false };
+    normalized.accounting = { canEdit: false, canView: false };
     normalized.commission = { ...normalized.commission, canEdit: false };
     normalized.time_clock = { ...normalized.time_clock, canEdit: false };
     normalized.week_hours = { ...normalized.week_hours, canEdit: false };
@@ -261,6 +265,7 @@ export function adminSectionForPath(pathname: string): AdminPermissionKey | null
   if (pathname === '/admin/sales-admin' || pathname.startsWith('/admin/sales-admin/')) return 'sales_admin';
   if (pathname === '/admin/sales-price-guide' || pathname.startsWith('/admin/sales-price-guide/')) return 'sales';
   if (pathname === '/admin/commission' || pathname.startsWith('/admin/commission/')) return 'commission';
+  if (pathname === '/admin/accounting' || pathname.startsWith('/admin/accounting/')) return 'accounting';
   if (pathname === '/admin/marketing' || pathname.startsWith('/admin/marketing/')) return 'marketing';
   if (pathname === '/admin/sales/prospecting' || pathname.startsWith('/admin/sales/prospecting/')) return 'prospecting';
   if (pathname === '/admin/sales' || pathname.startsWith('/admin/sales/')) return 'sales';

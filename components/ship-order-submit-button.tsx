@@ -31,6 +31,18 @@ function totalBoxQuantity(formData: FormData) {
   }, 0);
 }
 
+function hasManualTrackingField(form: HTMLFormElement) {
+  return Boolean(form.elements.namedItem('tracking_numbers'));
+}
+
+function parseTrackingNumbers(formData: FormData) {
+  return formData
+    .getAll('tracking_numbers')
+    .flatMap((value) => String(value ?? '').split(/[\n,;]+/))
+    .map((value) => value.trim())
+    .filter(Boolean);
+}
+
 export default function ShipOrderSubmitButton({
   className = 'btn-primary',
   hasRequiredBoxLines,
@@ -48,6 +60,12 @@ export default function ShipOrderSubmitButton({
     setZeroBoxesConfirmed(form, false);
     const formData = new FormData(form);
     const fulfillmentMethod = String(formData.get('fulfillment_method') ?? '');
+    if (fulfillmentMethod === 'carrier' && hasManualTrackingField(form) && !parseTrackingNumbers(formData).length) {
+      event.preventDefault();
+      window.alert('Enter at least one tracking number before marking a carrier-shipped order shipped.');
+      return;
+    }
+
     const boxesUsed = totalBoxQuantity(formData);
     if (boxesUsed > 0) return;
 

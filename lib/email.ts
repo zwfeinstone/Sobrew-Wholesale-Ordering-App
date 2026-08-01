@@ -272,6 +272,27 @@ export async function sendOrderEmails(payload: OrderEmailPayload) {
   ]);
 }
 
+export function buildShippedEmailContent(items: ShippedLine[], trackingLines: TrackingLine[] = []) {
+  const itemRows = items
+    .map((item) => `<li>${escapeHtml(item.name)} x ${item.qty}</li>`)
+    .join('');
+  const itemsHtml = itemRows ? `<p>Items in this shipment:</p><ul>${itemRows}</ul>` : '<p>Items in this shipment:</p><p>Unavailable</p>';
+  const trackingRows = trackingLines
+    .map((tracking) => {
+      const carrier = [tracking.carrier, tracking.service].map((value) => cleanEmailText(value)).filter(Boolean).join(' ');
+      const trackingCode = escapeHtml(tracking.trackingCode);
+      return `<li>${carrier ? `${escapeHtml(carrier)}: ` : ''}${trackingCode}</li>`;
+    })
+    .join('');
+  const trackingHtml = trackingRows ? `<p>Tracking:</p><ul>${trackingRows}</ul>` : '';
+
+  return `<p>Thank you for your business!</p>${itemsHtml}${trackingHtml}`;
+}
+
+function cleanEmailText(value: unknown) {
+  return String(value ?? '').trim();
+}
+
 export async function sendShippedEmail(to: string | string[], items: ShippedLine[], trackingLines: TrackingLine[] = []) {
   const resend = getResend();
   if (!resend) {
@@ -285,24 +306,14 @@ export async function sendShippedEmail(to: string | string[], items: ShippedLine
     return;
   }
 
-  const itemRows = items
-    .map((item) => `<li>${item.name} x ${item.qty}</li>`)
-    .join('');
-  const itemsHtml = itemRows ? `<p>Items in this shipment:</p><ul>${itemRows}</ul>` : '<p>Items in this shipment:</p><p>Unavailable</p>';
-  const trackingRows = trackingLines
-    .map((tracking) => {
-      const carrier = [tracking.carrier, tracking.service].filter(Boolean).join(' ');
-      return `<li>${carrier ? `${carrier}: ` : ''}${tracking.trackingCode}</li>`;
-    })
-    .join('');
-  const trackingHtml = trackingRows ? `<p>Tracking:</p><ul>${trackingRows}</ul>` : '';
+  const html = buildShippedEmailContent(items, trackingLines);
 
   try {
     const response = await resend.emails.send({
       from: RESEND_FROM,
       to: recipients,
       subject: 'Your Order Has Been Shipped!',
-      html: `<p>Thank you for your business!</p>${itemsHtml}${trackingHtml}`,
+      html,
     });
     console.log('Shipped email sent', response);
   } catch (error) {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { adminOrderCcForAssignedSalesEmail, buildCustomerWelcomeEmailContent } from '@/lib/email';
+import { adminOrderCcForAssignedSalesEmail, buildCustomerWelcomeEmailContent, buildShippedEmailContent } from '@/lib/email';
 
 describe('buildCustomerWelcomeEmailContent', () => {
   it('uses the first name from the full name', () => {
@@ -46,5 +46,31 @@ describe('adminOrderCcForAssignedSalesEmail', () => {
     expect(adminOrderCcForAssignedSalesEmail('HASKINS@SOBREW.COM')).toEqual(['haskins@sobrew.com']);
     expect(adminOrderCcForAssignedSalesEmail('another@sobrew.com')).toEqual([]);
     expect(adminOrderCcForAssignedSalesEmail(null)).toEqual([]);
+  });
+});
+
+describe('buildShippedEmailContent', () => {
+  it('includes multiple tracking numbers in the customer shipped email', () => {
+    const html = buildShippedEmailContent(
+      [{ name: 'Cold Brew', qty: 2 }],
+      [
+        { trackingCode: 'TRACK-001' },
+        { trackingCode: 'TRACK-002' },
+      ],
+    );
+
+    expect(html).toContain('TRACK-001');
+    expect(html).toContain('TRACK-002');
+  });
+
+  it('escapes customer-visible shipment values', () => {
+    const html = buildShippedEmailContent(
+      [{ name: '<strong>Cold Brew</strong>', qty: 1 }],
+      [{ carrier: '<Carrier>', trackingCode: '<TRACK>' }],
+    );
+
+    expect(html).toContain('&lt;strong&gt;Cold Brew&lt;/strong&gt;');
+    expect(html).toContain('&lt;Carrier&gt;');
+    expect(html).toContain('&lt;TRACK&gt;');
   });
 });

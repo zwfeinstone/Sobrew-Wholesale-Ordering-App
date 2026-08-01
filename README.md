@@ -26,7 +26,6 @@ Copy `.env.example` to `.env.local` and configure:
 - `RESEND_API_KEY`
 - `RESEND_FROM_EMAIL` (default `hello@sobrew.com`)
 - `SOBREW_ADMIN_EMAIL` (default `hello@sobrew.com`)
-- `EASYPOST_API_KEY` (optional; enables EasyPost rate lookup and label purchase)
 
 ## Supabase setup
 1. Create a new Supabase project.
@@ -82,11 +81,6 @@ Visit `/bootstrap` and submit email/password/token. If token matches `ADMIN_BOOT
   - admin notification to `hello@sobrew.com`
   - customer confirmation to ordering customer
 - Optional shipped email is sent when order status becomes `Shipped`.
-
-## EasyPost setup
-- Set `EASYPOST_API_KEY`.
-- Add the ship-from origin address in Admin > Settings.
-- Carrier shipments can then quote rates, buy labels, print labels, and automatically record shipping COGS from the purchased label cost.
 
 ## Seed data
 `db/migrations/002_seed.sql` adds two example products and includes assignment snippets for a sample user.
