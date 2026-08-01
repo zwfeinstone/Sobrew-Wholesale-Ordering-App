@@ -54,6 +54,8 @@ type QuickBooksOrderItem = {
 
 type QuickBooksInvoiceCenter = {
   customer_tax_status?: CustomerTaxStatus | string | null;
+  quickbooks_customer_id?: string | null;
+  quickbooks_display_name?: string | null;
   name: string | null;
 };
 
@@ -120,11 +122,65 @@ export type QuickBooksCatalogItemsResult = {
   truncated: boolean;
 };
 
+export type QuickBooksCustomerSummary = {
+  activeCustomerCount: number | null;
+  error: string | null;
+};
+
+export type QuickBooksCustomerAddress = {
+  city: string | null;
+  line1: string | null;
+  line2: string | null;
+  postalCode: string | null;
+  state: string | null;
+};
+
+export type QuickBooksCustomerRecord = {
+  active: boolean;
+  billAddress: QuickBooksCustomerAddress;
+  companyName: string | null;
+  displayName: string;
+  email: string | null;
+  fullyQualifiedName: string | null;
+  id: string;
+  phone: string | null;
+  syncToken: string | null;
+};
+
+export type QuickBooksCustomersResult = {
+  customers: QuickBooksCustomerRecord[];
+  error: string | null;
+  truncated: boolean;
+};
+
+export type QuickBooksPortalCenter = {
+  billing_address1?: string | null;
+  billing_city?: string | null;
+  billing_email?: string | null;
+  billing_state?: string | null;
+  billing_zip?: string | null;
+  id: string;
+  is_active: boolean | null;
+  legal_name?: string | null;
+  name: string | null;
+  quickbooks_company_name?: string | null;
+  quickbooks_customer_id?: string | null;
+  quickbooks_display_name?: string | null;
+};
+
+export type QuickBooksCustomerMatch = {
+  centerId: string;
+  customer: QuickBooksCustomerRecord | null;
+  reasons: string[];
+  score: number;
+};
+
 export type QuickBooksPortalProduct = {
   active: boolean | null;
   description: string | null;
   id: string;
   name: string | null;
+  quickbooks_item_id?: string | null;
   sku: string | null;
 };
 
@@ -133,6 +189,11 @@ export type QuickBooksProductResetResult = {
   archiveErrors: string[];
   createdCount: number;
   inactivatedCount: number;
+  productErrorCount: number;
+};
+
+export type QuickBooksProductCreateResult = {
+  createdCount: number;
   productErrorCount: number;
 };
 
@@ -392,6 +453,11 @@ function quickBooksQueryItems(payload: any) {
   return Array.isArray(items) ? items : [];
 }
 
+function quickBooksQueryCustomers(payload: any) {
+  const customers = payload?.QueryResponse?.Customer;
+  return Array.isArray(customers) ? customers : [];
+}
+
 function normalizeQuickBooksCatalogItem(item: any): QuickBooksCatalogItem | null {
   const id = cleanText(item?.Id);
   if (!id) return null;
@@ -404,6 +470,151 @@ function normalizeQuickBooksCatalogItem(item: any): QuickBooksCatalogItem | null
     syncToken: cleanText(item?.SyncToken) || null,
     type: cleanText(item?.Type) || null,
   };
+}
+
+function normalizeQuickBooksAddress(address: any): QuickBooksCustomerAddress {
+  return {
+    city: cleanText(address?.City) || null,
+    line1: cleanText(address?.Line1) || null,
+    line2: cleanText(address?.Line2) || null,
+    postalCode: cleanText(address?.PostalCode) || null,
+    state: cleanText(address?.CountrySubDivisionCode) || null,
+  };
+}
+
+function normalizeQuickBooksCustomer(customer: any): QuickBooksCustomerRecord | null {
+  const id = cleanText(customer?.Id);
+  if (!id) return null;
+  return {
+    active: customer?.Active !== false,
+    billAddress: normalizeQuickBooksAddress(customer?.BillAddr),
+    companyName: cleanText(customer?.CompanyName) || null,
+    displayName: cleanText(customer?.DisplayName) || cleanText(customer?.FullyQualifiedName) || `Customer ${id}`,
+    email: cleanText(customer?.PrimaryEmailAddr?.Address) || null,
+    fullyQualifiedName: cleanText(customer?.FullyQualifiedName) || null,
+    id,
+    phone: cleanText(customer?.PrimaryPhone?.FreeFormNumber) || null,
+    syncToken: cleanText(customer?.SyncToken) || null,
+  };
+}
+
+export function normalizeCustomerMatchText(value: unknown) {
+  return cleanText(value)
+    .toLowerCase()
+    .replace(/&/g, ' and ')
+    .replace(/\bdba\b/g, ' ')
+    .replace(/\b(the|inc|incorporated|llc|l\.l\.c|ltd|co|company|corp|corporation|pllc|lp|llp)\b/g, ' ')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function tokenSet(value: string) {
+  return new Set(normalizeCustomerMatchText(value).split(' ').filter((token) => token.length > 1));
+}
+
+function sharedDistinctiveTokens(left: string, right: string) {
+  const genericTokens = new Set(['health', 'behavioral', 'recovery', 'center', 'services', 'service', 'group', 'clinic']);
+  const leftTokens = tokenSet(left);
+  const rightTokens = tokenSet(right);
+  return [...leftTokens].filter((token) => token.length > 3 && !genericTokens.has(token) && rightTokens.has(token));
+}
+
+function tokenOverlapScore(left: string, right: string) {
+  const leftTokens = tokenSet(left);
+  const rightTokens = tokenSet(right);
+  if (!leftTokens.size || !rightTokens.size) return 0;
+  let overlap = 0;
+  for (const token of leftTokens) {
+    if (rightTokens.has(token)) overlap += 1;
+  }
+  return overlap / Math.max(leftTokens.size, rightTokens.size);
+}
+
+function zipPrefix(value: string | null | undefined) {
+  return cleanText(value).replace(/\D/g, '').slice(0, 5);
+}
+
+export function scoreQuickBooksCustomerMatch(center: QuickBooksPortalCenter, customer: QuickBooksCustomerRecord) {
+  const reasons: string[] = [];
+  let score = 0;
+  const centerName = cleanText(center.name);
+  const centerLegalName = cleanText(center.legal_name);
+  const customerNames = [
+    customer.displayName,
+    customer.companyName,
+    customer.fullyQualifiedName,
+  ].map(cleanText).filter(Boolean);
+
+  const exactName = customerNames.some((name) => normalizeCustomerMatchText(name) === normalizeCustomerMatchText(centerName));
+  if (exactName && centerName) {
+    score += 80;
+    reasons.push('same normalized name');
+  }
+
+  if (centerLegalName && customerNames.some((name) => normalizeCustomerMatchText(name) === normalizeCustomerMatchText(centerLegalName))) {
+    score += 85;
+    reasons.push('legal name match');
+  }
+
+  const bestNameOverlap = Math.max(0, ...customerNames.map((name) => tokenOverlapScore(centerName, name)));
+  if (!exactName && bestNameOverlap >= 0.5) {
+    score += Math.round(bestNameOverlap * 55);
+    reasons.push('similar name');
+  }
+
+  if (!exactName && bestNameOverlap < 0.5 && customerNames.some((name) => sharedDistinctiveTokens(centerName, name).length > 0)) {
+    score += 25;
+    reasons.push('shared distinctive name');
+  }
+
+  const centerEmail = cleanText(center.billing_email).toLowerCase();
+  if (centerEmail && centerEmail === cleanText(customer.email).toLowerCase()) {
+    score += 55;
+    reasons.push('billing email match');
+  }
+
+  const centerZip = zipPrefix(center.billing_zip);
+  const customerZip = zipPrefix(customer.billAddress.postalCode);
+  if (centerZip && centerZip === customerZip) {
+    score += 20;
+    reasons.push('ZIP match');
+  }
+
+  const centerState = cleanText(center.billing_state).toUpperCase();
+  const customerState = cleanText(customer.billAddress.state).toUpperCase();
+  if (centerState && centerState === customerState) {
+    score += 10;
+    reasons.push('state match');
+  }
+
+  return { reasons, score };
+}
+
+export function buildQuickBooksCustomerMatches(centers: QuickBooksPortalCenter[], customers: QuickBooksCustomerRecord[]) {
+  return centers.map((center): QuickBooksCustomerMatch => {
+    if (center.quickbooks_customer_id) {
+      const mappedCustomer = customers.find((customer) => customer.id === center.quickbooks_customer_id) ?? null;
+      return {
+        centerId: center.id,
+        customer: mappedCustomer,
+        reasons: mappedCustomer ? ['already linked'] : ['linked customer was not found in this QuickBooks pull'],
+        score: mappedCustomer ? 100 : 0,
+      };
+    }
+
+    const ranked = customers
+      .map((customer) => ({ customer, ...scoreQuickBooksCustomerMatch(center, customer) }))
+      .filter((match) => match.score >= 45)
+      .sort((a, b) => b.score - a.score);
+    const best = ranked[0];
+    return {
+      centerId: center.id,
+      customer: best?.customer ?? null,
+      reasons: best?.reasons ?? [],
+      score: best?.score ?? 0,
+    };
+  });
 }
 
 function quickBooksItemName(value: unknown) {
@@ -516,6 +727,60 @@ async function createQuickBooksProductItem(connection: QuickBooksConnection, pro
   };
 }
 
+export async function createMissingQuickBooksProductsFromPortal(products: QuickBooksPortalProduct[]): Promise<QuickBooksProductCreateResult> {
+  const activeUnmappedProducts = products
+    .filter((product) => product.active !== false && !cleanText(product.quickbooks_item_id))
+    .map((product) => ({
+      ...product,
+      name: quickBooksItemName(product.name),
+    }));
+
+  if (!activeUnmappedProducts.length) {
+    return { createdCount: 0, productErrorCount: 0 };
+  }
+
+  const connection = await getAuthorizedConnection();
+  const incomeAccountRef = await resolveProductIncomeAccount(connection);
+  const supabase = getSupabaseAdmin();
+  const syncedAt = new Date().toISOString();
+  let createdCount = 0;
+  let productErrorCount = 0;
+
+  for (const product of activeUnmappedProducts) {
+    try {
+      const item = await createQuickBooksProductItem(connection, product, incomeAccountRef);
+      const { error } = await supabase
+        .from('products')
+        .update({
+          quickbooks_item_id: item.id,
+          quickbooks_item_name: item.name,
+          quickbooks_item_type: item.type,
+          quickbooks_sync_error: null,
+          quickbooks_sync_status: 'created',
+          quickbooks_synced_at: syncedAt,
+        })
+        .eq('id', product.id);
+      if (error) throw error;
+      createdCount += 1;
+    } catch (error) {
+      productErrorCount += 1;
+      await supabase
+        .from('products')
+        .update({
+          quickbooks_item_id: null,
+          quickbooks_item_name: null,
+          quickbooks_item_type: null,
+          quickbooks_sync_error: error instanceof Error ? error.message : 'Unable to create QuickBooks item.',
+          quickbooks_sync_status: 'sync_error',
+          quickbooks_synced_at: syncedAt,
+        })
+        .eq('id', product.id);
+    }
+  }
+
+  return { createdCount, productErrorCount };
+}
+
 function customerNameForOrder(order: QuickBooksInvoiceOrder) {
   return cleanText(relatedOne(order.centers)?.name)
     || cleanText(order.shipping_company)
@@ -523,6 +788,18 @@ function customerNameForOrder(order: QuickBooksInvoiceOrder) {
     || cleanText(relatedOne(order.profiles)?.full_name)
     || cleanText(relatedOne(order.profiles)?.email)
     || `Sobrew order ${order.id.slice(0, 8)}`;
+}
+
+function quickBooksCustomerRefFromCenter(order: QuickBooksInvoiceOrder): QuickBooksRef {
+  const center = relatedOne(order.centers);
+  const quickBooksCustomerId = cleanText(center?.quickbooks_customer_id);
+  if (!quickBooksCustomerId) {
+    throw new QuickBooksConfigurationError('Map this portal center to a QuickBooks customer before invoicing.');
+  }
+  return {
+    name: cleanText(center?.quickbooks_display_name) || customerNameForOrder(order),
+    value: quickBooksCustomerId,
+  };
 }
 
 function productNameForItem(item: QuickBooksOrderItem) {
@@ -574,6 +851,26 @@ async function findOrCreateCustomer(connection: QuickBooksConnection, order: Qui
   const createdCustomer = created?.Customer;
   if (!createdCustomer?.Id) throw new Error('QuickBooks did not return a customer ID.');
   return { name: createdCustomer.DisplayName ?? displayName, value: String(createdCustomer.Id) };
+}
+
+function centerUpdateFromQuickBooksCustomer(customer: QuickBooksCustomerRecord) {
+  return {
+    billing_address1: customer.billAddress.line1,
+    billing_address2: customer.billAddress.line2,
+    billing_city: customer.billAddress.city,
+    billing_email: customer.email,
+    billing_phone: customer.phone,
+    billing_state: customer.billAddress.state,
+    billing_zip: customer.billAddress.postalCode,
+    legal_name: customer.companyName || customer.displayName,
+    quickbooks_company_name: customer.companyName,
+    quickbooks_customer_id: customer.id,
+    quickbooks_display_name: customer.displayName,
+    quickbooks_fully_qualified_name: customer.fullyQualifiedName,
+    quickbooks_sync_error: null,
+    quickbooks_sync_status: 'matched',
+    quickbooks_synced_at: new Date().toISOString(),
+  };
 }
 
 async function resolveInvoiceItem(connection: QuickBooksConnection): Promise<QuickBooksRef> {
@@ -679,7 +976,7 @@ export async function createQuickBooksInvoiceForOrder(orderId: string): Promise<
   const supabase = getSupabaseAdmin();
   const { data: order, error } = await supabase
     .from('orders')
-    .select('id,status,archived_at,created_at,notes,quickbooks_invoice_id,shipping_company,shipping_name,shipping_address1,shipping_address2,shipping_city,shipping_state,shipping_zip,profiles(email,full_name),centers(name,customer_tax_status),order_items(qty,unit_price_cents,line_total_cents,product_id,product_name_snapshot,products(name,sku,quickbooks_item_id,quickbooks_item_name))')
+    .select('id,status,archived_at,created_at,notes,quickbooks_invoice_id,shipping_company,shipping_name,shipping_address1,shipping_address2,shipping_city,shipping_state,shipping_zip,profiles(email,full_name),centers(name,customer_tax_status,quickbooks_customer_id,quickbooks_display_name),order_items(qty,unit_price_cents,line_total_cents,product_id,product_name_snapshot,products(name,sku,quickbooks_item_id,quickbooks_item_name))')
     .eq('id', orderId)
     .single();
   if (error || !order) throw new Error(error?.message || 'Order not found.');
@@ -695,7 +992,7 @@ export async function createQuickBooksInvoiceForOrder(orderId: string): Promise<
   if (missingMappedItems.length) {
     throw new Error(`Map these products to QuickBooks before invoicing: ${[...new Set(missingMappedItems)].join(', ')}`);
   }
-  const customerRef = await findOrCreateCustomer(connection, order as QuickBooksInvoiceOrder);
+  const customerRef = quickBooksCustomerRefFromCenter(order as QuickBooksInvoiceOrder);
   const itemRef = await resolveInvoiceItem(connection);
   const invoicePayload = buildQuickBooksInvoicePayload(order as QuickBooksInvoiceOrder, customerRef, itemRef, { taxableStates: salesTaxSettings.states });
   const created = await quickBooksRequest(connection, '/invoice', {
@@ -771,6 +1068,109 @@ export async function getQuickBooksProductSummary(): Promise<QuickBooksProductSu
       error: error instanceof Error ? error.message : 'Unable to read QuickBooks products.',
     };
   }
+}
+
+export async function getQuickBooksCustomerSummary(): Promise<QuickBooksCustomerSummary> {
+  try {
+    const connection = await getAuthorizedConnection();
+    const result = await quickBooksQuery(connection, 'SELECT COUNT(*) FROM Customer WHERE Active = true');
+    const totalCount = Number(result?.QueryResponse?.totalCount ?? result?.QueryResponse?.TotalCount);
+    return {
+      activeCustomerCount: Number.isFinite(totalCount) ? totalCount : null,
+      error: null,
+    };
+  } catch (error) {
+    return {
+      activeCustomerCount: null,
+      error: error instanceof Error ? error.message : 'Unable to read QuickBooks customers.',
+    };
+  }
+}
+
+export async function getQuickBooksActiveCustomers(limit = 1000): Promise<QuickBooksCustomersResult> {
+  try {
+    const connection = await getAuthorizedConnection();
+    const customers: QuickBooksCustomerRecord[] = [];
+    let startPosition = 1;
+
+    while (customers.length < limit) {
+      const pageSize = Math.min(100, limit - customers.length);
+      const result = await quickBooksQuery(
+        connection,
+        `SELECT * FROM Customer WHERE Active = true STARTPOSITION ${startPosition} MAXRESULTS ${pageSize}`
+      );
+      const pageCustomers = quickBooksQueryCustomers(result)
+        .map(normalizeQuickBooksCustomer)
+        .filter((customer): customer is QuickBooksCustomerRecord => Boolean(customer));
+      customers.push(...pageCustomers);
+      if (pageCustomers.length < pageSize) {
+        return { customers, error: null, truncated: false };
+      }
+      startPosition += pageSize;
+    }
+
+    return { customers, error: null, truncated: true };
+  } catch (error) {
+    return {
+      customers: [],
+      error: error instanceof Error ? error.message : 'Unable to pull QuickBooks customers.',
+      truncated: false,
+    };
+  }
+}
+
+export async function linkPortalCenterToQuickBooksCustomer({
+  centerId,
+  customerId,
+  mappingNote,
+}: {
+  centerId: string;
+  customerId: string;
+  mappingNote?: string | null;
+}) {
+  const connection = await getAuthorizedConnection();
+  const result = await quickBooksQuery(connection, `SELECT * FROM Customer WHERE Id = '${escapeQueryString(customerId)}'`);
+  const customer = quickBooksQueryCustomers(result)
+    .map(normalizeQuickBooksCustomer)
+    .find((row): row is QuickBooksCustomerRecord => Boolean(row));
+  if (!customer) throw new Error('That QuickBooks customer was not found.');
+
+  const supabase = getSupabaseAdmin();
+  const { error } = await supabase
+    .from('centers')
+    .update({
+      ...centerUpdateFromQuickBooksCustomer(customer),
+      quickbooks_mapping_note: cleanText(mappingNote) || null,
+    })
+    .eq('id', centerId);
+  if (error) throw new Error(`Unable to save QuickBooks customer mapping: ${error.message}`);
+  return customer;
+}
+
+export async function clearPortalCenterQuickBooksCustomer(centerId: string) {
+  const supabase = getSupabaseAdmin();
+  const { error } = await supabase
+    .from('centers')
+    .update({
+      billing_address1: null,
+      billing_address2: null,
+      billing_city: null,
+      billing_email: null,
+      billing_phone: null,
+      billing_state: null,
+      billing_zip: null,
+      legal_name: null,
+      quickbooks_company_name: null,
+      quickbooks_customer_id: null,
+      quickbooks_display_name: null,
+      quickbooks_fully_qualified_name: null,
+      quickbooks_mapping_note: null,
+      quickbooks_sync_error: null,
+      quickbooks_sync_status: 'unmapped',
+      quickbooks_synced_at: null,
+    })
+    .eq('id', centerId);
+  if (error) throw new Error(`Unable to clear QuickBooks customer mapping: ${error.message}`);
 }
 
 export async function getQuickBooksActiveItems(limit = 500): Promise<QuickBooksCatalogItemsResult> {

@@ -6,6 +6,13 @@ import StatusToast from '@/components/status-toast';
 import { requireAdminSectionView } from '@/lib/admin-permissions';
 import { requireAdminWriteAccess } from '@/lib/admin-write-access';
 import {
+  createMissingQuickBooksProductsFromPortal,
+  getQuickBooksConnectionStatus,
+  QuickBooksConfigurationError,
+  type QuickBooksPortalProduct,
+  type QuickBooksProductCreateResult,
+} from '@/lib/quickbooks';
+import {
   PRODUCT_CATEGORY_OPTIONS,
   UNCATEGORIZED_PRODUCT_CATEGORY,
   isProductCategory,
@@ -20,6 +27,9 @@ import { supabaseAdmin } from '@/lib/supabase/admin';
 type ProductRow = {
   id: string;
   name: string | null;
+  quickbooks_item_id: string | null;
+  quickbooks_sync_error: string | null;
+  quickbooks_sync_status: string | null;
   sku: string | null;
   category: string | null;
   active: boolean | null;
@@ -197,6 +207,44 @@ async function massAdjustRecipeLabor(formData: FormData) {
   redirect(productsToastHref(returnTo, 'bulk_labor_saved', { count: updatedCount }));
 }
 
+async function syncNewQuickBooksProducts(formData: FormData) {
+  'use server';
+  const returnTo = safeProductsReturnHref(formData);
+  await requireAdminWriteAccess(productsToastHref(returnTo, 'admin_write_denied'), 'products');
+
+  const { data: products, error } = await supabaseAdmin
+    .from('products')
+    .select('id,name,sku,description,active,quickbooks_item_id')
+    .neq('active', false)
+    .is('quickbooks_item_id', null)
+    .order('name', { ascending: true });
+
+  if (error) {
+    console.error('[admin-products] QuickBooks product load failed', { error });
+    redirect(productsToastHref(returnTo, 'quickbooks_sync_failed'));
+  }
+
+  if (!products?.length) {
+    redirect(productsToastHref(returnTo, 'quickbooks_sync_none'));
+  }
+
+  let result: QuickBooksProductCreateResult;
+  try {
+    result = await createMissingQuickBooksProductsFromPortal(products as QuickBooksPortalProduct[]);
+  } catch (error) {
+    if (error instanceof QuickBooksConfigurationError) {
+      redirect(productsToastHref(returnTo, 'quickbooks_sync_not_connected'));
+    }
+    console.error('[admin-products] QuickBooks product sync failed', { error });
+    redirect(productsToastHref(returnTo, 'quickbooks_sync_failed'));
+  }
+
+  revalidatePath('/admin/products');
+  revalidatePath('/admin/invoicing');
+  const toast = result.productErrorCount ? 'quickbooks_sync_with_errors' : result.createdCount ? 'quickbooks_sync_saved' : 'quickbooks_sync_none';
+  redirect(productsToastHref(returnTo, toast, { count: result.createdCount, errors: result.productErrorCount }));
+}
+
 export default async function ProductsPage({
   searchParams,
 }: {
@@ -204,9 +252,10 @@ export default async function ProductsPage({
 }) {
   await requireAdminSectionView('products');
   const supabase = await createClient();
-  const [{ data }, { count: recipeCount }] = await Promise.all([
-    supabase.from('products').select('id,name,sku,category,active').order('name', { ascending: true }),
+  const [{ data }, { count: recipeCount }, quickBooksStatus] = await Promise.all([
+    supabase.from('products').select('id,name,sku,category,active,quickbooks_item_id,quickbooks_sync_status,quickbooks_sync_error').order('name', { ascending: true }),
     supabase.from('product_recipes').select('id', { count: 'exact', head: true }),
+    getQuickBooksConnectionStatus(),
   ]);
   const products = (data ?? []) as ProductRow[];
   const categoryFilter = normalizeCategoryFilter(searchParams?.category);
@@ -216,6 +265,8 @@ export default async function ProductsPage({
   const currentHref = buildProductsHref(categoryFilter, search);
   const filteredProducts = products.filter((product) => productMatchesCategory(product, categoryFilter) && productMatchesSearch(product, search));
   const groupedProducts = groupProductsByCategory(filteredProducts);
+  const activeUnmappedQuickBooksCount = products.filter((product) => product.active !== false && !product.quickbooks_item_id).length;
+  const quickBooksErrorCount = products.filter((product) => product.quickbooks_sync_status === 'sync_error').length;
   const uncategorizedCount = products.filter((product) => productCategoryGroupKey(product.category) === UNCATEGORIZED_PRODUCT_CATEGORY).length;
   const categoryCounts = new Map<ProductCategoryGroup | 'all', number>([
     ['all', products.length],
@@ -243,6 +294,11 @@ export default async function ProductsPage({
       {toast === 'bulk_labor_confirm_required' ? <StatusToast message="Confirm the bulk labor adjustment before applying it." tone="error" /> : null}
       {toast === 'bulk_labor_none' ? <StatusToast message="No product recipes were found to update." tone="error" /> : null}
       {toast === 'bulk_labor_error' ? <StatusToast message="Unable to update product recipe labor." tone="error" /> : null}
+      {toast === 'quickbooks_sync_saved' ? <StatusToast message={`${Number.isFinite(adjustedCount) ? adjustedCount : 0} new product${adjustedCount === 1 ? '' : 's'} pushed to QuickBooks.`} tone="success" /> : null}
+      {toast === 'quickbooks_sync_with_errors' ? <StatusToast message={`${Number.isFinite(adjustedCount) ? adjustedCount : 0} product${adjustedCount === 1 ? '' : 's'} pushed to QuickBooks. Review products marked QuickBooks error.`} tone="error" /> : null}
+      {toast === 'quickbooks_sync_none' ? <StatusToast message="No new active products need to be pushed to QuickBooks." tone="success" /> : null}
+      {toast === 'quickbooks_sync_not_connected' ? <StatusToast message="QuickBooks is not connected or needs setup before products can sync." tone="error" /> : null}
+      {toast === 'quickbooks_sync_failed' ? <StatusToast message="Unable to push new products to QuickBooks." tone="error" /> : null}
       {toast === 'admin_write_denied' ? <StatusToast message="You do not have permission to edit products." tone="error" /> : null}
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
@@ -278,6 +334,29 @@ export default async function ProductsPage({
               </Link>
             );
           })}
+        </div>
+      </section>
+
+      <section className="card space-y-4">
+        <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
+          <div>
+            <span className="eyebrow">QuickBooks</span>
+            <h2 className="mt-3 text-xl font-semibold text-slate-950">Product sync</h2>
+            <p className="mt-2 text-sm text-slate-500">
+              {activeUnmappedQuickBooksCount} active portal product{activeUnmappedQuickBooksCount === 1 ? '' : 's'} not linked to QuickBooks.
+              {quickBooksErrorCount ? ` ${quickBooksErrorCount} product${quickBooksErrorCount === 1 ? '' : 's'} currently need review.` : ''}
+            </p>
+          </div>
+          <form action={syncNewQuickBooksProducts}>
+            <input name="return_to" type="hidden" value={currentHref} />
+            <PendingSubmitButton
+              className="btn-primary w-full lg:w-auto"
+              disabled={!quickBooksStatus.connected || activeUnmappedQuickBooksCount === 0}
+              disabledLabel={!quickBooksStatus.connected ? 'Connect QuickBooks first' : 'No new products'}
+              label="Push new products"
+              pendingLabel="Pushing..."
+            />
+          </form>
         </div>
       </section>
 
@@ -328,8 +407,20 @@ export default async function ProductsPage({
                   <span className={`rounded-full px-3 py-1 text-xs font-semibold uppercase tracking-[0.14em] ${product.active ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>
                     {product.active ? 'Active' : 'Inactive'}
                   </span>
+                  <span className={`rounded-full px-3 py-1 text-xs font-semibold uppercase tracking-[0.14em] ${
+                    product.quickbooks_item_id
+                      ? 'bg-teal-100 text-teal-700'
+                      : product.quickbooks_sync_status === 'sync_error'
+                        ? 'bg-rose-100 text-rose-700'
+                        : 'bg-slate-100 text-slate-600'
+                  }`}>
+                    {product.quickbooks_item_id ? 'QuickBooks' : product.quickbooks_sync_status === 'sync_error' ? 'QuickBooks error' : 'Not in QuickBooks'}
+                  </span>
                 </div>
               </div>
+              {product.quickbooks_sync_status === 'sync_error' && product.quickbooks_sync_error ? (
+                <p className="mt-3 text-sm font-medium text-rose-700">{product.quickbooks_sync_error}</p>
+              ) : null}
             </Link>
           ))}
         </section>

@@ -6,14 +6,20 @@ import StatusToast from '@/components/status-toast';
 import { adminCanEdit, requireAdminSectionView } from '@/lib/admin-permissions';
 import { requireAdminWriteAccess } from '@/lib/admin-write-access';
 import {
+  buildQuickBooksCustomerMatches,
+  clearPortalCenterQuickBooksCustomer,
   createQuickBooksInvoiceForOrder,
   disconnectQuickBooksConnection,
+  getQuickBooksActiveCustomers,
   getQuickBooksActiveItems,
   getQuickBooksCompanyInfo,
   getQuickBooksConnectionStatus,
+  getQuickBooksCustomerSummary,
   getQuickBooksProductSummary,
   getQuickBooksSalesTaxSettings,
+  linkPortalCenterToQuickBooksCustomer,
   QuickBooksConfigurationError,
+  type QuickBooksCustomerRecord,
   resetQuickBooksProductsFromPortal,
   saveQuickBooksSalesTaxSettings,
   shouldCollectQuickBooksSalesTax,
@@ -26,6 +32,7 @@ const INVOICING_TIME_ZONE = 'America/Chicago';
 const INVOICING_VIEWS = [
   { id: 'queue', label: 'Ready to Invoice' },
   { id: 'products', label: 'Products' },
+  { id: 'customers', label: 'Customers' },
   { id: 'sales-tax', label: 'Sales Tax' },
 ] as const;
 
@@ -86,8 +93,15 @@ const US_STATE_OPTIONS = [
 type SearchParams = Record<string, string | string[] | undefined>;
 type InvoicingView = (typeof INVOICING_VIEWS)[number]['id'];
 
+type InvoiceQueueCenter = {
+  customer_tax_status?: string | null;
+  name: string | null;
+  quickbooks_customer_id?: string | null;
+  quickbooks_display_name?: string | null;
+};
+
 type InvoiceQueueOrder = {
-  centers?: { customer_tax_status?: string | null; name: string | null } | { customer_tax_status?: string | null; name: string | null }[] | null;
+  centers?: InvoiceQueueCenter | InvoiceQueueCenter[] | null;
   created_at: string | null;
   id: string;
   invoice_error: string | null;
@@ -133,6 +147,27 @@ type QuickBooksResetStatusRow = {
   quickbooks_product_reset_error: string | null;
   quickbooks_product_reset_error_at: string | null;
   quickbooks_product_reset_last_result: Record<string, unknown> | null;
+};
+
+type CustomerSyncRow = {
+  billing_address1: string | null;
+  billing_city: string | null;
+  billing_email: string | null;
+  billing_state: string | null;
+  billing_zip: string | null;
+  created_at: string | null;
+  id: string;
+  is_active: boolean | null;
+  legal_name: string | null;
+  name: string;
+  quickbooks_company_name: string | null;
+  quickbooks_customer_id: string | null;
+  quickbooks_display_name: string | null;
+  quickbooks_fully_qualified_name: string | null;
+  quickbooks_mapping_note: string | null;
+  quickbooks_sync_error: string | null;
+  quickbooks_sync_status: string | null;
+  quickbooks_synced_at: string | null;
 };
 
 function relatedOne<T>(value: T | T[] | null | undefined): T | null {
@@ -208,6 +243,33 @@ function productLabel(item: NonNullable<InvoiceQueueOrder['order_items']>[number
   return cleanText(relatedOne(item.products)?.name) || cleanText(item.product_name_snapshot) || 'Product';
 }
 
+function quickBooksCustomerLabel(customer: QuickBooksCustomerRecord | null | undefined) {
+  if (!customer) return 'No suggestion';
+  return customer.companyName && customer.companyName !== customer.displayName
+    ? `${customer.displayName} (${customer.companyName})`
+    : customer.displayName;
+}
+
+function quickBooksCustomerAddressLabel(customer: QuickBooksCustomerRecord | null | undefined) {
+  if (!customer) return '';
+  return [
+    customer.billAddress.line1,
+    customer.billAddress.line2,
+    customer.billAddress.city,
+    customer.billAddress.state,
+    customer.billAddress.postalCode,
+  ].map(cleanText).filter(Boolean).join(', ');
+}
+
+function centerBillingAddressLabel(center: CustomerSyncRow) {
+  return [
+    center.billing_address1,
+    center.billing_city,
+    center.billing_state,
+    center.billing_zip,
+  ].map(cleanText).filter(Boolean).join(', ');
+}
+
 function invoicingHref(toast?: string) {
   if (!toast) return '/admin/invoicing';
   return `/admin/invoicing?${new URLSearchParams({ toast }).toString()}`;
@@ -215,6 +277,12 @@ function invoicingHref(toast?: string) {
 
 function productsInvoicingHref(toast: string, error?: string) {
   const params = new URLSearchParams({ toast, view: 'products' });
+  if (error) params.set('error', error.slice(0, 500));
+  return `/admin/invoicing?${params.toString()}`;
+}
+
+function customersInvoicingHref(toast: string, error?: string) {
+  const params = new URLSearchParams({ toast, view: 'customers' });
   if (error) params.set('error', error.slice(0, 500));
   return `/admin/invoicing?${params.toString()}`;
 }
@@ -239,6 +307,10 @@ function toastMessage(toast: string) {
     product_reset_failed: { message: 'Unable to reset QuickBooks products.', tone: 'error' },
     product_reset_saved: { message: 'QuickBooks products reset from portal products.', tone: 'success' },
     product_reset_with_errors: { message: 'QuickBooks product reset finished, but some portal products need review.', tone: 'error' },
+    customer_mapping_cleared: { message: 'QuickBooks customer mapping cleared.', tone: 'success' },
+    customer_mapping_failed: { message: 'Unable to save that QuickBooks customer mapping.', tone: 'error' },
+    customer_mapping_saved: { message: 'QuickBooks customer mapping saved.', tone: 'success' },
+    customer_mapping_selection_required: { message: 'Choose a QuickBooks customer to link.', tone: 'error' },
     quickbooks_config_error: { message: 'Add QuickBooks configuration before connecting.', tone: 'error' },
     quickbooks_connect_error: { message: 'Unable to connect QuickBooks.', tone: 'error' },
     quickbooks_connected: { message: 'QuickBooks connected.', tone: 'success' },
@@ -266,9 +338,44 @@ async function updateQuickBooksSalesTaxSettings(formData: FormData) {
 async function disconnectQuickBooks(formData: FormData) {
   'use server';
   await requireAdminWriteAccess(invoicingHref('admin_write_denied'), 'invoicing');
-  const view = String(formData.get('view') ?? '').trim() === 'products' ? 'products' : 'queue';
+  const rawView = String(formData.get('view') ?? '').trim();
+  const view = rawView === 'products' || rawView === 'customers' || rawView === 'sales-tax' ? rawView : 'queue';
   await disconnectQuickBooksConnection();
   redirect(`${invoicingViewHref(view)}${view === 'queue' ? '?' : '&'}toast=quickbooks_disconnected`);
+}
+
+async function linkQuickBooksCustomer(formData: FormData) {
+  'use server';
+  await requireAdminWriteAccess('/admin/invoicing?view=customers&toast=admin_write_denied', 'invoicing');
+  const centerId = String(formData.get('center_id') ?? '').trim();
+  const customerId = String(formData.get('quickbooks_customer_id') ?? '').trim();
+  const mappingNote = String(formData.get('quickbooks_mapping_note') ?? '').trim();
+  if (!centerId || !customerId) redirect('/admin/invoicing?view=customers&toast=customer_mapping_selection_required');
+
+  try {
+    await linkPortalCenterToQuickBooksCustomer({ centerId, customerId, mappingNote });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unable to save QuickBooks customer mapping.';
+    console.error('[invoicing] customer mapping failed', { centerId, customerId, error });
+    redirect(customersInvoicingHref('customer_mapping_failed', message));
+  }
+  redirect('/admin/invoicing?view=customers&toast=customer_mapping_saved');
+}
+
+async function clearQuickBooksCustomerMapping(formData: FormData) {
+  'use server';
+  await requireAdminWriteAccess('/admin/invoicing?view=customers&toast=admin_write_denied', 'invoicing');
+  const centerId = String(formData.get('center_id') ?? '').trim();
+  if (!centerId) redirect('/admin/invoicing?view=customers&toast=customer_mapping_selection_required');
+
+  try {
+    await clearPortalCenterQuickBooksCustomer(centerId);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unable to clear QuickBooks customer mapping.';
+    console.error('[invoicing] clear customer mapping failed', { centerId, error });
+    redirect(customersInvoicingHref('customer_mapping_failed', message));
+  }
+  redirect('/admin/invoicing?view=customers&toast=customer_mapping_cleared');
 }
 
 async function resetQuickBooksProducts(formData: FormData) {
@@ -397,15 +504,17 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
   const selectedToast = toastMessage(toast);
   const startIso = todayStartIso();
   const supabase = await createClient();
-  const [quickBooksStatus, quickBooksCompanyInfo, quickBooksProductSummary, quickBooksItemsResult, salesTaxSettings, ordersResult, productsResult, resetStatusResult] = await Promise.all([
+  const [quickBooksStatus, quickBooksCompanyInfo, quickBooksProductSummary, quickBooksItemsResult, quickBooksCustomerSummary, quickBooksCustomersResult, salesTaxSettings, ordersResult, productsResult, centersResult, resetStatusResult] = await Promise.all([
     getQuickBooksConnectionStatus(),
-    activeView === 'products' ? getQuickBooksCompanyInfo() : Promise.resolve({ companyName: null, email: null, error: null, legalName: null, realmId: null }),
+    activeView === 'products' || activeView === 'customers' ? getQuickBooksCompanyInfo() : Promise.resolve({ companyName: null, email: null, error: null, legalName: null, realmId: null }),
     activeView === 'products' ? getQuickBooksProductSummary() : Promise.resolve({ activeItemCount: null, error: null }),
     activeView === 'products' ? getQuickBooksActiveItems() : Promise.resolve({ error: null, items: [], truncated: false }),
+    activeView === 'customers' ? getQuickBooksCustomerSummary() : Promise.resolve({ activeCustomerCount: null, error: null }),
+    activeView === 'customers' ? getQuickBooksActiveCustomers() : Promise.resolve({ customers: [], error: null, truncated: false }),
     getQuickBooksSalesTaxSettings(),
     supabase
       .from('orders')
-      .select('id,created_at,shipped_at,subtotal_cents,shipping_company,shipping_name,shipping_state,invoice_status,invoice_error,profiles(email,full_name),centers(name,customer_tax_status),order_items(qty,line_total_cents,product_name_snapshot,products(name,sku,quickbooks_item_id))')
+      .select('id,created_at,shipped_at,subtotal_cents,shipping_company,shipping_name,shipping_state,invoice_status,invoice_error,profiles(email,full_name),centers(name,customer_tax_status,quickbooks_customer_id,quickbooks_display_name),order_items(qty,line_total_cents,product_name_snapshot,products(name,sku,quickbooks_item_id))')
       .eq('status', 'Shipped')
       .is('archived_at', null)
       .is('quickbooks_invoice_id', null)
@@ -419,6 +528,13 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
           .order('active', { ascending: false })
           .order('name', { ascending: true })
       : Promise.resolve({ data: [], error: null }),
+    activeView === 'customers'
+      ? supabase
+          .from('centers')
+          .select('id,name,is_active,created_at,quickbooks_customer_id,quickbooks_display_name,quickbooks_company_name,quickbooks_fully_qualified_name,legal_name,billing_email,billing_address1,billing_city,billing_state,billing_zip,quickbooks_sync_status,quickbooks_synced_at,quickbooks_sync_error,quickbooks_mapping_note')
+          .order('is_active', { ascending: false })
+          .order('name', { ascending: true })
+      : Promise.resolve({ data: [], error: null }),
     activeView === 'products'
       ? supabase
           .from('app_settings')
@@ -429,7 +545,9 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
   ]);
   const orders = (ordersResult.data ?? []) as InvoiceQueueOrder[];
   const products = (productsResult.data ?? []) as ProductSyncRow[];
+  const centers = (centersResult.data ?? []) as CustomerSyncRow[];
   const quickBooksItems = quickBooksItemsResult.items;
+  const quickBooksCustomers = quickBooksCustomersResult.customers;
   const resetStatus = resetStatusResult.data as QuickBooksResetStatusRow | null;
   const readyOrders = orders.filter((order) => order.invoice_status !== 'invoicing');
   const totalReadyCents = readyOrders.reduce((sum, order) => sum + Math.max(0, numericValue(order.subtotal_cents)), 0);
@@ -439,6 +557,13 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
   const unmappedProducts = activeProducts.filter((product) => !product.quickbooks_item_id && product.quickbooks_sync_status !== 'ignored');
   const ignoredProducts = activeProducts.filter((product) => product.quickbooks_sync_status === 'ignored');
   const productErrorCount = activeProducts.filter((product) => product.quickbooks_sync_status === 'sync_error').length;
+  const activeCenters = centers.filter((center) => center.is_active !== false);
+  const mappedCenters = activeCenters.filter((center) => Boolean(center.quickbooks_customer_id));
+  const unmappedCenters = activeCenters.filter((center) => !center.quickbooks_customer_id && center.quickbooks_sync_status !== 'ignored');
+  const customerMatches = buildQuickBooksCustomerMatches(activeCenters, quickBooksCustomers);
+  const customerMatchByCenterId = new Map(customerMatches.map((match) => [match.centerId, match]));
+  const customerById = new Map(quickBooksCustomers.map((customer) => [customer.id, customer]));
+  const customerErrorCount = activeCenters.filter((center) => center.quickbooks_sync_status === 'sync_error').length;
   const productResetDisabledReasons = [
     !canInvoice ? 'Your admin account needs edit access for Invoicing.' : '',
     !quickBooksStatus.connected ? 'QuickBooks is not connected.' : '',
@@ -495,7 +620,7 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
         </div>
       ) : null}
 
-      <nav className="grid gap-2 sm:grid-cols-3" aria-label="Invoicing views">
+      <nav className="grid gap-2 sm:grid-cols-4" aria-label="Invoicing views">
         {INVOICING_VIEWS.map((view) => (
           <Link
             key={view.id}
@@ -526,6 +651,190 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
           </form>
           <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
             Mark each center&apos;s tax profile on the center detail page. Unknown and tax-exempt centers are sent to QuickBooks as non-taxable.
+          </div>
+        </div>
+      ) : activeView === 'customers' ? (
+        <div className="space-y-6">
+          <div className="grid gap-4 md:grid-cols-4">
+            <div className="stat-card">
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Portal centers</p>
+              <p className="mt-2 text-3xl font-semibold text-slate-950">{activeCenters.length}</p>
+              <p className="mt-1 text-sm text-slate-500">{centers.length - activeCenters.length} inactive</p>
+            </div>
+            <div className="stat-card">
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Mapped</p>
+              <p className="mt-2 text-3xl font-semibold text-slate-950">{mappedCenters.length}</p>
+              <p className="mt-1 text-sm text-slate-500">QuickBooks customers linked</p>
+            </div>
+            <div className="stat-card">
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Unmapped</p>
+              <p className="mt-2 text-3xl font-semibold text-slate-950">{unmappedCenters.length}</p>
+              <p className="mt-1 text-sm text-slate-500">{customerErrorCount} errors</p>
+            </div>
+            <div className="stat-card">
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">QuickBooks customers</p>
+              <p className="mt-2 text-3xl font-semibold text-slate-950">{quickBooksCustomerSummary.activeCustomerCount === null ? '—' : quickBooksCustomerSummary.activeCustomerCount}</p>
+              <p className="mt-1 text-sm text-slate-500">{quickBooksStatus.connected ? quickBooksCustomerSummary.error ? 'Unavailable' : 'Active in QuickBooks' : 'Not connected'}</p>
+            </div>
+          </div>
+
+          {errorDetail ? (
+            <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-medium text-rose-900">
+              {errorDetail}
+            </div>
+          ) : null}
+          {quickBooksCustomerSummary.error && quickBooksStatus.connected ? (
+            <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-900">
+              {quickBooksCustomerSummary.error}
+            </div>
+          ) : null}
+          {quickBooksCustomersResult.error && quickBooksStatus.connected ? (
+            <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-900">
+              {quickBooksCustomersResult.error}
+            </div>
+          ) : null}
+          {quickBooksCustomersResult.truncated ? (
+            <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-900">
+              Showing the first {quickBooksCustomers.length} active QuickBooks customers. Use search later if the customer is beyond this pull.
+            </div>
+          ) : null}
+          {quickBooksStatus.connected ? (
+            <div className="rounded-xl border border-slate-200 bg-white/70 px-4 py-3 text-sm text-slate-600">
+              <p className="font-semibold text-slate-950">Connected QuickBooks company</p>
+              <p className="mt-1">
+                {quickBooksCompanyInfo.companyName || 'Unknown company'}
+                {quickBooksCompanyInfo.legalName && quickBooksCompanyInfo.legalName !== quickBooksCompanyInfo.companyName ? ` - ${quickBooksCompanyInfo.legalName}` : ''}
+              </p>
+              <p className="mt-1 break-all text-xs text-slate-500">Company ID {quickBooksCompanyInfo.realmId ?? quickBooksStatus.realmId}</p>
+              {quickBooksCompanyInfo.error ? <p className="mt-2 text-sm font-medium text-amber-800">{quickBooksCompanyInfo.error}</p> : null}
+            </div>
+          ) : null}
+
+          <div className="card space-y-4">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+              <div>
+                <h2 className="text-xl font-semibold tracking-tight text-slate-950">Customer mapping</h2>
+                <p className="mt-1 text-sm text-slate-500">Portal center names stay the same. QuickBooks enriches legal name, billing email, and billing address once a match is approved.</p>
+              </div>
+              <Link className="btn-secondary text-center" href="/admin/invoicing?view=customers">Refresh customers</Link>
+            </div>
+
+            {quickBooksStatus.connected ? (
+              <div className="overflow-x-auto">
+                <table className="min-w-full text-left text-sm">
+                  <thead className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
+                    <tr>
+                      <th className="px-3 py-2">Portal center</th>
+                      <th className="px-3 py-2">Current QuickBooks link</th>
+                      <th className="px-3 py-2">Suggested match</th>
+                      <th className="px-3 py-2">Manual link</th>
+                      <th className="px-3 py-2">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-200">
+                    {centers.map((center) => {
+                      const mappedCustomer = center.quickbooks_customer_id ? customerById.get(center.quickbooks_customer_id) ?? null : null;
+                      const suggestion = customerMatchByCenterId.get(center.id);
+                      const suggestedCustomer = suggestion?.customer ?? null;
+                      const isMapped = Boolean(center.quickbooks_customer_id);
+                      return (
+                        <tr key={center.id} className="align-top">
+                          <td className="min-w-[220px] px-3 py-3">
+                            <p className="font-semibold text-slate-950">{center.name}</p>
+                            {center.legal_name && center.legal_name !== center.name ? <p className="mt-1 text-xs text-slate-500">Legal: {center.legal_name}</p> : null}
+                            {center.billing_email ? <p className="mt-1 break-all text-xs text-slate-500">{center.billing_email}</p> : null}
+                            {centerBillingAddressLabel(center) ? <p className="mt-1 text-xs text-slate-500">{centerBillingAddressLabel(center)}</p> : null}
+                            <span className={`mt-2 inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${center.is_active === false ? 'bg-slate-100 text-slate-600' : 'bg-emerald-100 text-emerald-800'}`}>
+                              {center.is_active === false ? 'Inactive' : 'Active'}
+                            </span>
+                          </td>
+                          <td className="min-w-[220px] px-3 py-3">
+                            {isMapped ? (
+                              <div>
+                                <p className="font-semibold text-slate-950">{center.quickbooks_display_name || mappedCustomer?.displayName || center.quickbooks_customer_id}</p>
+                                {center.quickbooks_company_name && center.quickbooks_company_name !== center.quickbooks_display_name ? <p className="mt-1 text-xs text-slate-500">{center.quickbooks_company_name}</p> : null}
+                                <p className="mt-1 break-all font-mono text-xs text-slate-500">{center.quickbooks_customer_id}</p>
+                                {center.quickbooks_synced_at ? <p className="mt-1 text-xs text-slate-500">Synced {formatTimestamp(center.quickbooks_synced_at)}</p> : null}
+                              </div>
+                            ) : (
+                              <span className="text-slate-500">Not mapped</span>
+                            )}
+                          </td>
+                          <td className="min-w-[260px] px-3 py-3">
+                            {suggestedCustomer ? (
+                              <div className="space-y-2">
+                                <div>
+                                  <p className="font-semibold text-slate-950">{quickBooksCustomerLabel(suggestedCustomer)}</p>
+                                  {quickBooksCustomerAddressLabel(suggestedCustomer) ? <p className="mt-1 text-xs text-slate-500">{quickBooksCustomerAddressLabel(suggestedCustomer)}</p> : null}
+                                  <p className="mt-1 text-xs text-slate-500">Score {suggestion?.score ?? 0} · {(suggestion?.reasons ?? []).join(', ')}</p>
+                                </div>
+                                {!isMapped ? (
+                                  <form action={linkQuickBooksCustomer} className="space-y-2">
+                                    <input type="hidden" name="center_id" value={center.id} />
+                                    <input type="hidden" name="quickbooks_customer_id" value={suggestedCustomer.id} />
+                                    <input type="hidden" name="quickbooks_mapping_note" value={`Approved suggested match: ${(suggestion?.reasons ?? []).join(', ')}`} />
+                                    <PendingSubmitButton
+                                      className="btn-primary w-full"
+                                      disabled={!canInvoice}
+                                      label="Approve match"
+                                      pendingLabel="Saving..."
+                                    />
+                                  </form>
+                                ) : null}
+                              </div>
+                            ) : (
+                              <span className="text-slate-500">No strong suggestion</span>
+                            )}
+                          </td>
+                          <td className="min-w-[280px] px-3 py-3">
+                            <form action={linkQuickBooksCustomer} className="space-y-2">
+                              <input type="hidden" name="center_id" value={center.id} />
+                              <select className="input h-11" name="quickbooks_customer_id" defaultValue={center.quickbooks_customer_id ?? suggestedCustomer?.id ?? ''}>
+                                <option value="">Choose QuickBooks customer</option>
+                                {quickBooksCustomers.map((customer) => (
+                                  <option key={customer.id} value={customer.id}>
+                                    {quickBooksCustomerLabel(customer)}
+                                  </option>
+                                ))}
+                              </select>
+                              <input className="input h-11" name="quickbooks_mapping_note" placeholder="Mapping note" defaultValue={center.quickbooks_mapping_note ?? ''} />
+                              <PendingSubmitButton
+                                className="btn-secondary w-full"
+                                disabled={!canInvoice || !quickBooksCustomers.length}
+                                label="Save manual link"
+                                pendingLabel="Saving..."
+                              />
+                            </form>
+                          </td>
+                          <td className="min-w-[150px] px-3 py-3">
+                            <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${center.quickbooks_sync_status === 'sync_error' ? 'bg-rose-100 text-rose-800' : isMapped ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'}`}>
+                              {(center.quickbooks_sync_status ?? 'unmapped').replaceAll('_', ' ')}
+                            </span>
+                            {center.quickbooks_sync_error ? <p className="mt-2 text-xs font-medium text-rose-700">{center.quickbooks_sync_error}</p> : null}
+                            {isMapped ? (
+                              <form action={clearQuickBooksCustomerMapping} className="mt-3">
+                                <input type="hidden" name="center_id" value={center.id} />
+                                <PendingSubmitButton
+                                  className="rounded-full border border-rose-200 px-4 py-2.5 text-sm font-semibold text-rose-700 transition-all duration-200 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-70"
+                                  disabled={!canInvoice}
+                                  label="Clear link"
+                                  pendingLabel="Clearing..."
+                                />
+                              </form>
+                            ) : null}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <p className="text-sm text-slate-500">Connect QuickBooks to pull customers and approve mappings.</p>
+            )}
+
+            {quickBooksStatus.connected && !centers.length ? <p className="text-sm text-slate-500">No portal centers found.</p> : null}
+            {quickBooksStatus.connected && !quickBooksCustomers.length && !quickBooksCustomersResult.error ? <p className="text-sm text-slate-500">No active QuickBooks customers found.</p> : null}
           </div>
         </div>
       ) : activeView === 'products' ? (
@@ -729,6 +1038,7 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
             .map(productLabel);
           const isTaxable = shouldCollectQuickBooksSalesTax(order, salesTaxSettings.states);
           const center = relatedOne(order.centers);
+          const missingCustomerMapping = !cleanText(center?.quickbooks_customer_id);
           const taxStatus = center?.customer_tax_status === 'for_profit'
             ? 'For-profit'
             : center?.customer_tax_status === 'tax_exempt'
@@ -772,15 +1082,22 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
                   Needs QuickBooks product mapping: {[...new Set(missingMappedProducts)].join(', ')}
                 </p>
               ) : null}
+              {missingCustomerMapping ? (
+                <p className="text-sm font-medium text-amber-700">
+                  Needs QuickBooks customer mapping for {customerLabel(order)}.
+                </p>
+              ) : null}
 
               <div className="flex flex-col gap-3 sm:flex-row sm:justify-end">
                 <Link className="btn-secondary text-center" href={`/admin/orders/${order.id}`}>Open order</Link>
+                {missingCustomerMapping ? <Link className="btn-secondary text-center" href="/admin/invoicing?view=customers">Map customer</Link> : null}
+                {missingMappedProducts.length ? <Link className="btn-secondary text-center" href="/admin/invoicing?view=products">Map products</Link> : null}
                 <form action={invoiceOrder}>
                   <input type="hidden" name="order_id" value={order.id} />
                   <PendingSubmitButton
                     className="btn-primary w-full sm:w-auto"
-                    disabled={!canInvoice || isBusy || !quickBooksStatus.connected || Boolean(quickBooksStatus.missingConfig.length) || Boolean(missingMappedProducts.length)}
-                    disabledLabel={isBusy ? 'Invoicing...' : missingMappedProducts.length ? 'Needs mapping' : 'Invoice'}
+                    disabled={!canInvoice || isBusy || !quickBooksStatus.connected || Boolean(quickBooksStatus.missingConfig.length) || Boolean(missingMappedProducts.length) || missingCustomerMapping}
+                    disabledLabel={isBusy ? 'Invoicing...' : missingMappedProducts.length || missingCustomerMapping ? 'Needs mapping' : 'Invoice'}
                     label="Invoice"
                     pendingLabel="Invoicing..."
                   />

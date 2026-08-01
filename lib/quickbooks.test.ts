@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { buildQuickBooksInvoicePayload } from '@/lib/quickbooks';
+import {
+  buildQuickBooksCustomerMatches,
+  buildQuickBooksInvoicePayload,
+  normalizeCustomerMatchText,
+  scoreQuickBooksCustomerMatch,
+} from '@/lib/quickbooks';
 
 describe('quickbooks invoice payload', () => {
   it('maps Sobrew order lines into QuickBooks invoice lines', () => {
@@ -154,5 +159,61 @@ describe('quickbooks invoice payload', () => {
     );
 
     expect(payload.Line[0].SalesItemLineDetail.TaxCodeRef).toEqual({ value: 'NON' });
+  });
+});
+
+describe('quickbooks customer matching', () => {
+  const customer = {
+    active: true,
+    billAddress: {
+      city: 'Nashville',
+      line1: '100 Commerce St',
+      line2: null,
+      postalCode: '37201',
+      state: 'TN',
+    },
+    companyName: 'Bluebird Behavioral Health LLC',
+    displayName: 'Bluebird Behavioral Health LLC',
+    email: 'billing@bluebird.example',
+    fullyQualifiedName: 'Bluebird Behavioral Health LLC',
+    id: '123',
+    phone: '615-555-1234',
+    syncToken: '0',
+  };
+
+  it('normalizes common legal suffixes and DBA noise', () => {
+    expect(normalizeCustomerMatchText('The Bluebird Recovery, LLC DBA')).toBe('bluebird recovery');
+  });
+
+  it('scores DBA-to-legal-name customer matches without changing the portal name', () => {
+    const result = scoreQuickBooksCustomerMatch(
+      {
+        billing_zip: '37201',
+        id: 'center-1',
+        is_active: true,
+        name: 'Bluebird Recovery',
+      },
+      customer
+    );
+
+    expect(result.score).toBeGreaterThanOrEqual(45);
+    expect(result.reasons).toContain('ZIP match');
+  });
+
+  it('returns an existing linked QuickBooks customer first', () => {
+    const [match] = buildQuickBooksCustomerMatches(
+      [
+        {
+          id: 'center-linked',
+          is_active: true,
+          name: 'Different Portal DBA',
+          quickbooks_customer_id: '123',
+        },
+      ],
+      [customer]
+    );
+
+    expect(match.customer?.id).toBe('123');
+    expect(match.score).toBe(100);
   });
 });
