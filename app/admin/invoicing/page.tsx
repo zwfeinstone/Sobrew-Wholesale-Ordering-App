@@ -275,13 +275,15 @@ async function resetQuickBooksProducts(formData: FormData) {
     redirect('/admin/invoicing?view=products&toast=product_reset_failed');
   }
 
+  let toast: 'product_reset_saved' | 'product_reset_with_errors' = 'product_reset_saved';
   try {
     const result = await resetQuickBooksProductsFromPortal(products ?? []);
-    redirect(`/admin/invoicing?view=products&toast=${result.productErrorCount ? 'product_reset_with_errors' : 'product_reset_saved'}`);
+    toast = result.productErrorCount ? 'product_reset_with_errors' : 'product_reset_saved';
   } catch (error) {
     console.error('[invoicing] product reset failed', error);
     redirect('/admin/invoicing?view=products&toast=product_reset_failed');
   }
+  redirect(`/admin/invoicing?view=products&toast=${toast}`);
 }
 
 async function invoiceOrder(formData: FormData) {
