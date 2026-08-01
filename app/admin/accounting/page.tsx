@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import AccountingBulkSelectionControls from '@/components/accounting-bulk-selection-controls';
+import AccountingBudgetSimulator from '@/components/accounting-budget-simulator';
 import PendingSubmitButton from '@/components/pending-submit-button';
 import StatusToast from '@/components/status-toast';
 import { requireAdminSectionView } from '@/lib/admin-permissions';
@@ -21,6 +22,8 @@ import {
   type AiAccountingReviewCandidate,
   type AccountingAccountType,
   type AccountingCategoryRow,
+  type AccountingPnlSection,
+  type AccountingTransactionRow,
   type ParsedAccountingTransaction,
 } from '@/lib/accounting';
 import { createClient } from '@/lib/supabase/server';
@@ -28,17 +31,18 @@ import { usd } from '@/lib/utils';
 
 const REVIEW_PAGE_SIZE = 12;
 const PNL_TRANSACTION_LIMIT = 5000;
+const BUDGET_TRANSACTION_PAGE_SIZE = 1000;
 const BULK_ACCOUNTING_REVIEW_FORM_ID = 'bulk-accounting-review-form';
 const ACCOUNTING_VIEWS = [
   { id: 'overview', label: 'Overview' },
   { id: 'upload', label: 'Upload' },
-  { id: 'business_review', label: 'Business Review' },
+  { id: 'budgeting', label: 'Budgeting' },
+  { id: 'simulator', label: 'Simulator' },
   { id: 'review', label: 'Review Transactions' },
   { id: 'pnl', label: 'P&L' },
   { id: 'categories', label: 'Categories' },
   { id: 'imports', label: 'Imports' },
 ] as const;
-const BUSINESS_REVIEW_NOTE = 'Included in Sales Revenue per owner reconciliation review on 2026-08-01.';
 
 type AccountingView = (typeof ACCOUNTING_VIEWS)[number]['id'];
 
@@ -52,6 +56,23 @@ const PNL_DETAIL_SECTIONS = [
   { id: 'other_expenses', label: 'Other Expenses' },
 ] as const;
 
+const BUDGET_PNL_SECTION_LABELS: Record<AccountingPnlSection, string> = {
+  cogs: 'COGS',
+  none: 'No P&L',
+  operating_expenses: 'Operating Expenses',
+  other_expenses: 'Other Expenses',
+  other_income: 'Other Income',
+  revenue: 'Revenue',
+};
+
+const BUDGET_PNL_SECTIONS: Array<Exclude<AccountingPnlSection, 'none'>> = [
+  'revenue',
+  'cogs',
+  'operating_expenses',
+  'other_income',
+  'other_expenses',
+];
+
 type LastKnownAccountingTransaction = {
   account_name: string | null;
   account_type: AccountingAccountType | string;
@@ -60,6 +81,47 @@ type LastKnownAccountingTransaction = {
   merchant_name: string | null;
   original_description: string;
   transaction_date: string;
+};
+
+type BudgetTransactionRow = AccountingTransactionRow & {
+  account_name: string | null;
+  account_type: AccountingAccountType | string;
+  accounting_categories?: AccountingCategoryRow | AccountingCategoryRow[] | null;
+  id: string;
+  merchant_name: string | null;
+  original_description: string;
+};
+
+type BudgetCategoryPlan = {
+  allTimeAverageCents: number;
+  currentActualCents: number;
+  currentProjectedCents: number;
+  id: string;
+  name: string;
+  remainingCents: number;
+  section: AccountingPnlSection;
+  sectionLabel: string;
+  suggestedLimitCents: number;
+  trailingAverageCents: number;
+};
+
+type BudgetSectionSummary = {
+  cogsCents: number;
+  operatingExpensesCents: number;
+  otherExpensesCents: number;
+  otherIncomeCents: number;
+  revenueCents: number;
+};
+
+type BudgetMonthSummary = BudgetSectionSummary & {
+  month: string;
+};
+
+type BudgetSimulatorLine = {
+  amountCents: number;
+  id: string;
+  name: string;
+  section: 'revenue' | 'cogs' | 'operating_expenses' | 'other_income' | 'other_expenses';
 };
 
 function accountingHref(
@@ -90,13 +152,17 @@ function positivePageParam(value: string | string[] | undefined) {
 }
 
 function accountingViewHref({
+  category,
   end,
   page,
+  search,
   start,
   view,
 }: {
+  category?: string;
   end: string;
   page?: number;
+  search?: string;
   start: string;
   view: AccountingView;
 }) {
@@ -104,6 +170,8 @@ function accountingViewHref({
   params.set('view', view);
   params.set('start', start);
   params.set('end', end);
+  if (category) params.set('category', category);
+  if (search) params.set('q', search);
   if (page && page > 1) params.set('page', String(page));
   return `/admin/accounting?${params.toString()}`;
 }
@@ -112,14 +180,28 @@ function todayInput() {
   return new Date().toISOString().slice(0, 10);
 }
 
-function firstDayOfCurrentMonth() {
-  return `${todayInput().slice(0, 8)}01`;
+function utcDateInput(date: Date) {
+  return date.toISOString().slice(0, 10);
+}
+
+function firstDayOfCurrentYear() {
+  return `${todayInput().slice(0, 4)}-01-01`;
 }
 
 function addOneDay(dateInput: string) {
   const date = new Date(`${dateInput}T00:00:00.000Z`);
   date.setUTCDate(date.getUTCDate() + 1);
   return date.toISOString().slice(0, 10);
+}
+
+function firstDayOfNextMonth() {
+  const today = new Date(`${todayInput()}T00:00:00.000Z`);
+  return utcDateInput(new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth() + 1, 1)));
+}
+
+function lastDayOfPreviousMonth() {
+  const today = new Date(`${todayInput()}T00:00:00.000Z`);
+  return utcDateInput(new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), 0)));
 }
 
 function lastDayOfCurrentMonth() {
@@ -144,9 +226,21 @@ function money(value: unknown) {
 }
 
 function normalizeDateRange(searchParams?: SearchParams) {
-  const start = typeof searchParams?.start === 'string' ? searchParams.start : firstDayOfCurrentMonth();
+  const start = typeof searchParams?.start === 'string' ? searchParams.start : firstDayOfCurrentYear();
   const end = typeof searchParams?.end === 'string' ? searchParams.end : todayInput();
   return { end, endExclusive: addOneDay(end), start };
+}
+
+function searchParam(value: string | string[] | undefined) {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function reviewCategoryParam(value: string | string[] | undefined) {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function supabaseIlikeValue(value: string) {
+  return value.replace(/[,%]/g, ' ').trim();
 }
 
 function categoryLabel(category: AccountingCategoryRow | AccountingCategoryRow[] | null | undefined) {
@@ -163,6 +257,217 @@ function categoryAmountForPnlSection(transaction: any, category: AccountingCateg
     return amountCents;
   }
   return 0;
+}
+
+function monthKey(value: string) {
+  return value.slice(0, 7);
+}
+
+function monthLabel(value: string) {
+  const date = new Date(`${value}-01T00:00:00.000Z`);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat('en-US', {
+    month: 'short',
+    timeZone: 'UTC',
+    year: 'numeric',
+  }).format(date);
+}
+
+function daysInMonth(value: string) {
+  const [year, month] = value.split('-').map((part) => Number.parseInt(part, 10));
+  if (!Number.isFinite(year) || !Number.isFinite(month)) return 30;
+  return new Date(Date.UTC(year, month, 0)).getUTCDate();
+}
+
+function currentMonthProgress() {
+  const today = new Date(`${todayInput()}T00:00:00.000Z`);
+  return today.getUTCDate() / daysInMonth(todayInput().slice(0, 7));
+}
+
+function emptyBudgetSectionSummary(): BudgetSectionSummary {
+  return {
+    cogsCents: 0,
+    operatingExpensesCents: 0,
+    otherExpensesCents: 0,
+    otherIncomeCents: 0,
+    revenueCents: 0,
+  };
+}
+
+function addToBudgetSection(summary: BudgetSectionSummary, section: AccountingPnlSection, amountCents: number) {
+  if (section === 'revenue') summary.revenueCents += amountCents;
+  if (section === 'cogs') summary.cogsCents += amountCents;
+  if (section === 'operating_expenses') summary.operatingExpensesCents += amountCents;
+  if (section === 'other_income') summary.otherIncomeCents += amountCents;
+  if (section === 'other_expenses') summary.otherExpensesCents += amountCents;
+}
+
+function budgetSummaryValue(summary: BudgetSectionSummary, section: AccountingPnlSection) {
+  if (section === 'revenue') return summary.revenueCents;
+  if (section === 'cogs') return summary.cogsCents;
+  if (section === 'operating_expenses') return summary.operatingExpensesCents;
+  if (section === 'other_income') return summary.otherIncomeCents;
+  if (section === 'other_expenses') return summary.otherExpensesCents;
+  return 0;
+}
+
+function averageBudgetSection(months: string[], summaries: Map<string, BudgetSectionSummary>, section: AccountingPnlSection) {
+  if (!months.length) return 0;
+  return Math.round(months.reduce((sum, month) => (
+    sum + budgetSummaryValue(summaries.get(month) ?? emptyBudgetSectionSummary(), section)
+  ), 0) / months.length);
+}
+
+function averageCategoryAmount(months: string[], categoryMonthlyTotals: Map<string, number>) {
+  if (!months.length) return 0;
+  return Math.round(months.reduce((sum, month) => sum + (categoryMonthlyTotals.get(month) ?? 0), 0) / months.length);
+}
+
+function budgetHealthTone(plan: BudgetCategoryPlan) {
+  if (plan.suggestedLimitCents <= 0) return 'text-slate-500';
+  if (plan.currentProjectedCents > plan.suggestedLimitCents) return 'text-rose-700';
+  if (plan.currentProjectedCents > plan.suggestedLimitCents * 0.85) return 'text-amber-700';
+  return 'text-emerald-700';
+}
+
+function buildBudgetWorkspace(transactions: BudgetTransactionRow[]) {
+  const currentMonth = todayInput().slice(0, 7);
+  const progress = Math.max(currentMonthProgress(), 1 / 31);
+  const categoryStats = new Map<string, {
+    category: AccountingCategoryRow;
+    currentActualCents: number;
+    monthlyTotals: Map<string, number>;
+    totalCents: number;
+  }>();
+  const monthlySummaries = new Map<string, BudgetSectionSummary>();
+
+  for (const transaction of transactions) {
+    if (transaction.status === 'excluded') continue;
+    const category = relatedOne(transaction.accounting_categories);
+    if (!category || category.pnl_section === 'none') continue;
+    const amountCents = categoryAmountForPnlSection(transaction, category);
+    const rowMonth = monthKey(transaction.transaction_date);
+    const summary = monthlySummaries.get(rowMonth) ?? emptyBudgetSectionSummary();
+    addToBudgetSection(summary, category.pnl_section, amountCents);
+    monthlySummaries.set(rowMonth, summary);
+
+    const stats = categoryStats.get(category.id) ?? {
+      category,
+      currentActualCents: 0,
+      monthlyTotals: new Map<string, number>(),
+      totalCents: 0,
+    };
+    stats.totalCents += amountCents;
+    stats.monthlyTotals.set(rowMonth, (stats.monthlyTotals.get(rowMonth) ?? 0) + amountCents);
+    if (rowMonth === currentMonth) stats.currentActualCents += amountCents;
+    categoryStats.set(category.id, stats);
+  }
+
+  const allMonths = Array.from(monthlySummaries.keys()).sort();
+  const completedMonths = allMonths.filter((month) => month < currentMonth);
+  const baselineMonths = completedMonths.length ? completedMonths : allMonths;
+  const trailingMonths = baselineMonths.slice(-3);
+  const baselineMonthCount = Math.max(baselineMonths.length, 1);
+  const trailingRevenueCents = averageBudgetSection(trailingMonths, monthlySummaries, 'revenue');
+  const allTimeRevenueCents = averageBudgetSection(baselineMonths, monthlySummaries, 'revenue');
+  const projectedRevenueCents = Math.max(trailingRevenueCents, allTimeRevenueCents);
+  const trailingCogsCents = averageBudgetSection(trailingMonths, monthlySummaries, 'cogs');
+  const trailingOperatingExpensesCents = averageBudgetSection(trailingMonths, monthlySummaries, 'operating_expenses');
+  const trailingOtherIncomeCents = averageBudgetSection(trailingMonths, monthlySummaries, 'other_income');
+  const trailingOtherExpensesCents = averageBudgetSection(trailingMonths, monthlySummaries, 'other_expenses');
+  const cogsRatio = projectedRevenueCents > 0 ? trailingCogsCents / projectedRevenueCents : 0;
+  const plannedCogsCents = projectedRevenueCents > 0
+    ? Math.round(projectedRevenueCents * Math.min(Math.max(cogsRatio, 0.25), 0.65))
+    : trailingCogsCents;
+  const targetProfitCents = Math.round(projectedRevenueCents * 0.12);
+  const cashReserveCents = Math.round(projectedRevenueCents * 0.08);
+  const availableOperatingSpendCents = Math.max(
+    0,
+    projectedRevenueCents + trailingOtherIncomeCents - plannedCogsCents - trailingOtherExpensesCents - targetProfitCents - cashReserveCents,
+  );
+  const plannedOperatingSpendCents = trailingOperatingExpensesCents > 0
+    ? Math.min(trailingOperatingExpensesCents, availableOperatingSpendCents)
+    : availableOperatingSpendCents;
+
+  const categoryPlans: BudgetCategoryPlan[] = Array.from(categoryStats.values()).map((stats) => {
+    const section = stats.category.pnl_section;
+    const trailingAverageCents = averageCategoryAmount(trailingMonths, stats.monthlyTotals);
+    const allTimeAverageCents = Math.round(stats.totalCents / baselineMonthCount);
+    let suggestedLimitCents = Math.max(trailingAverageCents, allTimeAverageCents);
+
+    if (section === 'cogs' && trailingCogsCents > 0) {
+      suggestedLimitCents = Math.round((trailingAverageCents / trailingCogsCents) * plannedCogsCents);
+    }
+    if (section === 'operating_expenses' && trailingOperatingExpensesCents > 0) {
+      suggestedLimitCents = Math.round((trailingAverageCents / trailingOperatingExpensesCents) * plannedOperatingSpendCents);
+    }
+    if (section === 'other_expenses' && allTimeAverageCents > 0) {
+      suggestedLimitCents = Math.min(trailingAverageCents, allTimeAverageCents);
+    }
+
+    suggestedLimitCents = Math.max(0, suggestedLimitCents);
+    const currentActualCents = Math.max(0, stats.currentActualCents);
+    const currentProjectedCents = Math.round(currentActualCents / progress);
+
+    return {
+      allTimeAverageCents,
+      currentActualCents,
+      currentProjectedCents,
+      id: stats.category.id,
+      name: stats.category.name,
+      remainingCents: suggestedLimitCents - currentActualCents,
+      section,
+      sectionLabel: BUDGET_PNL_SECTION_LABELS[section],
+      suggestedLimitCents,
+      trailingAverageCents,
+    };
+  }).filter((plan) => BUDGET_PNL_SECTIONS.includes(plan.section as Exclude<AccountingPnlSection, 'none'>));
+
+  categoryPlans.sort((left, right) => (
+    BUDGET_PNL_SECTIONS.indexOf(left.section as Exclude<AccountingPnlSection, 'none'>)
+    - BUDGET_PNL_SECTIONS.indexOf(right.section as Exclude<AccountingPnlSection, 'none'>)
+  ) || right.suggestedLimitCents - left.suggestedLimitCents);
+
+  const monthlyHistory: BudgetMonthSummary[] = baselineMonths.slice(-6).reverse().map((month) => ({
+    ...emptyBudgetSectionSummary(),
+    ...(monthlySummaries.get(month) ?? {}),
+    month,
+  }));
+
+  const simulatorLines: BudgetSimulatorLine[] = categoryPlans
+    .filter((plan) => plan.suggestedLimitCents > 0)
+    .map((plan) => ({
+      amountCents: plan.suggestedLimitCents,
+      id: plan.id,
+      name: plan.name,
+      section: plan.section as BudgetSimulatorLine['section'],
+    }));
+
+  const recommendedNetIncomeCents = projectedRevenueCents - plannedCogsCents - plannedOperatingSpendCents + trailingOtherIncomeCents - trailingOtherExpensesCents;
+  const budgetRangeLabel = baselineMonths.length
+    ? `${monthLabel(baselineMonths[0])} through ${monthLabel(baselineMonths[baselineMonths.length - 1])}`
+    : 'No completed months yet';
+
+  return {
+    budgetRangeLabel,
+    categoryPlans,
+    monthlyHistory,
+    simulatorLines,
+    summary: {
+      availableOperatingSpendCents,
+      baselineMonthCount: baselineMonths.length,
+      cashReserveCents,
+      plannedCogsCents,
+      plannedOperatingSpendCents,
+      projectedRevenueCents,
+      recommendedNetIncomeCents,
+      targetProfitCents,
+      trailingCogsCents,
+      trailingOperatingExpensesCents,
+      trailingOtherExpensesCents,
+      trailingOtherIncomeCents,
+    },
+  };
 }
 
 function relatedOne<T>(value: T | T[] | null | undefined): T | null {
@@ -213,6 +518,9 @@ function transactionSummary(transaction: LastKnownAccountingTransaction | null) 
 
 function uploadStartLabel(transaction: LastKnownAccountingTransaction | null) {
   if (!transaction) return 'Download full history for the first upload.';
+  if (transaction.account_type === 'credit_card' && transaction.transaction_date.slice(0, 10) === lastDayOfPreviousMonth()) {
+    return `Caught up through ${formatDate(transaction.transaction_date)}. Upload the next credit card file on ${formatDate(firstDayOfNextMonth())}.`;
+  }
   return `Start the next download on ${formatDate(addOneDay(transaction.transaction_date))}.`;
 }
 
@@ -264,6 +572,25 @@ function aiReviewErrorMessage(code: string | string[] | undefined) {
   return null;
 }
 
+async function fetchBudgetTransactions(supabase: Awaited<ReturnType<typeof createClient>>) {
+  const rows: BudgetTransactionRow[] = [];
+
+  for (let from = 0; ; from += BUDGET_TRANSACTION_PAGE_SIZE) {
+    const { data, error } = await supabase
+      .from('accounting_transactions')
+      .select('id,transaction_date,account_name,account_type,merchant_name,original_description,amount_cents,status,category_id,accounting_categories(id,name,category_type,pnl_section)')
+      .in('status', ['needs_review', 'categorized'])
+      .order('transaction_date', { ascending: true })
+      .range(from, from + BUDGET_TRANSACTION_PAGE_SIZE - 1);
+
+    if (error || !data?.length) break;
+    rows.push(...((data ?? []) as BudgetTransactionRow[]));
+    if (data.length < BUDGET_TRANSACTION_PAGE_SIZE) break;
+  }
+
+  return rows;
+}
+
 function AccountingNav({
   activeView,
   end,
@@ -275,7 +602,7 @@ function AccountingNav({
 }) {
   return (
     <section className="card">
-      <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-7">
+      <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-8">
         {ACCOUNTING_VIEWS.map((view) => (
           <Link
             key={view.id}
@@ -570,7 +897,7 @@ async function runAiAccountingReview(formData: FormData) {
   'use server';
   const current = await requireAdminWriteAccess(accountingHref('admin_write_denied'), 'accounting');
   const apiKey = await serverOpenAiApiKey();
-  const start = String(formData.get('start') ?? '') || firstDayOfCurrentMonth();
+  const start = String(formData.get('start') ?? '') || firstDayOfCurrentYear();
   const end = String(formData.get('end') ?? '') || todayInput();
   const endExclusive = addOneDay(end);
 
@@ -667,6 +994,25 @@ export default async function AccountingPage({
   const reviewFrom = (reviewPage - 1) * REVIEW_PAGE_SIZE;
   const reviewTo = reviewFrom + REVIEW_PAGE_SIZE - 1;
   const { end, endExclusive, start } = normalizeDateRange(searchParams);
+  const reviewCategoryFilter = reviewCategoryParam(searchParams?.category);
+  const reviewSearch = searchParam(searchParams?.q);
+  const reviewSearchFilter = supabaseIlikeValue(reviewSearch);
+
+  let transactionsQuery = supabase
+    .from('accounting_transactions')
+    .select('id,transaction_date,account_name,account_type,merchant_name,original_description,amount_cents,status,ai_review_status,ai_review_summary,ai_review_flags,ai_review_model,ai_reviewed_at,review_notes,category_id,accounting_categories(id,name,category_type,pnl_section)', { count: 'exact' })
+    .gte('transaction_date', start)
+    .lt('transaction_date', endExclusive);
+
+  if (reviewCategoryFilter === '__uncategorized__') {
+    transactionsQuery = transactionsQuery.is('category_id', null);
+  } else if (reviewCategoryFilter) {
+    transactionsQuery = transactionsQuery.eq('category_id', reviewCategoryFilter);
+  }
+
+  if (reviewSearchFilter) {
+    transactionsQuery = transactionsQuery.or(`merchant_name.ilike.%${reviewSearchFilter}%,original_description.ilike.%${reviewSearchFilter}%,account_name.ilike.%${reviewSearchFilter}%`);
+  }
 
   const [
     categoriesResult,
@@ -675,14 +1021,10 @@ export default async function AccountingPage({
     batchesResult,
     latestBankTransactionResult,
     latestCreditCardTransactionResult,
-    businessReviewTransactionsResult,
+    budgetTransactions,
   ] = await Promise.all([
     supabase.from('accounting_categories').select('id,name,category_type,pnl_section,active').eq('active', true).order('display_order', { ascending: true }).order('name', { ascending: true }),
-    supabase
-      .from('accounting_transactions')
-      .select('id,transaction_date,account_name,account_type,merchant_name,original_description,amount_cents,status,ai_review_status,ai_review_summary,ai_review_flags,ai_review_model,ai_reviewed_at,review_notes,category_id,accounting_categories(id,name,category_type,pnl_section)', { count: 'exact' })
-      .gte('transaction_date', start)
-      .lt('transaction_date', endExclusive)
+    transactionsQuery
       .order('transaction_date', { ascending: false })
       .range(reviewFrom, reviewTo),
     supabase
@@ -709,27 +1051,20 @@ export default async function AccountingPage({
       .order('created_at', { ascending: false })
       .limit(1)
       .maybeSingle(),
-    supabase
-      .from('accounting_transactions')
-      .select('id,transaction_date,account_name,account_type,merchant_name,original_description,amount_cents,status,review_notes,accounting_categories(id,name,category_type,pnl_section)')
-      .eq('review_notes', BUSINESS_REVIEW_NOTE)
-      .order('transaction_date', { ascending: true }),
+    fetchBudgetTransactions(supabase),
   ]);
 
   const categories = (categoriesResult.data ?? []) as AccountingCategoryRow[];
   const transactions = (transactionsResult.data ?? []) as any[];
-  const businessReviewTransactions = (businessReviewTransactionsResult.data ?? []) as any[];
   const latestBankTransaction = (latestBankTransactionResult.data ?? null) as LastKnownAccountingTransaction | null;
   const latestCreditCardTransaction = (latestCreditCardTransactionResult.data ?? null) as LastKnownAccountingTransaction | null;
+  const budgetWorkspace = buildBudgetWorkspace(budgetTransactions);
   const monthEndDate = lastDayOfCurrentMonth();
   const transactionTotal = transactionsResult.count ?? transactions.length;
   const hasPreviousReviewPage = reviewPage > 1;
   const hasNextReviewPage = reviewFrom + transactions.length < transactionTotal;
   const pnlTransactions = (pnlTransactionsResult.data ?? []) as any[];
   const batches = batchesResult.data ?? [];
-  const businessReviewTotalCents = businessReviewTransactions.reduce((sum, transaction) => (
-    sum - normalizeAccountingNumber(transaction.amount_cents)
-  ), 0);
   const pnl = buildAccountingPnlTotals({
     transactions: pnlTransactions as any[],
   });
@@ -779,6 +1114,8 @@ export default async function AccountingPage({
           <div className="flex w-full min-w-0 flex-col gap-3 lg:flex-row lg:flex-wrap lg:items-end lg:justify-end xl:w-auto">
             <form className="grid w-full min-w-0 gap-3 rounded-xl border border-slate-200 bg-white/60 p-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] lg:w-auto" action="/admin/accounting">
               <input name="view" type="hidden" value={activeView} />
+              {activeView === 'review' && reviewCategoryFilter ? <input name="category" type="hidden" value={reviewCategoryFilter} /> : null}
+              {activeView === 'review' && reviewSearch ? <input name="q" type="hidden" value={reviewSearch} /> : null}
               <input className="input min-w-0" name="start" type="date" defaultValue={start} />
               <input className="input min-w-0" name="end" type="date" defaultValue={end} />
               <button className="btn-primary w-full sm:w-auto" type="submit">Update</button>
@@ -883,46 +1220,121 @@ export default async function AccountingPage({
         </form>
       </section> : null}
 
-      {activeView === 'business_review' ? <section className="card space-y-4">
-        <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
-          <div>
-            <span className="eyebrow">Business Review</span>
-            <h2 className="mt-3 text-2xl font-semibold tracking-tight text-slate-950">Owner-reviewed revenue items</h2>
+      {activeView === 'budgeting' ? <section className="space-y-6">
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+          <div className="stat-card">
+            <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Projected Revenue</p>
+            <p className="mt-2 text-2xl font-semibold text-slate-950">{money(budgetWorkspace.summary.projectedRevenueCents)}</p>
+            <p className="mt-1 text-sm text-slate-500">{budgetWorkspace.budgetRangeLabel}</p>
           </div>
-          <div className="rounded-xl border border-teal-100 bg-teal-50 px-4 py-3">
-            <p className="text-xs font-semibold uppercase tracking-[0.14em] text-teal-700">Included Revenue</p>
-            <p className="mt-1 text-2xl font-semibold text-teal-950">{money(businessReviewTotalCents)}</p>
+          <div className="stat-card">
+            <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">COGS Budget</p>
+            <p className="mt-2 text-2xl font-semibold text-slate-950">{money(budgetWorkspace.summary.plannedCogsCents)}</p>
+            <p className="mt-1 text-sm text-slate-500">Run-rate {money(budgetWorkspace.summary.trailingCogsCents)}</p>
+          </div>
+          <div className="stat-card">
+            <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Operating Spend</p>
+            <p className="mt-2 text-2xl font-semibold text-slate-950">{money(budgetWorkspace.summary.plannedOperatingSpendCents)}</p>
+            <p className="mt-1 text-sm text-slate-500">Spendable pool</p>
+          </div>
+          <div className="stat-card">
+            <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Planned Net Income</p>
+            <p className={`mt-2 text-2xl font-semibold ${budgetWorkspace.summary.recommendedNetIncomeCents >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>{money(budgetWorkspace.summary.recommendedNetIncomeCents)}</p>
+            <p className="mt-1 text-sm text-slate-500">{money(budgetWorkspace.summary.cashReserveCents)} reserve target</p>
           </div>
         </div>
-        <div className="overflow-x-auto">
-          <table className="min-w-full text-sm">
-            <thead>
-              <tr className="text-left text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">
-                <th className="px-3 py-2">Date</th>
-                <th className="px-3 py-2">Description</th>
-                <th className="px-3 py-2">Account</th>
-                <th className="px-3 py-2">Category</th>
-                <th className="px-3 py-2 text-right">Amount</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {businessReviewTransactions.map((transaction) => (
-                <tr key={transaction.id} className="bg-white/60">
-                  <td className="px-3 py-3 font-medium text-slate-700">{formatDate(transaction.transaction_date)}</td>
-                  <td className="px-3 py-3 text-slate-950">
-                    <p className="font-semibold">{transaction.merchant_name || transaction.original_description}</p>
-                    {transaction.merchant_name ? <p className="mt-1 text-xs text-slate-500">{transaction.original_description}</p> : null}
-                  </td>
-                  <td className="px-3 py-3 text-slate-700">{transaction.account_name || accountingAccountTypeLabel(transaction.account_type)}</td>
-                  <td className="px-3 py-3 text-slate-700">{categoryLabel(transaction.accounting_categories)}</td>
-                  <td className="px-3 py-3 text-right font-semibold text-emerald-700">{money(-normalizeAccountingNumber(transaction.amount_cents))}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+
+        <div className="grid gap-6 xl:grid-cols-[1.15fr_0.85fr]">
+          <div className="card space-y-4">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+              <div>
+                <span className="eyebrow">Budgeting</span>
+                <h2 className="mt-3 text-2xl font-semibold tracking-tight text-slate-950">Category spend limits</h2>
+              </div>
+              <div className="rounded-xl border border-teal-100 bg-teal-50 px-4 py-3">
+                <p className="text-xs font-semibold uppercase tracking-[0.14em] text-teal-700">Target Profit</p>
+                <p className="mt-1 text-xl font-semibold text-teal-950">{money(budgetWorkspace.summary.targetProfitCents)}</p>
+              </div>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="min-w-full text-sm">
+                <thead>
+                  <tr className="text-left text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">
+                    <th className="px-3 py-2">Category</th>
+                    <th className="px-3 py-2">Type</th>
+                    <th className="px-3 py-2 text-right">Run-rate</th>
+                    <th className="px-3 py-2 text-right">Limit</th>
+                    <th className="px-3 py-2 text-right">This month</th>
+                    <th className="px-3 py-2 text-right">Left</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {budgetWorkspace.categoryPlans.map((plan) => (
+                    <tr key={plan.id} className="bg-white/60">
+                      <td className="px-3 py-3 font-semibold text-slate-950">{plan.name}</td>
+                      <td className="px-3 py-3 text-slate-600">{plan.sectionLabel}</td>
+                      <td className="px-3 py-3 text-right text-slate-700">{money(plan.trailingAverageCents)}</td>
+                      <td className="px-3 py-3 text-right font-semibold text-slate-950">{money(plan.suggestedLimitCents)}</td>
+                      <td className={`px-3 py-3 text-right font-semibold ${budgetHealthTone(plan)}`}>{money(plan.currentProjectedCents)}</td>
+                      <td className={`px-3 py-3 text-right font-semibold ${plan.remainingCents >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>{money(plan.remainingCents)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            {!budgetWorkspace.categoryPlans.length ? <p className="text-sm text-slate-500">Categorized accounting activity will appear here after upload.</p> : null}
+          </div>
+
+          <div className="space-y-6">
+            <div className="card space-y-4">
+              <div>
+                <span className="eyebrow">Consultant Cockpit</span>
+                <h2 className="mt-3 text-2xl font-semibold tracking-tight text-slate-950">What belongs here</h2>
+              </div>
+              <div className="grid gap-3">
+                <div className="rounded-xl border border-slate-200 bg-white/65 p-3">
+                  <p className="font-semibold text-slate-950">Budget-vs-actual alerts</p>
+                  <p className="mt-1 text-sm text-slate-500">Flag categories that are pacing above plan before month-end.</p>
+                </div>
+                <div className="rounded-xl border border-slate-200 bg-white/65 p-3">
+                  <p className="font-semibold text-slate-950">Cash runway guardrail</p>
+                  <p className="mt-1 text-sm text-slate-500">Keep reserve dollars separate from spendable operating cash.</p>
+                </div>
+                <div className="rounded-xl border border-slate-200 bg-white/65 p-3">
+                  <p className="font-semibold text-slate-950">Approval thresholds</p>
+                  <p className="mt-1 text-sm text-slate-500">Mark categories where a one-off purchase should require review.</p>
+                </div>
+              </div>
+            </div>
+
+            <div className="card space-y-4">
+              <div>
+                <span className="eyebrow">History</span>
+                <h2 className="mt-3 text-2xl font-semibold tracking-tight text-slate-950">Monthly foundation</h2>
+              </div>
+              <div className="space-y-2">
+                {budgetWorkspace.monthlyHistory.map((month) => {
+                  const netIncomeCents = month.revenueCents - month.cogsCents - month.operatingExpensesCents + month.otherIncomeCents - month.otherExpensesCents;
+                  return (
+                    <div key={month.month} className="rounded-xl border border-slate-200 bg-white/65 px-3 py-2">
+                      <div className="flex items-center justify-between gap-3">
+                        <p className="font-semibold text-slate-950">{monthLabel(month.month)}</p>
+                        <p className={`font-semibold ${netIncomeCents >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>{money(netIncomeCents)}</p>
+                      </div>
+                      <p className="mt-1 text-xs font-medium text-slate-500">Revenue {money(month.revenueCents)} - COGS {money(month.cogsCents)} - OpEx {money(month.operatingExpensesCents)}</p>
+                    </div>
+                  );
+                })}
+                {!budgetWorkspace.monthlyHistory.length ? <p className="text-sm text-slate-500">Monthly budget history will appear after uploads.</p> : null}
+              </div>
+            </div>
+          </div>
         </div>
-        {!businessReviewTransactions.length ? <p className="text-sm text-slate-500">No business review items yet.</p> : null}
       </section> : null}
+
+      {activeView === 'simulator' ? (
+        <AccountingBudgetSimulator lines={budgetWorkspace.simulatorLines} />
+      ) : null}
 
       {activeView === 'pnl' ? <section className="grid gap-6 xl:grid-cols-[1fr_1fr]">
         <div className="card space-y-4">
@@ -1023,6 +1435,25 @@ export default async function AccountingPage({
             </p>
           </div>
         </div>
+        <form action="/admin/accounting" className="grid gap-3 rounded-xl border border-slate-200 bg-white/70 p-3 lg:grid-cols-[minmax(160px,0.8fr)_minmax(220px,1fr)_auto_auto] lg:items-end">
+          <input name="view" type="hidden" value="review" />
+          <input name="start" type="hidden" value={start} />
+          <input name="end" type="hidden" value={end} />
+          <label className="space-y-1 text-sm font-medium text-slate-700">
+            Category
+            <select className="input" name="category" defaultValue={reviewCategoryFilter}>
+              <option value="">All categories</option>
+              <option value="__uncategorized__">Uncategorized</option>
+              {categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}
+            </select>
+          </label>
+          <label className="space-y-1 text-sm font-medium text-slate-700">
+            Search
+            <input className="input" name="q" defaultValue={reviewSearch} placeholder="Merchant, description, account" />
+          </label>
+          <button className="btn-primary" type="submit">Filter</button>
+          <Link className="btn-secondary text-center" href={accountingViewHref({ end, start, view: 'review' })}>Clear</Link>
+        </form>
         {transactions.length ? (
           <form id={BULK_ACCOUNTING_REVIEW_FORM_ID} action={bulkUpdateAccountingTransactions} className="grid gap-3 rounded-xl border border-slate-200 bg-white/70 p-3 lg:grid-cols-[minmax(0,1fr)_minmax(220px,0.8fr)_minmax(220px,0.8fr)_auto] lg:items-end">
             <div className="space-y-2">
@@ -1123,7 +1554,7 @@ export default async function AccountingPage({
         <div className="flex flex-col gap-3 border-t border-slate-100 pt-4 sm:flex-row sm:items-center sm:justify-between">
           <Link
             className={`btn-secondary ${hasPreviousReviewPage ? '' : 'pointer-events-none opacity-50'}`}
-            href={accountingViewHref({ end, page: reviewPage - 1, start, view: 'review' })}
+            href={accountingViewHref({ category: reviewCategoryFilter, end, page: reviewPage - 1, search: reviewSearch, start, view: 'review' })}
             aria-disabled={!hasPreviousReviewPage}
           >
             Previous
@@ -1131,7 +1562,7 @@ export default async function AccountingPage({
           <p className="text-sm font-medium text-slate-500">Page {reviewPage}</p>
           <Link
             className={`btn-secondary ${hasNextReviewPage ? '' : 'pointer-events-none opacity-50'}`}
-            href={accountingViewHref({ end, page: reviewPage + 1, start, view: 'review' })}
+            href={accountingViewHref({ category: reviewCategoryFilter, end, page: reviewPage + 1, search: reviewSearch, start, view: 'review' })}
             aria-disabled={!hasNextReviewPage}
           >
             Next
