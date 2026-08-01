@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   accountingTransactionFingerprint,
+  accountingTransactionFingerprintForOccurrence,
   buildAccountingPnlTotals,
-  buildSuggestedAccountingMatches,
   parseAiAccountingReviewResponse,
   parseAccountingCsv,
 } from '@/lib/accounting';
@@ -113,64 +113,25 @@ describe('accounting duplicate fingerprints', () => {
 
     expect(first).toBe(second);
   });
-});
 
-describe('accounting suggested matches', () => {
-  it('suggests inventory receipt matches by amount, date, and supplier', () => {
-    const suggestions = buildSuggestedAccountingMatches({
-      expenses: [],
-      receipts: [{
-        freight_cents: 500,
-        id: 'receipt-1',
-        inventory_items: { name: 'Box 14x14x14', sku: 'BOX-14' },
-        item_unit_cost_cents: 150,
-        other_cost_cents: 0,
-        quantity: 50,
-        received_at: '2026-07-03T12:00:00.000Z',
-        supplier: 'Uline',
-      }],
-      transaction: {
-        accountName: 'Sobrew Visa',
-        accountType: 'credit_card',
-        amountCents: 8000,
-        merchantName: 'Uline',
-        originalDescription: 'ULINE SHIP SUPPLIES',
-        transactionDate: '2026-07-02',
-      },
+  it('distinguishes repeated identical transactions in the same upload', () => {
+    const baseFingerprint = accountingTransactionFingerprint({
+      accountName: 'Business Amex',
+      amountCents: 772,
+      originalDescription: 'BT*PIRATE SHIP * POSJACKSON WY',
+      transactionDate: '2026-04-07',
     });
 
-    expect(suggestions[0]).toMatchObject({
-      targetId: 'receipt-1',
-      targetType: 'inventory_receipt',
-    });
-    expect(suggestions[0].confidence).toBeGreaterThanOrEqual(90);
-  });
-
-  it('flags payment app activity as a potential duplicate payment', () => {
-    const suggestions = buildSuggestedAccountingMatches({
-      expenses: [],
-      receipts: [],
-      transaction: {
-        accountName: 'Sobrew Checking',
-        accountType: 'bank',
-        amountCents: 12500,
-        merchantName: 'Venmo',
-        originalDescription: 'VENMO PAYMENT ZACH',
-        transactionDate: '2026-07-15',
-      },
-    });
-
-    expect(suggestions[0]).toMatchObject({
-      targetId: null,
-      targetLabel: 'Potential duplicate payment',
-      targetType: 'other',
-    });
-    expect(suggestions[0].confidence).toBeGreaterThanOrEqual(70);
+    expect(accountingTransactionFingerprintForOccurrence(baseFingerprint, 1)).toBe(baseFingerprint);
+    expect(accountingTransactionFingerprintForOccurrence(baseFingerprint, 2)).not.toBe(baseFingerprint);
+    expect(accountingTransactionFingerprintForOccurrence(baseFingerprint, 2)).toBe(
+      accountingTransactionFingerprintForOccurrence(baseFingerprint, 2),
+    );
   });
 });
 
 describe('accounting P&L totals', () => {
-  it('does not count matched inventory purchases as an expense', () => {
+  it('does not count excluded rows in the standalone P&L', () => {
     const totals = buildAccountingPnlTotals({
       transactions: [
         {
@@ -188,13 +149,13 @@ describe('accounting P&L totals', () => {
         {
           accounting_categories: {
             category_type: 'asset',
-            id: 'inventory',
-            name: 'Inventory Purchase / Asset',
+            id: 'transfer',
+            name: 'Transfer / Credit Card Payment',
             pnl_section: 'none',
           },
           amount_cents: 8000,
-          category_id: 'inventory',
-          status: 'matched_inventory',
+          category_id: 'transfer',
+          status: 'excluded',
           transaction_date: '2026-07-02',
         },
         {
@@ -317,11 +278,11 @@ describe('AI accounting review parsing', () => {
   "flags": [
     {
       "transactionId": "txn-1",
-      "flagType": "inventory_overlap",
+      "flagType": "possible_transfer",
       "confidence": 92,
-      "reason": "Looks like a card purchase that may already be in receiving.",
-      "recommendedAction": "approve_inventory_match",
-      "categorySuggestion": "Inventory Purchase / Asset"
+      "reason": "Looks like a credit card payment.",
+      "recommendedAction": "exclude",
+      "categorySuggestion": "Transfer / Credit Card Payment"
     }
   ]
 }
@@ -330,11 +291,11 @@ describe('AI accounting review parsing', () => {
 
     expect(parsed.flags).toEqual([
       {
-        categorySuggestion: 'Inventory Purchase / Asset',
+        categorySuggestion: 'Transfer / Credit Card Payment',
         confidence: 92,
-        flagType: 'inventory_overlap',
-        reason: 'Looks like a card purchase that may already be in receiving.',
-        recommendedAction: 'approve_inventory_match',
+        flagType: 'possible_transfer',
+        reason: 'Looks like a credit card payment.',
+        recommendedAction: 'exclude',
         transactionId: 'txn-1',
       },
     ]);

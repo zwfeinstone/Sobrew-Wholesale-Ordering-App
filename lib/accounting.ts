@@ -14,8 +14,6 @@ export const ACCOUNTING_ACCOUNT_TYPES = [
 export const ACCOUNTING_TRANSACTION_STATUSES = [
   { value: 'needs_review', label: 'Needs Review' },
   { value: 'categorized', label: 'Categorized' },
-  { value: 'matched_inventory', label: 'Matched to Inventory' },
-  { value: 'matched_non_inventory_expense', label: 'Matched to Expense' },
   { value: 'excluded', label: 'Excluded' },
 ] as const;
 
@@ -50,33 +48,6 @@ export type AccountingTransactionRow = {
   transaction_date: string;
 };
 
-export type AccountingInventoryReceiptMatchRow = {
-  id: string;
-  supplier: string | null;
-  quantity: number | string | null;
-  item_unit_cost_cents: number | string | null;
-  freight_cents: number | string | null;
-  other_cost_cents: number | string | null;
-  received_at: string | null;
-  inventory_items?: { name: string | null; sku: string | null } | Array<{ name: string | null; sku: string | null }> | null;
-};
-
-export type AccountingNonInventoryExpenseMatchRow = {
-  amount_cents: number | string | null;
-  expense_type: string | null;
-  id: string;
-  spent_at: string | null;
-  vendor: string | null;
-};
-
-export type SuggestedAccountingMatch = {
-  confidence: number;
-  reason: string;
-  targetId: string | null;
-  targetLabel: string;
-  targetType: 'inventory_receipt' | 'non_inventory_expense' | 'other';
-};
-
 export type AccountingPnlTotals = {
   cardCogsCents: number;
   cardOperatingExpenseCents: number;
@@ -96,20 +67,15 @@ export type AiAccountingReviewCandidate = {
   existingStatus: string;
   id: string;
   merchantName: string | null;
-  suggestedMatches: Array<{
-    confidence: number;
-    reason: string | null;
-    targetType: string;
-  }>;
   transactionDate: string;
 };
 
 export type AiAccountingReviewFlag = {
   categorySuggestion?: string | null;
   confidence: number;
-  flagType: 'possible_duplicate' | 'inventory_overlap' | 'missing_category' | 'possible_transfer' | 'refund_or_credit' | 'unusual_amount' | 'vendor_review' | 'other';
+  flagType: 'possible_duplicate' | 'missing_category' | 'possible_transfer' | 'refund_or_credit' | 'unusual_amount' | 'vendor_review' | 'other';
   reason: string;
-  recommendedAction: 'approve_inventory_match' | 'categorize' | 'exclude' | 'split' | 'verify_vendor' | 'review';
+  recommendedAction: 'categorize' | 'exclude' | 'split' | 'verify_vendor' | 'review';
   transactionId: string;
 };
 
@@ -135,7 +101,6 @@ Review uploaded bank and credit-card transactions and flag only rows that deserv
 
 Important accounting rules:
 - Positive amounts are money out. Negative amounts are money in.
-- Inventory purchases that already have an inventory receipt should be matched to inventory and not counted again as operating expense.
 - Credit card payments, account transfers, owner draws, refunds, and deposits should generally be excluded from P&L expense unless the data says otherwise.
 - Cash App, Zelle, and Venmo payments are often payroll, owner-pay, reimbursement, or transfer rows that can duplicate something already recorded elsewhere.
 - Do not invent vendors, receipts, categories, or facts. Use only the supplied JSON.
@@ -143,7 +108,6 @@ Important accounting rules:
 
 Flag rows for:
 - possible duplicate expense
-- possible inventory overlap
 - missing or suspicious category
 - possible transfer or credit card payment
 - refund/credit needing treatment
@@ -155,10 +119,10 @@ Return only valid JSON in this exact shape:
   "flags": [
     {
       "transactionId": "uuid",
-      "flagType": "possible_duplicate | inventory_overlap | missing_category | possible_transfer | refund_or_credit | unusual_amount | vendor_review | other",
+      "flagType": "possible_duplicate | missing_category | possible_transfer | refund_or_credit | unusual_amount | vendor_review | other",
       "confidence": 0-100,
       "reason": "short owner-friendly explanation",
-      "recommendedAction": "approve_inventory_match | categorize | exclude | split | verify_vendor | review",
+      "recommendedAction": "categorize | exclude | split | verify_vendor | review",
       "categorySuggestion": "optional category name or null"
     }
   ]
@@ -327,6 +291,13 @@ export function accountingTransactionFingerprint({
     .digest('hex');
 }
 
+export function accountingTransactionFingerprintForOccurrence(baseFingerprint: string, occurrence: number) {
+  if (occurrence <= 1) return baseFingerprint;
+  return createHash('sha256')
+    .update(`${baseFingerprint}|occurrence:${occurrence}`)
+    .digest('hex');
+}
+
 export function parseAccountingCsv({
   accountName,
   accountType,
@@ -404,115 +375,8 @@ export function parseAccountingCsv({
   });
 }
 
-function totalReceiptCents(receipt: AccountingInventoryReceiptMatchRow) {
-  return (
-    normalizeAccountingNumber(receipt.quantity) * normalizeAccountingNumber(receipt.item_unit_cost_cents) +
-    normalizeAccountingNumber(receipt.freight_cents) +
-    normalizeAccountingNumber(receipt.other_cost_cents)
-  );
-}
-
-function daysBetween(left: string, right: string) {
-  const leftDate = new Date(`${left.slice(0, 10)}T00:00:00.000Z`);
-  const rightDate = new Date(`${right.slice(0, 10)}T00:00:00.000Z`);
-  if (Number.isNaN(leftDate.getTime()) || Number.isNaN(rightDate.getTime())) return 999;
-  return Math.abs(leftDate.getTime() - rightDate.getTime()) / 86_400_000;
-}
-
 function normalizedText(value: string | null | undefined) {
   return (value ?? '').trim().toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
-}
-
-function vendorScore(transactionText: string, vendor: string | null | undefined) {
-  const normalizedVendor = normalizedText(vendor);
-  if (!normalizedVendor) return 0;
-  if (transactionText.includes(normalizedVendor) || normalizedVendor.includes(transactionText)) return 25;
-  const vendorWords = normalizedVendor.split(' ').filter((word) => word.length >= 4);
-  if (vendorWords.some((word) => transactionText.includes(word))) return 12;
-  return 0;
-}
-
-const PAYMENT_APP_DUPLICATE_KEYWORDS = [
-  'cash app',
-  'cashapp',
-  'zelle',
-  'venmo',
-];
-
-function paymentAppDuplicateKeyword(transactionText: string) {
-  return PAYMENT_APP_DUPLICATE_KEYWORDS.find((keyword) => transactionText.includes(keyword)) ?? null;
-}
-
-export function buildSuggestedAccountingMatches({
-  expenses,
-  receipts,
-  transaction,
-}: {
-  expenses: AccountingNonInventoryExpenseMatchRow[];
-  receipts: AccountingInventoryReceiptMatchRow[];
-  transaction: ParsedAccountingTransaction;
-}) {
-  if (transaction.amountCents <= 0) return [];
-
-  const transactionText = normalizedText(`${transaction.merchantName ?? ''} ${transaction.originalDescription}`);
-  const suggestions: SuggestedAccountingMatch[] = [];
-  const paymentAppKeyword = paymentAppDuplicateKeyword(transactionText);
-
-  if (paymentAppKeyword) {
-    suggestions.push({
-      confidence: 78,
-      reason: `${paymentAppKeyword.replace(/\b\w/g, (char) => char.toUpperCase())} payments can duplicate payroll, owner-pay, reimbursements, or transfers already recorded elsewhere.`,
-      targetId: null,
-      targetLabel: 'Potential duplicate payment',
-      targetType: 'other',
-    });
-  }
-
-  for (const receipt of receipts) {
-    const receiptTotal = totalReceiptCents(receipt);
-    const amountDelta = Math.abs(receiptTotal - transaction.amountCents);
-    const dateDelta = daysBetween(transaction.transactionDate, receipt.received_at ?? '');
-    if (amountDelta > Math.max(500, transaction.amountCents * 0.08) || dateDelta > 21) continue;
-
-    let confidence = 35;
-    if (amountDelta <= 100) confidence += 30;
-    else if (amountDelta <= 500) confidence += 18;
-    if (dateDelta <= 3) confidence += 20;
-    else if (dateDelta <= 10) confidence += 10;
-    confidence += vendorScore(transactionText, receipt.supplier);
-
-    const item = relatedOne(receipt.inventory_items);
-    const itemLabel = item?.sku ? `${item.name} (${item.sku})` : item?.name ?? 'inventory receipt';
-    suggestions.push({
-      confidence: Math.min(99, Math.round(confidence)),
-      reason: `Similar amount and receipt date${receipt.supplier ? ` from ${receipt.supplier}` : ''}.`,
-      targetId: receipt.id,
-      targetLabel: itemLabel,
-      targetType: 'inventory_receipt',
-    });
-  }
-
-  for (const expense of expenses) {
-    const expenseTotal = normalizeAccountingNumber(expense.amount_cents);
-    const amountDelta = Math.abs(expenseTotal - transaction.amountCents);
-    const dateDelta = daysBetween(transaction.transactionDate, expense.spent_at ?? '');
-    if (amountDelta > Math.max(250, transaction.amountCents * 0.05) || dateDelta > 14) continue;
-
-    let confidence = 40;
-    if (amountDelta <= 100) confidence += 25;
-    if (dateDelta <= 3) confidence += 20;
-    confidence += vendorScore(transactionText, expense.vendor);
-
-    suggestions.push({
-      confidence: Math.min(99, Math.round(confidence)),
-      reason: `Looks like an existing non-inventory expense${expense.vendor ? ` from ${expense.vendor}` : ''}.`,
-      targetId: expense.id,
-      targetLabel: expense.vendor || expense.expense_type || 'non-inventory expense',
-      targetType: 'non_inventory_expense',
-    });
-  }
-
-  return suggestions.sort((left, right) => right.confidence - left.confidence).slice(0, 3);
 }
 
 export function categoryForTransaction(transaction: AccountingTransactionRow) {
@@ -525,11 +389,11 @@ function clampConfidence(value: unknown) {
 }
 
 function isAiFlagType(value: string): value is AiAccountingReviewFlag['flagType'] {
-  return ['possible_duplicate', 'inventory_overlap', 'missing_category', 'possible_transfer', 'refund_or_credit', 'unusual_amount', 'vendor_review', 'other'].includes(value);
+  return ['possible_duplicate', 'missing_category', 'possible_transfer', 'refund_or_credit', 'unusual_amount', 'vendor_review', 'other'].includes(value);
 }
 
 function isAiRecommendedAction(value: string): value is AiAccountingReviewFlag['recommendedAction'] {
-  return ['approve_inventory_match', 'categorize', 'exclude', 'split', 'verify_vendor', 'review'].includes(value);
+  return ['categorize', 'exclude', 'split', 'verify_vendor', 'review'].includes(value);
 }
 
 function extractJsonObject(text: string) {
@@ -656,7 +520,7 @@ export function buildAccountingPnlTotals({
     const category = categoryForTransaction(transaction);
     if (!category) continue;
     const amountCents = normalizeAccountingNumber(transaction.amount_cents);
-    if (transaction.status === 'matched_inventory' || transaction.status === 'matched_non_inventory_expense' || transaction.status === 'excluded') continue;
+    if (transaction.status === 'excluded') continue;
 
     if (category.pnl_section === 'cogs') cardCogsCents += amountCents;
     if (category.pnl_section === 'operating_expenses') cardOperatingExpenseCents += amountCents;

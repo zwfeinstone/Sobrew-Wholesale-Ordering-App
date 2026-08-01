@@ -11,8 +11,8 @@ import {
   accountingAccountTypeLabel,
   accountingStatusLabel,
   accountingTransactionFingerprint,
+  accountingTransactionFingerprintForOccurrence,
   buildAccountingPnlTotals,
-  buildSuggestedAccountingMatches,
   centsFromAccountingInput,
   generateAiAccountingReview,
   isAccountingAccountType,
@@ -50,8 +50,22 @@ const PNL_DETAIL_SECTIONS = [
   { id: 'other_expenses', label: 'Other Expenses' },
 ] as const;
 
-function accountingHref(toast: string) {
-  return `/admin/accounting?toast=${toast}`;
+function accountingHref(
+  toast: string,
+  options: {
+    count?: number;
+    end?: string;
+    start?: string;
+    view?: AccountingView;
+  } = {},
+) {
+  const params = new URLSearchParams();
+  params.set('toast', toast);
+  if (options.view) params.set('view', options.view);
+  if (options.start) params.set('start', options.start);
+  if (options.end) params.set('end', options.end);
+  if (typeof options.count === 'number') params.set('count', String(options.count));
+  return `/admin/accounting?${params.toString()}`;
 }
 
 function accountingViewParam(value: string | string[] | undefined): AccountingView {
@@ -145,8 +159,6 @@ function accountingCategoryImportKey(value: string | null | undefined) {
 
 function transactionTone(status: string) {
   if (status === 'needs_review') return 'bg-amber-50 text-amber-800 ring-amber-100';
-  if (status === 'matched_inventory') return 'bg-emerald-50 text-emerald-700 ring-emerald-100';
-  if (status === 'matched_non_inventory_expense') return 'bg-sky-50 text-sky-700 ring-sky-100';
   if (status === 'excluded') return 'bg-slate-100 text-slate-700 ring-slate-200';
   return 'bg-teal-50 text-teal-700 ring-teal-100';
 }
@@ -166,7 +178,6 @@ function aiReviewLabel(status: string | null | undefined) {
 }
 
 function aiFlagActionLabel(value: string | null | undefined) {
-  if (value === 'approve_inventory_match') return 'Approve inventory match';
   if (value === 'categorize') return 'Categorize';
   if (value === 'exclude') return 'Exclude';
   if (value === 'split') return 'Split';
@@ -174,11 +185,8 @@ function aiFlagActionLabel(value: string | null | undefined) {
   return 'Review';
 }
 
-function suggestedMatchLabel(targetType: string | null | undefined) {
-  if (targetType === 'inventory_receipt') return 'Possible inventory receipt';
-  if (targetType === 'non_inventory_expense') return 'Possible existing expense';
-  if (targetType === 'payroll') return 'Possible payroll payment';
-  return 'Potential duplicate payment';
+function isStandaloneAccountingFlag(flag: any) {
+  return flag?.flagType !== 'inventory_overlap' && flag?.recommendedAction !== 'approve_inventory_match';
 }
 
 async function serverOpenAiApiKey() {
@@ -234,52 +242,6 @@ function AccountingNav({
   );
 }
 
-async function createSuggestionsForTransactions({
-  parsedByFingerprint,
-  rows,
-  supabase,
-}: {
-  parsedByFingerprint: Map<string, ParsedAccountingTransaction>;
-  rows: any[];
-  supabase: Awaited<ReturnType<typeof createClient>>;
-}) {
-  if (!rows.length) return;
-
-  const { data: receipts } = await supabase
-    .from('inventory_receipts')
-    .select('id,supplier,quantity,item_unit_cost_cents,freight_cents,other_cost_cents,received_at,reversed_at,inventory_items(name,sku)')
-    .is('reversed_at', null)
-    .order('received_at', { ascending: false })
-    .limit(500);
-
-  const { data: expenses } = await supabase
-    .from('non_inventory_expenses')
-    .select('id,expense_type,vendor,amount_cents,spent_at')
-    .order('spent_at', { ascending: false })
-    .limit(500);
-
-  const matchRows = rows.flatMap((row) => {
-    const parsed = parsedByFingerprint.get(row.transaction_fingerprint);
-    if (!parsed) return [];
-    return buildSuggestedAccountingMatches({
-      expenses: (expenses ?? []) as any[],
-      receipts: (receipts ?? []) as any[],
-      transaction: parsed,
-    }).map((suggestion) => ({
-      transaction_id: row.id,
-      target_type: suggestion.targetType,
-      target_id: suggestion.targetId,
-      confidence: suggestion.confidence,
-      match_status: 'suggested',
-      reason: suggestion.reason,
-    }));
-  });
-
-  if (matchRows.length) {
-    await supabase.from('accounting_transaction_matches').insert(matchRows);
-  }
-}
-
 async function uploadAccountingCsv(formData: FormData) {
   'use server';
   await requireAdminWriteAccess(accountingHref('admin_write_denied'), 'accounting');
@@ -321,6 +283,8 @@ async function uploadAccountingCsv(formData: FormData) {
   );
   const outflowCents = parsed.reduce((sum, row) => sum + Math.max(0, row.amountCents), 0);
   const inflowCents = parsed.reduce((sum, row) => sum + Math.max(0, -row.amountCents), 0);
+  const uploadStart = parsed.reduce((earliest, row) => row.transactionDate < earliest ? row.transactionDate : earliest, parsed[0]?.transactionDate ?? todayInput());
+  const uploadEnd = parsed.reduce((latest, row) => row.transactionDate > latest ? row.transactionDate : latest, parsed[0]?.transactionDate ?? todayInput());
 
   const { data: batch, error: batchError } = await supabase
     .from('accounting_upload_batches')
@@ -340,11 +304,13 @@ async function uploadAccountingCsv(formData: FormData) {
 
   if (batchError || !batch) redirect(accountingHref('upload_error'));
 
-  const parsedByFingerprint = new Map<string, ParsedAccountingTransaction>();
+  const fingerprintOccurrences = new Map<string, number>();
   const rows = parsed.map((transaction) => {
-    const fingerprint = accountingTransactionFingerprint(transaction);
+    const baseFingerprint = accountingTransactionFingerprint(transaction);
+    const occurrence = (fingerprintOccurrences.get(baseFingerprint) ?? 0) + 1;
+    fingerprintOccurrences.set(baseFingerprint, occurrence);
+    const fingerprint = accountingTransactionFingerprintForOccurrence(baseFingerprint, occurrence);
     const category = categoryByName.get(accountingCategoryImportKey(transaction.categoryName)) ?? null;
-    parsedByFingerprint.set(fingerprint, transaction);
     return {
       upload_batch_id: batch.id,
       source_type: 'csv',
@@ -369,13 +335,12 @@ async function uploadAccountingCsv(formData: FormData) {
 
   if (error) redirect(accountingHref('upload_error'));
 
-  await createSuggestionsForTransactions({
-    parsedByFingerprint,
-    rows: inserted ?? [],
-    supabase,
-  });
-
-  redirect(accountingHref(inserted?.length ? 'upload_saved' : 'upload_duplicates'));
+  redirect(accountingHref(inserted?.length ? 'upload_saved' : 'upload_duplicates', {
+    count: inserted?.length ?? 0,
+    end: uploadEnd,
+    start: uploadStart,
+    view: inserted?.length ? 'imports' : 'review',
+  }));
 }
 
 async function addManualTransaction(formData: FormData) {
@@ -430,12 +395,6 @@ async function addManualTransaction(formData: FormData) {
     .select('id,transaction_fingerprint');
 
   if (error) redirect(accountingHref('manual_error'));
-
-  await createSuggestionsForTransactions({
-    parsedByFingerprint: new Map([[fingerprint, transaction]]),
-    rows: inserted ?? [],
-    supabase,
-  });
 
   redirect(accountingHref(inserted?.length ? 'manual_saved' : 'upload_duplicates'));
 }
@@ -498,61 +457,6 @@ async function updateAccountingTransaction(formData: FormData) {
       })
       .eq('id', transactionId);
     redirect(accountingHref(error ? 'review_error' : 'transaction_excluded'));
-  }
-
-  if (actionType === 'approve_match') {
-    const matchId = String(formData.get('match_id') ?? '').trim();
-    const targetType = String(formData.get('target_type') ?? '');
-    if (!matchId) redirect(accountingHref('review_error'));
-
-    const status = targetType === 'inventory_receipt'
-      ? 'matched_inventory'
-      : targetType === 'non_inventory_expense'
-        ? 'matched_non_inventory_expense'
-        : 'excluded';
-    const { error: matchError } = await supabase
-      .from('accounting_transaction_matches')
-      .update({
-        match_status: 'approved',
-        reviewed_by: current.profile.id,
-        reviewed_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', matchId)
-      .eq('transaction_id', transactionId);
-
-    const transactionUpdate: Record<string, unknown> = {
-      status,
-      reviewed_by: current.profile.id,
-      reviewed_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    };
-    if (status === 'excluded') {
-      transactionUpdate.review_notes = 'Approved as a likely duplicate payment or transfer';
-    }
-
-    const { error: transactionError } = await supabase
-      .from('accounting_transactions')
-      .update(transactionUpdate)
-      .eq('id', transactionId);
-
-    redirect(accountingHref(matchError || transactionError ? 'review_error' : 'match_approved'));
-  }
-
-  if (actionType === 'reject_match') {
-    const matchId = String(formData.get('match_id') ?? '').trim();
-    if (!matchId) redirect(accountingHref('review_error'));
-    const { error } = await supabase
-      .from('accounting_transaction_matches')
-      .update({
-        match_status: 'rejected',
-        reviewed_by: current.profile.id,
-        reviewed_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', matchId)
-      .eq('transaction_id', transactionId);
-    redirect(accountingHref(error ? 'review_error' : 'match_rejected'));
   }
 
   redirect(accountingHref('review_error'));
@@ -624,7 +528,7 @@ async function runAiAccountingReview(formData: FormData) {
   const [{ data: transactions }, { data: categories }] = await Promise.all([
     supabase
       .from('accounting_transactions')
-      .select('id,transaction_date,account_name,merchant_name,original_description,amount_cents,status,category_id,accounting_categories(name),accounting_transaction_matches(target_type,confidence,match_status,reason)')
+      .select('id,transaction_date,account_name,merchant_name,original_description,amount_cents,status,category_id,accounting_categories(name)')
       .gte('transaction_date', start)
       .lt('transaction_date', endExclusive)
       .in('status', ['needs_review', 'categorized'])
@@ -645,13 +549,6 @@ async function runAiAccountingReview(formData: FormData) {
     existingStatus: transaction.status,
     id: transaction.id,
     merchantName: transaction.merchant_name ?? null,
-    suggestedMatches: ((transaction.accounting_transaction_matches ?? []) as any[])
-      .filter((match) => match.match_status === 'suggested')
-      .map((match) => ({
-        confidence: Math.round(normalizeAccountingNumber(match.confidence)),
-        reason: match.reason ?? null,
-        targetType: match.target_type,
-      })),
     transactionDate: transaction.transaction_date,
   }));
 
@@ -711,6 +608,8 @@ export default async function AccountingPage({
   await requireAdminSectionView('accounting');
   const supabase = await createClient();
   const toast = typeof searchParams?.toast === 'string' ? searchParams.toast : '';
+  const toastCount = Number.parseInt(typeof searchParams?.count === 'string' ? searchParams.count : '', 10);
+  const uploadToastCount = Number.isFinite(toastCount) && toastCount > 0 ? toastCount : null;
   const activeView = accountingViewParam(searchParams?.view);
   const reviewPage = positivePageParam(searchParams?.page);
   const reviewFrom = (reviewPage - 1) * REVIEW_PAGE_SIZE;
@@ -726,7 +625,7 @@ export default async function AccountingPage({
     supabase.from('accounting_categories').select('id,name,category_type,pnl_section,active').eq('active', true).order('display_order', { ascending: true }).order('name', { ascending: true }),
     supabase
       .from('accounting_transactions')
-      .select('id,transaction_date,account_name,account_type,merchant_name,original_description,amount_cents,status,ai_review_status,ai_review_summary,ai_review_flags,ai_review_model,ai_reviewed_at,review_notes,category_id,accounting_categories(id,name,category_type,pnl_section),accounting_transaction_matches(id,target_type,target_id,confidence,match_status,reason)', { count: 'exact' })
+      .select('id,transaction_date,account_name,account_type,merchant_name,original_description,amount_cents,status,ai_review_status,ai_review_summary,ai_review_flags,ai_review_model,ai_reviewed_at,review_notes,category_id,accounting_categories(id,name,category_type,pnl_section)', { count: 'exact' })
       .gte('transaction_date', start)
       .lt('transaction_date', endExclusive)
       .order('transaction_date', { ascending: false })
@@ -753,10 +652,9 @@ export default async function AccountingPage({
   });
 
   const needsReviewCount = pnlTransactions.filter((transaction) => transaction.status === 'needs_review').length;
-  const aiFlaggedCount = pnlTransactions.filter((transaction) => transaction.ai_review_status === 'flagged').length;
-  const matchedInventoryCents = pnlTransactions
-    .filter((transaction) => transaction.status === 'matched_inventory')
-    .reduce((sum, transaction) => sum + Math.max(0, normalizeAccountingNumber(transaction.amount_cents)), 0);
+  const aiFlaggedCount = pnlTransactions.filter((transaction) => (
+    Array.isArray(transaction.ai_review_flags) && transaction.ai_review_flags.some(isStandaloneAccountingFlag)
+  )).length;
   const pnlCategoryBreakdown = PNL_DETAIL_SECTIONS.map((section) => ({
     ...section,
     rows: categories
@@ -773,7 +671,7 @@ export default async function AccountingPage({
 
   return (
     <div className="space-y-6">
-      {toast === 'upload_saved' ? <StatusToast message="Transactions uploaded." tone="success" /> : null}
+      {toast === 'upload_saved' ? <StatusToast message={uploadToastCount ? `${uploadToastCount} new transactions uploaded.` : 'Transactions uploaded.'} tone="success" /> : null}
       {toast === 'upload_duplicates' ? <StatusToast message="Those transactions were already in accounting." tone="success" /> : null}
       {toast === 'upload_empty' ? <StatusToast message="No usable transactions found in that file." tone="error" /> : null}
       {toast === 'upload_error' ? <StatusToast message="Unable to upload that file." tone="error" /> : null}
@@ -783,8 +681,6 @@ export default async function AccountingPage({
       {toast === 'category_error' ? <StatusToast message="Unable to add that category." tone="error" /> : null}
       {toast === 'transaction_saved' ? <StatusToast message="Transaction categorized." tone="success" /> : null}
       {toast === 'transaction_excluded' ? <StatusToast message="Transaction excluded from reports." tone="success" /> : null}
-      {toast === 'match_approved' ? <StatusToast message="Match approved. This transaction will not double-count as a separate expense." tone="success" /> : null}
-      {toast === 'match_rejected' ? <StatusToast message="Suggested match rejected." tone="success" /> : null}
       {toast === 'ai_review_saved' ? <StatusToast message="AI review complete. Flagged transactions are marked in the review queue." tone="success" /> : null}
       {toast === 'review_error' ? <StatusToast message="Unable to update that transaction." tone="error" /> : null}
       {toast === 'admin_write_denied' ? <StatusToast message="Only admins with accounting access can make changes." tone="error" /> : null}
@@ -813,7 +709,7 @@ export default async function AccountingPage({
 
       <AccountingNav activeView={activeView} end={end} start={start} />
 
-      {activeView === 'overview' ? <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-6">
+      {activeView === 'overview' ? <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
         <div className="stat-card">
           <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Revenue</p>
           <p className="mt-2 text-2xl font-semibold text-slate-950">{money(pnl.revenueCents)}</p>
@@ -838,11 +734,6 @@ export default async function AccountingPage({
           <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">AI Flags</p>
           <p className="mt-2 text-2xl font-semibold text-slate-950">{aiFlaggedCount}</p>
           <p className="mt-1 text-sm text-slate-500">Rows needing attention</p>
-        </div>
-        <div className="stat-card">
-          <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Inventory Reconciled</p>
-          <p className="mt-2 text-2xl font-semibold text-slate-950">{money(matchedInventoryCents)}</p>
-          <p className="mt-1 text-sm text-slate-500">Excluded from duplicate expense</p>
         </div>
       </section> : null}
 
@@ -989,7 +880,6 @@ export default async function AccountingPage({
               Showing {transactionTotal ? reviewFrom + 1 : 0}-{reviewFrom + transactions.length} of {transactionTotal} transactions.
             </p>
           </div>
-          <Link className="btn-secondary w-full sm:w-auto" href="/admin/receiving">Open receiving</Link>
         </div>
         {transactions.length ? (
           <form id={BULK_ACCOUNTING_REVIEW_FORM_ID} action={bulkUpdateAccountingTransactions} className="grid gap-3 rounded-xl border border-slate-200 bg-white/70 p-3 lg:grid-cols-[minmax(0,1fr)_minmax(220px,0.8fr)_minmax(220px,0.8fr)_auto] lg:items-end">
@@ -1015,8 +905,9 @@ export default async function AccountingPage({
         ) : null}
         <div className="space-y-3">
           {transactions.map((transaction) => {
-            const matches = (transaction.accounting_transaction_matches ?? []).filter((match: any) => match.match_status === 'suggested');
-            const aiFlags = Array.isArray(transaction.ai_review_flags) ? transaction.ai_review_flags : [];
+            const aiFlags = Array.isArray(transaction.ai_review_flags)
+              ? transaction.ai_review_flags.filter(isStandaloneAccountingFlag)
+              : [];
             return (
               <div key={transaction.id} className="rounded-xl border border-slate-200 bg-white/65 p-4">
                 <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_auto]">
@@ -1064,24 +955,6 @@ export default async function AccountingPage({
                   </div>
                 ) : transaction.ai_review_status === 'clean' ? (
                   <p className="mt-4 rounded-xl border border-emerald-100 bg-emerald-50/60 p-3 text-sm font-medium text-emerald-800">AI review found no exception flags.</p>
-                ) : null}
-
-                {matches.length ? (
-                  <div className="mt-4 space-y-2 border-t border-slate-100 pt-4">
-                    {matches.map((match: any) => (
-                      <form key={match.id} action={updateAccountingTransaction} className="grid gap-3 rounded-xl border border-amber-100 bg-amber-50/60 p-3 md:grid-cols-[minmax(0,1fr)_auto_auto] md:items-center">
-                        <input name="transaction_id" type="hidden" value={transaction.id} />
-                        <input name="match_id" type="hidden" value={match.id} />
-                        <input name="target_type" type="hidden" value={match.target_type} />
-                        <div>
-                          <p className="text-sm font-semibold text-amber-950">{suggestedMatchLabel(match.target_type)} - {Math.round(normalizeAccountingNumber(match.confidence))}%</p>
-                          <p className="mt-1 text-xs text-amber-800">{match.reason}</p>
-                        </div>
-                        <button className="btn-primary" name="action_type" type="submit" value="approve_match">Approve</button>
-                        <button className="btn-secondary" name="action_type" type="submit" value="reject_match">Reject</button>
-                      </form>
-                    ))}
-                  </div>
                 ) : null}
 
                 <form action={updateAccountingTransaction} className="mt-4 grid gap-3 border-t border-slate-100 pt-4 lg:grid-cols-[1fr_minmax(220px,0.8fr)_auto_auto] lg:items-end">
