@@ -322,6 +322,7 @@ function toastMessage(toast: string) {
     admin_write_denied: { message: 'You do not have permission to invoice orders.', tone: 'error' },
     invoice_already_created: { message: 'That order already has a QuickBooks invoice.', tone: 'success' },
     invoice_created: { message: 'QuickBooks invoice created.', tone: 'success' },
+    invoice_email_failed: { message: 'QuickBooks invoice was created, but the email was not sent. Fix the billing email or QuickBooks email settings and retry.', tone: 'error' },
     invoice_failed: { message: 'Unable to create that QuickBooks invoice.', tone: 'error' },
     invoice_mapping_required: { message: 'Map the QuickBooks customer and every product before invoicing.', tone: 'error' },
     invoice_not_ready: { message: 'Only shipped orders from today or later can be invoiced here.', tone: 'error' },
@@ -487,7 +488,7 @@ async function invoiceOrder(formData: FormData) {
   if (!order || order.archived_at || order.status !== 'Shipped' || !order.created_at || new Date(order.created_at) < new Date(startIso)) {
     redirect(invoicingHref('invoice_not_ready'));
   }
-  if (order.quickbooks_invoice_id) redirect(invoicingHref('invoice_already_created'));
+  if (order.quickbooks_invoice_id && order.invoice_status !== 'invoice_error') redirect(invoicingHref('invoice_already_created'));
   const missingCustomerMapping = !cleanText(relatedOne((order as any).centers)?.quickbooks_customer_id);
   const missingProductMappings = ((order as any).order_items ?? [])
     .filter((item: any) => !cleanText(relatedOne(item.products)?.quickbooks_item_id));
@@ -495,19 +496,20 @@ async function invoiceOrder(formData: FormData) {
     redirect(invoicingHref('invoice_mapping_required'));
   }
 
-  const claimResult = await supabase
+  const claimQuery = supabase
     .from('orders')
     .update({ invoice_error: null, invoice_status: 'invoicing' })
     .eq('id', orderId)
     .eq('status', 'Shipped')
     .is('archived_at', null)
-    .is('quickbooks_invoice_id', null)
-    .in('invoice_status', ['not_invoiced', 'invoice_error'])
-    .select('id')
-    .single();
+    .in('invoice_status', ['not_invoiced', 'invoice_error']);
+  const claimResult = order.quickbooks_invoice_id
+    ? await claimQuery.eq('quickbooks_invoice_id', order.quickbooks_invoice_id).select('id').single()
+    : await claimQuery.is('quickbooks_invoice_id', null).select('id').single();
 
   if (claimResult.error || !claimResult.data) redirect(invoicingHref('invoice_already_created'));
 
+  let successToast: 'invoice_created' | 'invoice_email_failed' = 'invoice_created';
   try {
     const invoice = await createQuickBooksInvoiceForOrder(orderId);
     const { error: updateError } = await supabase
@@ -516,12 +518,24 @@ async function invoiceOrder(formData: FormData) {
         invoice_error: null,
         invoice_status: 'invoiced',
         invoiced_at: new Date().toISOString(),
+        quickbooks_invoice_email_sent_at: invoice.emailSentAt,
+        quickbooks_invoice_email_to: invoice.emailTo,
         quickbooks_invoice_doc_number: invoice.docNumber,
         quickbooks_invoice_id: invoice.id,
         quickbooks_invoice_url: invoice.url,
       })
       .eq('id', orderId);
     if (updateError) throw updateError;
+    if (invoice.emailError) {
+      successToast = 'invoice_email_failed';
+      await supabase
+        .from('orders')
+        .update({
+          invoice_error: invoice.emailError,
+          invoice_status: 'invoice_error',
+        })
+        .eq('id', orderId);
+    }
   } catch (error) {
     const message = error instanceof QuickBooksConfigurationError
       ? error.message
@@ -538,7 +552,7 @@ async function invoiceOrder(formData: FormData) {
       .eq('id', orderId);
     redirect(invoicingHref(error instanceof QuickBooksConfigurationError ? 'quickbooks_config_error' : 'invoice_failed'));
   }
-  redirect(invoicingHref('invoice_created'));
+  redirect(invoicingHref(successToast));
 }
 
 export default async function AdminInvoicingPage({ searchParams }: { searchParams?: SearchParams }) {
@@ -563,7 +577,7 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
       .select('id,created_at,shipped_at,subtotal_cents,shipping_company,shipping_name,shipping_state,invoice_status,invoice_error,profiles(email,full_name),centers(name,customer_tax_status,quickbooks_customer_id,quickbooks_display_name),order_items(qty,line_total_cents,product_name_snapshot,products(name,sku,quickbooks_item_id))')
       .eq('status', 'Shipped')
       .is('archived_at', null)
-      .is('quickbooks_invoice_id', null)
+      .or('quickbooks_invoice_id.is.null,invoice_status.eq.invoice_error')
       .gte('created_at', startIso)
       .order('shipped_at', { ascending: true, nullsFirst: false })
       .order('created_at', { ascending: true }),

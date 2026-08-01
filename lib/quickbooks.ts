@@ -53,6 +53,7 @@ type QuickBooksOrderItem = {
 };
 
 type QuickBooksInvoiceCenter = {
+  billing_email?: string | null;
   customer_tax_status?: CustomerTaxStatus | string | null;
   quickbooks_customer_id?: string | null;
   quickbooks_display_name?: string | null;
@@ -97,6 +98,9 @@ export type QuickBooksCompanyInfo = {
 
 export type CreatedQuickBooksInvoice = {
   docNumber: string | null;
+  emailError: string | null;
+  emailSentAt: string | null;
+  emailTo: string | null;
   id: string;
   url: string | null;
 };
@@ -806,6 +810,12 @@ function customerNameForOrder(order: QuickBooksInvoiceOrder) {
     || `Sobrew order ${order.id.slice(0, 8)}`;
 }
 
+function invoiceEmailForOrder(order: QuickBooksInvoiceOrder) {
+  const center = relatedOne(order.centers);
+  const profile = relatedOne(order.profiles);
+  return cleanText(center?.billing_email) || cleanText(profile?.email);
+}
+
 function quickBooksCustomerRefFromCenter(order: QuickBooksInvoiceOrder): QuickBooksRef {
   const center = relatedOne(order.centers);
   const quickBooksCustomerId = cleanText(center?.quickbooks_customer_id);
@@ -967,8 +977,7 @@ export function buildQuickBooksInvoicePayload(
   }).filter((line) => line.Amount > 0);
   if (!lineItems.length) throw new Error('This order has no invoiceable line items.');
 
-  const profile = relatedOne(order.profiles);
-  const email = cleanText(profile?.email);
+  const email = invoiceEmailForOrder(order);
   const shippingAddress = addressForOrder(order);
   const privateNoteParts = [`Sobrew order ${order.id}`];
   const orderNotes = cleanText(order.notes);
@@ -984,6 +993,31 @@ export function buildQuickBooksInvoicePayload(
     PrivateNote: privateNoteParts.join('\n'),
     ShipAddr: shippingAddress,
   };
+}
+
+async function sendQuickBooksInvoiceEmail(connection: QuickBooksConnection, invoiceId: string, sendTo: string) {
+  if (!sendTo) throw new Error('Add a billing email before sending the QuickBooks invoice.');
+  await quickBooksRequest(connection, `/invoice/${encodeURIComponent(invoiceId)}/send?sendTo=${encodeURIComponent(sendTo)}`, {
+    headers: {
+      'Content-Type': 'application/octet-stream',
+    },
+    method: 'POST',
+  });
+  return new Date().toISOString();
+}
+
+async function trySendQuickBooksInvoiceEmail(connection: QuickBooksConnection, invoiceId: string, sendTo: string) {
+  try {
+    return {
+      emailError: null,
+      emailSentAt: await sendQuickBooksInvoiceEmail(connection, invoiceId, sendTo),
+    };
+  } catch (error) {
+    return {
+      emailError: error instanceof Error ? error.message : 'QuickBooks invoice was created, but the email could not be sent.',
+      emailSentAt: null,
+    };
+  }
 }
 
 export async function getQuickBooksSalesTaxSettings(): Promise<QuickBooksSalesTaxSettings> {
@@ -1028,15 +1062,28 @@ export async function createQuickBooksInvoiceForOrder(orderId: string): Promise<
   const supabase = getSupabaseAdmin();
   const { data: order, error } = await supabase
     .from('orders')
-    .select('id,status,archived_at,created_at,notes,quickbooks_invoice_id,shipping_company,shipping_name,shipping_address1,shipping_address2,shipping_city,shipping_state,shipping_zip,profiles(email,full_name),centers(name,customer_tax_status,quickbooks_customer_id,quickbooks_display_name),order_items(qty,unit_price_cents,line_total_cents,product_id,product_name_snapshot,products(name,sku,quickbooks_item_id,quickbooks_item_name))')
+    .select('id,status,archived_at,created_at,notes,quickbooks_invoice_id,quickbooks_invoice_doc_number,quickbooks_invoice_url,shipping_company,shipping_name,shipping_address1,shipping_address2,shipping_city,shipping_state,shipping_zip,profiles(email,full_name),centers(name,billing_email,customer_tax_status,quickbooks_customer_id,quickbooks_display_name),order_items(qty,unit_price_cents,line_total_cents,product_id,product_name_snapshot,products(name,sku,quickbooks_item_id,quickbooks_item_name))')
     .eq('id', orderId)
     .single();
   if (error || !order) throw new Error(error?.message || 'Order not found.');
   if ((order as any).archived_at) throw new Error('Archived orders cannot be invoiced.');
   if ((order as any).status !== 'Shipped') throw new Error('Only shipped orders can be invoiced.');
-  if ((order as any).quickbooks_invoice_id) throw new Error('This order has already been invoiced.');
 
   const connection = await getAuthorizedConnection();
+  const environment = connection.environment === 'production' ? 'production' : 'sandbox';
+  const emailTo = invoiceEmailForOrder(order as QuickBooksInvoiceOrder);
+  if ((order as any).quickbooks_invoice_id) {
+    const emailResult = await trySendQuickBooksInvoiceEmail(connection, String((order as any).quickbooks_invoice_id), emailTo);
+    return {
+      docNumber: (order as any).quickbooks_invoice_doc_number ? String((order as any).quickbooks_invoice_doc_number) : null,
+      emailError: emailResult.emailError,
+      emailSentAt: emailResult.emailSentAt,
+      emailTo,
+      id: String((order as any).quickbooks_invoice_id),
+      url: cleanText((order as any).quickbooks_invoice_url) || quickBooksAppInvoiceUrl(environment, String((order as any).quickbooks_invoice_id)),
+    };
+  }
+
   const salesTaxSettings = await getQuickBooksSalesTaxSettings();
   const missingMappedItems = ((order as any).order_items ?? [])
     .filter((item: QuickBooksOrderItem) => !cleanText(relatedOne(item.products)?.quickbooks_item_id))
@@ -1052,9 +1099,12 @@ export async function createQuickBooksInvoiceForOrder(orderId: string): Promise<
   });
   const invoice = created?.Invoice;
   if (!invoice?.Id) throw new Error('QuickBooks did not return an invoice ID.');
-  const environment = connection.environment === 'production' ? 'production' : 'sandbox';
+  const emailResult = await trySendQuickBooksInvoiceEmail(connection, String(invoice.Id), emailTo);
   return {
     docNumber: invoice.DocNumber ? String(invoice.DocNumber) : null,
+    emailError: emailResult.emailError,
+    emailSentAt: emailResult.emailSentAt,
+    emailTo,
     id: String(invoice.Id),
     url: quickBooksAppInvoiceUrl(environment, String(invoice.Id)),
   };
