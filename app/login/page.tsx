@@ -1,5 +1,6 @@
 import { redirect } from 'next/navigation';
 import Image from 'next/image';
+import Link from 'next/link';
 import LoginSubmitButton from '@/components/login-submit-button';
 import { firstAllowedAdminHref, isOwnerEmail } from '@/lib/admin-permission-definitions';
 import { loadSavedAdminPermissions } from '@/lib/admin-permission-save';
@@ -176,6 +177,11 @@ export default function LoginPage({ searchParams }: { searchParams: Record<strin
               </div>
             </div>
             <LoginSubmitButton />
+            <div className="login-legal-links">
+              <Link href="/privacy">Privacy Policy</Link>
+              <span aria-hidden="true">/</span>
+              <Link href="/eula">End-User License Agreement</Link>
+            </div>
           </form>
         </section>
 

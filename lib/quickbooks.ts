@@ -5,9 +5,13 @@ import { getSupabaseAdmin } from '@/lib/supabase/admin';
 
 const QUICKBOOKS_CONNECTION_ID = 'default';
 const QUICKBOOKS_ACCOUNTING_SCOPE = 'com.intuit.quickbooks.accounting';
+const DEFAULT_QUICKBOOKS_SALES_TAX_STATES = ['TN'];
+const QUICKBOOKS_LINE_TAXABLE_CODE = 'TAX';
+const QUICKBOOKS_LINE_NON_TAXABLE_CODE = 'NON';
 const QUICKBOOKS_TOKEN_ENDPOINT = 'https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer';
 
 type QuickBooksEnvironment = 'production' | 'sandbox';
+type CustomerTaxStatus = 'unknown' | 'for_profit' | 'tax_exempt';
 
 type QuickBooksConnection = {
   access_token: string;
@@ -37,8 +41,18 @@ type QuickBooksOrderItem = {
   unit_price_cents: number | string;
 };
 
+type QuickBooksInvoiceCenter = {
+  customer_tax_status?: CustomerTaxStatus | string | null;
+  name: string | null;
+};
+
+type QuickBooksSalesTaxOrder = {
+  centers?: QuickBooksInvoiceCenter | QuickBooksInvoiceCenter[] | null;
+  shipping_state: string | null;
+};
+
 type QuickBooksInvoiceOrder = {
-  centers?: { name: string | null } | { name: string | null }[] | null;
+  centers?: QuickBooksInvoiceCenter | QuickBooksInvoiceCenter[] | null;
   created_at: string | null;
   id: string;
   notes: string | null;
@@ -60,10 +74,43 @@ export type QuickBooksConnectionStatus = {
   realmId: string | null;
 };
 
+export type QuickBooksCompanyInfo = {
+  companyName: string | null;
+  email: string | null;
+  error: string | null;
+  legalName: string | null;
+  realmId: string | null;
+};
+
 export type CreatedQuickBooksInvoice = {
   docNumber: string | null;
   id: string;
   url: string | null;
+};
+
+export type QuickBooksProductSummary = {
+  activeItemCount: number | null;
+  error: string | null;
+};
+
+export type QuickBooksCatalogItem = {
+  active: boolean;
+  fullyQualifiedName: string | null;
+  id: string;
+  name: string;
+  sku: string | null;
+  syncToken: string | null;
+  type: string | null;
+};
+
+export type QuickBooksCatalogItemsResult = {
+  error: string | null;
+  items: QuickBooksCatalogItem[];
+  truncated: boolean;
+};
+
+export type QuickBooksSalesTaxSettings = {
+  states: string[];
 };
 
 export class QuickBooksConfigurationError extends Error {
@@ -89,6 +136,25 @@ function numericValue(value: number | string | null | undefined) {
 
 function amountFromCents(value: number | string | null | undefined) {
   return Number((numericValue(value) / 100).toFixed(2));
+}
+
+function normalizeStateCode(value: unknown) {
+  return cleanText(value).toUpperCase().replace(/[^A-Z]/g, '').slice(0, 2);
+}
+
+function normalizeSalesTaxStates(states: unknown) {
+  const values = Array.isArray(states) ? states : DEFAULT_QUICKBOOKS_SALES_TAX_STATES;
+  const normalized = values
+    .map(normalizeStateCode)
+    .filter((state) => /^[A-Z]{2}$/.test(state));
+  return [...new Set(normalized)].sort();
+}
+
+export function shouldCollectQuickBooksSalesTax(order: QuickBooksSalesTaxOrder, taxableStates: string[]) {
+  const center = relatedOne(order.centers);
+  if (center?.customer_tax_status !== 'for_profit') return false;
+  const shippingState = normalizeStateCode(order.shipping_state);
+  return Boolean(shippingState && normalizeSalesTaxStates(taxableStates).includes(shippingState));
 }
 
 function getQuickBooksEnvironment(): QuickBooksEnvironment {
@@ -290,6 +356,25 @@ async function quickBooksQuery(connection: QuickBooksConnection, query: string) 
   return quickBooksRequest(connection, `/query?query=${encodeURIComponent(query)}`);
 }
 
+function quickBooksQueryItems(payload: any) {
+  const items = payload?.QueryResponse?.Item;
+  return Array.isArray(items) ? items : [];
+}
+
+function normalizeQuickBooksCatalogItem(item: any): QuickBooksCatalogItem | null {
+  const id = cleanText(item?.Id);
+  if (!id) return null;
+  return {
+    active: item?.Active !== false,
+    fullyQualifiedName: cleanText(item?.FullyQualifiedName) || null,
+    id,
+    name: cleanText(item?.Name) || `Item ${id}`,
+    sku: cleanText(item?.Sku) || null,
+    syncToken: cleanText(item?.SyncToken) || null,
+    type: cleanText(item?.Type) || null,
+  };
+}
+
 function customerNameForOrder(order: QuickBooksInvoiceOrder) {
   return cleanText(relatedOne(order.centers)?.name)
     || cleanText(order.shipping_company)
@@ -366,7 +451,14 @@ async function resolveInvoiceItem(connection: QuickBooksConnection): Promise<Qui
   throw new QuickBooksConfigurationError('Set QUICKBOOKS_DEFAULT_ITEM_ID or QUICKBOOKS_DEFAULT_ITEM_NAME before creating QuickBooks invoices.');
 }
 
-export function buildQuickBooksInvoicePayload(order: QuickBooksInvoiceOrder, customerRef: QuickBooksRef, itemRef: QuickBooksRef) {
+export function buildQuickBooksInvoicePayload(
+  order: QuickBooksInvoiceOrder,
+  customerRef: QuickBooksRef,
+  itemRef: QuickBooksRef,
+  options: { taxableStates?: string[] } = {}
+) {
+  const shouldCollectSalesTax = shouldCollectQuickBooksSalesTax(order, options.taxableStates ?? DEFAULT_QUICKBOOKS_SALES_TAX_STATES);
+  const lineTaxCode = shouldCollectSalesTax ? QUICKBOOKS_LINE_TAXABLE_CODE : QUICKBOOKS_LINE_NON_TAXABLE_CODE;
   const lineItems = (order.order_items ?? []).map((item) => {
     const qty = Math.max(0, numericValue(item.qty));
     const unitPrice = amountFromCents(item.unit_price_cents);
@@ -378,6 +470,7 @@ export function buildQuickBooksInvoicePayload(order: QuickBooksInvoiceOrder, cus
       SalesItemLineDetail: {
         ItemRef: itemRef,
         Qty: qty,
+        TaxCodeRef: { value: lineTaxCode },
         UnitPrice: unitPrice,
       },
     };
@@ -403,11 +496,49 @@ export function buildQuickBooksInvoicePayload(order: QuickBooksInvoiceOrder, cus
   };
 }
 
+export async function getQuickBooksSalesTaxSettings(): Promise<QuickBooksSalesTaxSettings> {
+  const supabase = getSupabaseAdmin();
+  const { data, error } = await supabase
+    .from('app_settings')
+    .select('quickbooks_sales_tax_states')
+    .limit(1)
+    .maybeSingle();
+  if (error) throw new Error(`Unable to read QuickBooks sales tax settings: ${error.message}`);
+  return {
+    states: normalizeSalesTaxStates((data as { quickbooks_sales_tax_states?: string[] | null } | null)?.quickbooks_sales_tax_states),
+  };
+}
+
+export async function saveQuickBooksSalesTaxSettings(states: string[]): Promise<QuickBooksSalesTaxSettings> {
+  const supabase = getSupabaseAdmin();
+  const normalizedStates = normalizeSalesTaxStates(states);
+  const { data: existing, error: readError } = await supabase
+    .from('app_settings')
+    .select('id')
+    .limit(1)
+    .maybeSingle();
+  if (readError) throw new Error(`Unable to read app settings: ${readError.message}`);
+
+  const result = existing?.id
+    ? await supabase.from('app_settings').update({
+        quickbooks_sales_tax_states: normalizedStates,
+        updated_at: new Date().toISOString(),
+      }).eq('id', existing.id)
+    : await supabase.from('app_settings').insert({
+        brand_name: 'Sobrew',
+        quickbooks_sales_tax_states: normalizedStates,
+        updated_at: new Date().toISOString(),
+      });
+
+  if (result.error) throw new Error(`Unable to save QuickBooks sales tax settings: ${result.error.message}`);
+  return { states: normalizedStates };
+}
+
 export async function createQuickBooksInvoiceForOrder(orderId: string): Promise<CreatedQuickBooksInvoice> {
   const supabase = getSupabaseAdmin();
   const { data: order, error } = await supabase
     .from('orders')
-    .select('id,status,archived_at,created_at,notes,quickbooks_invoice_id,shipping_company,shipping_name,shipping_address1,shipping_address2,shipping_city,shipping_state,shipping_zip,profiles(email,full_name),centers(name),order_items(qty,unit_price_cents,line_total_cents,product_name_snapshot,products(name,sku))')
+    .select('id,status,archived_at,created_at,notes,quickbooks_invoice_id,shipping_company,shipping_name,shipping_address1,shipping_address2,shipping_city,shipping_state,shipping_zip,profiles(email,full_name),centers(name,customer_tax_status),order_items(qty,unit_price_cents,line_total_cents,product_name_snapshot,products(name,sku))')
     .eq('id', orderId)
     .single();
   if (error || !order) throw new Error(error?.message || 'Order not found.');
@@ -416,9 +547,10 @@ export async function createQuickBooksInvoiceForOrder(orderId: string): Promise<
   if ((order as any).quickbooks_invoice_id) throw new Error('This order has already been invoiced.');
 
   const connection = await getAuthorizedConnection();
+  const salesTaxSettings = await getQuickBooksSalesTaxSettings();
   const customerRef = await findOrCreateCustomer(connection, order as QuickBooksInvoiceOrder);
   const itemRef = await resolveInvoiceItem(connection);
-  const invoicePayload = buildQuickBooksInvoicePayload(order as QuickBooksInvoiceOrder, customerRef, itemRef);
+  const invoicePayload = buildQuickBooksInvoicePayload(order as QuickBooksInvoiceOrder, customerRef, itemRef, { taxableStates: salesTaxSettings.states });
   const created = await quickBooksRequest(connection, '/invoice', {
     body: JSON.stringify(invoicePayload),
     method: 'POST',
@@ -442,4 +574,85 @@ export async function getQuickBooksConnectionStatus(): Promise<QuickBooksConnect
     missingConfig: config.missingConfig,
     realmId: connection?.realm_id ?? null,
   };
+}
+
+export async function getQuickBooksCompanyInfo(): Promise<QuickBooksCompanyInfo> {
+  try {
+    const connection = await getAuthorizedConnection();
+    const result = await quickBooksRequest(connection, `/companyinfo/${encodeURIComponent(connection.realm_id)}`);
+    const company = result?.CompanyInfo;
+    return {
+      companyName: cleanText(company?.CompanyName) || null,
+      email: cleanText(company?.Email?.Address) || null,
+      error: null,
+      legalName: cleanText(company?.LegalName) || null,
+      realmId: connection.realm_id,
+    };
+  } catch (error) {
+    return {
+      companyName: null,
+      email: null,
+      error: error instanceof Error ? error.message : 'Unable to read QuickBooks company info.',
+      legalName: null,
+      realmId: null,
+    };
+  }
+}
+
+export async function disconnectQuickBooksConnection() {
+  const supabase = getSupabaseAdmin();
+  const { error } = await supabase
+    .from('quickbooks_connections')
+    .delete()
+    .eq('id', QUICKBOOKS_CONNECTION_ID);
+  if (error) throw new Error(`Unable to disconnect QuickBooks: ${error.message}`);
+}
+
+export async function getQuickBooksProductSummary(): Promise<QuickBooksProductSummary> {
+  try {
+    const connection = await getAuthorizedConnection();
+    const result = await quickBooksQuery(connection, 'SELECT COUNT(*) FROM Item WHERE Active = true');
+    const totalCount = Number(result?.QueryResponse?.totalCount ?? result?.QueryResponse?.TotalCount);
+    return {
+      activeItemCount: Number.isFinite(totalCount) ? totalCount : null,
+      error: null,
+    };
+  } catch (error) {
+    return {
+      activeItemCount: null,
+      error: error instanceof Error ? error.message : 'Unable to read QuickBooks products.',
+    };
+  }
+}
+
+export async function getQuickBooksActiveItems(limit = 500): Promise<QuickBooksCatalogItemsResult> {
+  try {
+    const connection = await getAuthorizedConnection();
+    const items: QuickBooksCatalogItem[] = [];
+    let startPosition = 1;
+
+    while (items.length < limit) {
+      const pageSize = Math.min(100, limit - items.length);
+      const result = await quickBooksQuery(
+        connection,
+        `SELECT * FROM Item WHERE Active = true STARTPOSITION ${startPosition} MAXRESULTS ${pageSize}`
+      );
+      const pageItems = quickBooksQueryItems(result)
+        .map(normalizeQuickBooksCatalogItem)
+        .filter((item): item is QuickBooksCatalogItem => Boolean(item));
+      items.push(...pageItems);
+      if (pageItems.length < pageSize) {
+        return { error: null, items, truncated: false };
+      }
+      startPosition += pageSize;
+    }
+
+    return { error: null, items, truncated: true };
+  } catch (error) {
+    return {
+      error: error instanceof Error ? error.message : 'Unable to pull QuickBooks products.',
+      items: [],
+      truncated: false,
+    };
+  }
 }

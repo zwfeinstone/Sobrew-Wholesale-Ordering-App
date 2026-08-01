@@ -90,6 +90,11 @@ function adminActionErrorMessage(error: string) {
   return `Could not complete that action (${error}).`;
 }
 
+function customerTaxStatusFromForm(formData: FormData) {
+  const value = String(formData.get('customer_tax_status') ?? '').trim();
+  return value === 'for_profit' || value === 'tax_exempt' ? value : 'unknown';
+}
+
 async function syncCenterCatalog(centerId: string, formData: FormData) {
   const selected = formData.getAll('product_id').map(String);
 
@@ -139,6 +144,8 @@ async function updateCenter(formData: FormData) {
       .update({
         name: String(formData.get('name') ?? '').trim() || 'Unnamed center',
         notes: String(formData.get('notes') ?? ''),
+        customer_tax_note: String(formData.get('customer_tax_note') ?? '').trim() || null,
+        customer_tax_status: customerTaxStatusFromForm(formData),
         is_active: formData.get('is_active') === 'on',
       })
       .eq('id', centerId);
@@ -498,6 +505,20 @@ export default async function UserDetailPage({
             <div className="space-y-2">
               <label className="text-sm font-medium text-slate-700">Center notes</label>
               <textarea className="input min-h-28" name="notes" defaultValue={center.notes ?? ''} />
+            </div>
+            <div className="grid gap-4 md:grid-cols-2">
+              <label className="space-y-2 text-sm font-medium text-slate-700">
+                Tax profile
+                <select className="input" name="customer_tax_status" defaultValue={center.customer_tax_status ?? 'unknown'}>
+                  <option value="unknown">Unknown / review before taxing</option>
+                  <option value="for_profit">For-profit</option>
+                  <option value="tax_exempt">Nonprofit or tax-exempt</option>
+                </select>
+              </label>
+              <label className="space-y-2 text-sm font-medium text-slate-700">
+                Tax note
+                <input className="input" name="customer_tax_note" defaultValue={center.customer_tax_note ?? ''} placeholder="Exemption certificate, resale note, or review detail" />
+              </label>
             </div>
           </section>
 

@@ -2903,6 +2903,24 @@ body::before {
   font-weight: 720;
 }
 
+.login-legal-links {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+  color: #64736d;
+  font-size: 0.75rem;
+  line-height: 1.15rem;
+}
+
+.login-legal-links a {
+  color: var(--accent-strong);
+  font-weight: 700;
+  text-decoration: underline;
+  text-underline-offset: 0.18rem;
+}
+
 .login-story-panel {
   display: flex;
   flex-direction: column;
