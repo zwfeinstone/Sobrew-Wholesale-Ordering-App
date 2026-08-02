@@ -445,9 +445,9 @@ function categoryCountLabel(count: number, noun: string) {
   return `${count.toLocaleString()} ${noun}${count === 1 ? '' : 's'}`;
 }
 
-function finishedGoodsStockRank(onHand: number) {
-  if (onHand > 0) return 0;
-  if (onHand < 0) return 1;
+function finishedGoodsStockRank(row: { available: number; onHand: number }) {
+  if (row.available < 0 || row.onHand < 0) return 1;
+  if (row.onHand > 0) return 0;
   return 2;
 }
 
@@ -646,9 +646,13 @@ export default async function InventoryPage({
     })
     .sort((left, right) => {
       if (finishedGoodsSort === 'on_hand') {
-        const leftRank = finishedGoodsStockRank(left.onHand);
-        const rightRank = finishedGoodsStockRank(right.onHand);
-        const quantitySort = leftRank === 1 ? left.onHand - right.onHand : right.onHand - left.onHand;
+        const leftRank = finishedGoodsStockRank(left);
+        const rightRank = finishedGoodsStockRank(right);
+        const quantitySort = leftRank === 1
+          ? left.available - right.available || left.onHand - right.onHand
+          : leftRank === 0
+            ? right.onHand - left.onHand
+            : 0;
         return leftRank - rightRank
           || quantitySort
           || productName(left.product).localeCompare(productName(right.product));

@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import type { ReactNode } from 'react';
 import PendingSubmitButton from '@/components/pending-submit-button';
+import ReportDateRangeFields from '@/components/report-date-range-fields';
 import { getSalesScopedCenterIdsForAdmin, scopeCenterRelatedQueryForAdmin, scopeCentersForAdmin } from '@/lib/admin-center-scope';
 import { adminCanView, requireAdminSectionView } from '@/lib/admin-permissions';
 import { dataNeedsForReport, type AdminReportId } from '@/lib/admin-report-data-needs';
@@ -3572,18 +3573,11 @@ export default async function AdminReportsPage({
           <form className={activeReport === 'ai_overview' || activeReport === 'ai_qa' ? 'hidden' : 'rounded-xl border border-slate-200/70 bg-white/60 p-4'}>
             <input type="hidden" name="report" value={activeReport} />
             <div className="grid gap-3 sm:grid-cols-2">
-              <label className="space-y-2 text-sm font-medium text-slate-700">
-                Report month
-                <input className="input" name="month" type="month" defaultValue={formatMonthInput(selectedMonth)} />
-              </label>
-              <label className="space-y-2 text-sm font-medium text-slate-700">
-                Range start
-                <input className="input" name="rangeStart" type="date" defaultValue={formatDateInput(rangeStart)} />
-              </label>
-              <label className="space-y-2 text-sm font-medium text-slate-700">
-                Range end
-                <input className="input" name="rangeEnd" type="date" defaultValue={rangeEndInput} />
-              </label>
+              <ReportDateRangeFields
+                monthValue={formatMonthInput(selectedMonth)}
+                rangeEndValue={rangeEndInput}
+                rangeStartValue={formatDateInput(rangeStart)}
+              />
               {activeReport !== 'prospecting' && activeReport !== 'ai_overview' && activeReport !== 'ai_qa' && activeReport !== 'inventory_adjustments' && activeReport !== 'labor_paid_gpm' ? (
                 <>
                   <label className="space-y-2 text-sm font-medium text-slate-700">
