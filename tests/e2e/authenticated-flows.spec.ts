@@ -113,6 +113,7 @@ test.describe('Prospecting report', () => {
     }
 
     await expectRateWithRawRatio(page, 'Live Contact Rate');
+    await expectRateWithRawRatio(page, 'Touched → Sample');
     await expectRateWithRawRatio(page, 'Calls → Sample');
     await expectNoSeriousAccessibilityViolations(page);
   });

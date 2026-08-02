@@ -10,6 +10,7 @@ export type AdminReportId =
   | 'inventory'
   | 'inventory_adjustments'
   | 'sales'
+  | 'sample_spend'
   | 'prospecting'
   | 'ai_qa'
   | 'ai_overview';
@@ -26,6 +27,7 @@ export type ReportDataNeeds = {
   prospecting: boolean;
   reorderSettings: boolean;
   sampleBoxes: boolean;
+  sampleOrders: boolean;
   salesDashboard: boolean;
   shortageMovements: boolean;
 };
@@ -33,6 +35,7 @@ export type ReportDataNeeds = {
 export function dataNeedsForReport(report: AdminReportId): ReportDataNeeds {
   const prospecting = report === 'prospecting';
   const salesDashboard = report === 'sales';
+  const sampleSpend = report === 'sample_spend';
   const inventoryAdjustments = report === 'inventory_adjustments';
   const inventory = report === 'inventory';
   const items = report === 'items';
@@ -41,10 +44,10 @@ export function dataNeedsForReport(report: AdminReportId): ReportDataNeeds {
   const production = report === 'production';
   const simulator = report === 'simulator';
   const aiReport = report === 'ai_overview' || report === 'ai_qa';
-  const profitability = !prospecting && !salesDashboard && !aiReport && !inventoryAdjustments;
+  const profitability = !prospecting && !salesDashboard && !sampleSpend && !aiReport && !inventoryAdjustments;
 
   return {
-    coreCommerce: !prospecting && !aiReport && !inventoryAdjustments,
+    coreCommerce: !prospecting && !sampleSpend && !aiReport && !inventoryAdjustments,
     inventoryAdjustments,
     inventoryValuation: inventoryAdjustments || inventory || margin || simulator || salesDashboard,
     laborPaidGpm,
@@ -55,6 +58,7 @@ export function dataNeedsForReport(report: AdminReportId): ReportDataNeeds {
     prospecting,
     reorderSettings: salesDashboard,
     sampleBoxes: inventory,
+    sampleOrders: sampleSpend,
     salesDashboard,
     shortageMovements: inventory || margin || salesDashboard,
   };

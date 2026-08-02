@@ -15,6 +15,7 @@ describe('dataNeedsForReport', () => {
       prospecting: true,
       reorderSettings: false,
       sampleBoxes: false,
+      sampleOrders: false,
       salesDashboard: false,
       shortageMovements: false,
     });
@@ -27,6 +28,25 @@ describe('dataNeedsForReport', () => {
     expect(needs.productionInputs).toBe(false);
     expect(needs.productRecipes).toBe(false);
     expect(needs.reorderSettings).toBe(true);
+  });
+
+  it('loads only shipped sample order rows for sample spend', () => {
+    expect(dataNeedsForReport('sample_spend')).toEqual({
+      coreCommerce: false,
+      inventoryAdjustments: false,
+      inventoryValuation: false,
+      laborPaidGpm: false,
+      nonInventoryExpenses: false,
+      productionInputs: false,
+      productionRuns: false,
+      productRecipes: false,
+      prospecting: false,
+      reorderSettings: false,
+      sampleBoxes: false,
+      sampleOrders: true,
+      salesDashboard: false,
+      shortageMovements: false,
+    });
   });
 
   it('loads production inputs and recipes for production detail', () => {
@@ -66,6 +86,7 @@ describe('dataNeedsForReport', () => {
       prospecting: false,
       reorderSettings: false,
       sampleBoxes: false,
+      sampleOrders: false,
       salesDashboard: false,
       shortageMovements: false,
     });
@@ -84,6 +105,7 @@ describe('dataNeedsForReport', () => {
       prospecting: false,
       reorderSettings: false,
       sampleBoxes: false,
+      sampleOrders: false,
       salesDashboard: false,
       shortageMovements: false,
     });
@@ -102,6 +124,7 @@ describe('dataNeedsForReport', () => {
       prospecting: false,
       reorderSettings: false,
       sampleBoxes: false,
+      sampleOrders: false,
       salesDashboard: false,
       shortageMovements: false,
     });

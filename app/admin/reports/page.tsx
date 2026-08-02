@@ -104,6 +104,7 @@ const REPORTS = [
   { id: 'inventory', label: 'Inventory Value & Expenses' },
   { id: 'inventory_adjustments', label: 'Inventory Adjustments' },
   { id: 'sales', label: 'Sales & Customers' },
+  { id: 'sample_spend', label: 'Sample Spend' },
   { id: 'prospecting', label: 'Prospecting' },
 ] as const;
 
@@ -207,6 +208,81 @@ type InventoryAdjustmentReport = {
   };
 };
 
+type SampleBoxRunReportRow = {
+  center_id: string | null;
+  cogs_estimated: boolean | null;
+  fixed_misc_cents: number | string | null;
+  fixed_shipping_cents: number | string | null;
+  inventory_cogs_cents: number | string | null;
+  product_cogs_cents: number | string | null;
+  quantity_boxes: number | string;
+  sales_profile_id: string | null;
+  total_cogs_cents: number | string | null;
+};
+
+type SampleBoxSpendSummary = {
+  boxes: number;
+  estimatedCount: number;
+  fixedCents: number;
+  inventoryCents: number;
+  productCents: number;
+  runCount: number;
+  totalCents: number;
+};
+
+type SampleOrderReportRow = {
+  id: string;
+  shipped_at: string | null;
+  shipping_cost_cents: number | string | null;
+  status: string | null;
+};
+
+type SampleOrderItemReportRow = {
+  cogs_estimated?: boolean | null;
+  cogs_product_cents?: number | string | null;
+  cogs_shipping_cents?: number | string | null;
+  cogs_snapshot_at?: string | null;
+  cogs_total_cents?: number | string | null;
+  order_id: string;
+  product_id: string | null;
+  qty: number | string;
+};
+
+type SampleProductReportRow = {
+  id: string;
+  name: string | null;
+  sku: string | null;
+};
+
+type SampleProductionRunReportRow = {
+  actual_labor_cost_cents: number | string | null;
+  actual_unit_cost_cents: number | string | null;
+  fixed_cost_cents: number | string | null;
+  fixed_shipping_label_cost_cents: number | string | null;
+  product_id: string;
+  produced_at: string | null;
+  quantity_produced: number | string | null;
+  quantity_voided: number | string | null;
+  status: string | null;
+};
+
+type SampleSpendOrderSummary = {
+  boxes: number;
+  estimatedLineCount: number;
+  orderCount: number;
+  productCogsCents: number;
+  productionFixedCents: number;
+  productionLaborCents: number;
+  productionQuantity: number;
+  productionRunCount: number;
+  productionShippingLabelCents: number;
+  productionValueCents: number;
+  sampleProductCount: number;
+  shippingCogsCents: number;
+  snapshottedLineCount: number;
+  totalCents: number;
+};
+
 function skippedReportQuery() {
   return Promise.resolve({ data: [] as any[], error: null });
 }
@@ -265,7 +341,7 @@ const RAW_COFFEE_BUCKETS = [
 ] as const;
 
 function reportIsProfitability(reportId: ReportId) {
-  return reportId !== 'sales' && reportId !== 'prospecting';
+  return reportId !== 'sales' && reportId !== 'sample_spend' && reportId !== 'prospecting';
 }
 
 function paramsFromRecord(searchParams: Record<string, string | string[] | undefined> | undefined) {
@@ -2967,6 +3043,7 @@ function ProspectingReport({
   const pipeline = summary.pipeline_snapshot;
   const selectedRepName = salesProfileId ? prospectingRepLabel(salesProfileId, profilesById) : 'all reps';
   const averageSampleCost = period.sample_boxes > 0 ? money(period.sample_cogs_cents / period.sample_boxes) : '—';
+  const touchedLeadSampleRate = rate(period.sample_requests, period.tracked_unique_leads);
 
   return (
     <>
@@ -2976,11 +3053,12 @@ function ProspectingReport({
           title="Selected-period performance"
           subtitle={`Exact activity and outcomes recorded for ${selectedRepName}. Percentages include their raw numerator and denominator.`}
         />
-        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-6">
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
           <StatTile label="New Leads" value={number(period.new_leads)} detail={`Created in range; grouped by current assignee.`} />
           <StatTile label="Call Attempts" value={number(period.call_attempts)} detail={`${number(period.calls_voicemail)} voicemail, ${number(period.calls_no_answer)} no answer.`} />
           <StatTile label="Live Contact Rate" value={prospectingRate(period.live_contacts, period.call_attempts)} detail="Live conversations divided by initial call attempts." />
           <StatTile label="Sample Requests" value={number(period.sample_requests)} detail={`${number(period.phone_sample_requests)} phone, ${number(period.email_sample_requests)} email, ${number(period.text_sample_requests)} text.`} />
+          <StatTile label="Touched → Sample" value={formatRateWithRatio(touchedLeadSampleRate)} detail={`${number(period.tracked_unique_leads)} worked lead${period.tracked_unique_leads === 1 ? '' : 's'}; ${number(period.sample_requests)} sample request${period.sample_requests === 1 ? '' : 's'}.`} />
           <StatTile label="Calls → Sample" value={prospectingRate(period.phone_sample_requests, period.call_attempts)} detail="Phone-attributed sample requests divided by call attempts." />
           <StatTile label="Deals Won" value={number(period.deals_won)} detail={`${prospectingRate(period.deals_won, period.deals_won + period.deals_lost)} decided outcomes; ${number(period.deals_lost)} lost.`} />
         </div>
@@ -3062,6 +3140,68 @@ function ProspectingReport({
         </p>
         <ProspectingSourceTable rows={summary.sources} />
       </details>
+    </>
+  );
+}
+
+function SampleSpendReport({ summary }: { summary: SampleSpendOrderSummary }) {
+  const averageSpendPerBox = summary.boxes > 0 ? money(summary.totalCents / summary.boxes) : '—';
+  const estimatedLineDetail = summary.estimatedLineCount
+    ? `${number(summary.estimatedLineCount)} line${summary.estimatedLineCount === 1 ? '' : 's'} used estimated COGS.`
+    : 'No estimated sample order COGS in this range.';
+
+  return (
+    <>
+      <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+        <StatTile
+          label="Boxes Sent"
+          value={quantity(summary.boxes)}
+          detail={`${number(summary.orderCount)} shipped sample order${summary.orderCount === 1 ? '' : 's'} in range.`}
+        />
+        <StatTile
+          label="Total Sample Spend"
+          value={money(summary.totalCents)}
+          detail="Product COGS plus shipping COGS on shipped sample orders."
+        />
+        <StatTile
+          label="Average Spend / Box"
+          value={averageSpendPerBox}
+          detail={summary.boxes > 0 ? 'Total spend divided by boxes sent.' : 'No sample boxes recorded in range.'}
+        />
+        <StatTile
+          label="Estimated Lines"
+          value={number(summary.estimatedLineCount)}
+          detail={estimatedLineDetail}
+        />
+      </section>
+
+      <section className="card space-y-5">
+        <SectionHeading
+          eyebrow="Sample spend"
+          title="Shipped sample order cost breakdown"
+          subtitle="Spend is recognized when prospecting sample orders ship, using the saved order-line COGS snapshot."
+        />
+        <div className="grid gap-3 sm:grid-cols-3">
+          <StatTile label="Product COGS" value={money(summary.productCogsCents)} detail="Coffee, materials, labor, and fixed production COGS on shipped sample boxes." />
+          <StatTile label="Shipping COGS" value={money(summary.shippingCogsCents)} detail="Shipping costs allocated to shipped sample orders." />
+          <StatTile label="Snapshotted Lines" value={number(summary.snapshottedLineCount)} detail="Sample order lines with saved COGS snapshots." />
+        </div>
+      </section>
+
+      <section className="card space-y-5">
+        <SectionHeading
+          eyebrow="Sample production"
+          title="Sample box production runs"
+          subtitle="Production value shows sample-box inventory created in the selected range and is not added again to shipped sample spend."
+        />
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+          <StatTile label="Runs" value={number(summary.productionRunCount)} detail={`${number(summary.sampleProductCount)} active sample box product${summary.sampleProductCount === 1 ? '' : 's'} tracked.`} />
+          <StatTile label="Boxes Produced" value={quantity(summary.productionQuantity)} detail="Net produced units after voids." />
+          <StatTile label="Production Value" value={money(summary.productionValueCents)} detail="Quantity produced multiplied by actual unit cost." />
+          <StatTile label="Labor In Runs" value={money(summary.productionLaborCents)} detail="Actual labor recorded on sample box production runs." />
+          <StatTile label="Shipping Labels" value={money(summary.productionShippingLabelCents)} detail={`${money(summary.productionFixedCents)} total fixed production cost.`} />
+        </div>
+      </section>
     </>
   );
 }
@@ -3263,6 +3403,67 @@ export default async function AdminReportsPage({
     prospectingReportQuery,
   ]);
 
+  let sampleOrders: SampleOrderReportRow[] = [];
+  let sampleOrderItems: SampleOrderItemReportRow[] = [];
+  let sampleProducts: SampleProductReportRow[] = [];
+  let sampleProductionRuns: SampleProductionRunReportRow[] = [];
+  let sampleSpendLoadError: string | null = null;
+
+  if (dataNeeds.sampleOrders) {
+    const [sampleProductsResult, sampleOrdersResult] = await Promise.all([
+      supabase
+        .from('products')
+        .select('id,name,sku')
+        .eq('category', 'sample_boxes')
+        .order('name', { ascending: true })
+        .limit(ADMIN_QUERY_ROW_LIMIT),
+      supabase
+        .from('orders')
+        .select('id,status,shipping_cost_cents,shipped_at')
+        .eq('order_kind', 'prospecting_sample')
+        .eq('status', 'Shipped')
+        .gte('shipped_at', rangeStart.toISOString())
+        .lt('shipped_at', rangeEndExclusive.toISOString())
+        .order('shipped_at', { ascending: false })
+        .limit(ADMIN_QUERY_ROW_LIMIT),
+    ]);
+
+    if (sampleProductsResult.error || sampleOrdersResult.error) {
+      sampleSpendLoadError = sampleProductsResult.error?.message || sampleOrdersResult.error?.message || 'The Sample Spend report could not be loaded.';
+    } else {
+      sampleProducts = (sampleProductsResult.data ?? []) as SampleProductReportRow[];
+      sampleOrders = (sampleOrdersResult.data ?? []) as SampleOrderReportRow[];
+      const sampleProductIds = sampleProducts.map((product) => product.id);
+      const sampleOrderIds = sampleOrders.map((order) => order.id);
+      const [sampleOrderItemsResult, sampleProductionRunsResult] = await Promise.all([
+        sampleOrderIds.length
+          ? supabase
+            .from('order_items')
+            .select('order_id,product_id,qty,cogs_product_cents,cogs_shipping_cents,cogs_total_cents,cogs_snapshot_at,cogs_estimated')
+            .in('order_id', sampleOrderIds)
+            .limit(ADMIN_QUERY_ROW_LIMIT)
+          : skippedReportQuery(),
+        sampleProductIds.length
+          ? supabase
+            .from('production_runs')
+            .select('product_id,quantity_produced,quantity_voided,status,actual_unit_cost_cents,actual_labor_cost_cents,fixed_cost_cents,fixed_shipping_label_cost_cents,produced_at')
+            .in('product_id', sampleProductIds)
+            .gte('produced_at', rangeStart.toISOString())
+            .lt('produced_at', rangeEndExclusive.toISOString())
+            .order('produced_at', { ascending: false })
+            .limit(ADMIN_QUERY_ROW_LIMIT)
+          : skippedReportQuery(),
+      ]);
+
+      if (sampleOrderItemsResult.error || sampleProductionRunsResult.error) {
+        sampleSpendLoadError = sampleOrderItemsResult.error?.message || sampleProductionRunsResult.error?.message || 'The Sample Spend report could not be loaded.';
+      } else {
+        sampleOrderItems = (sampleOrderItemsResult.data ?? []) as SampleOrderItemReportRow[];
+        sampleProductionRuns = (sampleProductionRunsResult.data ?? []) as SampleProductionRunReportRow[];
+      }
+    }
+  }
+
   let laborPaidTimeEntries: LaborPaidGpmTimeEntryRow[] = [];
   let laborPaidAllocations: LaborPaidGpmAllocationRow[] = [];
   let laborPaidSalaryPayments: LaborPaidGpmSalaryPaymentRow[] = [];
@@ -3321,6 +3522,9 @@ export default async function AdminReportsPage({
   }
   if (dataNeeds.prospecting && prospectingReportResult.error) {
     return <CriticalReportError message={prospectingReportResult.error.message || 'The Prospecting aggregate could not be loaded.'} />;
+  }
+  if (sampleSpendLoadError) {
+    return <CriticalReportError message={sampleSpendLoadError} />;
   }
   if (activeReport === 'simulator' && shippingBoxUsagesResult.error) {
     return <CriticalReportError message={shippingBoxUsagesResult.error.message || 'The simulator shipping box usage could not be loaded.'} />;
@@ -3434,34 +3638,75 @@ export default async function AdminReportsPage({
     rangeStart,
     recipes: activeReport !== 'production' || recipeResult.error ? [] : ((recipeResult.data ?? []) as CoffeeSoldRecipeRow[]),
   });
-  const sampleBoxRuns = (sampleBoxRunsResult.error ? [] : (sampleBoxRunsResult.data ?? []) as Array<{
-    center_id: string | null;
-    cogs_estimated: boolean | null;
-    fixed_misc_cents: number | string | null;
-    fixed_shipping_cents: number | string | null;
-    inventory_cogs_cents: number | string | null;
-    product_cogs_cents: number | string | null;
-    quantity_boxes: number | string;
-    sales_profile_id: string | null;
-    total_cogs_cents: number | string | null;
-  }>).filter((run) => {
+  const sampleBoxRuns = (sampleBoxRunsResult.error ? [] : (sampleBoxRunsResult.data ?? []) as SampleBoxRunReportRow[]).filter((run) => {
     if (selectedSalesRepId && run.sales_profile_id !== selectedSalesRepId) return false;
     if (!currentAccess.isOwner && run.sales_profile_id !== currentAccess.profile.id) return false;
     if (centerScope !== null && run.center_id && !centerScope.includes(run.center_id)) return false;
     return true;
   });
-  const sampleBoxSummary = sampleBoxRuns.reduce(
+  const sampleBoxSummary = sampleBoxRuns.reduce<SampleBoxSpendSummary>(
     (summary, run) => {
       summary.boxes += normalizeReportNumber(run.quantity_boxes);
       summary.inventoryCents += normalizeReportNumber(run.inventory_cogs_cents);
       summary.productCents += normalizeReportNumber(run.product_cogs_cents);
       summary.fixedCents += normalizeReportNumber(run.fixed_shipping_cents) + normalizeReportNumber(run.fixed_misc_cents);
+      summary.runCount += 1;
       summary.totalCents += normalizeReportNumber(run.total_cogs_cents);
       if (run.cogs_estimated) summary.estimatedCount += 1;
       return summary;
     },
-    { boxes: 0, estimatedCount: 0, fixedCents: 0, inventoryCents: 0, productCents: 0, totalCents: 0 }
+    { boxes: 0, estimatedCount: 0, fixedCents: 0, inventoryCents: 0, productCents: 0, runCount: 0, totalCents: 0 }
   );
+  const sampleProductIds = new Set(sampleProducts.map((product) => product.id));
+  const sampleOrderProductLines = sampleOrderItems.filter((item) => item.product_id && sampleProductIds.has(item.product_id));
+  const sampleOrderShippingCents = sampleOrders.reduce((sum, order) => sum + normalizeReportNumber(order.shipping_cost_cents), 0);
+  const sampleSpendLineSummary = sampleOrderProductLines.reduce(
+    (summary, item) => {
+      const productCogsCents = normalizeReportNumber(item.cogs_product_cents);
+      const shippingCogsCents = normalizeReportNumber(item.cogs_shipping_cents);
+      const totalCogsCents = normalizeReportNumber(item.cogs_total_cents);
+      summary.boxes += normalizeReportNumber(item.qty);
+      summary.estimatedLineCount += item.cogs_estimated ? 1 : 0;
+      summary.productCogsCents += productCogsCents;
+      summary.shippingCogsCents += shippingCogsCents;
+      summary.snapshottedLineCount += item.cogs_snapshot_at ? 1 : 0;
+      summary.totalCents += totalCogsCents || productCogsCents + shippingCogsCents;
+      return summary;
+    },
+    { boxes: 0, estimatedLineCount: 0, productCogsCents: 0, shippingCogsCents: 0, snapshottedLineCount: 0, totalCents: 0 }
+  );
+  const sampleShippingCogsCents = sampleSpendLineSummary.shippingCogsCents || sampleOrderShippingCents;
+  const sampleTotalCents = sampleSpendLineSummary.productCogsCents + sampleShippingCogsCents;
+  const sampleProductionSummary = sampleProductionRuns.reduce(
+    (summary, run) => {
+      if (run.status === 'void') return summary;
+      const quantityProduced = Math.max(0, normalizeReportNumber(run.quantity_produced) - normalizeReportNumber(run.quantity_voided));
+      summary.productionFixedCents += normalizeReportNumber(run.fixed_cost_cents);
+      summary.productionLaborCents += normalizeReportNumber(run.actual_labor_cost_cents);
+      summary.productionQuantity += quantityProduced;
+      summary.productionRunCount += 1;
+      summary.productionShippingLabelCents += normalizeReportNumber(run.fixed_shipping_label_cost_cents);
+      summary.productionValueCents += quantityProduced * normalizeReportNumber(run.actual_unit_cost_cents);
+      return summary;
+    },
+    { productionFixedCents: 0, productionLaborCents: 0, productionQuantity: 0, productionRunCount: 0, productionShippingLabelCents: 0, productionValueCents: 0 }
+  );
+  const sampleSpendSummary: SampleSpendOrderSummary = {
+    boxes: sampleSpendLineSummary.boxes,
+    estimatedLineCount: sampleSpendLineSummary.estimatedLineCount,
+    orderCount: sampleOrders.length,
+    productCogsCents: sampleSpendLineSummary.productCogsCents,
+    productionFixedCents: sampleProductionSummary.productionFixedCents,
+    productionLaborCents: sampleProductionSummary.productionLaborCents,
+    productionQuantity: sampleProductionSummary.productionQuantity,
+    productionRunCount: sampleProductionSummary.productionRunCount,
+    productionShippingLabelCents: sampleProductionSummary.productionShippingLabelCents,
+    productionValueCents: sampleProductionSummary.productionValueCents,
+    sampleProductCount: sampleProducts.length,
+    shippingCogsCents: sampleShippingCogsCents,
+    snapshottedLineCount: sampleSpendLineSummary.snapshottedLineCount,
+    totalCents: sampleTotalCents,
+  };
   const prospectingProfileRows = [
     ...salesReps,
     currentAccess.profile as AdminRow,
@@ -3578,7 +3823,7 @@ export default async function AdminReportsPage({
                 rangeEndValue={rangeEndInput}
                 rangeStartValue={formatDateInput(rangeStart)}
               />
-              {activeReport !== 'prospecting' && activeReport !== 'ai_overview' && activeReport !== 'ai_qa' && activeReport !== 'inventory_adjustments' && activeReport !== 'labor_paid_gpm' ? (
+              {activeReport !== 'prospecting' && activeReport !== 'sample_spend' && activeReport !== 'ai_overview' && activeReport !== 'ai_qa' && activeReport !== 'inventory_adjustments' && activeReport !== 'labor_paid_gpm' ? (
                 <>
                   <label className="space-y-2 text-sm font-medium text-slate-700">
                     Product
@@ -3619,6 +3864,8 @@ export default async function AdminReportsPage({
             <p className="mt-3 text-sm leading-6 text-slate-500">
               {activeReport === 'prospecting'
                 ? `${REPORTS.find((report) => report.id === activeReport)?.label}. Using ${dateLabel(rangeStart)} through ${dateLabel(addDays(rangeEndExclusive, -1))}.`
+                : activeReport === 'sample_spend'
+                  ? `${REPORTS.find((report) => report.id === activeReport)?.label}. Using ${dateLabel(rangeStart)} through ${dateLabel(addDays(rangeEndExclusive, -1))}.`
                 : activeReport === 'inventory_adjustments'
                   ? `${REPORTS.find((report) => report.id === activeReport)?.label}. Using ${dateLabel(rangeStart)} through ${dateLabel(addDays(rangeEndExclusive, -1))}.`
                 : activeReport === 'recent_order_gpm'
@@ -3637,7 +3884,7 @@ export default async function AdminReportsPage({
 
       <SourceRowLimitNotice sources={limitedSourceLabels} />
 
-      {activeReport !== 'prospecting' && activeReport !== 'ai_overview' && activeReport !== 'ai_qa' && activeReport !== 'inventory_adjustments' && !hasCommerceOrders ? (
+      {activeReport !== 'prospecting' && activeReport !== 'sample_spend' && activeReport !== 'ai_overview' && activeReport !== 'ai_qa' && activeReport !== 'inventory_adjustments' && !hasCommerceOrders ? (
         <section className="card">
           <EmptyState message="No orders found yet. Reports will populate as wholesale orders are placed." />
         </section>
@@ -4038,6 +4285,10 @@ export default async function AdminReportsPage({
             </div>
           </section>
         </>
+      ) : null}
+
+      {activeReport === 'sample_spend' ? (
+        <SampleSpendReport summary={sampleSpendSummary} />
       ) : null}
 
       {activeReport === 'inventory_adjustments' ? (
