@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Sobrew Customer Email Mockups</title>
+    <style>
+      * { box-sizing: border-box; }
+      body { margin: 0; background: #f1f3ef; color: #291f18; font-family: Arial, Helvetica, sans-serif; }
+      .page-header { background: #2f4f3b; color: #fff; padding: 24px; }
+      .page-header h1 { margin: 0; font-size: 24px; letter-spacing: 0; }
+      .page-header p { margin: 7px 0 0; color: #dce8df; font-size: 14px; }
+      .email-grid { display: grid; grid-template-columns: repeat(3, minmax(320px, 1fr)); gap: 18px; padding: 18px; }
+      .email-card { min-width: 0; overflow: hidden; background: #fff; border: 1px solid #d7ddd7; border-radius: 8px; }
+      .email-label { min-height: 116px; padding: 18px; border-bottom: 1px solid #d7ddd7; }
+      .email-type { margin: 0 0 7px; color: #4f7250; font-size: 11px; font-weight: 800; letter-spacing: 1.4px; text-transform: uppercase; }
+      .subject { margin: 0 0 12px; color: #241a12; font-size: 18px; line-height: 1.35; }
+      a { color: #b44f3e; font-size: 13px; font-weight: 700; text-decoration: none; }
+      a:hover { text-decoration: underline; }
+      iframe { display: block; width: 100%; height: 960px; border: 0; background: #fff; }
+      @media (max-width: 1080px) {
+        .email-grid { grid-template-columns: 1fr; }
+        iframe { height: 1080px; }
+      }
+      @media (max-width: 480px) {
+        .page-header { padding: 20px 18px; }
+        .email-grid { gap: 12px; padding: 12px; }
+        .email-label { min-height: 0; padding: 16px; }
+        .subject { font-size: 17px; }
+        .email-label a { display: inline-block; background: #2f4f3b; border-radius: 6px; color: #ffffff; padding: 10px 13px; }
+        iframe { display: none; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="page-header">
+      <h1>Sobrew customer emails</h1>
+      <p>All three mockups with their current customer-facing subject lines.</p>
+    </div>
+
+    <div class="email-grid">
+      <div class="email-card">
+        <div class="email-label">
+          <p class="email-type">Welcome email</p>
+          <h2 class="subject">Welcome to Sobrew Wholesale Ordering</h2>
+          <a href="welcome-email.html" target="_blank">Open full preview</a>
+        </div>
+        <iframe src="welcome-email.html" title="Welcome email preview"></iframe>
+      </div>
+
+      <div class="email-card">
+        <div class="email-label">
+          <p class="email-type">Order confirmation</p>
+          <h2 class="subject">Thank You For Your Order!</h2>
+          <a href="order-confirmation.html" target="_blank">Open full preview</a>
+        </div>
+        <iframe src="order-confirmation.html" title="Order confirmation email preview"></iframe>
+      </div>
+
+      <div class="email-card">
+        <div class="email-label">
+          <p class="email-type">Shipped order</p>
+          <h2 class="subject">Your Order Has Been Shipped!</h2>
+          <a href="shipped-order.html" target="_blank">Open full preview</a>
+        </div>
+        <iframe src="shipped-order.html" title="Shipped order email preview"></iframe>
+      </div>
+    </div>
+  </body>
+</html>

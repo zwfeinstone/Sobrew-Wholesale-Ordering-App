@@ -87,12 +87,9 @@ export default async function UsersPage() {
   const centersQuery = supabase.from('centers').select('id,name,is_active,created_at').order('name', { ascending: true });
   const centerMembersQuery = supabase.from('profiles').select('center_id,is_active,last_seen_at').eq('is_admin', false).not('center_id', 'is', null);
 
-  const [{ data: centers }, { data: centerMembers }, { data: adminUsers }] = await Promise.all([
+  const [{ data: centers }, { data: centerMembers }] = await Promise.all([
     centersQuery,
     centerMembersQuery,
-    currentAccess.isOwner
-      ? supabase.from('profiles').select('id,email,full_name,is_active,is_admin,is_superadmin').eq('is_admin', true).order('created_at', { ascending: false })
-      : Promise.resolve({ data: [] }),
   ]);
 
   const memberCountsByCenterId = new Map<string, number>();
@@ -139,30 +136,6 @@ export default async function UsersPage() {
           </div>
         ))}
       </section>
-
-      {currentAccess.isOwner ? (
-      <section className="space-y-4">
-        <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-          <div>
-            <span className="eyebrow">Admin Accounts</span>
-            <h2 className="page-title mt-4 text-3xl">Admin logins</h2>
-          </div>
-          {currentAccess.isOwner ? (
-            <Link href="/admin/admins/new" className="btn-primary w-full sm:w-auto">
-              Add Admin
-            </Link>
-          ) : null}
-        </div>
-        {!adminUsers?.length ? <div className="card text-sm text-slate-600">No admin accounts found.</div> : null}
-        {adminUsers?.map((user: any) => (
-          <Link key={user.id} href={`/admin/users/${user.id}`} className="card block transition-all duration-200 hover:-translate-y-0.5 hover:bg-white/95">
-            <p className="text-lg font-semibold text-slate-950">{user.full_name || user.email}</p>
-            <p className="mt-2 break-all text-sm text-slate-500">{user.email}</p>
-            <p className="mt-2 text-sm text-slate-500">{!user.is_active ? 'Deactivated' : 'Active'}{user.is_superadmin ? ' - Superadmin' : ''}</p>
-          </Link>
-        ))}
-      </section>
-      ) : null}
     </div>
   );
 }

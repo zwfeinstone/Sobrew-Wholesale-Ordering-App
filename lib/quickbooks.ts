@@ -9,6 +9,9 @@ const DEFAULT_QUICKBOOKS_SALES_TAX_STATES = ['TN'];
 const QUICKBOOKS_LINE_TAXABLE_CODE = 'TAX';
 const QUICKBOOKS_LINE_NON_TAXABLE_CODE = 'NON';
 const QUICKBOOKS_TOKEN_ENDPOINT = 'https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer';
+const QUICKBOOKS_BUSINESS_TIME_ZONE = 'America/Chicago';
+const QUICKBOOKS_DEFAULT_SHIP_VIA = 'UPS';
+const QUICKBOOKS_DEFAULT_TRACKING_NOTE = 'See shipped order email';
 
 type QuickBooksEnvironment = 'production' | 'sandbox';
 type CustomerTaxStatus = 'unknown' | 'for_profit' | 'tax_exempt';
@@ -169,6 +172,38 @@ export type QuickBooksCustomersResult = {
   truncated: boolean;
 };
 
+export type QuickBooksInvoiceReceivableStatus = 'paid' | 'unpaid';
+
+export type QuickBooksInvoiceReceivableTiming = 'paid' | 'overdue' | 'due_today' | 'not_due_yet' | 'unknown';
+
+export type QuickBooksInvoiceReceivable = {
+  amountCents: number;
+  balanceCents: number;
+  customerName: string | null;
+  docNumber: string | null;
+  dueDate: string | null;
+  id: string;
+  paidAmountCents: number;
+  status: QuickBooksInvoiceReceivableStatus;
+  statusLabel: string;
+  timing: QuickBooksInvoiceReceivableTiming;
+  timingDays: number | null;
+  txnDate: string | null;
+};
+
+export type QuickBooksInvoiceReceivablesResult = {
+  error: string | null;
+  invoices: QuickBooksInvoiceReceivable[];
+  missingIds: string[];
+};
+
+export type QuickBooksReceivablesSummary = {
+  notDueYetCents: number;
+  overdueCents: number;
+  paidCents: number;
+  unpaidCents: number;
+};
+
 export type QuickBooksPortalCenter = {
   billing_address1?: string | null;
   billing_address2?: string | null;
@@ -258,6 +293,11 @@ function amountFromCents(value: number | string | null | undefined) {
   return Number((numericValue(value) / 100).toFixed(2));
 }
 
+function centsFromAmount(value: number | string | null | undefined) {
+  const parsed = numericValue(value);
+  return Math.round(parsed * 100);
+}
+
 function normalizeStateCode(value: unknown) {
   return cleanText(value).toUpperCase().replace(/[^A-Z]/g, '').slice(0, 2);
 }
@@ -268,6 +308,17 @@ function normalizeSalesTaxStates(states: unknown) {
     .map(normalizeStateCode)
     .filter((state) => /^[A-Z]{2}$/.test(state));
   return [...new Set(normalized)].sort();
+}
+
+function quickBooksDate(value = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    day: '2-digit',
+    month: '2-digit',
+    timeZone: QUICKBOOKS_BUSINESS_TIME_ZONE,
+    year: 'numeric',
+  }).formatToParts(value);
+  const byType = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${byType.year}-${byType.month}-${byType.day}`;
 }
 
 export function shouldCollectQuickBooksSalesTax(order: QuickBooksSalesTaxOrder, taxableStates: string[]) {
@@ -509,6 +560,11 @@ function quickBooksQueryCustomers(payload: any) {
   return Array.isArray(customers) ? customers : [];
 }
 
+function quickBooksQueryInvoices(payload: any) {
+  const invoices = payload?.QueryResponse?.Invoice;
+  return Array.isArray(invoices) ? invoices : [];
+}
+
 function normalizeQuickBooksCatalogItem(item: any): QuickBooksCatalogItem | null {
   const id = cleanText(item?.Id);
   if (!id) return null;
@@ -558,6 +614,95 @@ export function normalizeCustomerMatchText(value: unknown) {
     .replace(/[^a-z0-9]+/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+function dateOnlyUtcMs(value: string | null | undefined) {
+  const text = cleanText(value);
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(text);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) return null;
+  return Date.UTC(year, month - 1, day);
+}
+
+function daysBetweenDateOnly(left: string, right: string) {
+  const leftMs = dateOnlyUtcMs(left);
+  const rightMs = dateOnlyUtcMs(right);
+  if (leftMs === null || rightMs === null) return null;
+  return Math.round((leftMs - rightMs) / 86_400_000);
+}
+
+export function normalizeQuickBooksInvoiceReceivable(invoice: any, today = quickBooksDate()): QuickBooksInvoiceReceivable | null {
+  const id = cleanText(invoice?.Id);
+  if (!id) return null;
+
+  const amountCents = Math.max(0, centsFromAmount(invoice?.TotalAmt));
+  const balanceCents = Math.max(0, centsFromAmount(invoice?.Balance));
+  const paidAmountCents = Math.max(0, amountCents - balanceCents);
+  const dueDate = cleanText(invoice?.DueDate) || null;
+  const txnDate = cleanText(invoice?.TxnDate) || null;
+  const status: QuickBooksInvoiceReceivableStatus = balanceCents <= 0 ? 'paid' : 'unpaid';
+  let timing: QuickBooksInvoiceReceivableTiming = status === 'paid' ? 'paid' : 'unknown';
+  let timingDays: number | null = null;
+  let statusLabel = 'Paid';
+
+  if (status === 'unpaid') {
+    const daysUntilDue = dueDate ? daysBetweenDateOnly(dueDate, today) : null;
+    if (daysUntilDue === null) {
+      statusLabel = 'Unpaid';
+    } else if (daysUntilDue < 0) {
+      timing = 'overdue';
+      timingDays = Math.abs(daysUntilDue);
+      statusLabel = `Overdue ${timingDays} ${timingDays === 1 ? 'day' : 'days'}`;
+    } else if (daysUntilDue === 0) {
+      timing = 'due_today';
+      timingDays = 0;
+      statusLabel = 'Due today';
+    } else {
+      timing = 'not_due_yet';
+      timingDays = daysUntilDue;
+      statusLabel = `Due in ${timingDays} ${timingDays === 1 ? 'day' : 'days'}`;
+    }
+  }
+
+  return {
+    amountCents,
+    balanceCents,
+    customerName: cleanText(invoice?.CustomerRef?.name) || null,
+    docNumber: cleanText(invoice?.DocNumber) || null,
+    dueDate,
+    id,
+    paidAmountCents,
+    status,
+    statusLabel,
+    timing,
+    timingDays,
+    txnDate,
+  };
+}
+
+export function buildQuickBooksReceivablesSummary(invoices: QuickBooksInvoiceReceivable[]): QuickBooksReceivablesSummary {
+  return invoices.reduce<QuickBooksReceivablesSummary>((summary, invoice) => {
+    if (invoice.status === 'paid') {
+      summary.paidCents += invoice.amountCents;
+      return summary;
+    }
+
+    summary.unpaidCents += invoice.balanceCents;
+    if (invoice.timing === 'overdue') {
+      summary.overdueCents += invoice.balanceCents;
+    } else {
+      summary.notDueYetCents += invoice.balanceCents;
+    }
+    return summary;
+  }, {
+    notDueYetCents: 0,
+    overdueCents: 0,
+    paidCents: 0,
+    unpaidCents: 0,
+  });
 }
 
 function tokenSet(value: string) {
@@ -986,7 +1131,7 @@ export function buildQuickBooksCustomerPayloadFromCenter(center: QuickBooksPorta
 export function buildQuickBooksInvoicePayload(
   order: QuickBooksInvoiceOrder,
   customerRef: QuickBooksRef,
-  options: { docNumber?: string; taxableStates?: string[] } = {}
+  options: { docNumber?: string; invoiceDate?: Date; taxableStates?: string[] } = {}
 ) {
   const shouldCollectSalesTax = shouldCollectQuickBooksSalesTax(order, options.taxableStates ?? DEFAULT_QUICKBOOKS_SALES_TAX_STATES);
   const lineTaxCode = shouldCollectSalesTax ? QUICKBOOKS_LINE_TAXABLE_CODE : QUICKBOOKS_LINE_NON_TAXABLE_CODE;
@@ -1024,6 +1169,9 @@ export function buildQuickBooksInvoicePayload(
     Line: lineItems,
     PrivateNote: privateNoteParts.join('\n'),
     ShipAddr: shippingAddress,
+    ShipDate: quickBooksDate(options.invoiceDate),
+    ShipMethodRef: { value: QUICKBOOKS_DEFAULT_SHIP_VIA },
+    TrackingNum: QUICKBOOKS_DEFAULT_TRACKING_NOTE,
   };
 }
 
@@ -1360,6 +1508,43 @@ export async function getQuickBooksCustomerSummary(): Promise<QuickBooksCustomer
     return {
       activeCustomerCount: null,
       error: error instanceof Error ? error.message : 'Unable to read QuickBooks customers.',
+    };
+  }
+}
+
+export async function getQuickBooksInvoiceReceivables(invoiceIds: string[]): Promise<QuickBooksInvoiceReceivablesResult> {
+  const uniqueIds = [...new Set(invoiceIds.map(cleanText).filter(Boolean))];
+  if (!uniqueIds.length) return { error: null, invoices: [], missingIds: [] };
+
+  try {
+    const connection = await getAuthorizedConnection();
+    const invoices: QuickBooksInvoiceReceivable[] = [];
+    const foundIds = new Set<string>();
+    const today = quickBooksDate();
+
+    for (let index = 0; index < uniqueIds.length; index += 30) {
+      const chunk = uniqueIds.slice(index, index + 30);
+      const idList = chunk.map((id) => `'${escapeQueryString(id)}'`).join(',');
+      const result = await quickBooksQuery(connection, `SELECT * FROM Invoice WHERE Id IN (${idList}) MAXRESULTS ${chunk.length}`);
+      for (const invoice of quickBooksQueryInvoices(result)) {
+        const receivable = normalizeQuickBooksInvoiceReceivable(invoice, today);
+        if (receivable) {
+          foundIds.add(receivable.id);
+          invoices.push(receivable);
+        }
+      }
+    }
+
+    return {
+      error: null,
+      invoices,
+      missingIds: uniqueIds.filter((id) => !foundIds.has(id)),
+    };
+  } catch (error) {
+    return {
+      error: error instanceof Error ? error.message : 'Unable to pull QuickBooks invoice balances.',
+      invoices: [],
+      missingIds: [],
     };
   }
 }

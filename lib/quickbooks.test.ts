@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
+  buildQuickBooksReceivablesSummary,
   buildQuickBooksCustomerMatches,
   buildQuickBooksCustomerPayloadFromCenter,
   buildQuickBooksInvoicePayload,
   normalizeCustomerMatchText,
+  normalizeQuickBooksInvoiceReceivable,
   scoreQuickBooksCustomerMatch,
 } from '@/lib/quickbooks';
 
@@ -34,11 +36,14 @@ describe('quickbooks invoice payload', () => {
         shipping_zip: '60601',
       },
       { name: 'Lakeview Recovery', value: '42' },
-      { docNumber: 'SO-1272' }
+      { docNumber: 'SO-1272', invoiceDate: new Date('2026-08-01T16:00:00.000Z') }
     );
 
     expect(payload.CustomerRef).toEqual({ name: 'Lakeview Recovery', value: '42' });
     expect(payload.DocNumber).toBe('SO-1272');
+    expect(payload.ShipDate).toBe('2026-08-01');
+    expect(payload.ShipMethodRef).toEqual({ value: 'UPS' });
+    expect(payload.TrackingNum).toBe('See shipped order email');
     expect(payload.BillEmail).toEqual({ Address: 'buyer@example.com' });
     expect(payload.Line).toEqual([
       {
@@ -187,6 +192,108 @@ describe('quickbooks invoice payload', () => {
       },
       { name: 'Unmapped Center', value: '42' }
     )).toThrow('Map Cold Brew Case to QuickBooks before invoicing.');
+  });
+});
+
+describe('quickbooks invoice receivables', () => {
+  const today = '2026-08-02';
+
+  it('marks invoices with no balance as paid', () => {
+    const invoice = normalizeQuickBooksInvoiceReceivable({
+      Balance: 0,
+      CustomerRef: { name: 'Valley Behavioral Health' },
+      DocNumber: 'SO-1164',
+      DueDate: '2026-07-11',
+      Id: '1164',
+      TotalAmt: 160,
+      TxnDate: '2026-06-11',
+    }, today);
+
+    expect(invoice).toMatchObject({
+      amountCents: 16000,
+      balanceCents: 0,
+      customerName: 'Valley Behavioral Health',
+      paidAmountCents: 16000,
+      status: 'paid',
+      statusLabel: 'Paid',
+      timing: 'paid',
+      timingDays: null,
+    });
+  });
+
+  it('marks unpaid invoices overdue by day count', () => {
+    const invoice = normalizeQuickBooksInvoiceReceivable({
+      Balance: 160,
+      DocNumber: 'SO-1164',
+      DueDate: '2026-07-11',
+      Id: '1164',
+      TotalAmt: 160,
+      TxnDate: '2026-06-11',
+    }, today);
+
+    expect(invoice).toMatchObject({
+      balanceCents: 16000,
+      status: 'unpaid',
+      statusLabel: 'Overdue 22 days',
+      timing: 'overdue',
+      timingDays: 22,
+    });
+  });
+
+  it('marks unpaid invoices due today or in the future', () => {
+    expect(normalizeQuickBooksInvoiceReceivable({
+      Balance: 80,
+      DueDate: today,
+      Id: 'today',
+      TotalAmt: 80,
+    }, today)).toMatchObject({
+      statusLabel: 'Due today',
+      timing: 'due_today',
+      timingDays: 0,
+    });
+
+    expect(normalizeQuickBooksInvoiceReceivable({
+      Balance: 411.1,
+      DueDate: '2026-08-09',
+      Id: 'future',
+      TotalAmt: 411.1,
+    }, today)).toMatchObject({
+      balanceCents: 41110,
+      statusLabel: 'Due in 7 days',
+      timing: 'not_due_yet',
+      timingDays: 7,
+    });
+  });
+
+  it('keeps unpaid invoices without a due date in the not-due summary bucket', () => {
+    const invoice = normalizeQuickBooksInvoiceReceivable({
+      Balance: 287.44,
+      Id: 'missing-due-date',
+      TotalAmt: 287.44,
+    }, today);
+
+    expect(invoice).toMatchObject({
+      status: 'unpaid',
+      statusLabel: 'Unpaid',
+      timing: 'unknown',
+      timingDays: null,
+    });
+  });
+
+  it('builds QuickBooks-style paid and unpaid totals', () => {
+    const invoices = [
+      normalizeQuickBooksInvoiceReceivable({ Balance: 160, DueDate: '2026-07-11', Id: 'overdue', TotalAmt: 160 }, today),
+      normalizeQuickBooksInvoiceReceivable({ Balance: 411.1, DueDate: '2026-08-09', Id: 'future', TotalAmt: 411.1 }, today),
+      normalizeQuickBooksInvoiceReceivable({ Balance: 0, DueDate: '2026-07-01', Id: 'paid', TotalAmt: 80 }, today),
+      normalizeQuickBooksInvoiceReceivable({ Balance: 25, Id: 'unknown', TotalAmt: 25 }, today),
+    ].filter((invoice): invoice is NonNullable<typeof invoice> => Boolean(invoice));
+
+    expect(buildQuickBooksReceivablesSummary(invoices)).toEqual({
+      notDueYetCents: 43610,
+      overdueCents: 16000,
+      paidCents: 8000,
+      unpaidCents: 59610,
+    });
   });
 });
 

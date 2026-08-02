@@ -18,7 +18,7 @@ function errorMessage(error: string) {
 async function createAdminAccount(formData: FormData) {
   'use server';
 
-  const current = await requireManageAdmins('/admin/users?error=admin_permission_denied');
+  const current = await requireManageAdmins('/admin/admins?error=admin_permission_denied');
   const email = String(formData.get('email') ?? '').trim().toLowerCase();
   const fullName = String(formData.get('full_name') ?? '').trim();
   const password = String(formData.get('password') ?? '').trim();
@@ -121,7 +121,7 @@ export default async function NewAdminPage({
 }: {
   searchParams?: Record<string, string | string[] | undefined>;
 }) {
-  await requireManageAdmins('/admin/users?error=admin_permission_denied');
+  await requireManageAdmins('/admin/admins?error=admin_permission_denied');
   const error = typeof searchParams?.error === 'string' ? searchParams.error : '';
   const initialAccess = legacyReadOnlyAccessMap();
 

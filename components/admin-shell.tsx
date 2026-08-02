@@ -14,6 +14,7 @@ const ADMIN_NAV_GROUPS: Array<{ label: string; sections: AdminPermissionKey[] }>
   { label: 'Operations', sections: ['inventory', 'receiving', 'planning', 'production'] },
   { label: 'Growth', sections: ['sales', 'sales_admin', 'prospecting', 'marketing', 'commission'] },
   { label: 'Finance & team', sections: ['accounting', 'invoicing', 'reports', 'payroll', 'time_clock', 'week_hours', 'settings'] },
+  { label: 'Admin', sections: ['manage_admins'] },
 ];
 
 export function AdminShell({

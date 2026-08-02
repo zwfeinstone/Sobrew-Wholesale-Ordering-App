@@ -32,6 +32,9 @@ describe('admin permissions', () => {
     expect(adminSectionForPath('/admin/sales-price-guide')).toBe('sales');
     expect(adminSectionForPath('/admin/sales/prospecting/list/123')).toBe('prospecting');
     expect(adminSectionForPath('/admin/invoicing')).toBe('invoicing');
+    expect(adminSectionForPath('/admin/budgeting')).toBe('accounting');
+    expect(adminSectionForPath('/admin/admins')).toBe('manage_admins');
+    expect(adminSectionForPath('/admin/admins/new')).toBe('manage_admins');
     expect(adminSectionForPath('/admin/access-denied')).toBeNull();
   });
 });

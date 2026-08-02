@@ -69,7 +69,7 @@ function trackingRowsFromFormData(formData: FormData) {
     .flatMap((value) => String(value ?? '').split(/[\n,;]+/))
     .map(cleanText)
     .filter(Boolean)
-    .map((trackingCode) => ({ trackingCode }));
+    .map((trackingCode) => ({ carrier: 'UPS', trackingCode }));
 }
 
 function orderToastHref(id: string, toast: string) {
@@ -134,7 +134,7 @@ async function shipOrder(formData: FormData) {
 
   const { data: order } = await supabase
     .from('orders')
-    .select('id,user_id,center_id,status,archived_at,subtotal_cents,profiles(email)')
+    .select('id,user_id,center_id,status,archived_at,subtotal_cents,profiles(email,full_name),centers(name)')
     .eq('id', id)
     .single();
   if (!order || order.archived_at) redirect(`/admin/orders/${id}?toast=ship_error`);
@@ -289,7 +289,18 @@ async function shipOrder(formData: FormData) {
   if (order.status !== 'Shipped') {
     const items = await getOrderItemSummaries(supabase, id);
     const centerEmails = await getCenterLoginEmails(supabase, (order as any).center_id);
-    await sendShippedEmail(centerEmails.length ? centerEmails : (order as any).profiles.email, items, manualTrackingRows);
+    const orderProfile = relatedOne((order as any).profiles);
+    const orderCenter = relatedOne((order as any).centers);
+    await sendShippedEmail(
+      centerEmails.length ? centerEmails : orderProfile?.email,
+      items,
+      manualTrackingRows,
+      {
+        customerName: orderCenter?.name ?? orderProfile?.full_name,
+        orderId: id,
+        shippedAt,
+      },
+    );
   }
 
   redirect(`/admin/orders/${id}?toast=order_shipped`);

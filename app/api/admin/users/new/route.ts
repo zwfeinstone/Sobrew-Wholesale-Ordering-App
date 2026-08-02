@@ -106,6 +106,7 @@ export async function POST(request: Request) {
     targetProfileId: adminProfile.id,
   });
   const welcomeResult = await sendCustomerWelcomeEmail({
+    centerName,
     email,
     fullName: full_name,
     password,

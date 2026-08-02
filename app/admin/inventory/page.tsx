@@ -426,6 +426,10 @@ function SectionHeading({ eyebrow, title, subtitle }: { eyebrow: string; title: 
   );
 }
 
+function categoryCountLabel(count: number, noun: string) {
+  return `${count.toLocaleString()} ${noun}${count === 1 ? '' : 's'}`;
+}
+
 function StockCard({
   costLabel,
   detail,
@@ -622,6 +626,29 @@ export default async function InventoryPage({
       return productName(left.product).localeCompare(productName(right.product));
     });
   const sellableRowsWithOnHand = sellableRows.filter((row) => row.onHand > 0).length;
+  const rawCoffeeValueCents = rawCoffeeItems.reduce((sum, item) => sum + (lotSummaryByItem.get(item.id)?.valueCents ?? 0), 0);
+  const materialSupplyValueCents = materialSupplyItems.reduce((sum, item) => sum + (lotSummaryByItem.get(item.id)?.valueCents ?? 0), 0);
+  const finishedGoodsValueCents = sellableRows.reduce((sum, row) => sum + row.onHand * row.costCents, 0);
+  const inventoryCategories = [
+    {
+      href: '#raw-coffee',
+      label: 'Raw Coffee',
+      countLabel: categoryCountLabel(rawCoffeeItems.length, 'item'),
+      detail: `${usd(Math.round(rawCoffeeValueCents))} current value`,
+    },
+    {
+      href: '#materials-supplies',
+      label: 'Materials & Supplies',
+      countLabel: categoryCountLabel(materialSupplyItems.length, 'item'),
+      detail: `${usd(Math.round(materialSupplyValueCents))} current value`,
+    },
+    {
+      href: '#finished-goods',
+      label: 'Finished Goods',
+      countLabel: categoryCountLabel(sellableRows.length, 'active product'),
+      detail: `${usd(Math.round(finishedGoodsValueCents))} estimated value; ${sellableRowsWithOnHand.toLocaleString()} with stock`,
+    },
+  ];
 
   return (
     <div className="space-y-6">
@@ -645,7 +672,32 @@ export default async function InventoryPage({
         </div>
       </section>
 
-      <section className="card space-y-4">
+      <section className="card space-y-4" aria-labelledby="inventory-categories-title">
+        <div>
+          <span className="eyebrow">Categories</span>
+          <h2 id="inventory-categories-title" className="mt-3 text-xl font-semibold tracking-tight text-slate-950">Inventory categories</h2>
+        </div>
+        <div className="grid gap-3 md:grid-cols-3">
+          {inventoryCategories.map((category) => (
+            <Link
+              key={category.href}
+              href={category.href}
+              className="group rounded-xl border border-slate-200 bg-white/70 p-4 transition-all duration-200 hover:-translate-y-0.5 hover:border-teal-200 hover:bg-white hover:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 focus-visible:ring-offset-2"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="break-words text-base font-semibold text-slate-950 group-hover:text-teal-800">{category.label}</p>
+                  <p className="mt-1 text-sm text-slate-500">{category.countLabel}</p>
+                </div>
+                <span className="mt-0.5 rounded-full bg-teal-50 px-2.5 py-1 text-xs font-semibold text-teal-800">View</span>
+              </div>
+              <p className="mt-4 text-sm font-medium text-slate-600">{category.detail}</p>
+            </Link>
+          ))}
+        </div>
+      </section>
+
+      <section id="raw-coffee" className="card scroll-mt-6 space-y-4 md:scroll-mt-8">
         <SectionHeading eyebrow="Raw Coffee" title="Coffee inventory" subtitle="Coffee is received and consumed in pounds." />
         <div className="grid gap-3 lg:grid-cols-2">
           {rawCoffeeItems.map((item) => {
@@ -664,7 +716,7 @@ export default async function InventoryPage({
         </div>
       </section>
 
-      <section className="card space-y-4">
+      <section id="materials-supplies" className="card scroll-mt-6 space-y-4 md:scroll-mt-8">
         <SectionHeading eyebrow="Materials & Supplies" title="Packaging and production inputs" subtitle="These are received in units and consumed by recipes or shipping. Product box stock can go negative when shipped short." />
         <div className="grid gap-3 lg:grid-cols-2">
           {materialSupplyItems.map((item) => {
@@ -721,7 +773,7 @@ export default async function InventoryPage({
         </div>
       </section>
 
-      <section className="card space-y-4">
+      <section id="finished-goods" className="card scroll-mt-6 space-y-4 md:scroll-mt-8">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
           <SectionHeading eyebrow="Sellable Inventory" title="Finished goods available to sell" subtitle="On hand comes from production. Available stock subtracts open New and Processing orders and can go negative." />
           <form className="grid gap-2 sm:grid-cols-[minmax(12rem,16rem)_auto] sm:items-end">

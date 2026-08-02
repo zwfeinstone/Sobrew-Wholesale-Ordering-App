@@ -3,6 +3,7 @@ import {
   chooseProductCostCents,
   historicalShippingByProduct,
   priceRangeCents,
+  projectedShippingByProduct,
   recipeUnitCostEstimateCents,
   roundToNearestQuarterCents,
   targetMarginPriceCents,
@@ -11,6 +12,7 @@ import {
 describe('sales price guide calculations', () => {
   it('calculates target margin prices rounded to the nearest quarter', () => {
     expect(targetMarginPriceCents(1000, 30)).toBe(1425);
+    expect(targetMarginPriceCents(1000, 35)).toBe(1550);
     expect(targetMarginPriceCents(1000, 40)).toBe(1675);
     expect(targetMarginPriceCents(1000, 50)).toBe(2000);
     expect(roundToNearestQuarterCents(1543)).toBe(1550);
@@ -100,6 +102,92 @@ describe('sales price guide calculations', () => {
     expect(summaries.get('product-2')?.averageShippingCents).toBe(200);
   });
 
+  it('projects missing shipping from the closest same-category item by weight and box size', () => {
+    const historicalSummaries = new Map([
+      ['similar', {
+        averageShippingCents: 1200,
+        lineCount: 2,
+        orderCount: 2,
+        shippingCents: 2400,
+        source: 'historical' as const,
+        unitsSold: 2,
+      }],
+      ['farther', {
+        averageShippingCents: 5000,
+        lineCount: 1,
+        orderCount: 1,
+        shippingCents: 5000,
+        source: 'historical' as const,
+        unitsSold: 1,
+      }],
+      ['wrong-category', {
+        averageShippingCents: 100,
+        lineCount: 1,
+        orderCount: 1,
+        shippingCents: 100,
+        source: 'historical' as const,
+        unitsSold: 1,
+      }],
+    ]);
+    const projected = projectedShippingByProduct({
+      historicalSummaries,
+      products: [
+        { category: 'whole_bean', id: 'target', name: 'New 3lb Item' },
+        { category: 'whole_bean', id: 'similar', name: 'Similar 2lb Item' },
+        { category: 'whole_bean', id: 'farther', name: 'Farther 8lb Item' },
+        { category: 'k_cups', id: 'wrong-category', name: 'Wrong Category' },
+      ],
+      recipes: [
+        recipeWithWeightAndBox('target', 3, 'BOX-12X12X10'),
+        recipeWithWeightAndBox('similar', 2, 'BOX-12X12X10'),
+        recipeWithWeightAndBox('farther', 8, 'BOX-16X16X16'),
+        recipeWithWeightAndBox('wrong-category', 3, 'BOX-12X12X10'),
+      ],
+    });
+
+    expect(projected.get('target')).toMatchObject({
+      averageShippingCents: 1800,
+      projectedFromProductId: 'similar',
+      projectedFromProductName: 'Similar 2lb Item',
+      projectedPricePerLbCents: 600,
+      projectedWeightLb: 3,
+      source: 'projected',
+    });
+  });
+
+  it('does not project shipping over actual product history', () => {
+    const historicalSummaries = new Map([
+      ['target', {
+        averageShippingCents: 900,
+        lineCount: 1,
+        orderCount: 1,
+        shippingCents: 900,
+        source: 'historical' as const,
+        unitsSold: 1,
+      }],
+      ['similar', {
+        averageShippingCents: 1200,
+        lineCount: 1,
+        orderCount: 1,
+        shippingCents: 1200,
+        source: 'historical' as const,
+        unitsSold: 1,
+      }],
+    ]);
+
+    expect(projectedShippingByProduct({
+      historicalSummaries,
+      products: [
+        { category: 'whole_bean', id: 'target', name: 'Has History' },
+        { category: 'whole_bean', id: 'similar', name: 'Similar Item' },
+      ],
+      recipes: [
+        recipeWithWeightAndBox('target', 3, 'BOX-12X12X10'),
+        recipeWithWeightAndBox('similar', 2, 'BOX-12X12X10'),
+      ],
+    }).has('target')).toBe(false);
+  });
+
   it('estimates recipe unit cost from materials, labor, and fixed label costs', () => {
     const estimate = recipeUnitCostEstimateCents({
       branding_label_qty: 2,
@@ -133,3 +221,31 @@ describe('sales price guide calculations', () => {
     expect(estimate).toBe(221.5);
   });
 });
+
+function recipeWithWeightAndBox(productId: string, weightLb: number, boxSku: string) {
+  return {
+    branding_label_qty: 0,
+    labor_minutes: 0,
+    labor_rate_cents: 0,
+    output_qty: 1,
+    product_id: productId,
+    product_recipe_components: [
+      {
+        component_role: 'raw_coffee',
+        inventory_item_id: `${productId}-coffee`,
+        inventory_items: { base_unit: 'lb' as const, id: `${productId}-coffee`, item_type: 'raw_coffee', sku: 'RAW' },
+        quantity: weightLb,
+        unit: 'lb' as const,
+      },
+      {
+        component_role: 'box',
+        inventory_item_id: `${productId}-box`,
+        inventory_items: { base_unit: 'each' as const, id: `${productId}-box`, item_type: 'material_supply', sku: boxSku },
+        quantity: 1,
+        unit: 'each' as const,
+      },
+    ],
+    shipping_label_qty: 0,
+    waste_percent: 0,
+  };
+}

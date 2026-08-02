@@ -82,7 +82,7 @@ export const ADMIN_NAV_LINKS: Array<{
   { name: 'Sales Admin', href: '/admin/sales-admin', sectionKey: 'sales_admin' },
   { name: 'Commission', href: '/admin/commission', sectionKey: 'commission' },
   { name: 'Accounting', href: '/admin/accounting', sectionKey: 'accounting' },
-  { name: 'Budgeting', href: '/admin/accounting?view=budgeting', child: true, sectionKey: 'accounting' },
+  { name: 'Budgeting', href: '/admin/budgeting', sectionKey: 'accounting' },
   { name: 'Invoicing', href: '/admin/invoicing', sectionKey: 'invoicing' },
   { name: 'Reports', href: '/admin/reports', sectionKey: 'reports' },
   { name: 'Marketing', href: '/admin/marketing', sectionKey: 'marketing' },
@@ -102,6 +102,7 @@ export const ADMIN_NAV_LINKS: Array<{
   { name: 'Week Hours', href: '/admin/week-hours', sectionKey: 'week_hours' },
   { name: 'Payroll', href: '/admin/payroll', sectionKey: 'payroll' },
   { name: 'Settings', href: '/admin/settings', sectionKey: 'settings' },
+  { name: 'Admins', href: '/admin/admins', sectionKey: 'manage_admins' },
 ];
 
 export const ADMIN_PERMISSION_GROUPS: Array<{ keys: AdminPermissionKey[]; label: string }> = [
@@ -130,7 +131,7 @@ export function ownerAccessMap(): AdminAccessMap {
 
 export function legacyReadOnlyAccessMap(): AdminAccessMap {
   const access = emptyAccess();
-  grant(access, ADMIN_NAV_LINKS.map((link) => link.sectionKey), false);
+  grant(access, ADMIN_NAV_LINKS.map((link) => link.sectionKey).filter((key) => key !== 'manage_admins'), false);
   grant(access, ['reports_sales'], false);
   return access;
 }
@@ -265,11 +266,12 @@ export function firstAllowedAdminHref(access: AdminAccessMap) {
 
 export function adminSectionForPath(pathname: string): AdminPermissionKey | null {
   if (pathname === '/admin/access-denied' || pathname.startsWith('/admin/access-denied/')) return null;
-  if (pathname === '/admin/admins/new' || pathname.startsWith('/admin/admins/new/')) return 'manage_admins';
+  if (pathname === '/admin/admins' || pathname.startsWith('/admin/admins/')) return 'manage_admins';
   if (pathname === '/admin') return 'dashboard';
   if (pathname === '/admin/sales-admin' || pathname.startsWith('/admin/sales-admin/')) return 'sales_admin';
   if (pathname === '/admin/sales-price-guide' || pathname.startsWith('/admin/sales-price-guide/')) return 'sales';
   if (pathname === '/admin/commission' || pathname.startsWith('/admin/commission/')) return 'commission';
+  if (pathname === '/admin/budgeting' || pathname.startsWith('/admin/budgeting/')) return 'accounting';
   if (pathname === '/admin/accounting' || pathname.startsWith('/admin/accounting/')) return 'accounting';
   if (pathname === '/admin/invoicing' || pathname.startsWith('/admin/invoicing/')) return 'invoicing';
   if (pathname === '/admin/marketing' || pathname.startsWith('/admin/marketing/')) return 'marketing';

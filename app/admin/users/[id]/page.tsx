@@ -258,6 +258,12 @@ async function addCenterLogin(formData: FormData) {
     redirect(`/admin/users/${centerId}?error=login_missing`);
   }
 
+  const { data: welcomeCenter } = await supabaseAdmin
+    .from('centers')
+    .select('name')
+    .eq('id', centerId)
+    .maybeSingle();
+
   const created = await supabaseAdmin.auth.admin.createUser({ email, password, email_confirm: true });
   if (created.error || !created.data.user) {
     redirect(`/admin/users/${centerId}?error=login_create_failed`);
@@ -280,6 +286,7 @@ async function addCenterLogin(formData: FormData) {
   }
 
   const welcomeResult = await sendCustomerWelcomeEmail({
+    centerName: welcomeCenter?.name,
     email,
     fullName: full_name,
     password,

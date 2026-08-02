@@ -26,8 +26,19 @@ export type SalesPriceGuideShippingSummary = {
   averageShippingCents: number;
   lineCount: number;
   orderCount: number;
+  projectedFromProductId?: string;
+  projectedFromProductName?: string | null;
+  projectedPricePerLbCents?: number;
+  projectedWeightLb?: number;
   shippingCents: number;
+  source?: 'historical' | 'projected';
   unitsSold: number;
+};
+
+export type SalesPriceGuideProductRow = {
+  category?: string | null;
+  id: string;
+  name?: string | null;
 };
 
 export type SalesPriceGuideOrderRow = {
@@ -51,7 +62,19 @@ export type SalesPriceGuideOrderItemRow = {
 export type SalesPriceGuideRecipeComponentRow = {
   component_role: string | null;
   inventory_item_id: string;
-  inventory_items?: { base_unit: InventoryUnit; id: string; sku?: string | null } | Array<{ base_unit: InventoryUnit; id: string; sku?: string | null }> | null;
+  inventory_items?: {
+    base_unit: InventoryUnit;
+    id: string;
+    item_type?: string | null;
+    name?: string | null;
+    sku?: string | null;
+  } | Array<{
+    base_unit: InventoryUnit;
+    id: string;
+    item_type?: string | null;
+    name?: string | null;
+    sku?: string | null;
+  }> | null;
   quantity: number | string | null;
   unit: InventoryUnit;
 };
@@ -76,6 +99,33 @@ function lineRevenueCents(item: SalesPriceGuideOrderItemRow) {
   const explicit = normalizeInventoryNumber(item.line_total_cents);
   if (explicit > 0) return explicit;
   return normalizeInventoryNumber(item.qty) * normalizeInventoryNumber(item.unit_price_cents);
+}
+
+function normalizeCategory(value: string | null | undefined) {
+  return String(value ?? '').trim().toLowerCase();
+}
+
+function boxVolumeFromText(value: string | null | undefined) {
+  const text = String(value ?? '').toLowerCase();
+  const match = text.match(/(\d+(?:\.\d+)?)\s*x\s*(\d+(?:\.\d+)?)\s*x\s*(\d+(?:\.\d+)?)/i);
+  if (!match) return 0;
+  return Number(match[1]) * Number(match[2]) * Number(match[3]);
+}
+
+function boxVolumeForComponent(component: SalesPriceGuideRecipeComponentRow) {
+  const item = relatedOne(component.inventory_items);
+  return Math.max(boxVolumeFromText(item?.sku), boxVolumeFromText(item?.name));
+}
+
+function isBoxComponent(component: SalesPriceGuideRecipeComponentRow) {
+  const item = relatedOne(component.inventory_items);
+  const sku = String(item?.sku ?? '').toUpperCase();
+  return component.component_role === 'box' || sku.startsWith('BOX-') || sku.includes('-BOX-');
+}
+
+function isWeightComponent(component: SalesPriceGuideRecipeComponentRow) {
+  const item = relatedOne(component.inventory_items);
+  return component.component_role === 'raw_coffee' || item?.item_type === 'raw_coffee';
 }
 
 export function roundToNearestQuarterCents(valueCents: number) {
@@ -203,10 +253,124 @@ export function historicalShippingByProduct({
       lineCount: summary.lineCount,
       orderCount: summary.orderIds.size,
       shippingCents: summary.shippingCents,
+      source: 'historical',
       unitsSold: summary.unitsSold,
     });
   }
   return publicSummaries;
+}
+
+function packageProfileForRecipe(recipe: SalesPriceGuideRecipeRow | null | undefined) {
+  if (!recipe) return { boxVolume: 0, weightLb: 0 };
+  const outputQty = normalizeInventoryNumber(recipe.output_qty) || 1;
+  const components = recipe.product_recipe_components ?? [];
+  let weightLb = 0;
+  let boxVolume = 0;
+
+  for (const component of components) {
+    if (isWeightComponent(component)) {
+      try {
+        weightLb += convertInventoryQuantity(
+          normalizeInventoryNumber(component.quantity) * recipeComponentWasteMultiplier(component.component_role, recipe.waste_percent),
+          component.unit,
+          'lb'
+        );
+      } catch {
+        // Ignore non-weight components that were misclassified.
+      }
+    }
+
+    if (isBoxComponent(component)) {
+      boxVolume = Math.max(boxVolume, boxVolumeForComponent(component));
+    }
+  }
+
+  return {
+    boxVolume,
+    weightLb: weightLb / outputQty,
+  };
+}
+
+function packageSimilarityScore(
+  target: { boxVolume: number; weightLb: number },
+  candidate: { boxVolume: number; weightLb: number }
+) {
+  const weightDelta = target.weightLb > 0 ? Math.abs(candidate.weightLb - target.weightLb) / target.weightLb : 1;
+  const boxDelta = target.boxVolume > 0 && candidate.boxVolume > 0
+    ? Math.abs(candidate.boxVolume - target.boxVolume) / target.boxVolume
+    : target.boxVolume === candidate.boxVolume
+      ? 0
+      : 1;
+  return weightDelta * 2 + boxDelta;
+}
+
+export function projectedShippingByProduct({
+  historicalSummaries,
+  products,
+  recipes,
+}: {
+  historicalSummaries: Map<string, SalesPriceGuideShippingSummary>;
+  products: SalesPriceGuideProductRow[];
+  recipes: SalesPriceGuideRecipeRow[];
+}) {
+  const productById = new Map(products.map((product) => [product.id, product]));
+  const recipeByProductId = new Map(recipes.map((recipe) => [recipe.product_id, recipe]));
+  const profiles = new Map(products.map((product) => [product.id, {
+    ...packageProfileForRecipe(recipeByProductId.get(product.id)),
+    category: normalizeCategory(product.category),
+    productId: product.id,
+  }]));
+  const projected = new Map<string, SalesPriceGuideShippingSummary>();
+
+  for (const product of products) {
+    if (historicalSummaries.has(product.id)) continue;
+    const target = profiles.get(product.id);
+    if (!target || !target.category || target.weightLb <= 0) continue;
+
+    const candidates = [...historicalSummaries.entries()]
+      .map(([productId, summary]) => ({
+        product: productById.get(productId) ?? null,
+        profile: profiles.get(productId) ?? null,
+        summary,
+      }))
+      .filter((candidate) => (
+        candidate.product
+        && candidate.profile
+        && candidate.profile.category === target.category
+        && candidate.profile.weightLb > 0
+        && candidate.summary.averageShippingCents > 0
+      ));
+
+    let best: (typeof candidates)[number] | null = null;
+    let bestScore = Number.POSITIVE_INFINITY;
+    for (const candidate of candidates) {
+      const score = packageSimilarityScore(target, candidate.profile!);
+      if (score < bestScore) {
+        best = candidate;
+        bestScore = score;
+      }
+    }
+    if (!best?.profile) continue;
+
+    const projectedPricePerLbCents = best.summary.averageShippingCents / best.profile.weightLb;
+    const averageShippingCents = Math.round(projectedPricePerLbCents * target.weightLb);
+    if (averageShippingCents <= 0) continue;
+
+    projected.set(product.id, {
+      averageShippingCents,
+      lineCount: 0,
+      orderCount: 0,
+      projectedFromProductId: best.profile.productId,
+      projectedFromProductName: best.product?.name ?? null,
+      projectedPricePerLbCents,
+      projectedWeightLb: target.weightLb,
+      shippingCents: 0,
+      source: 'projected',
+      unitsSold: 0,
+    });
+  }
+
+  return projected;
 }
 
 export function recipeUnitCostEstimateCents(recipe: SalesPriceGuideRecipeRow | null | undefined, avgCostByItemId: Map<string, number>) {

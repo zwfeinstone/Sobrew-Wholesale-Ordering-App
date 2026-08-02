@@ -2,6 +2,7 @@ import {
   chooseProductCostCents,
   historicalShippingByProduct,
   priceRangeCents,
+  projectedShippingByProduct,
   recipeUnitCostEstimateCents,
   targetMarginPriceCents,
   type SalesPriceGuideCostSource,
@@ -59,7 +60,7 @@ type PriceRow = {
 type GuideRow = {
   costSource: SalesPriceGuideCostSource;
   currentPriceRange: ReturnType<typeof priceRangeCents>;
-  price30Cents: number;
+  price35Cents: number;
   price40Cents: number;
   price50Cents: number;
   product: ProductRow;
@@ -69,7 +70,7 @@ type GuideRow = {
 };
 
 const TARGET_MARGINS = [
-  { key: 'price30Cents', label: '30%' },
+  { key: 'price35Cents', label: '35%' },
   { key: 'price40Cents', label: '40%' },
   { key: 'price50Cents', label: '50%' },
 ] as const;
@@ -112,7 +113,14 @@ function formatTargetPrice(row: GuideRow, value: number) {
 }
 
 function shippingDetail(summary: SalesPriceGuideShippingSummary | null) {
-  if (!summary || summary.unitsSold <= 0) return 'No shipping history';
+  if (!summary) return 'No shipping history';
+  if (summary.source === 'projected') {
+    const sourceName = summary.projectedFromProductName?.trim() || 'similar product';
+    const pricePerLb = summary.projectedPricePerLbCents ? formatMoney(summary.projectedPricePerLbCents) : 'unknown';
+    const weight = summary.projectedWeightLb ? `${summary.projectedWeightLb.toFixed(2)} lb` : 'unknown weight';
+    return `Projected from ${sourceName} at ${pricePerLb}/lb for ${weight}.`;
+  }
+  if (summary.unitsSold <= 0) return 'No shipping history';
   const unitLabel = summary.unitsSold === 1 ? 'unit' : 'units';
   const orderLabel = summary.orderCount === 1 ? 'order' : 'orders';
   return `${formatMoney(summary.averageShippingCents)} avg from ${summary.unitsSold.toLocaleString()} ${unitLabel}, ${summary.orderCount.toLocaleString()} ${orderLabel}`;
@@ -149,7 +157,7 @@ export default async function SalesPriceGuidePage() {
     supabase.from('user_product_prices').select('product_id,price_cents').limit(50000),
     supabase.from('inventory_items').select('id,item_type,base_unit,product_id,active').eq('active', true).limit(50000),
     supabase.from('inventory_lots').select('inventory_item_id,quantity_remaining,unit_cost_cents').limit(50000),
-    supabase.from('product_recipes').select('product_id,output_qty,waste_percent,labor_minutes,labor_rate_cents,shipping_label_qty,branding_label_qty,product_recipe_components(inventory_item_id,quantity,unit,component_role,inventory_items(id,base_unit,sku))').limit(50000),
+    supabase.from('product_recipes').select('product_id,output_qty,waste_percent,labor_minutes,labor_rate_cents,shipping_label_qty,branding_label_qty,product_recipe_components(inventory_item_id,quantity,unit,component_role,inventory_items(id,base_unit,sku,name,item_type))').limit(50000),
     supabase.from('production_runs').select('product_id,quantity_produced,quantity_voided,status,actual_unit_cost_cents,produced_at').order('produced_at', { ascending: false }).limit(50000),
     supabase.from('orders').select('id,status,shipping_cost_cents').eq('status', 'Shipped').limit(50000),
     supabase.from('order_items').select('id,order_id,product_id,qty,unit_price_cents,line_total_cents,shipping_boxes_used,cogs_shipping_cents,cogs_snapshot_at').limit(50000),
@@ -187,6 +195,11 @@ export default async function SalesPriceGuidePage() {
   );
   const recipesByProductId = new Map(recipes.map((recipe) => [recipe.product_id, recipe]));
   const shippingByProductId = historicalShippingByProduct({ orderItems: shippedOrderItems, orders: shippedOrders });
+  const projectedShippingByProductId = projectedShippingByProduct({
+    historicalSummaries: shippingByProductId,
+    products,
+    recipes,
+  });
   const pricesByProductId = new Map<string, Array<number | string>>();
   for (const price of prices) {
     const values = pricesByProductId.get(price.product_id) ?? [];
@@ -202,13 +215,13 @@ export default async function SalesPriceGuidePage() {
         latestProductionCostCents: latestProductionCostByProductId.get(product.id) ?? 0,
         recipeEstimateCostCents: recipeUnitCostEstimateCents(recipesByProductId.get(product.id), avgCostByInventoryItemId),
       });
-      const shippingSummary = shippingByProductId.get(product.id) ?? null;
+      const shippingSummary = shippingByProductId.get(product.id) ?? projectedShippingByProductId.get(product.id) ?? null;
       const totalCostCents = costChoice.costCents + (shippingSummary?.averageShippingCents ?? 0);
 
       return {
         costSource: costChoice.source,
         currentPriceRange: priceRangeCents(pricesByProductId.get(product.id) ?? []),
-        price30Cents: costChoice.source === 'missing_cost' ? 0 : targetMarginPriceCents(totalCostCents, 30),
+        price35Cents: costChoice.source === 'missing_cost' ? 0 : targetMarginPriceCents(totalCostCents, 35),
         price40Cents: costChoice.source === 'missing_cost' ? 0 : targetMarginPriceCents(totalCostCents, 40),
         price50Cents: costChoice.source === 'missing_cost' ? 0 : targetMarginPriceCents(totalCostCents, 50),
         product,
@@ -224,7 +237,8 @@ export default async function SalesPriceGuidePage() {
     });
   const groupedRows = groupRows(rows);
   const missingCostCount = rows.filter((row) => row.costSource === 'missing_cost').length;
-  const productsWithShippingHistory = rows.filter((row) => row.shippingSummary).length;
+  const productsWithShippingHistory = rows.filter((row) => row.shippingSummary?.source === 'historical').length;
+  const productsWithProjectedShipping = rows.filter((row) => row.shippingSummary?.source === 'projected').length;
 
   return (
     <div className="space-y-6">
@@ -232,7 +246,7 @@ export default async function SalesPriceGuidePage() {
         <span className="eyebrow">Growth</span>
         <h1 className="page-title mt-4">Sales Price Guide</h1>
         <p className="page-subtitle mt-3 max-w-3xl">
-          Reference product cost, historical shipping, and clean quote prices for 30%, 40%, and 50% gross margins.
+          Reference product cost, historical shipping, and clean quote prices for 35%, 40%, and 50% gross margins.
         </p>
       </section>
 
@@ -244,7 +258,7 @@ export default async function SalesPriceGuidePage() {
         <div className="stat-card">
           <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Shipping history</p>
           <p className="mt-2 text-3xl font-semibold text-slate-950">{productsWithShippingHistory.toLocaleString()}</p>
-          <p className="mt-1 text-sm text-slate-500">Products with shipped-order data.</p>
+          <p className="mt-1 text-sm text-slate-500">{productsWithProjectedShipping.toLocaleString()} projected from similar items.</p>
         </div>
         <div className="stat-card">
           <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Needs cost</p>
@@ -285,7 +299,13 @@ export default async function SalesPriceGuidePage() {
                     <td className="px-3 py-4 text-right font-semibold text-slate-950">{row.costSource === 'missing_cost' ? '-' : formatMoney(row.productCostCents)}</td>
                     <td className="px-3 py-4 text-right">
                       <p className="font-semibold text-slate-950">{formatMoney(row.shippingSummary?.averageShippingCents ?? 0)}</p>
-                      <p className="mt-1 text-xs text-slate-500">{row.shippingSummary ? `${row.shippingSummary.unitsSold.toLocaleString()} units` : 'No history'}</p>
+                      <p className="mt-1 text-xs text-slate-500">
+                        {row.shippingSummary?.source === 'projected'
+                          ? 'Projected'
+                          : row.shippingSummary
+                            ? `${row.shippingSummary.unitsSold.toLocaleString()} units`
+                            : 'No history'}
+                      </p>
                     </td>
                     <td className="px-3 py-4 text-right font-semibold text-slate-950">{row.costSource === 'missing_cost' ? '-' : formatMoney(row.totalCostCents)}</td>
                     <td className="px-3 py-4">
