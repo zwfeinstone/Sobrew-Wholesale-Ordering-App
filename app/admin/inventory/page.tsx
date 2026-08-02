@@ -94,7 +94,7 @@ type ProductionRunRow = {
 };
 
 type FinishedGoodsSort = 'name' | 'on_hand';
-type InventoryCategory = 'raw_coffee' | 'material_supply' | 'finished_good';
+type InventoryCategory = 'raw_coffee' | 'material_supply' | 'finished_good' | 'adjustment_log';
 
 function inventoryHref(toast: string, category: InventoryCategory = 'raw_coffee') {
   const search = new URLSearchParams({ category, toast });
@@ -103,7 +103,7 @@ function inventoryHref(toast: string, category: InventoryCategory = 'raw_coffee'
 
 function inventoryCategoryHref(category: InventoryCategory, finishedGoodsSort: FinishedGoodsSort) {
   const search = new URLSearchParams({ category });
-  if (category === 'finished_good' && finishedGoodsSort !== 'name') {
+  if (category === 'finished_good' && finishedGoodsSort !== 'on_hand') {
     search.set('finished_sort', finishedGoodsSort);
   }
   return `/admin/inventory?${search.toString()}`;
@@ -153,11 +153,11 @@ function formatAdjustmentTimestamp(value: string | null | undefined) {
 }
 
 function normalizeFinishedGoodsSort(value: string | string[] | undefined): FinishedGoodsSort {
-  return value === 'on_hand' ? 'on_hand' : 'name';
+  return value === 'name' ? 'name' : 'on_hand';
 }
 
 function normalizeInventoryCategory(value: string | string[] | undefined): InventoryCategory {
-  if (value === 'material_supply' || value === 'finished_good') return value;
+  if (value === 'material_supply' || value === 'finished_good' || value === 'adjustment_log') return value;
   return 'raw_coffee';
 }
 
@@ -445,6 +445,12 @@ function categoryCountLabel(count: number, noun: string) {
   return `${count.toLocaleString()} ${noun}${count === 1 ? '' : 's'}`;
 }
 
+function finishedGoodsStockRank(onHand: number) {
+  if (onHand > 0) return 0;
+  if (onHand < 0) return 1;
+  return 2;
+}
+
 function StockCard({
   costLabel,
   detail,
@@ -495,7 +501,7 @@ export default async function InventoryPage({
   if (requestedCategory !== activeCategory) {
     const search = new URLSearchParams({ category: activeCategory });
     if (toast) search.set('toast', toast);
-    if (activeCategory === 'finished_good' && finishedGoodsSort !== 'name') search.set('finished_sort', finishedGoodsSort);
+    if (activeCategory === 'finished_good' && finishedGoodsSort !== 'on_hand') search.set('finished_sort', finishedGoodsSort);
     redirect(`/admin/inventory?${search.toString()}`);
   }
 
@@ -640,10 +646,11 @@ export default async function InventoryPage({
     })
     .sort((left, right) => {
       if (finishedGoodsSort === 'on_hand') {
-        const leftHasStock = left.onHand > 0 ? 1 : 0;
-        const rightHasStock = right.onHand > 0 ? 1 : 0;
-        return rightHasStock - leftHasStock
-          || right.onHand - left.onHand
+        const leftRank = finishedGoodsStockRank(left.onHand);
+        const rightRank = finishedGoodsStockRank(right.onHand);
+        const quantitySort = leftRank === 1 ? left.onHand - right.onHand : right.onHand - left.onHand;
+        return leftRank - rightRank
+          || quantitySort
           || productName(left.product).localeCompare(productName(right.product));
       }
       return productName(left.product).localeCompare(productName(right.product));
@@ -652,6 +659,7 @@ export default async function InventoryPage({
   const rawCoffeeValueCents = rawCoffeeItems.reduce((sum, item) => sum + (lotSummaryByItem.get(item.id)?.valueCents ?? 0), 0);
   const materialSupplyValueCents = materialSupplyItems.reduce((sum, item) => sum + (lotSummaryByItem.get(item.id)?.valueCents ?? 0), 0);
   const finishedGoodsValueCents = sellableRows.reduce((sum, row) => sum + row.onHand * row.costCents, 0);
+  const adjustmentLogRows = adjustmentRows.slice(0, 25);
   const inventoryCategories = [
     {
       id: 'raw_coffee',
@@ -671,11 +679,13 @@ export default async function InventoryPage({
       countLabel: categoryCountLabel(sellableRows.length, 'active product'),
       detail: `${usd(Math.round(finishedGoodsValueCents))} estimated value; ${sellableRowsWithOnHand.toLocaleString()} with stock`,
     },
+    {
+      id: 'adjustment_log',
+      label: 'Adjustment Log',
+      countLabel: categoryCountLabel(adjustmentLogRows.length, 'adjustment'),
+      detail: 'Recent manual changes across all inventory',
+    },
   ] satisfies Array<{ id: InventoryCategory; label: string; countLabel: string; detail: string }>;
-  const activeCategoryLabel = inventoryCategories.find((category) => category.id === activeCategory)?.label ?? 'Inventory';
-  const categoryAdjustmentRows = adjustmentRows
-    .filter((adjustment) => itemsById.get(adjustment.inventory_item_id)?.item_type === activeCategory)
-    .slice(0, 25);
 
   return (
     <div className="space-y-6">
@@ -704,7 +714,7 @@ export default async function InventoryPage({
           <span className="eyebrow">Categories</span>
           <h2 id="inventory-categories-title" className="mt-3 text-xl font-semibold tracking-tight text-slate-950">Inventory categories</h2>
         </div>
-        <nav className="grid gap-3 md:grid-cols-3" aria-label="Inventory category subpages">
+        <nav className="grid gap-3 md:grid-cols-2 xl:grid-cols-4" aria-label="Inventory category subpages">
           {inventoryCategories.map((category) => {
             const isActive = activeCategory === category.id;
             return (
@@ -824,7 +834,7 @@ export default async function InventoryPage({
                 Sort finished goods
                 <select className="input mt-2" name="finished_sort" defaultValue={finishedGoodsSort}>
                   <option value="name">Product name</option>
-                  <option value="on_hand">On hand first</option>
+                  <option value="on_hand">On hand, shortages, zero</option>
                 </select>
               </label>
               <button className="btn-secondary" type="submit">Apply</button>
@@ -901,43 +911,45 @@ export default async function InventoryPage({
         </section>
       ) : null}
 
-      <section className="card space-y-4">
-        <SectionHeading eyebrow="Adjustment Log" title={`${activeCategoryLabel} corrections and adjustments`} subtitle={`Recent manual inventory changes for ${activeCategoryLabel.toLowerCase()}.`} />
-        <div className="space-y-3">
-          {categoryAdjustmentRows.map((adjustment) => {
-            const item = itemsById.get(adjustment.inventory_item_id);
-            const quantityChange = normalizeInventoryNumber(adjustment.quantity_change);
-            const isPositive = quantityChange >= 0;
-            const quantityLabel = `${isPositive ? '+' : '-'}${formatInventoryQuantity(Math.abs(quantityChange), adjustment.unit)}`;
-            return (
-              <div key={adjustment.id} className="rounded-2xl border border-slate-200 bg-white/70 p-4">
-                <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_8rem_9rem_10rem] md:items-start">
-                  <div className="min-w-0">
-                    <p className="break-words font-semibold text-slate-950">{itemDisplayName(item)}</p>
-                    <p className="mt-1 text-sm text-slate-500">
-                      {adjustmentTypeLabel(adjustment.adjustment_type)} - {item ? inventoryItemTypeLabel(item.item_type) : 'Inventory Item'}
-                    </p>
-                    {adjustment.notes ? <p className="mt-2 break-words text-sm text-slate-600">{adjustment.notes}</p> : null}
-                  </div>
-                  <div>
-                    <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Change</p>
-                    <p className={`mt-1 font-semibold ${isPositive ? 'text-emerald-700' : 'text-rose-700'}`}>{quantityLabel}</p>
-                  </div>
-                  <div>
-                    <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Unit COGS</p>
-                    <p className="mt-1 font-semibold text-slate-950">{usd(Math.round(normalizeInventoryNumber(adjustment.unit_cost_cents)))}</p>
-                  </div>
-                  <div>
-                    <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Recorded</p>
-                    <p className="mt-1 text-sm font-semibold text-slate-950">{formatAdjustmentTimestamp(adjustment.adjusted_at ?? adjustment.created_at)}</p>
+      {activeCategory === 'adjustment_log' ? (
+        <section className="card space-y-4">
+          <SectionHeading eyebrow="Adjustment Log" title="Corrections and adjustments" subtitle="Recent manual inventory changes across all categories." />
+          <div className="space-y-3">
+            {adjustmentLogRows.map((adjustment) => {
+              const item = itemsById.get(adjustment.inventory_item_id);
+              const quantityChange = normalizeInventoryNumber(adjustment.quantity_change);
+              const isPositive = quantityChange >= 0;
+              const quantityLabel = `${isPositive ? '+' : '-'}${formatInventoryQuantity(Math.abs(quantityChange), adjustment.unit)}`;
+              return (
+                <div key={adjustment.id} className="rounded-2xl border border-slate-200 bg-white/70 p-4">
+                  <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_8rem_9rem_10rem] md:items-start">
+                    <div className="min-w-0">
+                      <p className="break-words font-semibold text-slate-950">{itemDisplayName(item)}</p>
+                      <p className="mt-1 text-sm text-slate-500">
+                        {adjustmentTypeLabel(adjustment.adjustment_type)} - {item ? inventoryItemTypeLabel(item.item_type) : 'Inventory Item'}
+                      </p>
+                      {adjustment.notes ? <p className="mt-2 break-words text-sm text-slate-600">{adjustment.notes}</p> : null}
+                    </div>
+                    <div>
+                      <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Change</p>
+                      <p className={`mt-1 font-semibold ${isPositive ? 'text-emerald-700' : 'text-rose-700'}`}>{quantityLabel}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Unit COGS</p>
+                      <p className="mt-1 font-semibold text-slate-950">{usd(Math.round(normalizeInventoryNumber(adjustment.unit_cost_cents)))}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Recorded</p>
+                      <p className="mt-1 text-sm font-semibold text-slate-950">{formatAdjustmentTimestamp(adjustment.adjusted_at ?? adjustment.created_at)}</p>
+                    </div>
                   </div>
                 </div>
-              </div>
-            );
-          })}
-          {!categoryAdjustmentRows.length ? <p className="rounded-2xl border border-slate-200 bg-white/70 p-4 text-sm text-slate-500">No {activeCategoryLabel.toLowerCase()} corrections or adjustments have been logged yet.</p> : null}
-        </div>
-      </section>
+              );
+            })}
+            {!adjustmentLogRows.length ? <p className="rounded-2xl border border-slate-200 bg-white/70 p-4 text-sm text-slate-500">No corrections or adjustments have been logged yet.</p> : null}
+          </div>
+        </section>
+      ) : null}
     </div>
   );
 }
