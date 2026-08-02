@@ -150,11 +150,22 @@ type SalaryPaymentRow = {
   salary_pay_cents: number | string | null;
 };
 
+type WeeklySalesSpiffRow = {
+  amount_cents: number | string | null;
+  id: string;
+  notes: string | null;
+  paid_at: string | null;
+  profile_id: string;
+  week_end_date: string;
+  week_start_date: string;
+};
+
 type EmployeePayrollGroup = {
   entryCount: Set<string>;
   hourlyWageCents: number;
   minutes: number;
   salaryCents: number;
+  spiffCents: number;
   workTypes: Map<TimeEntryWorkType, number>;
 };
 
@@ -163,6 +174,7 @@ type WorkTypePayrollGroup = {
   hourlyWageCents: number;
   minutes: number;
   salaryCents: number;
+  spiffCents: number;
 };
 
 type PayrollLockRow = {
@@ -289,6 +301,8 @@ function errorMessage(error: string) {
   if (error === 'save_error') return 'Unable to save payroll settings.';
   if (error === 'salary_invalid') return 'Choose a valid monthly salary payment.';
   if (error === 'salary_not_ready') return 'That employee is not an active monthly salaried employee.';
+  if (error === 'spiff_invalid') return 'Choose a valid sales SPIFF week, amount, and sales rep.';
+  if (error === 'spiff_not_ready') return 'That employee is not marked as an active sales rep.';
   if (error === 'invalid_time') return 'Check the time values and available unallocated minutes.';
   if (error === 'missing_reason') return 'A reason is required for that change.';
   if (error === 'invalid_work_type') return 'Choose a valid labor tag.';
@@ -311,6 +325,7 @@ function successMessage(success: string) {
   if (success === 'employee_already_paid') return 'Employee was already marked paid for the selected week.';
   if (success === 'salary_paid') return 'Monthly salary approved and marked paid.';
   if (success === 'salary_already_paid') return 'Monthly salary was already marked paid.';
+  if (success === 'spiff_saved') return 'Weekly sales SPIFF saved.';
   if (success === 'allocation_added') return 'Labor allocation added.';
   if (success === 'allocation_removed') return 'Labor allocation removed.';
   if (success === 'entry_approved') return 'Shift approved.';
@@ -939,6 +954,85 @@ async function approveMonthlySalaryPayment(formData: FormData) {
   redirect(`${returnTo}${returnTo.includes('?') ? '&' : '?'}${result.error ? 'error=save_error' : 'success=salary_paid'}`);
 }
 
+async function addWeeklySalesSpiff(formData: FormData) {
+  'use server';
+  const current = await requireAdminSectionEdit('payroll', payrollHref({ error: 'write_denied', tab: 'payments' }));
+  const returnTo = safeReturnHref(formData, payrollHref({ tab: 'payments' }));
+  const profileId = String(formData.get('profile_id') ?? '');
+  const weekStartDate = String(formData.get('week_start_date') ?? '');
+  const weekEndDate = String(formData.get('week_end_date') ?? '');
+  const amountCents = dollarsToCents(String(formData.get('amount') ?? '0'));
+  const notes = String(formData.get('notes') ?? '').trim() || null;
+
+  if (!profileId || !isDateInput(weekStartDate) || !isDateInput(weekEndDate) || weekEndDate < weekStartDate || amountCents <= 0) {
+    redirect(`${returnTo}${returnTo.includes('?') ? '&' : '?'}error=spiff_invalid`);
+  }
+
+  const [{ data: profile }, { data: setting }, { data: existing }] = await Promise.all([
+    supabaseAdmin
+      .from('profiles')
+      .select('id,email,full_name,is_active,is_admin')
+      .eq('id', profileId)
+      .eq('is_admin', true)
+      .maybeSingle(),
+    supabaseAdmin
+      .from('admin_commission_settings')
+      .select('profile_id,active,is_sales_rep')
+      .eq('profile_id', profileId)
+      .maybeSingle(),
+    supabaseAdmin
+      .from('admin_weekly_sales_spiffs')
+      .select('id,amount_cents,notes,paid_at')
+      .eq('profile_id', profileId)
+      .eq('week_start_date', weekStartDate)
+      .eq('week_end_date', weekEndDate)
+      .maybeSingle(),
+  ]);
+
+  if (!profile || profile.is_active === false || setting?.active === false || !setting?.is_sales_rep) {
+    redirect(`${returnTo}${returnTo.includes('?') ? '&' : '?'}error=spiff_not_ready`);
+  }
+
+  const now = new Date().toISOString();
+  const spiffPayload = {
+    amount_cents: amountCents,
+    notes,
+    paid_at: now,
+    paid_by: current.profile.id,
+    profile_id: profileId,
+    updated_at: now,
+    updated_by: current.profile.id,
+    week_end_date: weekEndDate,
+    week_start_date: weekStartDate,
+    ...(existing?.id ? {} : { created_by: current.profile.id }),
+  };
+  const result = await supabaseAdmin
+    .from('admin_weekly_sales_spiffs')
+    .upsert(spiffPayload, { onConflict: 'profile_id,week_start_date,week_end_date' })
+    .select('id')
+    .single();
+
+  if (!result.error) {
+    await recordAdminAuditLog({
+      action: 'weekly_sales_spiff_saved',
+      actorProfileId: current.profile.id,
+      after: {
+        amount_cents: amountCents,
+        notes,
+        payment_id: result.data?.id,
+        week_end_date: weekEndDate,
+        week_start_date: weekStartDate,
+      },
+      before: existing,
+      sectionKey: 'payroll',
+      supabase: supabaseAdmin,
+      targetProfileId: profileId,
+    });
+  }
+
+  redirect(`${returnTo}${returnTo.includes('?') ? '&' : '?'}${result.error ? 'error=save_error' : 'success=spiff_saved'}`);
+}
+
 async function approveCompletedWeekEntries(formData: FormData) {
   'use server';
   const current = await requireAdminSectionEdit('payroll', payrollHref({ error: 'write_denied', tab: 'review' }));
@@ -1275,7 +1369,7 @@ function buildSegments(entries: TimeEntry[], allocationsByEntry: Map<string, All
 function groupSegmentsByEmployee(segments: PayrollSegment[]) {
   const grouped = new Map<string, EmployeePayrollGroup>();
   for (const segment of segments) {
-    const row = grouped.get(segment.entry.profile_id) ?? { entryCount: new Set<string>(), hourlyWageCents: 0, minutes: 0, salaryCents: 0, workTypes: new Map<TimeEntryWorkType, number>() };
+    const row = grouped.get(segment.entry.profile_id) ?? { entryCount: new Set<string>(), hourlyWageCents: 0, minutes: 0, salaryCents: 0, spiffCents: 0, workTypes: new Map<TimeEntryWorkType, number>() };
     row.entryCount.add(segment.entry.id);
     row.minutes += segment.minutes;
     row.hourlyWageCents += segment.wageCents;
@@ -1288,7 +1382,7 @@ function groupSegmentsByEmployee(segments: PayrollSegment[]) {
 function groupSegmentsByWorkType(segments: PayrollSegment[]) {
   const grouped = new Map<TimeEntryWorkType, WorkTypePayrollGroup>();
   for (const segment of segments) {
-    const row = grouped.get(segment.workType) ?? { entryCount: new Set<string>(), hourlyWageCents: 0, minutes: 0, salaryCents: 0 };
+    const row = grouped.get(segment.workType) ?? { entryCount: new Set<string>(), hourlyWageCents: 0, minutes: 0, salaryCents: 0, spiffCents: 0 };
     row.entryCount.add(segment.entry.id);
     row.minutes += segment.minutes;
     row.hourlyWageCents += segment.wageCents;
@@ -1384,7 +1478,7 @@ function buildSalaryRows({
 
 function applySalaryRowsToEmployeeGroups(grouped: Map<string, EmployeePayrollGroup>, salaryRows: SalaryPayrollRow[]) {
   for (const salary of salaryRows) {
-    const row = grouped.get(salary.profileId) ?? { entryCount: new Set<string>(), hourlyWageCents: 0, minutes: 0, salaryCents: 0, workTypes: new Map<TimeEntryWorkType, number>() };
+    const row = grouped.get(salary.profileId) ?? { entryCount: new Set<string>(), hourlyWageCents: 0, minutes: 0, salaryCents: 0, spiffCents: 0, workTypes: new Map<TimeEntryWorkType, number>() };
     row.salaryCents += salary.salaryCents;
     if (!row.workTypes.has(salary.workType)) row.workTypes.set(salary.workType, 0);
     grouped.set(salary.profileId, row);
@@ -1393,10 +1487,26 @@ function applySalaryRowsToEmployeeGroups(grouped: Map<string, EmployeePayrollGro
 
 function applySalaryRowsToWorkTypeGroups(grouped: Map<TimeEntryWorkType, WorkTypePayrollGroup>, salaryRows: SalaryPayrollRow[]) {
   for (const salary of salaryRows) {
-    const row = grouped.get(salary.workType) ?? { entryCount: new Set<string>(), hourlyWageCents: 0, minutes: 0, salaryCents: 0 };
+    const row = grouped.get(salary.workType) ?? { entryCount: new Set<string>(), hourlyWageCents: 0, minutes: 0, salaryCents: 0, spiffCents: 0 };
     row.salaryCents += salary.salaryCents;
     grouped.set(salary.workType, row);
   }
+}
+
+function applyWeeklySalesSpiffsToEmployeeGroups(grouped: Map<string, EmployeePayrollGroup>, spiffs: WeeklySalesSpiffRow[]) {
+  for (const spiff of spiffs) {
+    const row = grouped.get(spiff.profile_id) ?? { entryCount: new Set<string>(), hourlyWageCents: 0, minutes: 0, salaryCents: 0, spiffCents: 0, workTypes: new Map<TimeEntryWorkType, number>() };
+    row.spiffCents += normalizeMoneyCents(spiff.amount_cents);
+    grouped.set(spiff.profile_id, row);
+  }
+}
+
+function applyWeeklySalesSpiffsToWorkTypeGroups(grouped: Map<TimeEntryWorkType, WorkTypePayrollGroup>, spiffs: WeeklySalesSpiffRow[]) {
+  const spiffCents = spiffs.reduce((sum, spiff) => sum + normalizeMoneyCents(spiff.amount_cents), 0);
+  if (!spiffCents) return;
+  const row = grouped.get('sales') ?? { entryCount: new Set<string>(), hourlyWageCents: 0, minutes: 0, salaryCents: 0, spiffCents: 0 };
+  row.spiffCents += spiffCents;
+  grouped.set('sales', row);
 }
 
 function WorkTypeSelect({ defaultValue, includeUnassigned = true, name = 'work_type' }: { defaultValue?: string | null; includeUnassigned?: boolean; name?: string }) {
@@ -1827,6 +1937,7 @@ export default async function PayrollPage({
     productionRunLaborResult,
     payrollLocksResult,
     salaryPaymentsResult,
+    weeklySalesSpiffsResult,
   ] = await Promise.all([
     supabaseAdmin
       .from('profiles')
@@ -1857,6 +1968,14 @@ export default async function PayrollPage({
       .from('admin_salary_payroll_payments')
       .select('id,profile_id,payroll_month,period_start_date,period_end_date,salary_amount_cents,salary_frequency,salary_labor_work_type,salary_pay_cents,approved_at,paid_at,notes')
       .order('payroll_month', { ascending: false })
+      .order('paid_at', { ascending: false })
+      .limit(500),
+    supabaseAdmin
+      .from('admin_weekly_sales_spiffs')
+      .select('id,profile_id,week_start_date,week_end_date,amount_cents,paid_at,notes')
+      .lte('week_start_date', toInput)
+      .gte('week_end_date', fromInput)
+      .order('week_start_date', { ascending: false })
       .order('paid_at', { ascending: false })
       .limit(500),
   ]);
@@ -1899,6 +2018,9 @@ export default async function PayrollPage({
   if (salaryPaymentsResult.error) {
     console.error('[admin-payroll] salary payment records failed', { error: salaryPaymentsResult.error });
   }
+  if (weeklySalesSpiffsResult.error) {
+    console.error('[admin-payroll] weekly sales spiff records failed', { error: weeklySalesSpiffsResult.error });
+  }
   if (productionRunLaborResult.error) {
     console.error('[admin-payroll] cogs report cards failed', {
       productionRunLaborError: productionRunLaborResult.error,
@@ -1910,6 +2032,7 @@ export default async function PayrollPage({
   const timeSettings = (timeSettingsResult.data ?? []) as TimeSettingRow[];
   const timeByProfile = new Map(timeSettings.map((setting) => [setting.profile_id, setting]));
   const commissionByProfile = new Map(((commissionSettingsResult.data ?? []) as CommissionSettingRow[]).map((setting) => [setting.profile_id, setting]));
+  const salesRepAdmins = admins.filter((admin) => admin.is_active !== false && Boolean(commissionByProfile.get(admin.id)?.is_sales_rep));
   const tagsByProfile = new Map<string, Set<LaborWorkType>>();
   for (const assignment of (tagAssignmentsResult.data ?? []) as LaborTagAssignmentRow[]) {
     if (!isLaborWorkType(assignment.work_type)) continue;
@@ -1928,6 +2051,7 @@ export default async function PayrollPage({
   }
   const payrollLocks = (payrollLocksResult.data ?? []) as PayrollLockRow[];
   const salaryPayments = salaryPaymentsResult.error ? [] : (salaryPaymentsResult.data ?? []) as SalaryPaymentRow[];
+  const weeklySalesSpiffs = weeklySalesSpiffsResult.error ? [] : (weeklySalesSpiffsResult.data ?? []) as WeeklySalesSpiffRow[];
   const salaryPaymentsByProfileMonth = new Map(salaryPayments.map((payment) => [`${payment.profile_id}:${payment.payroll_month}`, payment]));
   const segments = buildSegments(entries, allocationsByEntry);
   const salaryRows = buildSalaryRows({ filterWorkType, fromDate, selectedAdmin, timeSettings, toDate });
@@ -1956,10 +2080,17 @@ export default async function PayrollPage({
     .filter((payment) => !selectedAdmin || payment.profile_id === selectedAdmin)
     .filter((payment) => !filterWorkType || normalizeSalaryLaborWorkType(payment.salary_labor_work_type) === filterWorkType);
   const selectedSalaryPaidCents = selectedSalaryPaymentRows.reduce((sum, payment) => sum + normalizeMoneyCents(payment.salary_pay_cents), 0);
+  const selectedWeeklySalesSpiffs = weeklySalesSpiffs
+    .filter((spiff) => spiff.week_start_date <= toInput && spiff.week_end_date >= fromInput)
+    .filter((spiff) => !selectedAdmin || spiff.profile_id === selectedAdmin)
+    .filter(() => !filterWorkType || filterWorkType === 'sales');
+  const selectedSalesSpiffCents = selectedWeeklySalesSpiffs.reduce((sum, spiff) => sum + normalizeMoneyCents(spiff.amount_cents), 0);
   const byEmployee = groupSegmentsByEmployee(segments);
   const byWorkType = groupSegmentsByWorkType(segments);
   applySalaryRowsToEmployeeGroups(byEmployee, salaryRows);
   applySalaryRowsToWorkTypeGroups(byWorkType, salaryRows);
+  applyWeeklySalesSpiffsToEmployeeGroups(byEmployee, selectedWeeklySalesSpiffs);
+  applyWeeklySalesSpiffsToWorkTypeGroups(byWorkType, selectedWeeklySalesSpiffs);
   const weeklyPaymentRows = buildWeeklyPaymentRows(entries, segments, adminById);
   const weeklyPaymentDueRows = weeklyPaymentRows.filter((row) => row.completedEntryCount > 0 && row.openEntryCount === 0 && row.unapprovedEntryCount === 0 && row.lockedEntryCount < row.completedEntryCount);
   const weeklyPaymentPaidRows = weeklyPaymentRows.filter((row) => row.completedEntryCount > 0 && row.lockedEntryCount === row.completedEntryCount);
@@ -1969,7 +2100,7 @@ export default async function PayrollPage({
   const totalPaidMinutes = segments.reduce((sum, segment) => sum + segment.minutes, 0);
   const totalHourlyWages = segments.reduce((sum, segment) => sum + segment.wageCents, 0);
   const totalSalaryPay = salaryRows.reduce((sum, salary) => sum + salary.salaryCents, 0);
-  const totalPay = totalHourlyWages + totalSalaryPay;
+  const totalPay = totalHourlyWages + totalSalaryPay + selectedSalesSpiffCents;
   const totalLunchMinutes = entries.reduce((sum, entry) => sum + completedBreakMinutes(entryBreaks(entry)), 0);
   const productionHourlyWages = segments.filter((segment) => segment.workType === 'production').reduce((sum, segment) => sum + segment.wageCents, 0);
   const productionSalaryPay = salaryRows.filter((salary) => salary.workType === 'production').reduce((sum, salary) => sum + salary.salaryCents, 0);
@@ -2023,6 +2154,7 @@ export default async function PayrollPage({
       {successMessage(success) ? <StatusToast message={successMessage(success)} tone="success" /> : null}
       {error ? <StatusToast message={errorMessage(error)} tone="error" /> : null}
       {salaryPaymentsResult.error ? <section className="card text-sm text-red-700">Salary payment records are not available yet. Run the monthly salary payroll migration to approve and mark salary paid.</section> : null}
+      {weeklySalesSpiffsResult.error ? <section className="card text-sm text-red-700">Weekly sales SPIFF records are not available yet. Run the weekly sales SPIFF migration to save and report SPIFF payouts.</section> : null}
 
       <section className="panel">
         <span className="eyebrow">Payroll</span>
@@ -2078,11 +2210,96 @@ export default async function PayrollPage({
 
       {activeTab === 'payments' ? (
         <section className="space-y-5">
-          <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+          <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
             <StatTile label="People to Pay" value={String(weeklyPaymentDueRows.length)} detail="Closed and approved, not yet marked paid." />
             <StatTile label="Hours Worked" value={hoursLabel(weeklyPaymentHours)} detail="Completed, non-void paid hours in this week." />
             <StatTile label="Amount Owed" value={usd(weeklyPaymentOwedCents)} detail="Ready-to-pay hourly wages only." />
+            <StatTile label="Sales SPIFFs" value={usd(selectedSalesSpiffCents)} detail={`${selectedWeeklySalesSpiffs.length} SPIFF record${selectedWeeklySalesSpiffs.length === 1 ? '' : 's'} in range.`} />
             <StatTile label="Paid" value={String(weeklyPaymentPaidRows.length)} detail="People already marked paid for this week." />
+          </section>
+
+          <section className="grid gap-5 xl:grid-cols-[0.85fr_1.15fr]">
+            {canEditPayroll ? (
+              <form action={addWeeklySalesSpiff} className="card space-y-4">
+                {returnToInput(currentUrl)}
+                <div>
+                  <h2 className="text-xl font-semibold text-slate-950">Add sales SPIFF</h2>
+                  <p className="mt-1 text-sm text-slate-500">
+                    {formatDateInputLabel(fromInput)} to {formatDateInputLabel(toInput)}
+                  </p>
+                </div>
+                <label className="space-y-2 text-sm font-medium text-slate-700">
+                  Sales person
+                  <select className="input" name="profile_id" defaultValue={salesRepAdmins.some((admin) => admin.id === selectedAdmin) ? selectedAdmin : ''} required>
+                    <option value="">Choose sales rep</option>
+                    {salesRepAdmins.map((admin) => (
+                      <option key={admin.id} value={admin.id}>{profileLabel(admin)}</option>
+                    ))}
+                  </select>
+                </label>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <label className="space-y-2 text-sm font-medium text-slate-700">
+                    Week start
+                    <input className="input" name="week_start_date" type="date" defaultValue={fromInput} required />
+                  </label>
+                  <label className="space-y-2 text-sm font-medium text-slate-700">
+                    Week end
+                    <input className="input" name="week_end_date" type="date" defaultValue={toInput} required />
+                  </label>
+                </div>
+                <label className="space-y-2 text-sm font-medium text-slate-700">
+                  Amount
+                  <input className="input" name="amount" type="number" min="0.01" step="0.01" required />
+                </label>
+                <textarea className="input min-h-20" name="notes" placeholder="Optional note" />
+                <PendingSubmitButton
+                  className="btn-primary w-full sm:w-auto"
+                  disabled={!salesRepAdmins.length || Boolean(weeklySalesSpiffsResult.error)}
+                  disabledLabel={weeklySalesSpiffsResult.error ? 'Migration Required' : 'No Sales Reps'}
+                  label="Save SPIFF"
+                  pendingLabel="Saving..."
+                />
+              </form>
+            ) : (
+              <section className="card space-y-3">
+                <h2 className="text-xl font-semibold text-slate-950">Add sales SPIFF</h2>
+                <p className="text-sm text-slate-500">View only</p>
+              </section>
+            )}
+
+            <section className="card space-y-4">
+              <div>
+                <h2 className="text-xl font-semibold text-slate-950">Weekly sales SPIFFs</h2>
+                <p className="mt-1 text-sm text-slate-500">{usd(selectedSalesSpiffCents)} paid in the selected range.</p>
+              </div>
+              {!selectedWeeklySalesSpiffs.length ? <EmptyState message="No weekly sales SPIFF records found for the selected filters." /> : null}
+              {selectedWeeklySalesSpiffs.length ? (
+                <div className="overflow-x-auto">
+                  <table className="w-full min-w-[44rem] border-separate border-spacing-y-2 text-left text-sm">
+                    <thead>
+                      <tr className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+                        <th className="px-4 py-2">Sales person</th>
+                        <th className="px-4 py-2">Week</th>
+                        <th className="px-4 py-2 text-right">Amount</th>
+                        <th className="px-4 py-2">Paid</th>
+                        <th className="px-4 py-2">Notes</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {selectedWeeklySalesSpiffs.map((spiff) => (
+                        <tr key={spiff.id} className="bg-white/70">
+                          <td className="rounded-l-xl px-4 py-3 font-semibold text-slate-950">{profileLabel(adminById.get(spiff.profile_id))}</td>
+                          <td className="px-4 py-3 text-slate-700">{formatDateInputLabel(spiff.week_start_date)} to {formatDateInputLabel(spiff.week_end_date)}</td>
+                          <td className="px-4 py-3 text-right font-semibold text-slate-950">{usd(normalizeMoneyCents(spiff.amount_cents))}</td>
+                          <td className="px-4 py-3 text-slate-700">{formatCentralDateTime(spiff.paid_at, 'Not paid')}</td>
+                          <td className="rounded-r-xl px-4 py-3 text-slate-600">{spiff.notes || ''}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : null}
+            </section>
           </section>
 
           <section className="card space-y-5">
@@ -2119,10 +2336,11 @@ export default async function PayrollPage({
             <StatTile label="Estimated Wages" value={usd(totalHourlyWages)} detail="Uses each shift's rate snapshot." />
             <StatTile label="Open Issues" value={String(longOpenEntries.length + longOpenBreaks.length + unapprovedEntries.length)} detail="Long open shifts/lunches and unapproved shifts." />
           </div>
-          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
             <StatTile label="Estimated Salary" value={usd(totalSalaryPay)} detail="Prorated estimate for salaried employees in range." />
             <StatTile label="Paid Salary Records" value={usd(selectedSalaryPaidCents)} detail={`${selectedSalaryPaymentRows.length} salary payment record${selectedSalaryPaymentRows.length === 1 ? '' : 's'} in range.`} />
-            <StatTile label="Estimated Pay" value={usd(totalPay)} detail="Hourly wages plus estimated salary." />
+            <StatTile label="Sales SPIFFs" value={usd(selectedSalesSpiffCents)} detail={`${selectedWeeklySalesSpiffs.length} SPIFF record${selectedWeeklySalesSpiffs.length === 1 ? '' : 's'} in range.`} />
+            <StatTile label="Total Pay" value={usd(totalPay)} detail="Hourly wages, estimated salary, and paid sales SPIFFs." />
             <StatTile label="Production Hours" value={hoursLabel(productionPaidMinutes)} detail="Hours clocked or allocated to Production." />
           </div>
         </section>
@@ -2142,6 +2360,7 @@ export default async function PayrollPage({
                     <th className="px-4 py-2 text-right">Paid hours</th>
                     <th className="px-4 py-2 text-right">Hourly</th>
                     <th className="px-4 py-2 text-right">Salary</th>
+                    <th className="px-4 py-2 text-right">SPIFFs</th>
                     <th className="px-4 py-2 text-right">Total</th>
                     <th className="px-4 py-2">Top tags</th>
                   </tr>
@@ -2159,7 +2378,8 @@ export default async function PayrollPage({
                         <td className="px-4 py-3 text-right text-slate-700">{hoursLabel(row.minutes)}</td>
                         <td className="px-4 py-3 text-right text-slate-700">{usd(row.hourlyWageCents)}</td>
                         <td className="px-4 py-3 text-right text-slate-700">{usd(row.salaryCents)}</td>
-                        <td className="px-4 py-3 text-right font-semibold text-slate-950">{usd(row.hourlyWageCents + row.salaryCents)}</td>
+                        <td className="px-4 py-3 text-right text-slate-700">{usd(row.spiffCents)}</td>
+                        <td className="px-4 py-3 text-right font-semibold text-slate-950">{usd(row.hourlyWageCents + row.salaryCents + row.spiffCents)}</td>
                         <td className="rounded-r-xl px-4 py-3 text-slate-600">{topTags || 'None'}</td>
                       </tr>
                     );
@@ -2201,17 +2421,48 @@ export default async function PayrollPage({
           </section>
 
           <section className="card space-y-4">
+            <h2 className="text-xl font-semibold text-slate-950">Paid sales SPIFF records</h2>
+            {!selectedWeeklySalesSpiffs.length ? <EmptyState message="No weekly sales SPIFF records found for the selected filters." /> : null}
+            {selectedWeeklySalesSpiffs.length ? (
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[52rem] border-separate border-spacing-y-2 text-left text-sm">
+                  <thead>
+                    <tr className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+                      <th className="px-4 py-2">Sales person</th>
+                      <th className="px-4 py-2">Week</th>
+                      <th className="px-4 py-2 text-right">Amount</th>
+                      <th className="px-4 py-2">Paid</th>
+                      <th className="px-4 py-2">Notes</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {selectedWeeklySalesSpiffs.map((spiff) => (
+                      <tr key={spiff.id} className="bg-white/70">
+                        <td className="rounded-l-xl px-4 py-3 font-semibold text-slate-950">{profileLabel(adminById.get(spiff.profile_id))}</td>
+                        <td className="px-4 py-3 text-slate-700">{formatDateInputLabel(spiff.week_start_date)} to {formatDateInputLabel(spiff.week_end_date)}</td>
+                        <td className="px-4 py-3 text-right font-semibold text-slate-950">{usd(normalizeMoneyCents(spiff.amount_cents))}</td>
+                        <td className="px-4 py-3 text-slate-700">{formatCentralDateTime(spiff.paid_at, 'Not paid')}</td>
+                        <td className="rounded-r-xl px-4 py-3 text-slate-600">{spiff.notes || ''}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : null}
+          </section>
+
+          <section className="card space-y-4">
             <h2 className="text-xl font-semibold text-slate-950">Labor by tag</h2>
             <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
               {[UNASSIGNED_WORK_TYPE, ...LABOR_WORK_TYPES.map((workType) => workType.value)].map((workType) => {
-                const row = byWorkType.get(workType as TimeEntryWorkType) ?? { entryCount: new Set<string>(), hourlyWageCents: 0, minutes: 0, salaryCents: 0 };
-                const totalCents = row.hourlyWageCents + row.salaryCents;
+                const row = byWorkType.get(workType as TimeEntryWorkType) ?? { entryCount: new Set<string>(), hourlyWageCents: 0, minutes: 0, salaryCents: 0, spiffCents: 0 };
+                const totalCents = row.hourlyWageCents + row.salaryCents + row.spiffCents;
                 return (
                   <StatTile
                     key={workType}
                     label={workTypeLabel(workType)}
                     value={usd(totalCents)}
-                    detail={`${hoursLabel(row.minutes)} paid hours across ${row.entryCount.size} shift(s).${row.salaryCents ? ` Salary ${usd(row.salaryCents)}.` : ''}`}
+                    detail={`${hoursLabel(row.minutes)} paid hours across ${row.entryCount.size} shift(s).${row.salaryCents ? ` Salary ${usd(row.salaryCents)}.` : ''}${row.spiffCents ? ` SPIFFs ${usd(row.spiffCents)}.` : ''}`}
                   />
                 );
               })}
@@ -2383,7 +2634,7 @@ export default async function PayrollPage({
               <StatTile label="Open Shifts" value={String(openEntries.length)} detail="Must be clocked out before completion." />
               <StatTile label="Need Approval" value={String(unapprovedEntries.length)} detail="Completed shifts not approved or locked." />
               <StatTile label="Paid Hours" value={hoursLabel(totalPaidMinutes)} detail="Completed, non-void time in this range." />
-              <StatTile label="Estimated Pay" value={usd(totalPay)} detail="Hourly wages plus prorated salary." />
+              <StatTile label="Total Pay" value={usd(totalPay)} detail="Hourly wages, prorated salary, and paid sales SPIFFs." />
             </div>
             <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap">
               <form action={approveCompletedWeekEntries}>

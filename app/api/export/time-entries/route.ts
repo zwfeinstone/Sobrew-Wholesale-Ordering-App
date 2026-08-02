@@ -66,6 +66,15 @@ type ExportSalaryPayment = {
   salary_pay_cents: number | string | null;
 };
 
+type ExportWeeklySalesSpiff = {
+  amount_cents: number | string | null;
+  notes: string | null;
+  paid_at: string | null;
+  profile_id: string;
+  week_end_date: string;
+  week_start_date: string;
+};
+
 function csvCell(value: unknown) {
   const raw = String(value ?? '');
   return `"${raw.replaceAll('"', '""')}"`;
@@ -115,8 +124,16 @@ export async function GET(request: NextRequest) {
     .order('payroll_month', { ascending: true });
 
   if (adminId) salaryPaymentsQuery = salaryPaymentsQuery.eq('profile_id', adminId);
+  let weeklySalesSpiffsQuery = supabaseAdmin
+    .from('admin_weekly_sales_spiffs')
+    .select('profile_id,week_start_date,week_end_date,amount_cents,paid_at,notes')
+    .lte('week_start_date', toInput ?? '')
+    .gte('week_end_date', fromInput ?? '')
+    .order('week_start_date', { ascending: true });
 
-  const [{ data, error }, settingsResult, adminsResult, salaryPaymentsResult] = await Promise.all([
+  if (adminId) weeklySalesSpiffsQuery = weeklySalesSpiffsQuery.eq('profile_id', adminId);
+
+  const [{ data, error }, settingsResult, adminsResult, salaryPaymentsResult, weeklySalesSpiffsResult] = await Promise.all([
     query,
     supabaseAdmin
       .from('admin_time_settings')
@@ -126,12 +143,16 @@ export async function GET(request: NextRequest) {
       .select('id,email,full_name')
       .eq('is_admin', true),
     salaryPaymentsQuery,
+    weeklySalesSpiffsQuery,
   ]);
   if (error) return new Response(error.message, { status: 500 });
   if (settingsResult.error) return new Response(settingsResult.error.message, { status: 500 });
   if (adminsResult.error) return new Response(adminsResult.error.message, { status: 500 });
   if (salaryPaymentsResult.error) {
     console.error('[export-time-entries] salary payment records failed', salaryPaymentsResult.error);
+  }
+  if (weeklySalesSpiffsResult.error) {
+    console.error('[export-time-entries] weekly sales spiff records failed', weeklySalesSpiffsResult.error);
   }
 
   const adminById = new Map(((adminsResult.data ?? []) as ExportAdminProfile[]).map((admin) => [admin.id, admin]));
@@ -157,6 +178,8 @@ export async function GET(request: NextRequest) {
       workType: normalizeSalaryLaborWorkType(payment.salary_labor_work_type),
     }))
     .filter((payment) => !hasWorkTypeFilter || payment.workType === workType);
+  const paidWeeklySalesSpiffs = ((weeklySalesSpiffsResult.error ? [] : weeklySalesSpiffsResult.data ?? []) as ExportWeeklySalesSpiff[])
+    .filter(() => !hasWorkTypeFilter || workType === 'sales');
 
   const rows = [
     [
@@ -256,6 +279,29 @@ export async function GET(request: NextRequest) {
       salaryPayFrequencyLabel(salary.salary_frequency),
       salary.payroll_month,
       formatCentralDateTime(salary.paid_at, ''),
+    ]),
+    ...paidWeeklySalesSpiffs.map((spiff) => [
+      'sales_spiff_paid',
+      adminProfileLabel(adminById.get(spiff.profile_id)),
+      'paid',
+      workTypeLabel('sales'),
+      spiff.week_start_date,
+      spiff.week_end_date,
+      '0.00',
+      '0.00',
+      '',
+      usd(Number(spiff.amount_cents ?? 0)),
+      spiff.notes ?? '',
+      '',
+      '',
+      '',
+      '',
+      '',
+      '',
+      'spiff',
+      '',
+      spiff.week_start_date,
+      formatCentralDateTime(spiff.paid_at, ''),
     ]),
   ];
 

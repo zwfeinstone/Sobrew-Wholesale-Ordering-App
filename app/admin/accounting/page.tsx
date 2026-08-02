@@ -12,7 +12,6 @@ import {
   accountingStatusLabel,
   accountingTransactionFingerprint,
   accountingTransactionFingerprintForOccurrence,
-  buildAccountingPnlTotals,
   centsFromAccountingInput,
   generateAiAccountingReview,
   isAccountingAccountType,
@@ -21,29 +20,25 @@ import {
   type AiAccountingReviewCandidate,
   type AccountingAccountType,
   type AccountingCategoryRow,
-  type AccountingTransactionRow,
   type ParsedAccountingTransaction,
 } from '@/lib/accounting';
+import {
+  ACCOUNTING_PNL_TRANSACTION_LIMIT,
+  buildAccountingPnlStatement,
+  isStandaloneAccountingFlag,
+  type AccountingPayrollAllocationRow,
+  type AccountingPayrollTimeEntryRow,
+  type AccountingPnlTransactionRow,
+  type AccountingSalaryPaymentRow,
+  type ProductionRunLaborRow,
+} from '@/lib/accounting-pnl-statement';
 import { createClient } from '@/lib/supabase/server';
 import { getSupabaseAdmin } from '@/lib/supabase/admin';
-import {
-  isLaborWorkType,
-  normalizeMoneyCents,
-  normalizeWorkType,
-  paidMinutes,
-  wageCentsForMinutes,
-  workTypeLabel,
-  type LaborWorkType,
-  type TimeClockBreakRow,
-  type TimeClockEntryRow,
-  type TimeEntryWorkType,
-} from '@/lib/time-clock';
 import { usd } from '@/lib/utils';
 
 const REVIEW_PAGE_SIZE = 12;
 const BULK_REVIEW_BATCH_SIZE = 500;
 const REVIEW_SELECT_ALL_FETCH_SIZE = 1000;
-const PNL_TRANSACTION_LIMIT = 5000;
 const BULK_ACCOUNTING_REVIEW_FORM_ID = 'bulk-accounting-review-form';
 const ACCOUNTING_VIEWS = [
   { id: 'overview', label: 'Overview' },
@@ -60,16 +55,6 @@ type AccountingView = (typeof ACCOUNTING_VIEWS)[number]['id'];
 type SearchParams = Record<string, string | string[] | undefined>;
 type SupabaseAccountingClient = Awaited<ReturnType<typeof createClient>>;
 
-const PNL_DETAIL_SECTIONS = [
-  { id: 'revenue', label: 'Revenue' },
-  { id: 'cogs', label: 'COGS' },
-  { id: 'operating_expenses', label: 'Operating Expenses' },
-  { id: 'other_income', label: 'Other Income' },
-  { id: 'other_expenses', label: 'Other Expenses' },
-] as const;
-
-const PAYROLL_CATEGORY_PATTERN = /\b(payroll|owner pay)\b/i;
-
 type LastKnownAccountingTransaction = {
   account_name: string | null;
   account_type: AccountingAccountType | string;
@@ -78,44 +63,6 @@ type LastKnownAccountingTransaction = {
   merchant_name: string | null;
   original_description: string;
   transaction_date: string;
-};
-
-type ProductionRunLaborRow = {
-  actual_labor_cost_cents: number | string | null;
-  quantity_produced: number | string | null;
-  quantity_voided: number | string | null;
-  status: string | null;
-};
-
-type AccountingPayrollTimeEntryRow = TimeClockEntryRow & {
-  admin_time_breaks?: TimeClockBreakRow[] | null;
-  id: string;
-  profile_id: string;
-};
-
-type AccountingPayrollAllocationRow = {
-  minutes: number | string | null;
-  time_entry_id: string;
-  wage_cents: number | string | null;
-  work_type: string | null;
-};
-
-type AccountingSalaryPaymentRow = {
-  id: string;
-  paid_at: string | null;
-  period_end_date: string | null;
-  period_start_date: string | null;
-  salary_labor_work_type: string | null;
-  salary_pay_cents: number | string | null;
-};
-
-type AccountingLaborSummary = {
-  adminSalariesCents: number;
-  byWorkType: Array<{ amountCents: number; label: string; workType: TimeEntryWorkType }>;
-  otherSalariesCents: number;
-  productionLaborCogsCents: number;
-  salesSalariesCents: number;
-  totalLaborCents: number;
 };
 
 function accountingHref(
@@ -376,166 +323,6 @@ function categoryLabel(category: AccountingCategoryRow | AccountingCategoryRow[]
   return row?.name ?? 'Uncategorized';
 }
 
-function categoryAmountForPnlSection(transaction: any, category: AccountingCategoryRow) {
-  const amountCents = normalizeAccountingNumber(transaction.amount_cents);
-  if (category.pnl_section === 'revenue' || category.pnl_section === 'other_income') {
-    return -amountCents;
-  }
-  if (category.pnl_section === 'cogs' || category.pnl_section === 'operating_expenses' || category.pnl_section === 'other_expenses') {
-    return amountCents;
-  }
-  return 0;
-}
-
-function isShopifyDepositTransaction(transaction: any) {
-  const category = relatedOne(transaction.accounting_categories);
-  if (!category || category.pnl_section !== 'revenue' || transaction.status === 'excluded') return false;
-  const amountCents = normalizeAccountingNumber(transaction.amount_cents);
-  if (amountCents >= 0) return false;
-  const text = [
-    transaction.account_name,
-    transaction.merchant_name,
-    transaction.original_description,
-  ].filter(Boolean).join(' ').toLowerCase();
-  return text.includes('shopify') || text.includes('shop pay');
-}
-
-function activeProductionRunRatio(run: ProductionRunLaborRow) {
-  if (run.status === 'void') return 0;
-  const quantityProduced = normalizeAccountingNumber(run.quantity_produced);
-  if (quantityProduced <= 0) return run.status === 'partially_voided' ? 0 : 1;
-  const quantityVoided = normalizeAccountingNumber(run.quantity_voided);
-  return Math.max(0, Math.min(1, (quantityProduced - quantityVoided) / quantityProduced));
-}
-
-function productionLaborCogsForRuns(runs: ProductionRunLaborRow[]) {
-  return Math.round(runs.reduce((sum, run) => (
-    sum + normalizeAccountingNumber(run.actual_labor_cost_cents) * activeProductionRunRatio(run)
-  ), 0));
-}
-
-function normalizeSalaryLaborWorkType(value: string | null | undefined): LaborWorkType {
-  return isLaborWorkType(String(value ?? '')) ? String(value) as LaborWorkType : 'admin';
-}
-
-function accountingLaborBucket(workType: TimeEntryWorkType): 'admin' | 'other' | 'production' | 'sales' {
-  if (workType === 'production') return 'production';
-  if (workType === 'sales') return 'sales';
-  if (workType === 'admin') return 'admin';
-  return 'other';
-}
-
-function addLaborAmount(
-  totalsByWorkType: Map<TimeEntryWorkType, number>,
-  workType: TimeEntryWorkType,
-  amountCents: number,
-) {
-  if (!Number.isFinite(amountCents) || amountCents <= 0) return;
-  totalsByWorkType.set(workType, (totalsByWorkType.get(workType) ?? 0) + Math.round(amountCents));
-}
-
-function buildAccountingLaborSummary({
-  allocations,
-  salaryPayments,
-  timeEntries,
-}: {
-  allocations: AccountingPayrollAllocationRow[];
-  salaryPayments: AccountingSalaryPaymentRow[];
-  timeEntries: AccountingPayrollTimeEntryRow[];
-}): AccountingLaborSummary {
-  const totalsByWorkType = new Map<TimeEntryWorkType, number>();
-  const allocationsByEntry = new Map<string, AccountingPayrollAllocationRow[]>();
-
-  for (const allocation of allocations) {
-    const rows = allocationsByEntry.get(allocation.time_entry_id) ?? [];
-    rows.push(allocation);
-    allocationsByEntry.set(allocation.time_entry_id, rows);
-  }
-
-  for (const entry of timeEntries) {
-    if (entry.status === 'void' || !entry.clock_out_at) continue;
-    const entryAllocations = allocationsByEntry.get(entry.id) ?? [];
-    if (entryAllocations.length) {
-      for (const allocation of entryAllocations) {
-        addLaborAmount(
-          totalsByWorkType,
-          normalizeWorkType(allocation.work_type),
-          normalizeMoneyCents(allocation.wage_cents),
-        );
-      }
-      continue;
-    }
-
-    const minutes = paidMinutes(entry, entry.admin_time_breaks ?? []);
-    addLaborAmount(
-      totalsByWorkType,
-      normalizeWorkType(entry.work_type),
-      wageCentsForMinutes(minutes, entry.hourly_rate_cents_snapshot),
-    );
-  }
-
-  for (const payment of salaryPayments) {
-    if (!payment.paid_at) continue;
-    addLaborAmount(
-      totalsByWorkType,
-      normalizeSalaryLaborWorkType(payment.salary_labor_work_type),
-      normalizeMoneyCents(payment.salary_pay_cents),
-    );
-  }
-
-  let adminSalariesCents = 0;
-  let otherSalariesCents = 0;
-  let productionLaborCogsCents = 0;
-  let salesSalariesCents = 0;
-  let totalLaborCents = 0;
-
-  for (const [workType, amountCents] of totalsByWorkType.entries()) {
-    totalLaborCents += amountCents;
-    const bucket = accountingLaborBucket(workType);
-    if (bucket === 'production') productionLaborCogsCents += amountCents;
-    if (bucket === 'sales') salesSalariesCents += amountCents;
-    if (bucket === 'admin') adminSalariesCents += amountCents;
-    if (bucket === 'other') otherSalariesCents += amountCents;
-  }
-
-  const workTypeOrder: TimeEntryWorkType[] = [
-    'production',
-    'sales',
-    'admin',
-    'packing',
-    'receiving',
-    'shipping',
-    'cleaning',
-    'other',
-    'unassigned',
-  ];
-  const byWorkType = Array.from(totalsByWorkType.entries())
-    .map(([workType, amountCents]) => ({
-      amountCents,
-      label: workTypeLabel(workType),
-      workType,
-    }))
-    .sort((left, right) => workTypeOrder.indexOf(left.workType) - workTypeOrder.indexOf(right.workType));
-
-  return {
-    adminSalariesCents,
-    byWorkType,
-    otherSalariesCents,
-    productionLaborCogsCents,
-    salesSalariesCents,
-    totalLaborCents,
-  };
-}
-
-function isPayrollOperatingExpenseCategory(category: AccountingCategoryRow) {
-  return category.pnl_section === 'operating_expenses' && PAYROLL_CATEGORY_PATTERN.test(category.name);
-}
-
-function relatedOne<T>(value: T | T[] | null | undefined): T | null {
-  if (Array.isArray(value)) return value[0] ?? null;
-  return value ?? null;
-}
-
 function accountingCategoryImportKey(value: string | null | undefined) {
   return (value ?? '').trim().toLowerCase().replace(/[^a-z0-9]+/g, ' ');
 }
@@ -566,10 +353,6 @@ function aiFlagActionLabel(value: string | null | undefined) {
   if (value === 'split') return 'Split';
   if (value === 'verify_vendor') return 'Verify vendor';
   return 'Review';
-}
-
-function isStandaloneAccountingFlag(flag: any) {
-  return flag?.flagType !== 'inventory_overlap' && flag?.recommendedAction !== 'approve_inventory_match';
 }
 
 function transactionSummary(transaction: LastKnownAccountingTransaction | null) {
@@ -1102,11 +885,11 @@ export default async function AccountingPage({
       .range(reviewFrom, reviewTo),
     supabase
       .from('accounting_transactions')
-      .select('id,transaction_date,account_name,merchant_name,original_description,amount_cents,status,ai_review_status,category_id,accounting_categories(id,name,category_type,pnl_section)')
+      .select('id,transaction_date,account_name,account_type,merchant_name,original_description,amount_cents,status,ai_review_status,ai_review_flags,category_id,accounting_categories(id,name,category_type,pnl_section)')
       .gte('transaction_date', start)
       .lt('transaction_date', endExclusive)
       .order('transaction_date', { ascending: false })
-      .limit(PNL_TRANSACTION_LIMIT),
+      .limit(ACCOUNTING_PNL_TRANSACTION_LIMIT),
     supabase.from('accounting_upload_batches').select('id,source_type,account_name,account_type,file_name,transaction_count,total_outflow_cents,total_inflow_cents,created_at').order('created_at', { ascending: false }).limit(6),
     supabase
       .from('accounting_transactions')
@@ -1134,14 +917,14 @@ export default async function AccountingPage({
       .select('id,profile_id,clock_in_at,clock_out_at,hourly_rate_cents_snapshot,status,work_type,admin_time_breaks(break_start_at,break_end_at,status)')
       .gte('clock_in_at', payrollRangeStart)
       .lt('clock_in_at', payrollRangeEndExclusive)
-      .limit(PNL_TRANSACTION_LIMIT),
+      .limit(ACCOUNTING_PNL_TRANSACTION_LIMIT),
     payrollSupabase
       .from('admin_salary_payroll_payments')
       .select('id,paid_at,period_start_date,period_end_date,salary_labor_work_type,salary_pay_cents')
       .not('paid_at', 'is', null)
       .lte('period_start_date', end)
       .gte('period_end_date', start)
-      .limit(PNL_TRANSACTION_LIMIT),
+      .limit(ACCOUNTING_PNL_TRANSACTION_LIMIT),
   ]);
 
   const categories = (categoriesResult.data ?? []) as AccountingCategoryRow[];
@@ -1151,11 +934,8 @@ export default async function AccountingPage({
   const transactionTotal = transactionsResult.count ?? transactions.length;
   const hasPreviousReviewPage = reviewPage > 1;
   const hasNextReviewPage = reviewFrom + transactions.length < transactionTotal;
-  const pnlTransactions = (pnlTransactionsResult.data ?? []) as any[];
+  const pnlTransactions = (pnlTransactionsResult.data ?? []) as AccountingPnlTransactionRow[];
   const batches = batchesResult.data ?? [];
-  const pnl = buildAccountingPnlTotals({
-    transactions: pnlTransactions as any[],
-  });
   const payrollTimeEntries = payrollTimeEntriesResult.error ? [] : (payrollTimeEntriesResult.data ?? []) as AccountingPayrollTimeEntryRow[];
   const payrollSalaryPayments = payrollSalaryPaymentsResult.error ? [] : (payrollSalaryPaymentsResult.data ?? []) as AccountingSalaryPaymentRow[];
   let payrollAllocations: AccountingPayrollAllocationRow[] = [];
@@ -1164,63 +944,31 @@ export default async function AccountingPage({
       .from('admin_time_entry_allocations')
       .select('time_entry_id,work_type,minutes,wage_cents')
       .in('time_entry_id', payrollTimeEntries.map((entry) => entry.id))
-      .limit(PNL_TRANSACTION_LIMIT);
+      .limit(ACCOUNTING_PNL_TRANSACTION_LIMIT);
     payrollAllocations = payrollAllocationResult.error ? [] : (payrollAllocationResult.data ?? []) as AccountingPayrollAllocationRow[];
   }
-  const payrollLaborSummary = buildAccountingLaborSummary({
-    allocations: payrollAllocations,
-    salaryPayments: payrollSalaryPayments,
-    timeEntries: payrollTimeEntries,
+  const pnlStatement = buildAccountingPnlStatement({
+    categories,
+    payrollAllocations,
+    payrollSalaryPayments,
+    payrollTimeEntries,
+    productionRuns: (productionRunLaborResult.data ?? []) as ProductionRunLaborRow[],
+    transactions: pnlTransactions,
   });
-  const productionRunLaborCogsCents = productionLaborCogsForRuns((productionRunLaborResult.data ?? []) as ProductionRunLaborRow[]);
-  const laborCogsCents = payrollLaborSummary.productionLaborCogsCents || productionRunLaborCogsCents;
-  const laborCogsSourceLabel = payrollLaborSummary.productionLaborCogsCents > 0
-    ? 'Payroll production-tagged labor'
-    : 'Production run labor estimate';
-  const salesAdminOtherLaborCents = payrollLaborSummary.salesSalariesCents + payrollLaborSummary.adminSalariesCents + payrollLaborSummary.otherSalariesCents;
-  const payrollOperatingExpenseCents = pnlTransactions
-    .filter((transaction) => {
-      const category = relatedOne(transaction.accounting_categories);
-      return category ? isPayrollOperatingExpenseCategory(category) : false;
-    })
-    .reduce((sum, transaction) => sum + Math.max(0, normalizeAccountingNumber(transaction.amount_cents)), 0);
-  const laborReclassCents = Math.min(laborCogsCents, payrollOperatingExpenseCents);
-  const adjustedPnl = {
-    cogsCents: pnl.cardCogsCents + laborCogsCents,
-    grossProfitCents: pnl.revenueCents - pnl.cardCogsCents - laborCogsCents,
-    netIncomeCents: 0,
-    operatingExpenseCents: Math.max(0, pnl.cardOperatingExpenseCents - laborReclassCents),
-    operatingIncomeCents: 0,
-  };
-  adjustedPnl.operatingIncomeCents = adjustedPnl.grossProfitCents - adjustedPnl.operatingExpenseCents;
-  adjustedPnl.netIncomeCents = adjustedPnl.operatingIncomeCents + pnl.otherIncomeCents - pnl.otherExpenseCents;
-  const retailSalesCents = pnlTransactions
-    .filter(isShopifyDepositTransaction)
-    .reduce((sum, transaction) => sum + -normalizeAccountingNumber(transaction.amount_cents), 0);
-  const wholesaleSalesCents = pnl.revenueCents - retailSalesCents;
-  const revenueLineItems = [
-    { id: 'wholesale_sales', label: 'Wholesale Sales', totalCents: wholesaleSalesCents },
-    { id: 'retail_sales', label: 'Retail Sales', totalCents: retailSalesCents },
-  ];
-
-  const needsReviewCount = pnlTransactions.filter((transaction) => transaction.status === 'needs_review').length;
-  const aiFlaggedCount = pnlTransactions.filter((transaction) => (
-    Array.isArray(transaction.ai_review_flags) && transaction.ai_review_flags.some(isStandaloneAccountingFlag)
-  )).length;
-  const pnlCategoryBreakdown = PNL_DETAIL_SECTIONS.map((section) => ({
-    ...section,
-    rows: section.id === 'revenue' ? revenueLineItems : categories
-      .filter((category) => category.pnl_section === section.id)
-      .map((category) => ({
-        id: category.id,
-        label: category.name,
-        totalCents: pnlTransactions
-          .filter((transaction) => transaction.category_id === category.id && transaction.status === 'categorized')
-          .reduce((sum, transaction) => sum + categoryAmountForPnlSection(transaction, category), 0),
-      }))
-      .filter((row) => row.totalCents > 0)
-      .sort((left, right) => right.totalCents - left.totalCents),
-  })).filter((section) => section.rows.length > 0);
+  const {
+    adjustedPnl,
+    aiFlaggedCount,
+    basePnl: pnl,
+    categoryBreakdown: pnlCategoryBreakdown,
+    laborCogsCents,
+    laborCogsSourceLabel,
+    laborReclassCents,
+    needsReviewCount,
+    payrollLaborSummary,
+    retailSalesCents,
+    salesAdminOtherLaborCents,
+    wholesaleSalesCents,
+  } = pnlStatement;
 
   return (
     <div className="space-y-6">
@@ -1247,13 +995,14 @@ export default async function AccountingPage({
             <p className="page-subtitle mt-3 max-w-3xl">Upload bank and card activity, review possible duplicates, and track the numbers that feed your P&amp;L.</p>
           </div>
           <div className="flex w-full min-w-0 flex-col gap-3 lg:flex-row lg:flex-wrap lg:items-end lg:justify-end xl:w-auto">
-            <form className="grid w-full min-w-0 gap-3 rounded-xl border border-slate-200 bg-white/60 p-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] lg:w-auto" action="/admin/accounting">
+            <form className="grid w-full min-w-0 gap-3 rounded-xl border border-slate-200 bg-white/60 p-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto_auto] lg:w-auto" action="/admin/accounting">
               <input name="view" type="hidden" value={activeView} />
               {activeView === 'review' && reviewCategoryFilter ? <input name="category" type="hidden" value={reviewCategoryFilter} /> : null}
               {activeView === 'review' && reviewSearch ? <input name="q" type="hidden" value={reviewSearch} /> : null}
               <input className="input min-w-0" name="start" type="date" defaultValue={start} />
               <input className="input min-w-0" name="end" type="date" defaultValue={end} />
               <button className="btn-primary w-full sm:w-auto" type="submit">Update</button>
+              <button className="btn-secondary w-full sm:w-auto" formAction="/admin/accounting/pnl-statement" type="submit">Download PDF</button>
             </form>
             <form action={runAiAccountingReview} className="w-full rounded-xl border border-slate-200 bg-white/60 p-3 sm:w-auto">
               <input name="start" type="hidden" value={start} />
@@ -1495,6 +1244,7 @@ export default async function AccountingPage({
               <option value="operating_expense">Operating Expense</option>
               <option value="cogs">COGS</option>
               <option value="asset">Asset</option>
+              <option value="liability">Liability</option>
               <option value="other_income">Other Income</option>
               <option value="other_expense">Other Expense</option>
               <option value="excluded">Excluded</option>

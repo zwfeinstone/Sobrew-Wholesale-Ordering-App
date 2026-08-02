@@ -5,7 +5,10 @@ import {
   buildAccountingPnlTotals,
   parseAiAccountingReviewResponse,
   parseAccountingCsv,
+  type AccountingCategoryRow,
 } from '@/lib/accounting';
+import { createAccountingPnlPdf } from '@/lib/accounting-pnl-pdf';
+import { buildAccountingPnlStatement, type AccountingPnlTransactionRow } from '@/lib/accounting-pnl-statement';
 
 describe('accounting csv import', () => {
   it('parses common transaction exports', () => {
@@ -267,6 +270,135 @@ describe('accounting P&L totals', () => {
 
     expect(totals.cardOperatingExpenseCents).toBe(25856);
     expect(totals.netIncomeCents).toBe(-25856);
+  });
+});
+
+describe('detailed accounting P&L statement', () => {
+  const categories: AccountingCategoryRow[] = [
+    {
+      category_type: 'revenue',
+      id: 'sales',
+      name: 'Sales Revenue',
+      pnl_section: 'revenue',
+    },
+    {
+      category_type: 'cogs',
+      id: 'beans',
+      name: 'Coffee & Ingredients',
+      pnl_section: 'cogs',
+    },
+    {
+      category_type: 'operating_expense',
+      id: 'payroll',
+      name: 'Payroll & Owner Pay',
+      pnl_section: 'operating_expenses',
+    },
+  ];
+
+  const transactions: AccountingPnlTransactionRow[] = [
+    {
+      accounting_categories: categories[0],
+      account_name: 'Checking',
+      amount_cents: -100000,
+      category_id: 'sales',
+      id: 'txn-wholesale',
+      merchant_name: 'Wholesale batch',
+      original_description: 'Wholesale invoice deposits',
+      status: 'categorized',
+      transaction_date: '2026-07-01',
+    },
+    {
+      accounting_categories: categories[0],
+      account_name: 'Checking',
+      amount_cents: -25000,
+      category_id: 'sales',
+      id: 'txn-shopify',
+      merchant_name: 'Shopify Payments',
+      original_description: 'Shopify payout',
+      status: 'categorized',
+      transaction_date: '2026-07-03',
+    },
+    {
+      accounting_categories: categories[1],
+      account_name: 'Business Amex',
+      amount_cents: 20000,
+      category_id: 'beans',
+      id: 'txn-beans',
+      merchant_name: 'Coffee Importer',
+      original_description: 'Green coffee',
+      status: 'categorized',
+      transaction_date: '2026-07-05',
+    },
+    {
+      accounting_categories: categories[2],
+      account_name: 'Checking',
+      amount_cents: 30000,
+      category_id: 'payroll',
+      id: 'txn-payroll',
+      merchant_name: 'Payroll',
+      original_description: 'Owner pay',
+      status: 'categorized',
+      transaction_date: '2026-07-10',
+    },
+  ];
+
+  function buildStatement() {
+    return buildAccountingPnlStatement({
+      categories,
+      payrollSalaryPayments: [
+        {
+          id: 'salary-production',
+          paid_at: '2026-07-15T12:00:00.000Z',
+          period_end_date: '2026-07-31',
+          period_start_date: '2026-07-01',
+          salary_labor_work_type: 'production',
+          salary_pay_cents: 12000,
+        },
+        {
+          id: 'salary-sales',
+          paid_at: '2026-07-15T12:00:00.000Z',
+          period_end_date: '2026-07-31',
+          period_start_date: '2026-07-01',
+          salary_labor_work_type: 'sales',
+          salary_pay_cents: 5000,
+        },
+      ],
+      transactions,
+    });
+  }
+
+  it('splits revenue detail and applies labor COGS reclass', () => {
+    const statement = buildStatement();
+
+    expect(statement.wholesaleSalesCents).toBe(100000);
+    expect(statement.retailSalesCents).toBe(25000);
+    expect(statement.laborCogsCents).toBe(12000);
+    expect(statement.laborReclassCents).toBe(12000);
+    expect(statement.adjustedPnl.cogsCents).toBe(32000);
+    expect(statement.adjustedPnl.operatingExpenseCents).toBe(18000);
+    expect(statement.adjustedPnl.netIncomeCents).toBe(75000);
+
+    const revenueDetail = statement.detailSections.find((section) => section.id === 'revenue');
+    expect(revenueDetail?.rows.map((row) => [row.label, row.totalCents])).toEqual([
+      ['Wholesale Sales', 100000],
+      ['Retail Sales', 25000],
+    ]);
+    expect(revenueDetail?.rows.find((row) => row.id === 'retail_sales')?.transactions[0].description).toBe('Shopify Payments');
+  });
+
+  it('creates a PDF payload for the detailed statement', () => {
+    const pdf = createAccountingPnlPdf({
+      generatedAt: new Date('2026-08-02T12:00:00.000Z'),
+      period: { end: '2026-07-31', start: '2026-07-01' },
+      statement: buildStatement(),
+    });
+    const content = new TextDecoder().decode(pdf);
+
+    expect(content.startsWith('%PDF-1.4')).toBe(true);
+    expect(content).toContain('/Type /Catalog');
+    expect(content).toContain('Detailed Profit And Loss Statement');
+    expect(content).toContain('Wholesale Sales');
+    expect(content).toContain('Transaction Detail');
   });
 });
 
