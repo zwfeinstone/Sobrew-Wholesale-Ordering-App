@@ -94,9 +94,19 @@ type ProductionRunRow = {
 };
 
 type FinishedGoodsSort = 'name' | 'on_hand';
+type InventoryCategory = 'raw_coffee' | 'material_supply' | 'finished_good';
 
-function inventoryHref(toast: string) {
-  return `/admin/inventory?toast=${toast}`;
+function inventoryHref(toast: string, category: InventoryCategory = 'raw_coffee') {
+  const search = new URLSearchParams({ category, toast });
+  return `/admin/inventory?${search.toString()}`;
+}
+
+function inventoryCategoryHref(category: InventoryCategory, finishedGoodsSort: FinishedGoodsSort) {
+  const search = new URLSearchParams({ category });
+  if (category === 'finished_good' && finishedGoodsSort !== 'name') {
+    search.set('finished_sort', finishedGoodsSort);
+  }
+  return `/admin/inventory?${search.toString()}`;
 }
 
 function productName(product: ProductRow | undefined | null) {
@@ -146,6 +156,11 @@ function normalizeFinishedGoodsSort(value: string | string[] | undefined): Finis
   return value === 'on_hand' ? 'on_hand' : 'name';
 }
 
+function normalizeInventoryCategory(value: string | string[] | undefined): InventoryCategory {
+  if (value === 'material_supply' || value === 'finished_good') return value;
+  return 'raw_coffee';
+}
+
 function parsePositiveNumber(value: FormDataEntryValue | null, fallback = 0) {
   const parsed = Number.parseFloat(String(value ?? ''));
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
@@ -153,7 +168,7 @@ function parsePositiveNumber(value: FormDataEntryValue | null, fallback = 0) {
 
 async function adjustFinishedGoods(formData: FormData) {
   'use server';
-  await requireAdminWriteAccess(inventoryHref('admin_write_denied'));
+  await requireAdminWriteAccess(inventoryHref('admin_write_denied', 'finished_good'));
 
   const supabase = await createClient();
   const productId = String(formData.get('product_id') ?? '').trim();
@@ -165,13 +180,13 @@ async function adjustFinishedGoods(formData: FormData) {
   try {
     unitCostCents = centsFromDollars(String(formData.get('unit_cost') ?? '0'));
   } catch {
-    redirect(inventoryHref('finished_adjustment_error'));
+    redirect(inventoryHref('finished_adjustment_error', 'finished_good'));
   }
 
   const notes = String(formData.get('notes') ?? '').trim() || null;
 
   if (!productId || quantity <= 0 || !isInventoryAdjustmentType(adjustmentType) || !['add', 'subtract'].includes(direction)) {
-    redirect(inventoryHref('finished_adjustment_error'));
+    redirect(inventoryHref('finished_adjustment_error', 'finished_good'));
   }
 
   const { data: product } = await supabase
@@ -180,7 +195,7 @@ async function adjustFinishedGoods(formData: FormData) {
     .eq('id', productId)
     .single();
 
-  if (!product) redirect(inventoryHref('finished_adjustment_error'));
+  if (!product) redirect(inventoryHref('finished_adjustment_error', 'finished_good'));
 
   let { data: item } = await supabase
     .from('inventory_items')
@@ -189,7 +204,7 @@ async function adjustFinishedGoods(formData: FormData) {
     .eq('product_id', productId)
     .maybeSingle();
 
-  if (!item && direction === 'subtract') redirect(inventoryHref('finished_adjustment_error'));
+  if (!item && direction === 'subtract') redirect(inventoryHref('finished_adjustment_error', 'finished_good'));
 
   if (!item) {
     const { data: insertedItem, error: itemError } = await supabase
@@ -205,12 +220,12 @@ async function adjustFinishedGoods(formData: FormData) {
       .select('id,base_unit,item_type,product_id')
       .single();
 
-    if (itemError || !insertedItem) redirect(inventoryHref('finished_adjustment_error'));
+    if (itemError || !insertedItem) redirect(inventoryHref('finished_adjustment_error', 'finished_good'));
     item = insertedItem;
   }
 
   if (item.item_type !== 'finished_good' || item.product_id !== productId) {
-    redirect(inventoryHref('finished_adjustment_error'));
+    redirect(inventoryHref('finished_adjustment_error', 'finished_good'));
   }
 
   const signedQuantity = direction === 'subtract' ? -quantity : quantity;
@@ -234,7 +249,7 @@ async function adjustFinishedGoods(formData: FormData) {
       .select('id')
       .single();
 
-    if (lotError || !lot) redirect(inventoryHref('finished_adjustment_error'));
+    if (lotError || !lot) redirect(inventoryHref('finished_adjustment_error', 'finished_good'));
     lotId = lot.id;
   } else {
     const { data: lots } = await supabase
@@ -249,7 +264,7 @@ async function adjustFinishedGoods(formData: FormData) {
     let remaining = Math.abs(signedQuantity);
     let consumedValueCents = 0;
 
-    if (available < remaining) redirect(inventoryHref('finished_adjustment_error'));
+    if (available < remaining) redirect(inventoryHref('finished_adjustment_error', 'finished_good'));
 
     for (const lot of lots ?? []) {
       if (remaining <= 0) break;
@@ -259,7 +274,7 @@ async function adjustFinishedGoods(formData: FormData) {
         .update({ quantity_remaining: normalizeInventoryNumber(lot.quantity_remaining) - take })
         .eq('id', lot.id);
 
-      if (lotError) redirect(inventoryHref('finished_adjustment_error'));
+      if (lotError) redirect(inventoryHref('finished_adjustment_error', 'finished_good'));
       consumedValueCents += take * normalizeInventoryNumber(lot.unit_cost_cents);
       lotId = lot.id;
       remaining -= take;
@@ -283,7 +298,7 @@ async function adjustFinishedGoods(formData: FormData) {
     .select('id')
     .single();
 
-  if (adjustmentError || !adjustment) redirect(inventoryHref('finished_adjustment_error'));
+  if (adjustmentError || !adjustment) redirect(inventoryHref('finished_adjustment_error', 'finished_good'));
 
   const { error: movementError } = await supabase.from('inventory_movements').insert({
     inventory_item_id: item.id,
@@ -295,12 +310,12 @@ async function adjustFinishedGoods(formData: FormData) {
     notes: notes || `Finished goods ${adjustmentType}`,
   });
 
-  redirect(inventoryHref(movementError ? 'finished_adjustment_error' : 'finished_adjustment_saved'));
+  redirect(inventoryHref(movementError ? 'finished_adjustment_error' : 'finished_adjustment_saved', 'finished_good'));
 }
 
 async function adjustMaterialSupply(formData: FormData) {
   'use server';
-  await requireAdminWriteAccess(inventoryHref('admin_write_denied'));
+  await requireAdminWriteAccess(inventoryHref('admin_write_denied', 'material_supply'));
 
   const supabase = await createClient();
   const itemId = String(formData.get('inventory_item_id') ?? '').trim();
@@ -312,13 +327,13 @@ async function adjustMaterialSupply(formData: FormData) {
   try {
     unitCostCents = centsFromDollars(String(formData.get('unit_cost') ?? '0'));
   } catch {
-    redirect(inventoryHref('material_adjustment_error'));
+    redirect(inventoryHref('material_adjustment_error', 'material_supply'));
   }
 
   const notes = String(formData.get('notes') ?? '').trim() || null;
 
   if (!itemId || quantity <= 0 || !isInventoryAdjustmentType(adjustmentType) || !['add', 'subtract'].includes(direction)) {
-    redirect(inventoryHref('material_adjustment_error'));
+    redirect(inventoryHref('material_adjustment_error', 'material_supply'));
   }
 
   const { data: item } = await supabase
@@ -328,7 +343,7 @@ async function adjustMaterialSupply(formData: FormData) {
     .single();
 
   if (!item || item.item_type !== 'material_supply') {
-    redirect(inventoryHref('material_adjustment_error'));
+    redirect(inventoryHref('material_adjustment_error', 'material_supply'));
   }
 
   const signedQuantity = direction === 'subtract' ? -quantity : quantity;
@@ -352,7 +367,7 @@ async function adjustMaterialSupply(formData: FormData) {
       .select('id')
       .single();
 
-    if (lotError || !lot) redirect(inventoryHref('material_adjustment_error'));
+    if (lotError || !lot) redirect(inventoryHref('material_adjustment_error', 'material_supply'));
     lotId = lot.id;
   } else {
     const { data: lots } = await supabase
@@ -367,7 +382,7 @@ async function adjustMaterialSupply(formData: FormData) {
     let remaining = Math.abs(signedQuantity);
     let consumedValueCents = 0;
 
-    if (available < remaining) redirect(inventoryHref('material_adjustment_error'));
+    if (available < remaining) redirect(inventoryHref('material_adjustment_error', 'material_supply'));
 
     for (const lot of lots ?? []) {
       if (remaining <= 0) break;
@@ -377,7 +392,7 @@ async function adjustMaterialSupply(formData: FormData) {
         .update({ quantity_remaining: normalizeInventoryNumber(lot.quantity_remaining) - take })
         .eq('id', lot.id);
 
-      if (lotError) redirect(inventoryHref('material_adjustment_error'));
+      if (lotError) redirect(inventoryHref('material_adjustment_error', 'material_supply'));
       consumedValueCents += take * normalizeInventoryNumber(lot.unit_cost_cents);
       lotId = lot.id;
       remaining -= take;
@@ -401,7 +416,7 @@ async function adjustMaterialSupply(formData: FormData) {
     .select('id')
     .single();
 
-  if (adjustmentError || !adjustment) redirect(inventoryHref('material_adjustment_error'));
+  if (adjustmentError || !adjustment) redirect(inventoryHref('material_adjustment_error', 'material_supply'));
 
   const { error: movementError } = await supabase.from('inventory_movements').insert({
     inventory_item_id: item.id,
@@ -413,7 +428,7 @@ async function adjustMaterialSupply(formData: FormData) {
     notes: notes || `Material supply ${adjustmentType}`,
   });
 
-  redirect(inventoryHref(movementError ? 'material_adjustment_error' : 'material_adjustment_saved'));
+  redirect(inventoryHref(movementError ? 'material_adjustment_error' : 'material_adjustment_saved', 'material_supply'));
 }
 
 function SectionHeading({ eyebrow, title, subtitle }: { eyebrow: string; title: string; subtitle: string }) {
@@ -470,11 +485,19 @@ export default async function InventoryPage({
   const current = await requireAdminSectionView('inventory');
   const canAdjustInventory = current.isSuperadmin;
   const requestedTab = typeof searchParams?.tab === 'string' ? searchParams.tab : '';
+  const requestedCategory = typeof searchParams?.category === 'string' ? searchParams.category : '';
+  const activeCategory = normalizeInventoryCategory(searchParams?.category);
   const finishedGoodsSort = normalizeFinishedGoodsSort(searchParams?.finished_sort);
   const toast = typeof searchParams?.toast === 'string' ? searchParams.toast : '';
   if (requestedTab === 'setup') redirect('/admin/receiving');
   if (requestedTab === 'planning') redirect('/admin/planning');
   if (requestedTab === 'production') redirect('/admin/production');
+  if (requestedCategory !== activeCategory) {
+    const search = new URLSearchParams({ category: activeCategory });
+    if (toast) search.set('toast', toast);
+    if (activeCategory === 'finished_good' && finishedGoodsSort !== 'name') search.set('finished_sort', finishedGoodsSort);
+    redirect(`/admin/inventory?${search.toString()}`);
+  }
 
   const supabase = await createClient();
   const [
@@ -494,7 +517,7 @@ export default async function InventoryPage({
     supabase.from('production_runs').select('product_id,quantity_produced,quantity_voided,status,actual_unit_cost_cents').order('produced_at', { ascending: false }).limit(500),
     supabase.from('orders').select('id,status,order_items(product_id,qty)').in('status', ['New', 'Processing']).is('archived_at', null),
     supabase.from('inventory_movements').select('inventory_item_id,quantity_change,unit_cost_cents').in('movement_type', ['shipment_consume', 'sample_box_consume']).is('lot_id', null).limit(50000),
-    supabase.from('inventory_adjustments').select('id,inventory_item_id,adjustment_type,quantity_change,unit,unit_cost_cents,notes,adjusted_at,created_at').order('adjusted_at', { ascending: false }).order('created_at', { ascending: false }).limit(25),
+    supabase.from('inventory_adjustments').select('id,inventory_item_id,adjustment_type,quantity_change,unit,unit_cost_cents,notes,adjusted_at,created_at').order('adjusted_at', { ascending: false }).order('created_at', { ascending: false }).limit(100),
   ]);
 
   if (itemsResult.error) {
@@ -631,24 +654,28 @@ export default async function InventoryPage({
   const finishedGoodsValueCents = sellableRows.reduce((sum, row) => sum + row.onHand * row.costCents, 0);
   const inventoryCategories = [
     {
-      href: '#raw-coffee',
+      id: 'raw_coffee',
       label: 'Raw Coffee',
       countLabel: categoryCountLabel(rawCoffeeItems.length, 'item'),
       detail: `${usd(Math.round(rawCoffeeValueCents))} current value`,
     },
     {
-      href: '#materials-supplies',
+      id: 'material_supply',
       label: 'Materials & Supplies',
       countLabel: categoryCountLabel(materialSupplyItems.length, 'item'),
       detail: `${usd(Math.round(materialSupplyValueCents))} current value`,
     },
     {
-      href: '#finished-goods',
+      id: 'finished_good',
       label: 'Finished Goods',
       countLabel: categoryCountLabel(sellableRows.length, 'active product'),
       detail: `${usd(Math.round(finishedGoodsValueCents))} estimated value; ${sellableRowsWithOnHand.toLocaleString()} with stock`,
     },
-  ];
+  ] satisfies Array<{ id: InventoryCategory; label: string; countLabel: string; detail: string }>;
+  const activeCategoryLabel = inventoryCategories.find((category) => category.id === activeCategory)?.label ?? 'Inventory';
+  const categoryAdjustmentRows = adjustmentRows
+    .filter((adjustment) => itemsById.get(adjustment.inventory_item_id)?.item_type === activeCategory)
+    .slice(0, 25);
 
   return (
     <div className="space-y-6">
@@ -677,190 +704,207 @@ export default async function InventoryPage({
           <span className="eyebrow">Categories</span>
           <h2 id="inventory-categories-title" className="mt-3 text-xl font-semibold tracking-tight text-slate-950">Inventory categories</h2>
         </div>
-        <div className="grid gap-3 md:grid-cols-3">
-          {inventoryCategories.map((category) => (
-            <Link
-              key={category.href}
-              href={category.href}
-              className="group rounded-xl border border-slate-200 bg-white/70 p-4 transition-all duration-200 hover:-translate-y-0.5 hover:border-teal-200 hover:bg-white hover:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 focus-visible:ring-offset-2"
-            >
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <p className="break-words text-base font-semibold text-slate-950 group-hover:text-teal-800">{category.label}</p>
-                  <p className="mt-1 text-sm text-slate-500">{category.countLabel}</p>
-                </div>
-                <span className="mt-0.5 rounded-full bg-teal-50 px-2.5 py-1 text-xs font-semibold text-teal-800">View</span>
-              </div>
-              <p className="mt-4 text-sm font-medium text-slate-600">{category.detail}</p>
-            </Link>
-          ))}
-        </div>
-      </section>
-
-      <section id="raw-coffee" className="card scroll-mt-6 space-y-4 md:scroll-mt-8">
-        <SectionHeading eyebrow="Raw Coffee" title="Coffee inventory" subtitle="Coffee is received and consumed in pounds." />
-        <div className="grid gap-3 lg:grid-cols-2">
-          {rawCoffeeItems.map((item) => {
-            const summary = lotSummaryByItem.get(item.id);
+        <nav className="grid gap-3 md:grid-cols-3" aria-label="Inventory category subpages">
+          {inventoryCategories.map((category) => {
+            const isActive = activeCategory === category.id;
             return (
-              <StockCard
-                key={item.id}
-                name={itemDisplayName(item)}
-                detail={`${inventoryItemTypeLabel(item.item_type)} - stocked in ${item.base_unit}`}
-                quantity={formatInventoryQuantity(summary?.remaining ?? 0, item.base_unit)}
-                costLabel={`Avg ${usd(Math.round(summary?.avgCostCents ?? 0))} / ${item.base_unit}`}
-              />
+              <Link
+                key={category.id}
+                href={inventoryCategoryHref(category.id, finishedGoodsSort)}
+                aria-current={isActive ? 'page' : undefined}
+                className={`group rounded-xl border p-4 transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 focus-visible:ring-offset-2 ${
+                  isActive
+                    ? 'border-teal-200 bg-teal-50 text-teal-900 shadow-sm'
+                    : 'border-slate-200 bg-white/70 text-slate-700 hover:-translate-y-0.5 hover:border-teal-200 hover:bg-white hover:shadow-sm'
+                }`}
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className={`break-words text-base font-semibold ${isActive ? 'text-teal-900' : 'text-slate-950 group-hover:text-teal-800'}`}>{category.label}</p>
+                    <p className={`mt-1 text-sm ${isActive ? 'text-teal-800' : 'text-slate-500'}`}>{category.countLabel}</p>
+                  </div>
+                  <span className={`mt-0.5 rounded-full px-2.5 py-1 text-xs font-semibold ${isActive ? 'bg-white text-teal-900' : 'bg-teal-50 text-teal-800'}`}>
+                    {isActive ? 'Current' : 'View'}
+                  </span>
+                </div>
+                <p className={`mt-4 text-sm font-medium ${isActive ? 'text-teal-800' : 'text-slate-600'}`}>{category.detail}</p>
+              </Link>
             );
           })}
-          {!rawCoffeeItems.length ? <p className="rounded-2xl border border-slate-200 bg-white/70 p-4 text-sm text-slate-500">No raw coffee items have been created yet.</p> : null}
-        </div>
+        </nav>
       </section>
 
-      <section id="materials-supplies" className="card scroll-mt-6 space-y-4 md:scroll-mt-8">
-        <SectionHeading eyebrow="Materials & Supplies" title="Packaging and production inputs" subtitle="These are received in units and consumed by recipes or shipping. Product box stock can go negative when shipped short." />
-        <div className="grid gap-3 lg:grid-cols-2">
-          {materialSupplyItems.map((item) => {
-            const summary = lotSummaryByItem.get(item.id);
-            return (
-              <StockCard
-                key={item.id}
-                name={itemDisplayName(item)}
-                detail={`${inventoryItemTypeLabel(item.item_type)} - stocked in ${item.base_unit}`}
-                quantity={formatInventoryQuantity(summary?.remaining ?? 0, item.base_unit)}
-                costLabel={`Avg ${usd(Math.round(summary?.avgCostCents ?? 0))} / ${item.base_unit}`}
-                tone={(summary?.remaining ?? 0) < 0 ? 'short' : 'default'}
-              >
+      {activeCategory === 'raw_coffee' ? (
+        <section className="card space-y-4">
+          <SectionHeading eyebrow="Raw Coffee" title="Coffee inventory" subtitle="Coffee is received and consumed in pounds." />
+          <div className="grid gap-3 lg:grid-cols-2">
+            {rawCoffeeItems.map((item) => {
+              const summary = lotSummaryByItem.get(item.id);
+              return (
+                <StockCard
+                  key={item.id}
+                  name={itemDisplayName(item)}
+                  detail={`${inventoryItemTypeLabel(item.item_type)} - stocked in ${item.base_unit}`}
+                  quantity={formatInventoryQuantity(summary?.remaining ?? 0, item.base_unit)}
+                  costLabel={`Avg ${usd(Math.round(summary?.avgCostCents ?? 0))} / ${item.base_unit}`}
+                />
+              );
+            })}
+            {!rawCoffeeItems.length ? <p className="rounded-2xl border border-slate-200 bg-white/70 p-4 text-sm text-slate-500">No raw coffee items have been created yet.</p> : null}
+          </div>
+        </section>
+      ) : null}
+
+      {activeCategory === 'material_supply' ? (
+        <section className="card space-y-4">
+          <SectionHeading eyebrow="Materials & Supplies" title="Packaging and production inputs" subtitle="These are received in units and consumed by recipes or shipping. Product box stock can go negative when shipped short." />
+          <div className="grid gap-3 lg:grid-cols-2">
+            {materialSupplyItems.map((item) => {
+              const summary = lotSummaryByItem.get(item.id);
+              return (
+                <StockCard
+                  key={item.id}
+                  name={itemDisplayName(item)}
+                  detail={`${inventoryItemTypeLabel(item.item_type)} - stocked in ${item.base_unit}`}
+                  quantity={formatInventoryQuantity(summary?.remaining ?? 0, item.base_unit)}
+                  costLabel={`Avg ${usd(Math.round(summary?.avgCostCents ?? 0))} / ${item.base_unit}`}
+                  tone={(summary?.remaining ?? 0) < 0 ? 'short' : 'default'}
+                >
+                  {canAdjustInventory ? (
+                    <details>
+                      <summary className="cursor-pointer text-sm font-semibold text-teal-700">Adjust material or supply</summary>
+                      <form action={adjustMaterialSupply} className="mt-4 grid min-w-0 gap-3 sm:grid-cols-2" noValidate>
+                        <input name="inventory_item_id" type="hidden" value={item.id} />
+                        <label className="min-w-0 space-y-1 text-sm font-medium text-slate-700">
+                          Direction
+                          <select className="input" name="direction" defaultValue="add">
+                            <option value="add">Add stock</option>
+                            <option value="subtract">Subtract stock</option>
+                          </select>
+                        </label>
+                        <label className="min-w-0 space-y-1 text-sm font-medium text-slate-700">
+                          Reason
+                          <select className="input" name="adjustment_type" defaultValue="count_correction">
+                            {INVENTORY_ADJUSTMENT_TYPES.map((type) => <option key={type.value} value={type.value}>{type.label}</option>)}
+                          </select>
+                        </label>
+                        <label className="min-w-0 space-y-1 text-sm font-medium text-slate-700">
+                          Quantity
+                          <input className="input" name="quantity" required min="0" step="any" type="number" placeholder="Qty" />
+                        </label>
+                        <label className="min-w-0 space-y-1 text-sm font-medium text-slate-700">
+                          Unit COGS
+                          <input className="input" name="unit_cost" min="0" step="0.0001" type="number" defaultValue={dollarsInputValueFromCents(summary?.avgCostCents ?? 0)} placeholder="0.00" />
+                        </label>
+                        <label className="min-w-0 space-y-1 text-sm font-medium text-slate-700 sm:col-span-2">
+                          Notes
+                          <input className="input" name="notes" placeholder="Adjustment reason" />
+                        </label>
+                        <div className="sm:col-span-2">
+                          <PendingSubmitButton className="btn-secondary w-full" label="Save" pendingLabel="Saving..." />
+                        </div>
+                      </form>
+                    </details>
+                  ) : null}
+                </StockCard>
+              );
+            })}
+            {!materialSupplyItems.length ? <p className="rounded-2xl border border-slate-200 bg-white/70 p-4 text-sm text-slate-500">No materials or supplies have been created yet.</p> : null}
+          </div>
+        </section>
+      ) : null}
+
+      {activeCategory === 'finished_good' ? (
+        <section className="card space-y-4">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+            <SectionHeading eyebrow="Sellable Inventory" title="Finished goods available to sell" subtitle="On hand comes from production. Available stock subtracts open New and Processing orders and can go negative." />
+            <form className="grid gap-2 sm:grid-cols-[minmax(12rem,16rem)_auto] sm:items-end">
+              <input name="category" type="hidden" value="finished_good" />
+              <label className="text-sm font-semibold text-slate-700">
+                Sort finished goods
+                <select className="input mt-2" name="finished_sort" defaultValue={finishedGoodsSort}>
+                  <option value="name">Product name</option>
+                  <option value="on_hand">On hand first</option>
+                </select>
+              </label>
+              <button className="btn-secondary" type="submit">Apply</button>
+            </form>
+          </div>
+          <p className="text-sm font-semibold text-slate-500">
+            {sellableRowsWithOnHand.toLocaleString()} of {sellableRows.length.toLocaleString()} active products have inventory on hand.
+          </p>
+          <div className="space-y-3">
+            {sellableRows.map((row) => (
+              <div key={row.product.id} className="rounded-2xl border border-slate-200 bg-white/70 p-4">
+                <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
+                  <div className="min-w-0">
+                    <p className="break-words font-semibold text-slate-950">{productName(row.product)}</p>
+                    <p className="mt-1 text-sm text-slate-500">{row.product.sku || 'No SKU'} - {row.costSource}</p>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3 text-sm sm:grid-cols-4 xl:min-w-[34rem]">
+                    <div>
+                      <p className="text-xs uppercase tracking-[0.14em] text-slate-500">On hand</p>
+                      <p className="mt-1 font-semibold text-slate-950">{formatInventoryQuantity(row.onHand, 'each')}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Reserved</p>
+                      <p className="mt-1 font-semibold text-slate-950">{formatInventoryQuantity(row.reserved, 'each')}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Available</p>
+                      <p className={`mt-1 font-semibold ${row.available < 0 ? 'text-rose-700' : 'text-slate-950'}`}>{formatInventoryQuantity(row.available, 'each')}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Unit COGS</p>
+                      <p className="mt-1 font-semibold text-slate-950">{usd(Math.round(row.costCents))}</p>
+                    </div>
+                  </div>
+                </div>
                 {canAdjustInventory ? (
-                  <details>
-                    <summary className="cursor-pointer text-sm font-semibold text-teal-700">Adjust material or supply</summary>
-                    <form action={adjustMaterialSupply} className="mt-4 grid min-w-0 gap-3 sm:grid-cols-2" noValidate>
-                      <input name="inventory_item_id" type="hidden" value={item.id} />
-                      <label className="min-w-0 space-y-1 text-sm font-medium text-slate-700">
+                  <details className="mt-4 border-t border-slate-100 pt-4">
+                    <summary className="cursor-pointer text-sm font-semibold text-teal-700">Adjust finished goods</summary>
+                    <form action={adjustFinishedGoods} className="mt-4 grid gap-3 md:grid-cols-[9rem_11rem_8rem_9rem_minmax(0,1fr)_auto] md:items-end">
+                      <input name="product_id" type="hidden" value={row.product.id} />
+                      <label className="space-y-1 text-sm font-medium text-slate-700">
                         Direction
                         <select className="input" name="direction" defaultValue="add">
                           <option value="add">Add stock</option>
                           <option value="subtract">Subtract stock</option>
                         </select>
                       </label>
-                      <label className="min-w-0 space-y-1 text-sm font-medium text-slate-700">
+                      <label className="space-y-1 text-sm font-medium text-slate-700">
                         Reason
                         <select className="input" name="adjustment_type" defaultValue="count_correction">
                           {INVENTORY_ADJUSTMENT_TYPES.map((type) => <option key={type.value} value={type.value}>{type.label}</option>)}
                         </select>
                       </label>
-                      <label className="min-w-0 space-y-1 text-sm font-medium text-slate-700">
+                      <label className="space-y-1 text-sm font-medium text-slate-700">
                         Quantity
-                        <input className="input" name="quantity" required min="0" step="any" type="number" placeholder="Qty" />
+                        <input className="input" name="quantity" required min="1" step="1" type="number" placeholder="Qty" />
                       </label>
-                      <label className="min-w-0 space-y-1 text-sm font-medium text-slate-700">
+                      <label className="space-y-1 text-sm font-medium text-slate-700">
                         Unit COGS
-                        <input className="input" name="unit_cost" min="0" step="0.0001" type="number" defaultValue={dollarsInputValueFromCents(summary?.avgCostCents ?? 0)} placeholder="0.00" />
+                        <input className="input" name="unit_cost" min="0" step="0.0001" type="number" defaultValue={dollarsInputValueFromCents(row.costCents)} placeholder="0.00" />
                       </label>
-                      <label className="min-w-0 space-y-1 text-sm font-medium text-slate-700 sm:col-span-2">
+                      <label className="space-y-1 text-sm font-medium text-slate-700">
                         Notes
                         <input className="input" name="notes" placeholder="Adjustment reason" />
                       </label>
-                      <div className="sm:col-span-2">
-                        <PendingSubmitButton className="btn-secondary w-full" label="Save" pendingLabel="Saving..." />
-                      </div>
+                      <PendingSubmitButton className="btn-secondary w-full md:w-auto" label="Save" pendingLabel="Saving..." />
                     </form>
                   </details>
                 ) : null}
-              </StockCard>
-            );
-          })}
-          {!materialSupplyItems.length ? <p className="rounded-2xl border border-slate-200 bg-white/70 p-4 text-sm text-slate-500">No materials or supplies have been created yet.</p> : null}
-        </div>
-      </section>
-
-      <section id="finished-goods" className="card scroll-mt-6 space-y-4 md:scroll-mt-8">
-        <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
-          <SectionHeading eyebrow="Sellable Inventory" title="Finished goods available to sell" subtitle="On hand comes from production. Available stock subtracts open New and Processing orders and can go negative." />
-          <form className="grid gap-2 sm:grid-cols-[minmax(12rem,16rem)_auto] sm:items-end">
-            <label className="text-sm font-semibold text-slate-700">
-              Sort finished goods
-              <select className="input mt-2" name="finished_sort" defaultValue={finishedGoodsSort}>
-                <option value="name">Product name</option>
-                <option value="on_hand">On hand first</option>
-              </select>
-            </label>
-            <button className="btn-secondary" type="submit">Apply</button>
-          </form>
-        </div>
-        <p className="text-sm font-semibold text-slate-500">
-          {sellableRowsWithOnHand.toLocaleString()} of {sellableRows.length.toLocaleString()} active products have inventory on hand.
-        </p>
-        <div className="space-y-3">
-          {sellableRows.map((row) => (
-            <div key={row.product.id} className="rounded-2xl border border-slate-200 bg-white/70 p-4">
-              <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
-                <div className="min-w-0">
-                  <p className="break-words font-semibold text-slate-950">{productName(row.product)}</p>
-                  <p className="mt-1 text-sm text-slate-500">{row.product.sku || 'No SKU'} - {row.costSource}</p>
-                </div>
-                <div className="grid grid-cols-2 gap-3 text-sm sm:grid-cols-4 xl:min-w-[34rem]">
-                  <div>
-                    <p className="text-xs uppercase tracking-[0.14em] text-slate-500">On hand</p>
-                    <p className="mt-1 font-semibold text-slate-950">{formatInventoryQuantity(row.onHand, 'each')}</p>
-                  </div>
-                  <div>
-                    <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Reserved</p>
-                    <p className="mt-1 font-semibold text-slate-950">{formatInventoryQuantity(row.reserved, 'each')}</p>
-                  </div>
-                  <div>
-                    <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Available</p>
-                    <p className={`mt-1 font-semibold ${row.available < 0 ? 'text-rose-700' : 'text-slate-950'}`}>{formatInventoryQuantity(row.available, 'each')}</p>
-                  </div>
-                  <div>
-                    <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Unit COGS</p>
-                    <p className="mt-1 font-semibold text-slate-950">{usd(Math.round(row.costCents))}</p>
-                  </div>
-                </div>
               </div>
-              {canAdjustInventory ? (
-                <details className="mt-4 border-t border-slate-100 pt-4">
-                  <summary className="cursor-pointer text-sm font-semibold text-teal-700">Adjust finished goods</summary>
-                  <form action={adjustFinishedGoods} className="mt-4 grid gap-3 md:grid-cols-[9rem_11rem_8rem_9rem_minmax(0,1fr)_auto] md:items-end">
-                    <input name="product_id" type="hidden" value={row.product.id} />
-                    <label className="space-y-1 text-sm font-medium text-slate-700">
-                      Direction
-                      <select className="input" name="direction" defaultValue="add">
-                        <option value="add">Add stock</option>
-                        <option value="subtract">Subtract stock</option>
-                      </select>
-                    </label>
-                    <label className="space-y-1 text-sm font-medium text-slate-700">
-                      Reason
-                      <select className="input" name="adjustment_type" defaultValue="count_correction">
-                        {INVENTORY_ADJUSTMENT_TYPES.map((type) => <option key={type.value} value={type.value}>{type.label}</option>)}
-                      </select>
-                    </label>
-                    <label className="space-y-1 text-sm font-medium text-slate-700">
-                      Quantity
-                      <input className="input" name="quantity" required min="1" step="1" type="number" placeholder="Qty" />
-                    </label>
-                    <label className="space-y-1 text-sm font-medium text-slate-700">
-                      Unit COGS
-                      <input className="input" name="unit_cost" min="0" step="0.0001" type="number" defaultValue={dollarsInputValueFromCents(row.costCents)} placeholder="0.00" />
-                    </label>
-                    <label className="space-y-1 text-sm font-medium text-slate-700">
-                      Notes
-                      <input className="input" name="notes" placeholder="Adjustment reason" />
-                    </label>
-                    <PendingSubmitButton className="btn-secondary w-full md:w-auto" label="Save" pendingLabel="Saving..." />
-                  </form>
-                </details>
-              ) : null}
-            </div>
-          ))}
-          {!sellableRows.length ? <p className="rounded-2xl border border-slate-200 bg-white/70 p-4 text-sm text-slate-500">No active products found.</p> : null}
-        </div>
-      </section>
+            ))}
+            {!sellableRows.length ? <p className="rounded-2xl border border-slate-200 bg-white/70 p-4 text-sm text-slate-500">No active products found.</p> : null}
+          </div>
+        </section>
+      ) : null}
 
       <section className="card space-y-4">
-        <SectionHeading eyebrow="Adjustment Log" title="Corrections and adjustments" subtitle="Recent manual inventory changes across raw coffee, materials, supplies, and finished goods." />
+        <SectionHeading eyebrow="Adjustment Log" title={`${activeCategoryLabel} corrections and adjustments`} subtitle={`Recent manual inventory changes for ${activeCategoryLabel.toLowerCase()}.`} />
         <div className="space-y-3">
-          {adjustmentRows.map((adjustment) => {
+          {categoryAdjustmentRows.map((adjustment) => {
             const item = itemsById.get(adjustment.inventory_item_id);
             const quantityChange = normalizeInventoryNumber(adjustment.quantity_change);
             const isPositive = quantityChange >= 0;
@@ -891,7 +935,7 @@ export default async function InventoryPage({
               </div>
             );
           })}
-          {!adjustmentRows.length ? <p className="rounded-2xl border border-slate-200 bg-white/70 p-4 text-sm text-slate-500">No inventory corrections or adjustments have been logged yet.</p> : null}
+          {!categoryAdjustmentRows.length ? <p className="rounded-2xl border border-slate-200 bg-white/70 p-4 text-sm text-slate-500">No {activeCategoryLabel.toLowerCase()} corrections or adjustments have been logged yet.</p> : null}
         </div>
       </section>
     </div>
