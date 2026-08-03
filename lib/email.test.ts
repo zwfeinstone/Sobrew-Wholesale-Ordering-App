@@ -4,6 +4,7 @@ import {
   buildCustomerOrderEmailContent,
   buildCustomerWelcomeEmailContent,
   buildInvoicePdfEmailContent,
+  buildPaymentReceiptEmailContent,
   buildShippedEmailContent,
   buildShippedEmailText,
 } from '@/lib/email';
@@ -221,6 +222,40 @@ describe('buildInvoicePdfEmailContent', () => {
     expect(content.html).toContain('Hi &lt;Center&gt;,');
     expect(content.html).toContain('&lt;SO-1272&gt;');
     expect(content.html).not.toContain('Hi <Center>,');
+  });
+});
+
+describe('buildPaymentReceiptEmailContent', () => {
+  it('builds a card receipt email after capture', () => {
+    const content = buildPaymentReceiptEmailContent({
+      amountCents: 11600,
+      customerName: 'Lakeview Recovery',
+      invoiceNumber: 'SO-1272',
+      paymentMethodLabel: 'Visa ending 1111',
+      paymentMethodType: 'card',
+      paymentStatus: 'CAPTURED',
+    });
+
+    expect(content.html).toContain('Your Sobrew payment is complete.');
+    expect(content.html).toContain('Visa ending 1111 was charged $116.00.');
+    expect(content.html).toContain('QuickBooks status CAPTURED');
+    expect(content.text).toContain('Visa ending 1111 was charged $116.00.');
+    expect(content.text).toContain('Receipt amount: $116.00');
+  });
+
+  it('describes ACH and eCheck receipts as submitted while they settle', () => {
+    const content = buildPaymentReceiptEmailContent({
+      amountCents: 8000,
+      customerName: 'Upon Awakening',
+      invoiceNumber: 'SO-1273',
+      paymentMethodLabel: 'Checking ending 6789',
+      paymentMethodType: 'bank_account',
+      paymentStatus: 'PENDING',
+    });
+
+    expect(content.html).toContain('Your Sobrew payment was submitted.');
+    expect(content.html).toContain('Checking ending 6789 payment for $80.00 was submitted.');
+    expect(content.text).toContain('QuickBooks status: PENDING');
   });
 });
 

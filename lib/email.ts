@@ -78,6 +78,20 @@ type InvoicePdfEmailPayload = {
 
 type InvoicePdfEmailContentPayload = Pick<InvoicePdfEmailPayload, 'customerName' | 'invoiceNumber'>;
 
+type PaymentReceiptEmailPayload = {
+  amountCents: number;
+  customerName: string;
+  invoiceNumber: string;
+  orderId: string;
+  paymentMethodLabel: string;
+  paymentStatus: string;
+  paymentMethodType: string;
+  pdf: Buffer;
+  to: string;
+};
+
+type PaymentReceiptEmailContentPayload = Omit<PaymentReceiptEmailPayload, 'orderId' | 'pdf' | 'to'>;
+
 function escapeHtml(value: string) {
   return value
     .replace(/&/g, '&amp;')
@@ -999,6 +1013,89 @@ export function buildInvoicePdfEmailContent(payload: InvoicePdfEmailContentPaylo
   return { html, text };
 }
 
+export function buildPaymentReceiptEmailContent(payload: PaymentReceiptEmailContentPayload) {
+  const customerName = cleanEmailText(payload.customerName) || 'there';
+  const invoiceNumber = cleanEmailText(payload.invoiceNumber) || 'your invoice';
+  const paymentMethodLabel = cleanEmailText(payload.paymentMethodLabel) || 'saved payment method';
+  const paymentStatus = cleanEmailText(payload.paymentStatus).toUpperCase() || 'SUBMITTED';
+  const amount = usd(Math.round(payload.amountCents));
+  const isPending = paymentStatus === 'PENDING' || payload.paymentMethodType === 'bank_account' || payload.paymentMethodType === 'echeck';
+  const actionLabel = isPending ? 'Payment submitted' : 'Payment received';
+  const statusLine = isPending
+    ? `Your ${paymentMethodLabel} payment for ${amount} was submitted. QuickBooks status: ${paymentStatus}.`
+    : `Your ${paymentMethodLabel} was charged ${amount}.`;
+  const safeName = escapeHtml(customerName);
+  const safeInvoiceNumber = escapeHtml(invoiceNumber);
+  const safePaymentMethodLabel = escapeHtml(paymentMethodLabel);
+  const safeAmount = escapeHtml(amount);
+  const safeStatus = escapeHtml(paymentStatus);
+  const safeStatusLine = escapeHtml(statusLine);
+  const safeReplyTo = escapeHtml(REPLY_TO_EMAIL);
+  const html = emailShell({
+    eyebrow: actionLabel,
+    footerMessage: 'Funding recovery, one cup at a time.',
+    preheader: `Sobrew receipt ${invoiceNumber}: ${amount}.`,
+    showSocialFooter: true,
+    title: isPending ? 'Your Sobrew payment was submitted.' : 'Your Sobrew payment is complete.',
+    variant: 'invoice',
+    body: `
+      <tr>
+        <td style="padding:30px 32px 10px 32px;">
+          <p style="margin:0 0 14px 0; color:#291f18; font-size:17px; line-height:1.55;">Hi ${safeName},</p>
+          <p style="margin:0; color:#594736; font-size:16px; line-height:1.65;">${safeStatusLine} A receipt copy of Sobrew invoice <strong style="color:#241a12;">${safeInvoiceNumber}</strong> is attached.</p>
+        </td>
+      </tr>
+      <tr>
+        <td style="padding:22px 32px 0 32px;">
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background:#f4f6f4; border-left:4px solid #31563f; border-radius:6px;">
+            <tr>
+              <td style="padding:17px 19px;">
+                <p style="margin:0 0 5px 0; color:#607265; font-size:11px; font-weight:700; letter-spacing:1.6px; text-transform:uppercase;">Receipt</p>
+                <p style="margin:0 0 10px 0; color:#26372c; font-size:23px; line-height:1.25; font-weight:800; word-break:break-word;">${safeAmount}</p>
+                <p style="margin:0; color:#526158; font-size:14px; line-height:1.6;">${safePaymentMethodLabel} · QuickBooks status ${safeStatus}</p>
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+      <tr>
+        <td style="padding:24px 32px 0 32px;">
+          <p style="margin:0 0 7px 0; color:#26372c; font-size:15px; font-weight:800;">Questions or adjustments?</p>
+          <p style="margin:0; color:#594736; font-size:14px; line-height:1.65;">Reply to this email or reach us at <a href="mailto:${safeReplyTo}" style="color:#31563f; font-weight:700; text-decoration:none;">${safeReplyTo}</a> and we will take care of it.</p>
+        </td>
+      </tr>
+      <tr>
+        <td style="padding:26px 32px 30px 32px;">
+          <p style="margin:0 0 14px 0; color:#594736; font-size:15px; line-height:1.65;">Thank you for your partnership.</p>
+          <p style="margin:0; color:#291f18; font-size:15px; line-height:1.65;">Best,<br />The Sobrew Team</p>
+        </td>
+      </tr>
+    `,
+  });
+  const text = [
+    `Hi ${customerName},`,
+    '',
+    `${statusLine} A receipt copy of Sobrew invoice ${invoiceNumber} is attached.`,
+    '',
+    `Receipt amount: ${amount}`,
+    `Payment method: ${paymentMethodLabel}`,
+    `QuickBooks status: ${paymentStatus}`,
+    `If you have any questions or need anything adjusted, just reply to this email or reach us at ${REPLY_TO_EMAIL} and we will take care of it.`,
+    '',
+    'Stay connected:',
+    `Website: ${WEBSITE_URL}`,
+    `Instagram: ${INSTAGRAM_URL}`,
+    `LinkedIn: ${LINKEDIN_URL}`,
+    '',
+    'Thank you for your partnership.',
+    '',
+    'Best,',
+    'The Sobrew Team',
+  ].join('\n');
+
+  return { html, text };
+}
+
 export async function sendShippedEmail(
   to: string | string[],
   items: ShippedLine[],
@@ -1087,6 +1184,66 @@ export async function sendInvoicePdfEmail(payload: InvoicePdfEmailPayload): Prom
     return { ok: true };
   } catch (error) {
     console.error('Failed to send invoice PDF email', error);
+    return { error, ok: false };
+  }
+}
+
+export async function sendPaymentReceiptEmail(payload: PaymentReceiptEmailPayload): Promise<SendEmailResult> {
+  const resend = getResend();
+  if (!resend) {
+    const error = new Error('Resend disabled: missing RESEND_API_KEY');
+    console.error(error.message);
+    return { error, ok: false };
+  }
+
+  if (!payload.to) {
+    const error = new Error('Payment receipt email skipped: missing recipient');
+    console.error(error.message);
+    return { error, ok: false };
+  }
+
+  const attachmentInvoiceNumber = payload.invoiceNumber.replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '');
+  const { html, text } = buildPaymentReceiptEmailContent({
+    amountCents: payload.amountCents,
+    customerName: payload.customerName,
+    invoiceNumber: payload.invoiceNumber,
+    paymentMethodLabel: payload.paymentMethodLabel,
+    paymentMethodType: payload.paymentMethodType,
+    paymentStatus: payload.paymentStatus,
+  });
+
+  try {
+    const response = await resend.emails.send({
+      attachments: [
+        {
+          content: payload.pdf,
+          contentType: 'application/pdf',
+          filename: `Sobrew-Receipt-${attachmentInvoiceNumber || payload.orderId.slice(0, 8)}.pdf`,
+        },
+        {
+          content: Buffer.from(INSTAGRAM_ICON_BASE64, 'base64'),
+          contentType: 'image/png',
+          filename: 'sobrew-instagram.png',
+          inlineContentId: INSTAGRAM_ICON_CID,
+        },
+        {
+          content: Buffer.from(LINKEDIN_ICON_BASE64, 'base64'),
+          contentType: 'image/png',
+          filename: 'sobrew-linkedin.png',
+          inlineContentId: LINKEDIN_ICON_CID,
+        },
+      ],
+      from: RESEND_FROM,
+      replyTo: REPLY_TO_EMAIL,
+      to: payload.to,
+      subject: `Sobrew Receipt ${payload.invoiceNumber}`,
+      html,
+      text,
+    });
+    console.log('Payment receipt email sent', response);
+    return { ok: true };
+  } catch (error) {
+    console.error('Failed to send payment receipt email', error);
     return { error, ok: false };
   }
 }

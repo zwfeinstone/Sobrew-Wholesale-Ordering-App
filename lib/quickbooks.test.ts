@@ -4,8 +4,12 @@ import {
   buildQuickBooksCustomerMatches,
   buildQuickBooksCustomerPayloadFromCenter,
   buildQuickBooksInvoicePayload,
+  buildQuickBooksInvoicePaymentPayload,
+  buildQuickBooksSavedPaymentChargePayload,
   normalizeCustomerMatchText,
   normalizeQuickBooksInvoiceReceivable,
+  normalizeQuickBooksSavedPaymentMethodType,
+  quickBooksSavedPaymentMethodLabel,
   scoreQuickBooksCustomerMatch,
 } from '@/lib/quickbooks';
 
@@ -192,6 +196,105 @@ describe('quickbooks invoice payload', () => {
       },
       { name: 'Unmapped Center', value: '42' }
     )).toThrow('Map Cold Brew Case to QuickBooks before invoicing.');
+  });
+});
+
+describe('quickbooks saved payment payloads', () => {
+  it('normalizes supported saved payment method type names', () => {
+    expect(normalizeQuickBooksSavedPaymentMethodType('credit card')).toBe('card');
+    expect(normalizeQuickBooksSavedPaymentMethodType('checking')).toBe('bank_account');
+    expect(normalizeQuickBooksSavedPaymentMethodType('ACH')).toBe('bank_account');
+    expect(normalizeQuickBooksSavedPaymentMethodType('e-check')).toBe('echeck');
+    expect(normalizeQuickBooksSavedPaymentMethodType('cash')).toBeNull();
+  });
+
+  it('builds readable saved payment labels without exposing full payment details', () => {
+    expect(quickBooksSavedPaymentMethodLabel({
+      quickbooks_payment_method_brand: 'Visa',
+      quickbooks_payment_method_last4: '1111',
+      quickbooks_payment_method_type: 'card',
+    })).toBe('Visa ending 1111');
+
+    expect(quickBooksSavedPaymentMethodLabel({
+      quickbooks_payment_method_last4: '6789',
+      quickbooks_payment_method_type: 'bank_account',
+    })).toBe('Saved bank account ending 6789');
+  });
+
+  it('builds a saved card charge payload', () => {
+    expect(buildQuickBooksSavedPaymentChargePayload(
+      { id: 'card-123', label: 'Visa ending 1111', type: 'card' },
+      3625,
+      'Sobrew invoice SO-1272'
+    )).toEqual({
+      path: '/charges',
+      payload: {
+        amount: '36.25',
+        capture: true,
+        cardOnFile: 'card-123',
+        context: {
+          isEcommerce: true,
+          mobile: false,
+        },
+        currency: 'USD',
+        description: 'Sobrew invoice SO-1272',
+      },
+    });
+  });
+
+  it('builds a saved ACH/eCheck payment payload', () => {
+    expect(buildQuickBooksSavedPaymentChargePayload(
+      { id: 'bank-123', label: 'Checking ending 6789', type: 'bank_account' },
+      8000,
+      'Sobrew invoice SO-1273'
+    )).toEqual({
+      path: '/echecks',
+      payload: {
+        amount: '80.00',
+        bankAccountOnFile: 'bank-123',
+        context: {
+          deviceInfo: {
+            id: 'sobrew-portal',
+            type: 'server',
+          },
+          isEcommerce: true,
+          mobile: false,
+        },
+        description: 'Sobrew invoice SO-1273',
+        paymentMode: 'WEB',
+      },
+    });
+  });
+
+  it('builds a QuickBooks payment linked to the invoice', () => {
+    const payload = buildQuickBooksInvoicePaymentPayload({
+      amountCents: 11600,
+      chargeId: 'charge-123',
+      chargeStatus: 'CAPTURED',
+      customerRef: { name: 'Lakeview Recovery', value: '42' },
+      invoiceId: 'invoice-123',
+      invoiceNumber: 'SO-1272',
+      paymentMethodLabel: 'Visa ending 1111',
+    });
+
+    expect(payload).toMatchObject({
+      CustomerRef: { name: 'Lakeview Recovery', value: '42' },
+      Line: [
+        {
+          Amount: 116,
+          LinkedTxn: [
+            {
+              TxnId: 'invoice-123',
+              TxnType: 'Invoice',
+            },
+          ],
+        },
+      ],
+      PaymentRefNum: 'charge-123',
+      TotalAmt: 116,
+    });
+    expect(payload.PrivateNote).toContain('QuickBooks Payments status CAPTURED');
+    expect(payload.PrivateNote).toContain('Visa ending 1111');
   });
 });
 

@@ -11,6 +11,7 @@ import {
   clearPortalCenterQuickBooksCustomer,
   createQuickBooksCustomerFromPortalCenter,
   createQuickBooksInvoiceForOrder,
+  createQuickBooksPaidInvoiceForOrder,
   disconnectQuickBooksConnection,
   getQuickBooksActiveCustomers,
   getQuickBooksActiveItems,
@@ -22,13 +23,15 @@ import {
   getQuickBooksProductSummary,
   getQuickBooksSalesTaxSettings,
   linkPortalCenterToQuickBooksCustomer,
+  normalizeQuickBooksSavedPaymentMethodType,
   QuickBooksConfigurationError,
+  quickBooksSavedPaymentMethodLabel,
   type QuickBooksCustomerRecord,
   resetQuickBooksProductsFromPortal,
   saveQuickBooksSalesTaxSettings,
   shouldCollectQuickBooksSalesTax,
 } from '@/lib/quickbooks';
-import { sendInvoicePdfEmail } from '@/lib/email';
+import { sendInvoicePdfEmail, sendPaymentReceiptEmail } from '@/lib/email';
 import { getSupabaseAdmin } from '@/lib/supabase/admin';
 import { createClient } from '@/lib/supabase/server';
 import { usd } from '@/lib/utils';
@@ -99,6 +102,9 @@ const US_STATE_OPTIONS = [
   ['WY', 'Wyoming'],
 ] as const;
 
+const INVOICE_ORDER_SELECT = 'id,created_at,shipped_at,subtotal_cents,shipping_company,shipping_name,shipping_state,invoice_status,invoice_error,invoiced_at,quickbooks_invoice_id,quickbooks_invoice_doc_number,quickbooks_invoice_url,quickbooks_invoice_email_to,quickbooks_invoice_email_sent_at,quickbooks_payment_charge_id,quickbooks_payment_error,quickbooks_payment_id,quickbooks_payment_method_label,quickbooks_payment_method_type,quickbooks_payment_status,quickbooks_receipt_email_to,quickbooks_receipt_email_sent_at,profiles(email,full_name),centers(name,customer_tax_status,quickbooks_customer_id,quickbooks_display_name,quickbooks_payment_method_brand,quickbooks_payment_method_exp_month,quickbooks_payment_method_exp_year,quickbooks_payment_method_id,quickbooks_payment_method_last4,quickbooks_payment_method_type),order_items(qty,line_total_cents,product_name_snapshot,products(name,sku,quickbooks_item_id))';
+const CUSTOMER_SYNC_SELECT = 'id,name,is_active,created_at,quickbooks_customer_id,quickbooks_display_name,quickbooks_company_name,quickbooks_fully_qualified_name,legal_name,billing_email,billing_address1,billing_city,billing_state,billing_zip,quickbooks_sync_status,quickbooks_synced_at,quickbooks_sync_error,quickbooks_mapping_note,quickbooks_payment_method_brand,quickbooks_payment_method_exp_month,quickbooks_payment_method_exp_year,quickbooks_payment_method_id,quickbooks_payment_method_last4,quickbooks_payment_method_note,quickbooks_payment_method_type,quickbooks_payment_method_updated_at';
+
 type SearchParams = Record<string, string | string[] | undefined>;
 type InvoicingView = (typeof INVOICING_VIEWS)[number]['id'];
 
@@ -107,6 +113,12 @@ type InvoiceQueueCenter = {
   name: string | null;
   quickbooks_customer_id?: string | null;
   quickbooks_display_name?: string | null;
+  quickbooks_payment_method_brand?: string | null;
+  quickbooks_payment_method_exp_month?: string | null;
+  quickbooks_payment_method_exp_year?: string | null;
+  quickbooks_payment_method_id?: string | null;
+  quickbooks_payment_method_last4?: string | null;
+  quickbooks_payment_method_type?: string | null;
 };
 
 type InvoiceQueueOrder = {
@@ -136,6 +148,14 @@ type InvoiceQueueOrder = {
   quickbooks_invoice_email_to?: string | null;
   quickbooks_invoice_id?: string | null;
   quickbooks_invoice_url?: string | null;
+  quickbooks_payment_charge_id?: string | null;
+  quickbooks_payment_error?: string | null;
+  quickbooks_payment_id?: string | null;
+  quickbooks_payment_method_label?: string | null;
+  quickbooks_payment_method_type?: string | null;
+  quickbooks_payment_status?: string | null;
+  quickbooks_receipt_email_sent_at?: string | null;
+  quickbooks_receipt_email_to?: string | null;
   shipped_at: string | null;
   shipping_company?: string | null;
   shipping_name: string | null;
@@ -180,6 +200,14 @@ type CustomerSyncRow = {
   quickbooks_display_name: string | null;
   quickbooks_fully_qualified_name: string | null;
   quickbooks_mapping_note: string | null;
+  quickbooks_payment_method_brand: string | null;
+  quickbooks_payment_method_exp_month: string | null;
+  quickbooks_payment_method_exp_year: string | null;
+  quickbooks_payment_method_id: string | null;
+  quickbooks_payment_method_last4: string | null;
+  quickbooks_payment_method_note: string | null;
+  quickbooks_payment_method_type: string | null;
+  quickbooks_payment_method_updated_at: string | null;
   quickbooks_sync_error: string | null;
   quickbooks_sync_status: string | null;
   quickbooks_synced_at: string | null;
@@ -349,6 +377,20 @@ function invoiceNumberLabel(order: InvoiceQueueOrder) {
   return cleanText(order.quickbooks_invoice_doc_number) || cleanText(order.quickbooks_invoice_id) || 'Missing invoice number';
 }
 
+function hasQuickBooksPaymentsScope(grantedScopes: string[]) {
+  return grantedScopes.includes('com.intuit.quickbooks.payment');
+}
+
+function savedPaymentMethodInfo(center: InvoiceQueueCenter | CustomerSyncRow | null | undefined) {
+  const methodId = cleanText(center?.quickbooks_payment_method_id);
+  const methodType = normalizeQuickBooksSavedPaymentMethodType(center?.quickbooks_payment_method_type);
+  return {
+    id: methodId,
+    label: methodId && methodType ? quickBooksSavedPaymentMethodLabel(center) : '',
+    type: methodType,
+  };
+}
+
 function errorMessage(error: unknown, fallback: string) {
   return error instanceof Error ? error.message : fallback;
 }
@@ -370,6 +412,14 @@ function toastMessage(toast: string) {
     invoice_resend_pdf_failed: { message: 'Unable to resend that invoice PDF.', tone: 'error' },
     invoice_resent: { message: 'QuickBooks invoice resent.', tone: 'success' },
     invoice_pdf_resent: { message: 'Invoice PDF resent.', tone: 'success' },
+    payment_already_recorded: { message: 'That order already has a recorded QuickBooks payment.', tone: 'success' },
+    payment_failed: { message: 'Unable to charge the saved payment method.', tone: 'error' },
+    payment_method_failed: { message: 'Unable to save that payment method.', tone: 'error' },
+    payment_method_invalid: { message: 'Choose a saved payment type and enter the QuickBooks saved payment ID.', tone: 'error' },
+    payment_method_required: { message: 'Add a saved payment method to this customer before charging automatically.', tone: 'error' },
+    payment_method_saved: { message: 'Saved payment method updated.', tone: 'success' },
+    payment_receipt_failed: { message: 'Payment was recorded, but the receipt email was not sent. Check the billing email and retry from Archived Invoices.', tone: 'error' },
+    payment_receipt_sent: { message: 'Payment recorded and receipt emailed.', tone: 'success' },
     product_reset_confirm_required: { message: 'Confirm the live QuickBooks product reset before running it.', tone: 'error' },
     product_reset_failed: { message: 'Unable to reset QuickBooks products.', tone: 'error' },
     product_reset_saved: { message: 'QuickBooks products reset from portal products.', tone: 'success' },
@@ -385,6 +435,7 @@ function toastMessage(toast: string) {
     quickbooks_connected: { message: 'QuickBooks connected.', tone: 'success' },
     quickbooks_disconnected: { message: 'QuickBooks disconnected. Reconnect the correct company before syncing products.', tone: 'success' },
     quickbooks_not_connected: { message: 'Connect QuickBooks before creating invoices.', tone: 'error' },
+    quickbooks_payments_not_authorized: { message: 'Reconnect QuickBooks to authorize Payments before charging saved methods.', tone: 'error' },
     sales_tax_settings_failed: { message: 'Unable to save QuickBooks sales tax settings.', tone: 'error' },
     sales_tax_settings_saved: { message: 'QuickBooks sales tax settings saved.', tone: 'success' },
   };
@@ -461,6 +512,40 @@ async function clearQuickBooksCustomerMapping(formData: FormData) {
     redirect(customersInvoicingHref('customer_mapping_failed', message, centerId));
   }
   redirect(customersInvoicingHref('customer_mapping_cleared', undefined, centerId));
+}
+
+async function saveQuickBooksPaymentMethod(formData: FormData) {
+  'use server';
+  await requireAdminWriteAccess('/admin/invoicing?view=customers&toast=admin_write_denied', 'invoicing');
+  const centerId = cleanText(formData.get('center_id'));
+  if (!centerId) redirect(customersInvoicingHref('payment_method_failed'));
+
+  const methodId = cleanText(formData.get('quickbooks_payment_method_id'));
+  const methodType = normalizeQuickBooksSavedPaymentMethodType(formData.get('quickbooks_payment_method_type'));
+  if (methodId && !methodType) redirect(customersInvoicingHref('payment_method_invalid', undefined, centerId));
+
+  const last4 = cleanText(formData.get('quickbooks_payment_method_last4')).replace(/\D/g, '').slice(-4);
+  const expMonth = cleanText(formData.get('quickbooks_payment_method_exp_month')).replace(/\D/g, '').slice(0, 2);
+  const expYear = cleanText(formData.get('quickbooks_payment_method_exp_year')).replace(/\D/g, '').slice(0, 4);
+  const supabase = getSupabaseAdmin();
+  const { error } = await supabase
+    .from('centers')
+    .update({
+      quickbooks_payment_method_brand: methodId ? cleanText(formData.get('quickbooks_payment_method_brand')) || null : null,
+      quickbooks_payment_method_exp_month: methodId && methodType === 'card' ? expMonth || null : null,
+      quickbooks_payment_method_exp_year: methodId && methodType === 'card' ? expYear || null : null,
+      quickbooks_payment_method_id: methodId || null,
+      quickbooks_payment_method_last4: methodId ? last4 || null : null,
+      quickbooks_payment_method_note: methodId ? cleanText(formData.get('quickbooks_payment_method_note')) || null : null,
+      quickbooks_payment_method_type: methodId ? methodType : null,
+      quickbooks_payment_method_updated_at: new Date().toISOString(),
+    })
+    .eq('id', centerId);
+  if (error) {
+    console.error('[invoicing] payment method save failed', { centerId, error });
+    redirect(customersInvoicingHref('payment_method_failed', error.message, centerId));
+  }
+  redirect(customersInvoicingHref('payment_method_saved', undefined, centerId));
 }
 
 async function resetQuickBooksProducts(formData: FormData) {
@@ -624,6 +709,135 @@ async function invoiceOrder(formData: FormData) {
   redirect(invoicingHref(successToast));
 }
 
+async function chargeSavedPaymentForOrder(formData: FormData) {
+  'use server';
+  const orderId = cleanText(formData.get('order_id'));
+  await requireAdminWriteAccess(invoicingHref('admin_write_denied'), 'invoicing');
+  if (!orderId) redirect(invoicingHref('invoice_not_ready'));
+
+  const quickBooksStatus = await getQuickBooksConnectionStatus();
+  if (!quickBooksStatus.connected) redirect(invoicingHref('quickbooks_not_connected'));
+  if (!hasQuickBooksPaymentsScope(quickBooksStatus.grantedScopes)) redirect(invoicingHref('quickbooks_payments_not_authorized'));
+
+  const supabase = getSupabaseAdmin();
+  const startIso = quickBooksInvoicingStartIso();
+  const { data: order } = await supabase
+    .from('orders')
+    .select('id,status,archived_at,created_at,quickbooks_invoice_id,invoice_status,quickbooks_payment_id,centers(quickbooks_customer_id,quickbooks_payment_method_id,quickbooks_payment_method_type),order_items(line_total_cents,product_name_snapshot,products(name,quickbooks_item_id))')
+    .eq('id', orderId)
+    .single();
+
+  if (!order || (order as any).archived_at || (order as any).status !== 'Shipped' || !(order as any).created_at || new Date((order as any).created_at) < new Date(startIso)) {
+    redirect(invoicingHref('invoice_not_ready'));
+  }
+  if (cleanText((order as any).quickbooks_payment_id)) redirect(invoicingHref('payment_already_recorded'));
+
+  const center = relatedOne((order as any).centers);
+  if (invoiceableLineItemCount(order as any) === 0) {
+    await supabase
+      .from('orders')
+      .update({
+        invoice_error: 'This order has no invoiceable line items.',
+        invoice_status: 'invoice_error',
+      })
+      .eq('id', orderId);
+    redirect(invoicingHref('invoice_no_line_items'));
+  }
+  const missingCustomerMapping = !cleanText(center?.quickbooks_customer_id);
+  const missingProductMappings = ((order as any).order_items ?? [])
+    .filter((item: any) => !cleanText(relatedOne(item.products)?.quickbooks_item_id));
+  if (missingCustomerMapping || missingProductMappings.length) {
+    redirect(invoicingHref('invoice_mapping_required'));
+  }
+
+  const claimQuery = supabase
+    .from('orders')
+    .update({
+      invoice_error: null,
+      invoice_status: 'invoicing',
+      quickbooks_payment_error: null,
+    })
+    .eq('id', orderId)
+    .eq('status', 'Shipped')
+    .is('archived_at', null)
+    .is('quickbooks_payment_id', null)
+    .in('invoice_status', ['not_invoiced', 'invoice_error']);
+  const claimResult = (order as any).quickbooks_invoice_id
+    ? await claimQuery.eq('quickbooks_invoice_id', (order as any).quickbooks_invoice_id).select('id').single()
+    : await claimQuery.is('quickbooks_invoice_id', null).select('id').single();
+
+  if (claimResult.error || !claimResult.data) redirect(invoicingHref('invoice_already_created'));
+
+  let successToast: 'payment_receipt_sent' | 'payment_receipt_failed' = 'payment_receipt_sent';
+  try {
+    const invoice = await createQuickBooksPaidInvoiceForOrder(orderId);
+    let receiptEmailError: string | null = null;
+    let receiptEmailSentAt: string | null = null;
+
+    if (!invoice.emailTo) {
+      receiptEmailError = 'Add a billing email before sending the payment receipt.';
+    } else {
+      const pdf = await getQuickBooksInvoicePdf(invoice.id);
+      const emailResult = await sendPaymentReceiptEmail({
+        amountCents: invoice.amountCents,
+        customerName: invoice.customerName,
+        invoiceNumber: invoice.docNumber || invoice.id,
+        orderId,
+        paymentMethodLabel: invoice.paymentMethodLabel,
+        paymentMethodType: invoice.paymentMethodType,
+        paymentStatus: invoice.paymentChargeStatus,
+        pdf,
+        to: invoice.emailTo,
+      });
+      if (emailResult.ok) {
+        receiptEmailSentAt = new Date().toISOString();
+      } else {
+        receiptEmailError = errorMessage(emailResult.error, 'Payment was recorded, but the receipt email could not be sent.');
+      }
+    }
+
+    const { error: updateError } = await supabase
+      .from('orders')
+      .update({
+        invoice_error: null,
+        invoice_status: 'invoiced',
+        invoiced_at: new Date().toISOString(),
+        quickbooks_invoice_doc_number: invoice.docNumber,
+        quickbooks_invoice_email_to: invoice.emailTo,
+        quickbooks_invoice_id: invoice.id,
+        quickbooks_invoice_url: invoice.url,
+        quickbooks_payment_charge_id: invoice.paymentChargeId,
+        quickbooks_payment_error: receiptEmailError,
+        quickbooks_payment_id: invoice.paymentId,
+        quickbooks_payment_method_label: invoice.paymentMethodLabel,
+        quickbooks_payment_method_type: invoice.paymentMethodType,
+        quickbooks_payment_status: invoice.paymentChargeStatus,
+        quickbooks_receipt_email_sent_at: receiptEmailSentAt,
+        quickbooks_receipt_email_to: invoice.emailTo,
+      })
+      .eq('id', orderId);
+    if (updateError) throw updateError;
+    if (receiptEmailError) successToast = 'payment_receipt_failed';
+  } catch (error) {
+    const message = error instanceof QuickBooksConfigurationError
+      ? error.message
+      : error instanceof Error
+        ? error.message
+        : 'Unable to charge the saved payment method.';
+    console.error('[invoicing] saved payment charge failed', { error, orderId });
+    await supabase
+      .from('orders')
+      .update({
+        invoice_error: message,
+        invoice_status: 'invoice_error',
+        quickbooks_payment_error: message,
+      })
+      .eq('id', orderId);
+    redirect(invoicingHref(error instanceof QuickBooksConfigurationError ? 'quickbooks_config_error' : 'payment_failed'));
+  }
+  redirect(invoicingHref(successToast));
+}
+
 async function resendQuickBooksInvoice(formData: FormData) {
   'use server';
   const orderId = String(formData.get('order_id') ?? '').trim();
@@ -736,6 +950,75 @@ async function resendInvoicePdf(formData: FormData) {
   redirect(`/admin/invoicing?view=sent&toast=${toast}`);
 }
 
+async function resendPaymentReceipt(formData: FormData) {
+  'use server';
+  const orderId = cleanText(formData.get('order_id'));
+  await requireAdminWriteAccess('/admin/invoicing?view=sent&toast=admin_write_denied', 'invoicing');
+  if (!orderId) redirect('/admin/invoicing?view=sent&toast=payment_receipt_failed');
+
+  const supabase = getSupabaseAdmin();
+  const { data: order, error: readError } = await supabase
+    .from('orders')
+    .select('id,subtotal_cents,quickbooks_invoice_id,quickbooks_invoice_doc_number,quickbooks_invoice_email_to,quickbooks_payment_id,quickbooks_payment_method_label,quickbooks_payment_method_type,quickbooks_payment_status,profiles(email,full_name),centers(name,billing_email)')
+    .eq('id', orderId)
+    .single();
+  if (readError || !order?.quickbooks_invoice_id || !order?.quickbooks_payment_id) {
+    redirect('/admin/invoicing?view=sent&toast=payment_receipt_failed');
+  }
+
+  const emailTo = cleanText((order as any).quickbooks_invoice_email_to)
+    || cleanText(relatedOne((order as any).centers)?.billing_email)
+    || cleanText(relatedOne((order as any).profiles)?.email);
+  if (!emailTo) {
+    await supabase
+      .from('orders')
+      .update({
+        quickbooks_payment_error: 'Add a billing email before resending the payment receipt.',
+      })
+      .eq('id', orderId);
+    redirect('/admin/invoicing?view=sent&toast=payment_receipt_failed');
+  }
+
+  let toast: 'payment_receipt_sent' | 'payment_receipt_failed' = 'payment_receipt_sent';
+  try {
+    const pdf = await getQuickBooksInvoicePdf(String((order as any).quickbooks_invoice_id));
+    const invoiceNumber = cleanText((order as any).quickbooks_invoice_doc_number) || String((order as any).quickbooks_invoice_id);
+    const emailResult = await sendPaymentReceiptEmail({
+      amountCents: Math.round(numericValue((order as any).subtotal_cents)),
+      customerName: cleanText(relatedOne((order as any).centers)?.name) || cleanText(relatedOne((order as any).profiles)?.full_name) || 'there',
+      invoiceNumber,
+      orderId,
+      paymentMethodLabel: cleanText((order as any).quickbooks_payment_method_label) || 'saved payment method',
+      paymentMethodType: cleanText((order as any).quickbooks_payment_method_type) || 'saved_payment_method',
+      paymentStatus: cleanText((order as any).quickbooks_payment_status) || 'RECORDED',
+      pdf,
+      to: emailTo,
+    });
+    if (!emailResult.ok) throw emailResult.error;
+
+    const { error: updateError } = await supabase
+      .from('orders')
+      .update({
+        quickbooks_payment_error: null,
+        quickbooks_receipt_email_sent_at: new Date().toISOString(),
+        quickbooks_receipt_email_to: emailTo,
+      })
+      .eq('id', orderId);
+    if (updateError) throw updateError;
+  } catch (error) {
+    const message = errorMessage(error, 'Unable to resend that payment receipt.');
+    console.error('[invoicing] payment receipt resend failed', { error, orderId });
+    await supabase
+      .from('orders')
+      .update({
+        quickbooks_payment_error: message,
+      })
+      .eq('id', orderId);
+    toast = 'payment_receipt_failed';
+  }
+  redirect(`/admin/invoicing?view=sent&toast=${toast}`);
+}
+
 export default async function AdminInvoicingPage({ searchParams }: { searchParams?: SearchParams }) {
   const current = await requireAdminSectionView('invoicing');
   const canInvoice = adminCanEdit(current.access, 'invoicing');
@@ -755,7 +1038,7 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
     getQuickBooksSalesTaxSettings(),
     supabase
       .from('orders')
-      .select('id,created_at,shipped_at,subtotal_cents,shipping_company,shipping_name,shipping_state,invoice_status,invoice_error,invoiced_at,quickbooks_invoice_id,quickbooks_invoice_doc_number,quickbooks_invoice_url,quickbooks_invoice_email_to,quickbooks_invoice_email_sent_at,profiles(email,full_name),centers(name,customer_tax_status,quickbooks_customer_id,quickbooks_display_name),order_items(qty,line_total_cents,product_name_snapshot,products(name,sku,quickbooks_item_id))')
+      .select(INVOICE_ORDER_SELECT)
       .eq('status', 'Shipped')
       .is('archived_at', null)
       .or('quickbooks_invoice_id.is.null,invoice_status.eq.invoice_error')
@@ -764,7 +1047,7 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
       .order('created_at', { ascending: true }),
     supabase
       .from('orders')
-      .select('id,created_at,shipped_at,subtotal_cents,shipping_company,shipping_name,shipping_state,invoice_status,invoice_error,invoiced_at,quickbooks_invoice_id,quickbooks_invoice_doc_number,quickbooks_invoice_url,quickbooks_invoice_email_to,quickbooks_invoice_email_sent_at,profiles(email,full_name),centers(name,customer_tax_status,quickbooks_customer_id,quickbooks_display_name),order_items(qty,line_total_cents,product_name_snapshot,products(name,sku,quickbooks_item_id))')
+      .select(INVOICE_ORDER_SELECT)
       .eq('invoice_status', 'invoiced')
       .not('quickbooks_invoice_id', 'is', null)
       .order('quickbooks_invoice_email_sent_at', { ascending: false, nullsFirst: false })
@@ -773,7 +1056,7 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
     activeView === 'accounts-receivable'
       ? supabase
           .from('orders')
-          .select('id,created_at,shipped_at,subtotal_cents,shipping_company,shipping_name,shipping_state,invoice_status,invoice_error,invoiced_at,quickbooks_invoice_id,quickbooks_invoice_doc_number,quickbooks_invoice_url,quickbooks_invoice_email_to,quickbooks_invoice_email_sent_at,profiles(email,full_name),centers(name,customer_tax_status,quickbooks_customer_id,quickbooks_display_name),order_items(qty,line_total_cents,product_name_snapshot,products(name,sku,quickbooks_item_id))')
+          .select(INVOICE_ORDER_SELECT)
           .not('quickbooks_invoice_id', 'is', null)
           .order('invoiced_at', { ascending: false, nullsFirst: false })
           .order('created_at', { ascending: false })
@@ -789,7 +1072,7 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
     activeView === 'customers'
       ? supabase
           .from('centers')
-          .select('id,name,is_active,created_at,quickbooks_customer_id,quickbooks_display_name,quickbooks_company_name,quickbooks_fully_qualified_name,legal_name,billing_email,billing_address1,billing_city,billing_state,billing_zip,quickbooks_sync_status,quickbooks_synced_at,quickbooks_sync_error,quickbooks_mapping_note')
+          .select(CUSTOMER_SYNC_SELECT)
           .order('is_active', { ascending: false })
           .order('name', { ascending: true })
       : Promise.resolve({ data: [], error: null }),
@@ -834,6 +1117,7 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
   const quickBooksItems = quickBooksItemsResult.items;
   const quickBooksCustomers = quickBooksCustomersResult.customers;
   const resetStatus = resetStatusResult.data as QuickBooksResetStatusRow | null;
+  const quickBooksPaymentsAuthorized = hasQuickBooksPaymentsScope(quickBooksStatus.grantedScopes);
   const readyOrders = orders.filter(orderIsReadyToInvoice);
   const needsMappingOrders = orders.filter((order) => order.invoice_status !== 'invoicing' && !orderIsReadyToInvoice(order));
   const totalReadyCents = readyOrders.reduce((sum, order) => sum + Math.max(0, numericValue(order.subtotal_cents)), 0);
@@ -914,6 +1198,12 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
       {quickBooksStatus.missingConfig.length ? (
         <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-900">
           Missing {quickBooksStatus.missingConfig.join(', ')}.
+        </div>
+      ) : null}
+
+      {quickBooksStatus.connected && !quickBooksPaymentsAuthorized ? (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-900">
+          Reconnect QuickBooks to authorize Payments before charging saved cards, checking accounts, or ACH/eCheck methods.
         </div>
       ) : null}
 
@@ -1084,7 +1374,7 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
 
           {sentInvoices.length ? (
             <div className="overflow-x-auto">
-              <table className="min-w-[76rem] text-left text-sm">
+              <table className="min-w-[86rem] text-left text-sm">
                 <thead className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
                   <tr>
                     <th className="px-3 py-2">Invoice</th>
@@ -1092,6 +1382,7 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
                     <th className="px-3 py-2">Amount</th>
                     <th className="px-3 py-2">Created</th>
                     <th className="px-3 py-2">Email</th>
+                    <th className="px-3 py-2">Payment</th>
                     <th className="px-3 py-2">Order</th>
                     <th className="px-3 py-2">Shipped</th>
                     <th className="px-3 py-2">Lines</th>
@@ -1112,6 +1403,23 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
                       <td className="px-3 py-3 font-semibold text-slate-950">{usd(Math.round(numericValue(order.subtotal_cents)))}</td>
                       <td className="px-3 py-3 text-slate-600">{formatTimestamp(order.quickbooks_invoice_email_sent_at ?? order.invoiced_at ?? null)}</td>
                       <td className="max-w-[14rem] break-all px-3 py-3 text-slate-600">{order.quickbooks_invoice_email_to || relatedOne(order.profiles)?.email || '—'}</td>
+                      <td className="min-w-[220px] px-3 py-3">
+                        {order.quickbooks_payment_id ? (
+                          <div>
+                            <span className="inline-flex rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-semibold text-emerald-800">
+                              {order.quickbooks_payment_status || 'Recorded'}
+                            </span>
+                            <p className="mt-1 text-xs text-slate-500">{order.quickbooks_payment_method_label || 'Saved payment method'}</p>
+                            <p className="mt-1 break-all font-mono text-xs text-slate-500">QB payment {order.quickbooks_payment_id}</p>
+                            <p className="mt-1 text-xs text-slate-500">
+                              {order.quickbooks_receipt_email_sent_at ? `Receipt sent ${formatTimestamp(order.quickbooks_receipt_email_sent_at)}` : 'Receipt not sent'}
+                            </p>
+                            {order.quickbooks_payment_error ? <p className="mt-1 text-xs font-medium text-rose-700">{order.quickbooks_payment_error}</p> : null}
+                          </div>
+                        ) : (
+                          <span className="text-slate-500">Not charged by portal</span>
+                        )}
+                      </td>
                       <td className="px-3 py-3 text-slate-600">{formatTimestamp(order.created_at)}</td>
                       <td className="px-3 py-3 text-slate-600">{formatTimestamp(order.shipped_at)}</td>
                       <td className="px-3 py-3 text-slate-600">{(order.order_items ?? []).length}</td>
@@ -1136,8 +1444,8 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
                             <input type="hidden" name="order_id" value={order.id} />
                             <PendingSubmitButton
                               className="btn-secondary w-full whitespace-nowrap text-center text-xs"
-                              disabled={!canInvoice || !quickBooksStatus.connected}
-                              disabledLabel="Resend invoice"
+                              disabled={!canInvoice || !quickBooksStatus.connected || Boolean(order.quickbooks_payment_id)}
+                              disabledLabel={order.quickbooks_payment_id ? 'Use receipt' : 'Resend invoice'}
                               label="Resend invoice"
                               pendingLabel="Resending..."
                             />
@@ -1146,12 +1454,24 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
                             <input type="hidden" name="order_id" value={order.id} />
                             <PendingSubmitButton
                               className="btn-secondary w-full whitespace-nowrap text-center text-xs"
-                              disabled={!canInvoice || !quickBooksStatus.connected}
-                              disabledLabel="Resend PDF"
+                              disabled={!canInvoice || !quickBooksStatus.connected || Boolean(order.quickbooks_payment_id)}
+                              disabledLabel={order.quickbooks_payment_id ? 'Use receipt' : 'Resend PDF'}
                               label="Resend PDF"
                               pendingLabel="Sending PDF..."
                             />
                           </form>
+                          {order.quickbooks_payment_id ? (
+                            <form action={resendPaymentReceipt} className="w-full">
+                              <input type="hidden" name="order_id" value={order.id} />
+                              <PendingSubmitButton
+                                className="btn-secondary w-full whitespace-nowrap text-center text-xs"
+                                disabled={!canInvoice || !quickBooksStatus.connected}
+                                disabledLabel="Resend receipt"
+                                label="Resend receipt"
+                                pendingLabel="Sending receipt..."
+                              />
+                            </form>
+                          ) : null}
                         </div>
                       </td>
                     </tr>
@@ -1252,13 +1572,14 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
 
             {quickBooksStatus.connected ? (
               <div className="overflow-x-auto">
-                <table className="min-w-full text-left text-sm">
+                <table className="min-w-[92rem] text-left text-sm">
                   <thead className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
                     <tr>
                       <th className="px-3 py-2">Portal center</th>
                       <th className="px-3 py-2">Current QuickBooks link</th>
                       <th className="px-3 py-2">Suggested match</th>
                       <th className="px-3 py-2">Manual link</th>
+                      <th className="px-3 py-2">Saved payment</th>
                       <th className="px-3 py-2">Actions</th>
                     </tr>
                   </thead>
@@ -1268,6 +1589,7 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
                       const suggestion = customerMatchByCenterId.get(center.id);
                       const suggestedCustomer = suggestion?.customer ?? null;
                       const isMapped = Boolean(center.quickbooks_customer_id);
+                      const paymentMethod = savedPaymentMethodInfo(center);
                       return (
                         <tr key={center.id} id={`qb-center-${center.id}`} className="scroll-mt-24 align-top">
                           <td className="min-w-[220px] px-3 py-3">
@@ -1333,6 +1655,40 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
                                 className="btn-secondary w-full"
                                 disabled={!canInvoice || !quickBooksCustomers.length}
                                 label="Save manual link"
+                                pendingLabel="Saving..."
+                              />
+                            </form>
+                          </td>
+                          <td className="min-w-[300px] px-3 py-3">
+                            <form action={saveQuickBooksPaymentMethod} className="space-y-2">
+                              <input type="hidden" name="center_id" value={center.id} />
+                              {paymentMethod.id ? (
+                                <div>
+                                  <p className="font-semibold text-slate-950">{paymentMethod.label}</p>
+                                  <p className="mt-1 break-all font-mono text-xs text-slate-500">{paymentMethod.id}</p>
+                                  {center.quickbooks_payment_method_updated_at ? <p className="mt-1 text-xs text-slate-500">Updated {formatTimestamp(center.quickbooks_payment_method_updated_at)}</p> : null}
+                                </div>
+                              ) : (
+                                <p className="text-slate-500">No saved payment method</p>
+                              )}
+                              <div className="grid gap-2 sm:grid-cols-2">
+                                <select className="input h-11 sm:col-span-2" name="quickbooks_payment_method_type" defaultValue={paymentMethod.type ?? ''}>
+                                  <option value="">No automatic payment</option>
+                                  <option value="card">Card</option>
+                                  <option value="bank_account">Checking / ACH</option>
+                                  <option value="echeck">eCheck</option>
+                                </select>
+                                <input className="input h-11 sm:col-span-2" name="quickbooks_payment_method_id" placeholder="QuickBooks saved payment ID" defaultValue={center.quickbooks_payment_method_id ?? ''} />
+                                <input className="input h-11" name="quickbooks_payment_method_brand" placeholder="Brand or bank" defaultValue={center.quickbooks_payment_method_brand ?? ''} />
+                                <input className="input h-11" name="quickbooks_payment_method_last4" placeholder="Last 4" defaultValue={center.quickbooks_payment_method_last4 ?? ''} />
+                                <input className="input h-11" name="quickbooks_payment_method_exp_month" placeholder="Exp MM" defaultValue={center.quickbooks_payment_method_exp_month ?? ''} />
+                                <input className="input h-11" name="quickbooks_payment_method_exp_year" placeholder="Exp YYYY" defaultValue={center.quickbooks_payment_method_exp_year ?? ''} />
+                              </div>
+                              <input className="input h-11" name="quickbooks_payment_method_note" placeholder="Payment note" defaultValue={center.quickbooks_payment_method_note ?? ''} />
+                              <PendingSubmitButton
+                                className="btn-secondary w-full"
+                                disabled={!canInvoice}
+                                label="Save payment method"
                                 pendingLabel="Saving..."
                               />
                             </form>
@@ -1581,6 +1937,9 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
           const mappingBlocked = missingCustomerMapping || missingMappedProducts.length > 0;
           const noInvoiceableItems = invoiceableLineItemCount(order) === 0;
           const readyToInvoice = orderIsReadyToInvoice(order);
+          const paymentMethod = savedPaymentMethodInfo(center);
+          const hasSavedPaymentMethod = Boolean(paymentMethod.id && paymentMethod.type);
+          const hasRecordedPayment = Boolean(cleanText(order.quickbooks_payment_id));
           const taxStatus = center?.customer_tax_status === 'for_profit'
             ? 'For-profit'
             : center?.customer_tax_status === 'tax_exempt'
@@ -1598,15 +1957,34 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
                     <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${isTaxable ? 'bg-teal-100 text-teal-800' : 'bg-slate-100 text-slate-700'}`}>
                       {isTaxable ? 'Taxable in QuickBooks' : 'Non-taxable in QuickBooks'}
                     </span>
+                    {hasSavedPaymentMethod ? (
+                      <span className="rounded-full bg-indigo-100 px-2.5 py-1 text-xs font-semibold text-indigo-800">
+                        Saved payment
+                      </span>
+                    ) : null}
+                    {hasRecordedPayment ? (
+                      <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-semibold text-emerald-800">
+                        Payment recorded
+                      </span>
+                    ) : null}
                   </div>
                   <p className="mt-2 text-sm text-slate-500">Shipped {formatTimestamp(order.shipped_at)} · Ordered {formatTimestamp(order.created_at)}</p>
                   <p className="mt-1 text-sm text-slate-500">{taxStatus} · Ship-to state {order.shipping_state || 'missing'}</p>
+                  {hasSavedPaymentMethod ? <p className="mt-1 text-sm text-slate-500">Saved payment: {paymentMethod.label}</p> : null}
+                  {!hasSavedPaymentMethod && !missingCustomerMapping ? <p className="mt-1 text-sm text-slate-500">QuickBooks will be checked for a saved card, checking, or ACH/eCheck method before charging.</p> : null}
                   <p className="mt-1 break-all text-sm text-slate-500">Order {order.id}</p>
                   {order.quickbooks_invoice_id ? (
                     <p className="mt-1 text-sm text-slate-500">
                       QuickBooks invoice <span className="font-mono font-semibold text-slate-700">{invoiceNumberLabel(order)}</span>
                     </p>
                   ) : null}
+                  {order.quickbooks_payment_charge_id ? (
+                    <p className="mt-1 text-sm text-slate-500">
+                      QuickBooks payment transaction <span className="font-mono font-semibold text-slate-700">{order.quickbooks_payment_charge_id}</span>
+                      {order.quickbooks_payment_status ? ` · ${order.quickbooks_payment_status}` : ''}
+                    </p>
+                  ) : null}
+                  {order.quickbooks_payment_error ? <p className="mt-1 text-sm font-medium text-rose-700">{order.quickbooks_payment_error}</p> : null}
                 </div>
                 <div className="text-left lg:text-right">
                   <p className="text-2xl font-semibold text-slate-950">{usd(Math.round(numericValue(order.subtotal_cents)))}</p>
@@ -1639,12 +2017,34 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
                 <Link className="btn-secondary text-center" href={`/admin/orders/${order.id}`}>Open order</Link>
                 {missingCustomerMapping ? <Link className="btn-secondary text-center" href="/admin/invoicing?view=customers">Map customer</Link> : null}
                 {missingMappedProducts.length ? <Link className="btn-secondary text-center" href="/admin/invoicing?view=products">Map products</Link> : null}
+                <form action={chargeSavedPaymentForOrder}>
+                  <input type="hidden" name="order_id" value={order.id} />
+                  <PendingSubmitButton
+                    className="btn-primary w-full sm:w-auto"
+                    disabled={!canInvoice || !readyToInvoice || !quickBooksStatus.connected || !quickBooksPaymentsAuthorized || Boolean(quickBooksStatus.missingConfig.length) || hasRecordedPayment}
+                    disabledLabel={
+                      hasRecordedPayment
+                        ? 'Payment recorded'
+                        : isBusy
+                          ? 'Invoicing...'
+                          : noInvoiceableItems
+                            ? 'No invoiceable items'
+                            : mappingBlocked
+                              ? 'Needs mapping'
+                              : !quickBooksPaymentsAuthorized
+                                ? 'Reconnect QuickBooks'
+                                : 'Charge saved payment'
+                    }
+                    label={order.quickbooks_payment_charge_id ? 'Record payment & send receipt' : hasSavedPaymentMethod ? 'Charge saved payment & send receipt' : 'Check QuickBooks & charge'}
+                    pendingLabel={order.quickbooks_payment_charge_id ? 'Recording...' : hasSavedPaymentMethod ? 'Charging...' : 'Checking...'}
+                  />
+                </form>
                 <form action={invoiceOrder}>
                   <input type="hidden" name="order_id" value={order.id} />
                   <PendingSubmitButton
                     className="btn-primary w-full sm:w-auto"
-                    disabled={!canInvoice || !readyToInvoice || !quickBooksStatus.connected || Boolean(quickBooksStatus.missingConfig.length)}
-                    disabledLabel={isBusy ? 'Invoicing...' : noInvoiceableItems ? 'No invoiceable items' : mappingBlocked ? 'Needs mapping' : 'Create & send invoice'}
+                    disabled={!canInvoice || !readyToInvoice || !quickBooksStatus.connected || Boolean(quickBooksStatus.missingConfig.length) || hasRecordedPayment}
+                    disabledLabel={hasRecordedPayment ? 'Payment recorded' : isBusy ? 'Invoicing...' : noInvoiceableItems ? 'No invoiceable items' : mappingBlocked ? 'Needs mapping' : 'Create & send invoice'}
                     label="Create & send invoice"
                     pendingLabel="Invoicing..."
                   />
@@ -1654,8 +2054,8 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
                   <input type="hidden" name="delivery" value="pdf" />
                   <PendingSubmitButton
                     className="btn-secondary w-full sm:w-auto"
-                    disabled={!canInvoice || !readyToInvoice || !quickBooksStatus.connected || Boolean(quickBooksStatus.missingConfig.length)}
-                    disabledLabel={isBusy ? 'Invoicing...' : noInvoiceableItems ? 'No invoiceable items' : mappingBlocked ? 'Needs mapping' : 'Send PDF'}
+                    disabled={!canInvoice || !readyToInvoice || !quickBooksStatus.connected || Boolean(quickBooksStatus.missingConfig.length) || hasRecordedPayment}
+                    disabledLabel={hasRecordedPayment ? 'Payment recorded' : isBusy ? 'Invoicing...' : noInvoiceableItems ? 'No invoiceable items' : mappingBlocked ? 'Needs mapping' : 'Send PDF'}
                     label="Create & send PDF"
                     pendingLabel="Sending PDF..."
                   />
@@ -1664,7 +2064,7 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
                   <input type="hidden" name="order_id" value={order.id} />
                   <button
                     className="btn-secondary w-full sm:w-auto disabled:opacity-60"
-                    disabled={!canInvoice || !readyToInvoice || !quickBooksStatus.connected || Boolean(quickBooksStatus.missingConfig.length)}
+                    disabled={!canInvoice || !readyToInvoice || !quickBooksStatus.connected || Boolean(quickBooksStatus.missingConfig.length) || hasRecordedPayment}
                     type="submit"
                   >
                     Create & download PDF

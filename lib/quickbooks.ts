@@ -5,6 +5,8 @@ import { getSupabaseAdmin } from '@/lib/supabase/admin';
 
 const QUICKBOOKS_CONNECTION_ID = 'default';
 const QUICKBOOKS_ACCOUNTING_SCOPE = 'com.intuit.quickbooks.accounting';
+const QUICKBOOKS_PAYMENT_SCOPE = 'com.intuit.quickbooks.payment';
+const QUICKBOOKS_OAUTH_SCOPE = `${QUICKBOOKS_ACCOUNTING_SCOPE} ${QUICKBOOKS_PAYMENT_SCOPE}`;
 const DEFAULT_QUICKBOOKS_SALES_TAX_STATES = ['TN'];
 const QUICKBOOKS_LINE_TAXABLE_CODE = 'TAX';
 const QUICKBOOKS_LINE_NON_TAXABLE_CODE = 'NON';
@@ -22,12 +24,14 @@ type QuickBooksConnection = {
   environment: QuickBooksEnvironment | string;
   realm_id: string;
   refresh_token: string;
+  scope?: string | null;
 };
 
 type QuickBooksTokenResponse = {
   access_token: string;
   expires_in: number;
   refresh_token: string;
+  scope?: string;
   x_refresh_token_expires_in?: number;
 };
 
@@ -58,8 +62,15 @@ type QuickBooksOrderItem = {
 type QuickBooksInvoiceCenter = {
   billing_email?: string | null;
   customer_tax_status?: CustomerTaxStatus | string | null;
+  id?: string | null;
   quickbooks_customer_id?: string | null;
   quickbooks_display_name?: string | null;
+  quickbooks_payment_method_brand?: string | null;
+  quickbooks_payment_method_exp_month?: string | null;
+  quickbooks_payment_method_exp_year?: string | null;
+  quickbooks_payment_method_id?: string | null;
+  quickbooks_payment_method_last4?: string | null;
+  quickbooks_payment_method_type?: string | null;
   name: string | null;
 };
 
@@ -75,6 +86,7 @@ type QuickBooksInvoiceOrder = {
   notes: string | null;
   order_items?: QuickBooksOrderItem[] | null;
   profiles?: { email: string | null; full_name: string | null } | { email: string | null; full_name: string | null }[] | null;
+  quickbooks_invoice_id?: string | null;
   shipping_address1: string | null;
   shipping_address2: string | null;
   shipping_city: string | null;
@@ -82,6 +94,7 @@ type QuickBooksInvoiceOrder = {
   shipping_name: string | null;
   shipping_state: string | null;
   shipping_zip: string | null;
+  subtotal_cents?: number | string | null;
 };
 
 type QuickBooksInvoiceRecord = {
@@ -93,6 +106,7 @@ type QuickBooksInvoiceRecord = {
 export type QuickBooksConnectionStatus = {
   connected: boolean;
   environment: QuickBooksEnvironment;
+  grantedScopes: string[];
   missingConfig: string[];
   realmId: string | null;
 };
@@ -106,6 +120,7 @@ export type QuickBooksCompanyInfo = {
 };
 
 export type CreatedQuickBooksInvoice = {
+  amountCents: number;
   customerName: string;
   docNumber: string | null;
   emailError: string | null;
@@ -118,6 +133,26 @@ export type CreatedQuickBooksInvoice = {
 export type QuickBooksInvoicePdf = {
   content: Buffer;
   filename: string;
+};
+
+export type QuickBooksSavedPaymentMethodType = 'card' | 'bank_account' | 'echeck';
+
+export type QuickBooksSavedPaymentMethod = {
+  brand?: string | null;
+  expMonth?: string | null;
+  expYear?: string | null;
+  id: string;
+  label: string;
+  last4?: string | null;
+  type: QuickBooksSavedPaymentMethodType;
+};
+
+export type CreatedQuickBooksPaidInvoice = CreatedQuickBooksInvoice & {
+  paymentChargeId: string;
+  paymentChargeStatus: string;
+  paymentId: string;
+  paymentMethodLabel: string;
+  paymentMethodType: QuickBooksSavedPaymentMethodType;
 };
 
 export type QuickBooksProductSummary = {
@@ -293,9 +328,202 @@ function amountFromCents(value: number | string | null | undefined) {
   return Number((numericValue(value) / 100).toFixed(2));
 }
 
+function amountStringFromCents(value: number | string | null | undefined) {
+  return amountFromCents(value).toFixed(2);
+}
+
 function centsFromAmount(value: number | string | null | undefined) {
   const parsed = numericValue(value);
   return Math.round(parsed * 100);
+}
+
+function invoiceableTotalCents(order: Pick<QuickBooksInvoiceOrder, 'order_items' | 'subtotal_cents'>) {
+  const lineTotal = (order.order_items ?? [])
+    .reduce((sum, item) => sum + Math.max(0, numericValue(item.line_total_cents)), 0);
+  return Math.round(lineTotal || Math.max(0, numericValue(order.subtotal_cents)));
+}
+
+function normalizePaymentMethodLast4(value: unknown) {
+  return cleanText(value).replace(/\D/g, '').slice(-4);
+}
+
+export function normalizeQuickBooksSavedPaymentMethodType(value: unknown): QuickBooksSavedPaymentMethodType | null {
+  const normalized = cleanText(value).toLowerCase().replace(/[\s-]+/g, '_');
+  if (normalized === 'card' || normalized === 'credit_card' || normalized === 'debit_card') return 'card';
+  if (normalized === 'bank' || normalized === 'bank_account' || normalized === 'checking' || normalized === 'ach') return 'bank_account';
+  if (normalized === 'echeck' || normalized === 'e_check') return 'echeck';
+  return null;
+}
+
+export function quickBooksSavedPaymentMethodLabel(method: Partial<QuickBooksInvoiceCenter> | null | undefined) {
+  const type = normalizeQuickBooksSavedPaymentMethodType(method?.quickbooks_payment_method_type);
+  const brand = cleanText(method?.quickbooks_payment_method_brand);
+  const last4 = normalizePaymentMethodLast4(method?.quickbooks_payment_method_last4);
+  const fallback = type === 'card' ? 'Saved card' : type === 'bank_account' ? 'Saved bank account' : type === 'echeck' ? 'Saved eCheck' : 'Saved payment method';
+  if (brand && last4) return `${brand} ending ${last4}`;
+  if (last4) return `${fallback} ending ${last4}`;
+  if (brand) return brand;
+  return fallback;
+}
+
+function savedPaymentMethodForOrder(order: QuickBooksInvoiceOrder): QuickBooksSavedPaymentMethod {
+  const center = relatedOne(order.centers);
+  const id = cleanText(center?.quickbooks_payment_method_id);
+  const type = normalizeQuickBooksSavedPaymentMethodType(center?.quickbooks_payment_method_type);
+  if (!id || !type) throw new QuickBooksConfigurationError('Add a saved QuickBooks payment method to this customer before charging automatically.');
+  return {
+    brand: cleanText(center?.quickbooks_payment_method_brand) || null,
+    expMonth: cleanText(center?.quickbooks_payment_method_exp_month) || null,
+    expYear: cleanText(center?.quickbooks_payment_method_exp_year) || null,
+    id,
+    label: quickBooksSavedPaymentMethodLabel(center),
+    last4: normalizePaymentMethodLast4(center?.quickbooks_payment_method_last4) || null,
+    type,
+  };
+}
+
+function cachedSavedPaymentMethodForOrder(order: QuickBooksInvoiceOrder): QuickBooksSavedPaymentMethod | null {
+  try {
+    return savedPaymentMethodForOrder(order);
+  } catch {
+    return null;
+  }
+}
+
+function paymentPayloadArray(payload: any, keys: string[]) {
+  for (const key of keys) {
+    const value = payload?.[key];
+    if (Array.isArray(value)) return value;
+    if (value && typeof value === 'object') return [value];
+  }
+  if (Array.isArray(payload)) return payload;
+  return [];
+}
+
+function paymentEntityIsActive(entity: any) {
+  const status = cleanText(entity?.status ?? entity?.Status).toUpperCase();
+  return !status || status === 'ACTIVE' || status === 'VALID';
+}
+
+function maskedLast4(...values: unknown[]) {
+  for (const value of values) {
+    const last4 = normalizePaymentMethodLast4(value);
+    if (last4) return last4;
+  }
+  return null;
+}
+
+function normalizeStoredCard(card: any): QuickBooksSavedPaymentMethod | null {
+  const id = cleanText(card?.id ?? card?.Id);
+  if (!id || !paymentEntityIsActive(card)) return null;
+  const brand = cleanText(card?.cardType ?? card?.cardBrand ?? card?.brand ?? card?.type ?? card?.Type) || null;
+  const last4 = maskedLast4(card?.last4, card?.number, card?.Number, card?.maskedNumber);
+  const method = {
+    quickbooks_payment_method_brand: brand,
+    quickbooks_payment_method_last4: last4,
+    quickbooks_payment_method_type: 'card',
+  };
+  return {
+    brand,
+    expMonth: cleanText(card?.expMonth ?? card?.ExpMonth) || null,
+    expYear: cleanText(card?.expYear ?? card?.ExpYear) || null,
+    id,
+    label: quickBooksSavedPaymentMethodLabel(method),
+    last4,
+    type: 'card',
+  };
+}
+
+function normalizeStoredBankAccount(account: any): QuickBooksSavedPaymentMethod | null {
+  const id = cleanText(account?.id ?? account?.Id);
+  if (!id || !paymentEntityIsActive(account)) return null;
+  const brand = cleanText(account?.bankName ?? account?.name ?? account?.Name ?? account?.accountType ?? account?.AccountType) || null;
+  const last4 = maskedLast4(account?.last4, account?.accountNumber, account?.AccountNumber, account?.maskedAccountNumber);
+  const method = {
+    quickbooks_payment_method_brand: brand,
+    quickbooks_payment_method_last4: last4,
+    quickbooks_payment_method_type: 'bank_account',
+  };
+  return {
+    brand,
+    id,
+    label: quickBooksSavedPaymentMethodLabel(method),
+    last4,
+    type: 'bank_account',
+  };
+}
+
+async function readQuickBooksSavedPaymentCollection(
+  connection: QuickBooksConnection,
+  customerId: string,
+  resource: 'cards' | 'bank-accounts'
+) {
+  const payload = await quickBooksPaymentsCustomerRequest(
+    connection,
+    `/customers/${encodeURIComponent(customerId)}/${resource}`
+  );
+  return resource === 'cards'
+    ? paymentPayloadArray(payload, ['cards', 'Cards', 'card', 'Card']).map(normalizeStoredCard).filter((method): method is QuickBooksSavedPaymentMethod => Boolean(method))
+    : paymentPayloadArray(payload, ['bankAccounts', 'bankaccounts', 'bank_accounts', 'BankAccounts', 'bankAccount', 'BankAccount']).map(normalizeStoredBankAccount).filter((method): method is QuickBooksSavedPaymentMethod => Boolean(method));
+}
+
+async function getQuickBooksSavedPaymentMethodsForCustomer(connection: QuickBooksConnection, customerId: string) {
+  const errors: string[] = [];
+  const [cards, bankAccounts] = await Promise.all([
+    readQuickBooksSavedPaymentCollection(connection, customerId, 'cards').catch((error) => {
+      errors.push(errorMessageForSavedPaymentRead('cards', error));
+      return [] as QuickBooksSavedPaymentMethod[];
+    }),
+    readQuickBooksSavedPaymentCollection(connection, customerId, 'bank-accounts').catch((error) => {
+      errors.push(errorMessageForSavedPaymentRead('bank accounts', error));
+      return [] as QuickBooksSavedPaymentMethod[];
+    }),
+  ]);
+  return { errors, methods: [...cards, ...bankAccounts] };
+}
+
+function errorMessageForSavedPaymentRead(resource: string, error: unknown) {
+  return `${resource}: ${error instanceof Error ? error.message : 'unavailable'}`;
+}
+
+async function cacheQuickBooksSavedPaymentMethodForOrder(
+  supabase: ReturnType<typeof getSupabaseAdmin>,
+  order: QuickBooksInvoiceOrder,
+  method: QuickBooksSavedPaymentMethod
+) {
+  const centerId = cleanText(relatedOne(order.centers)?.id);
+  if (!centerId) return;
+  await supabase
+    .from('centers')
+    .update({
+      quickbooks_payment_method_brand: method.brand ?? null,
+      quickbooks_payment_method_exp_month: method.type === 'card' ? method.expMonth ?? null : null,
+      quickbooks_payment_method_exp_year: method.type === 'card' ? method.expYear ?? null : null,
+      quickbooks_payment_method_id: method.id,
+      quickbooks_payment_method_last4: method.last4 ?? null,
+      quickbooks_payment_method_type: method.type,
+      quickbooks_payment_method_updated_at: new Date().toISOString(),
+    })
+    .eq('id', centerId);
+}
+
+async function resolveSavedPaymentMethodForOrder(
+  connection: QuickBooksConnection,
+  supabase: ReturnType<typeof getSupabaseAdmin>,
+  order: QuickBooksInvoiceOrder,
+  customerRef: QuickBooksRef
+): Promise<QuickBooksSavedPaymentMethod> {
+  const cachedMethod = cachedSavedPaymentMethodForOrder(order);
+  if (cachedMethod) return cachedMethod;
+
+  const result = await getQuickBooksSavedPaymentMethodsForCustomer(connection, customerRef.value);
+  const method = result.methods[0];
+  if (!method) {
+    const detail = result.errors.length ? ` ${result.errors.join(' ')}` : '';
+    throw new QuickBooksConfigurationError(`No saved QuickBooks payment method was found for this customer.${detail}`);
+  }
+  await cacheQuickBooksSavedPaymentMethodForOrder(supabase, order, method);
+  return method;
 }
 
 function normalizeStateCode(value: unknown) {
@@ -336,6 +564,18 @@ function quickBooksApiBaseUrl(environment: QuickBooksEnvironment) {
   return environment === 'production'
     ? 'https://quickbooks.api.intuit.com'
     : 'https://sandbox-quickbooks.api.intuit.com';
+}
+
+function quickBooksPaymentsApiBaseUrl(environment: QuickBooksEnvironment) {
+  return environment === 'production'
+    ? 'https://api.intuit.com/quickbooks/v4/payments'
+    : 'https://sandbox.api.intuit.com/quickbooks/v4/payments';
+}
+
+function quickBooksPaymentsCustomerApiBaseUrl(environment: QuickBooksEnvironment) {
+  return environment === 'production'
+    ? 'https://api.intuit.com/quickbooks/v4'
+    : 'https://sandbox.api.intuit.com/quickbooks/v4';
 }
 
 function quickBooksAppInvoiceUrl(environment: QuickBooksEnvironment, invoiceId: string) {
@@ -420,7 +660,7 @@ export function buildQuickBooksAuthorizationUrl(state: string) {
     client_id: config.clientId,
     redirect_uri: config.redirectUri,
     response_type: 'code',
-    scope: QUICKBOOKS_ACCOUNTING_SCOPE,
+    scope: QUICKBOOKS_OAUTH_SCOPE,
     state,
   });
   return `https://appcenter.intuit.com/connect/oauth2?${params.toString()}`;
@@ -453,6 +693,7 @@ export async function exchangeQuickBooksAuthorizationCode({
     realm_id: realmId,
     refresh_token: token.refresh_token,
     refresh_token_expires_at: token.x_refresh_token_expires_in ? tokenExpiry(token.x_refresh_token_expires_in) : null,
+    scope: cleanText(token.scope) || QUICKBOOKS_OAUTH_SCOPE,
     updated_at: new Date().toISOString(),
   }, { onConflict: 'id' });
   if (error) throw new Error(`Unable to save QuickBooks connection: ${error.message}`);
@@ -462,7 +703,7 @@ async function getStoredConnection(): Promise<QuickBooksConnection | null> {
   const supabase = getSupabaseAdmin();
   const { data, error } = await supabase
     .from('quickbooks_connections')
-    .select('realm_id,environment,access_token,refresh_token,access_token_expires_at')
+    .select('realm_id,environment,access_token,refresh_token,access_token_expires_at,scope')
     .eq('id', QUICKBOOKS_CONNECTION_ID)
     .maybeSingle();
   if (error) throw new Error(`Unable to read QuickBooks connection: ${error.message}`);
@@ -482,6 +723,7 @@ async function refreshConnection(connection: QuickBooksConnection) {
       access_token_expires_at: tokenExpiry(token.expires_in),
       refresh_token: token.refresh_token,
       refresh_token_expires_at: token.x_refresh_token_expires_in ? tokenExpiry(token.x_refresh_token_expires_in) : null,
+      scope: cleanText(token.scope) || connection.scope || QUICKBOOKS_OAUTH_SCOPE,
       updated_at: new Date().toISOString(),
     })
     .eq('id', QUICKBOOKS_CONNECTION_ID);
@@ -491,6 +733,7 @@ async function refreshConnection(connection: QuickBooksConnection) {
     access_token: token.access_token,
     access_token_expires_at: tokenExpiry(token.expires_in),
     refresh_token: token.refresh_token,
+    scope: cleanText(token.scope) || connection.scope || QUICKBOOKS_OAUTH_SCOPE,
   };
 }
 
@@ -540,6 +783,44 @@ async function quickBooksBinaryRequest(connection: QuickBooksConnection, path: s
     throw new Error(quickBooksErrorMessage(payload, 'QuickBooks request failed.', response.headers.get('intuit_tid')));
   }
   return Buffer.from(await response.arrayBuffer());
+}
+
+async function quickBooksPaymentsRequest(connection: QuickBooksConnection, path: string, init: RequestInit = {}) {
+  const environment = connection.environment === 'production' ? 'production' : 'sandbox';
+  const url = `${quickBooksPaymentsApiBaseUrl(environment)}${path}`;
+  const response = await fetch(url, {
+    ...init,
+    headers: {
+      Accept: 'application/json',
+      Authorization: `Bearer ${connection.access_token}`,
+      ...(init.body ? { 'Content-Type': 'application/json' } : {}),
+      ...init.headers,
+    },
+  });
+  const payload = await parseJsonResponse(response);
+  if (!response.ok) {
+    throw new Error(quickBooksErrorMessage(payload, 'QuickBooks Payments request failed.', response.headers.get('intuit_tid')));
+  }
+  return payload;
+}
+
+async function quickBooksPaymentsCustomerRequest(connection: QuickBooksConnection, path: string, init: RequestInit = {}) {
+  const environment = connection.environment === 'production' ? 'production' : 'sandbox';
+  const url = `${quickBooksPaymentsCustomerApiBaseUrl(environment)}${path}`;
+  const response = await fetch(url, {
+    ...init,
+    headers: {
+      Accept: 'application/json',
+      Authorization: `Bearer ${connection.access_token}`,
+      ...(init.body ? { 'Content-Type': 'application/json' } : {}),
+      ...init.headers,
+    },
+  });
+  const payload = await parseJsonResponse(response);
+  if (!response.ok) {
+    throw new Error(quickBooksErrorMessage(payload, 'QuickBooks Payments customer request failed.', response.headers.get('intuit_tid')));
+  }
+  return payload;
 }
 
 function escapeQueryString(value: string) {
@@ -1175,6 +1456,91 @@ export function buildQuickBooksInvoicePayload(
   };
 }
 
+export function buildQuickBooksSavedPaymentChargePayload(
+  method: QuickBooksSavedPaymentMethod,
+  amountCents: number,
+  description: string
+) {
+  const amount = amountStringFromCents(amountCents);
+  if (method.type === 'card') {
+    return {
+      path: '/charges',
+      payload: {
+        amount,
+        capture: true,
+        cardOnFile: method.id,
+        context: {
+          isEcommerce: true,
+          mobile: false,
+        },
+        currency: 'USD',
+        description,
+      },
+    };
+  }
+
+  return {
+    path: '/echecks',
+    payload: {
+      amount,
+      bankAccountOnFile: method.id,
+      context: {
+        deviceInfo: {
+          id: 'sobrew-portal',
+          type: 'server',
+        },
+        isEcommerce: true,
+        mobile: false,
+      },
+      description,
+      paymentMode: 'WEB',
+    },
+  };
+}
+
+export function buildQuickBooksInvoicePaymentPayload({
+  amountCents,
+  chargeId,
+  chargeStatus,
+  customerRef,
+  invoiceId,
+  invoiceNumber,
+  paymentMethodLabel,
+}: {
+  amountCents: number;
+  chargeId: string;
+  chargeStatus: string;
+  customerRef: QuickBooksRef;
+  invoiceId: string;
+  invoiceNumber: string | null;
+  paymentMethodLabel: string;
+}) {
+  const amount = amountFromCents(amountCents);
+  return {
+    CustomerRef: customerRef,
+    Line: [
+      {
+        Amount: amount,
+        LinkedTxn: [
+          {
+            TxnId: invoiceId,
+            TxnType: 'Invoice',
+          },
+        ],
+      },
+    ],
+    PaymentRefNum: chargeId,
+    PrivateNote: [
+      `Sobrew payment ${chargeId}`,
+      invoiceNumber ? `Invoice ${invoiceNumber}` : null,
+      `QuickBooks Payments status ${chargeStatus || 'unknown'}`,
+      paymentMethodLabel,
+    ].filter(Boolean).join('\n'),
+    TotalAmt: amount,
+    TxnDate: quickBooksDate(),
+  };
+}
+
 async function getQuickBooksInvoice(connection: QuickBooksConnection, invoiceId: string): Promise<QuickBooksInvoiceRecord | null> {
   const result = await quickBooksRequest(connection, `/invoice/${encodeURIComponent(invoiceId)}`);
   return result?.Invoice ?? null;
@@ -1346,7 +1712,7 @@ export async function createQuickBooksInvoiceForOrder(
   const supabase = getSupabaseAdmin();
   const { data: order, error } = await supabase
     .from('orders')
-    .select('id,status,archived_at,created_at,notes,quickbooks_invoice_id,quickbooks_invoice_doc_number,quickbooks_invoice_url,shipping_company,shipping_name,shipping_address1,shipping_address2,shipping_city,shipping_state,shipping_zip,profiles(email,full_name),centers(name,billing_email,customer_tax_status,quickbooks_customer_id,quickbooks_display_name),order_items(qty,unit_price_cents,line_total_cents,product_id,product_name_snapshot,products(name,sku,quickbooks_item_id,quickbooks_item_name))')
+    .select('id,status,archived_at,created_at,notes,subtotal_cents,quickbooks_invoice_id,quickbooks_invoice_doc_number,quickbooks_invoice_url,shipping_company,shipping_name,shipping_address1,shipping_address2,shipping_city,shipping_state,shipping_zip,profiles(email,full_name),centers(name,billing_email,customer_tax_status,quickbooks_customer_id,quickbooks_display_name),order_items(qty,unit_price_cents,line_total_cents,product_id,product_name_snapshot,products(name,sku,quickbooks_item_id,quickbooks_item_name))')
     .eq('id', orderId)
     .single();
   if (error || !order) throw new Error(error?.message || 'Order not found.');
@@ -1357,6 +1723,7 @@ export async function createQuickBooksInvoiceForOrder(
   const environment = connection.environment === 'production' ? 'production' : 'sandbox';
   const customerName = customerNameForOrder(order as QuickBooksInvoiceOrder);
   const emailTo = invoiceEmailForOrder(order as QuickBooksInvoiceOrder);
+  const amountCents = invoiceableTotalCents(order as QuickBooksInvoiceOrder);
   if ((order as any).quickbooks_invoice_id) {
     const portalDocNumber = await assignQuickBooksInvoiceDocNumber(orderId);
     const docNumberResult = await tryEnsureQuickBooksInvoiceDocNumber(
@@ -1366,6 +1733,7 @@ export async function createQuickBooksInvoiceForOrder(
     );
     if (!docNumberResult.docNumber) {
       return {
+        amountCents,
         customerName,
         docNumber: null,
         emailError: `QuickBooks invoice was not emailed because no invoice number could be assigned. ${docNumberResult.error}`,
@@ -1379,6 +1747,7 @@ export async function createQuickBooksInvoiceForOrder(
       ? await trySendQuickBooksInvoiceEmail(connection, String((order as any).quickbooks_invoice_id), emailTo)
       : { emailError: null, emailSentAt: null };
     return {
+      amountCents,
       customerName,
       docNumber: docNumberResult.docNumber,
       emailError: emailResult.emailError,
@@ -1411,6 +1780,7 @@ export async function createQuickBooksInvoiceForOrder(
   const docNumberResult = await tryEnsureQuickBooksInvoiceDocNumber(connection, String(invoice.Id), portalDocNumber, invoice);
   if (!docNumberResult.docNumber) {
     return {
+      amountCents,
       customerName,
       docNumber: null,
       emailError: `QuickBooks invoice was created, but it was not emailed because no invoice number could be assigned. ${docNumberResult.error}`,
@@ -1424,6 +1794,7 @@ export async function createQuickBooksInvoiceForOrder(
     ? await trySendQuickBooksInvoiceEmail(connection, String(invoice.Id), emailTo)
     : { emailError: null, emailSentAt: null };
   return {
+    amountCents,
     customerName,
     docNumber: docNumberResult.docNumber,
     emailError: emailResult.emailError,
@@ -1434,6 +1805,133 @@ export async function createQuickBooksInvoiceForOrder(
   };
 }
 
+function paymentChargeRequestId(orderId: string, invoiceId: string, paymentMethodId: string) {
+  return `sobrew-${orderId}-${invoiceId}-${paymentMethodId}`
+    .replace(/[^A-Za-z0-9_-]+/g, '-')
+    .slice(0, 50);
+}
+
+function paymentChargeWasDeclined(status: string) {
+  return ['CANCELLED', 'DECLINED', 'FAILED', 'REFUNDED', 'VOIDED'].includes(status.toUpperCase());
+}
+
+async function createQuickBooksPaymentCharge(
+  connection: QuickBooksConnection,
+  orderId: string,
+  invoiceId: string,
+  method: QuickBooksSavedPaymentMethod,
+  amountCents: number,
+  description: string
+) {
+  const request = buildQuickBooksSavedPaymentChargePayload(method, amountCents, description);
+  const charge = await quickBooksPaymentsRequest(connection, request.path, {
+    body: JSON.stringify(request.payload),
+    headers: {
+      'Request-Id': paymentChargeRequestId(orderId, invoiceId, method.id),
+    },
+    method: 'POST',
+  });
+  const chargeId = cleanText(charge?.id);
+  const chargeStatus = cleanText(charge?.status) || 'UNKNOWN';
+  if (!chargeId) throw new Error('QuickBooks Payments did not return a payment transaction ID.');
+  if (paymentChargeWasDeclined(chargeStatus)) {
+    throw new Error(`QuickBooks Payments did not accept the payment: ${chargeStatus}.`);
+  }
+  return { charge, chargeId, chargeStatus };
+}
+
+export async function createQuickBooksPaidInvoiceForOrder(orderId: string): Promise<CreatedQuickBooksPaidInvoice> {
+  const cleanOrderId = cleanText(orderId);
+  if (!cleanOrderId) throw new Error('Order is required.');
+
+  const supabase = getSupabaseAdmin();
+  const { data: order, error } = await supabase
+    .from('orders')
+    .select('id,status,archived_at,created_at,notes,subtotal_cents,quickbooks_payment_charge_id,quickbooks_payment_id,quickbooks_payment_status,shipping_company,shipping_name,shipping_address1,shipping_address2,shipping_city,shipping_state,shipping_zip,profiles(email,full_name),centers(id,name,billing_email,customer_tax_status,quickbooks_customer_id,quickbooks_display_name,quickbooks_payment_method_brand,quickbooks_payment_method_exp_month,quickbooks_payment_method_exp_year,quickbooks_payment_method_id,quickbooks_payment_method_last4,quickbooks_payment_method_type),order_items(qty,unit_price_cents,line_total_cents,product_id,product_name_snapshot,products(name,sku,quickbooks_item_id,quickbooks_item_name))')
+    .eq('id', cleanOrderId)
+    .single();
+  if (error || !order) throw new Error(error?.message || 'Order not found.');
+  if ((order as any).archived_at) throw new Error('Archived orders cannot be invoiced.');
+  if ((order as any).status !== 'Shipped') throw new Error('Only shipped orders can be invoiced.');
+  if (cleanText((order as any).quickbooks_payment_id)) {
+    throw new Error('This order already has a recorded QuickBooks payment.');
+  }
+
+  const connection = await getAuthorizedConnection();
+  const customerRef = quickBooksCustomerRefFromCenter(order as QuickBooksInvoiceOrder);
+  const method = await resolveSavedPaymentMethodForOrder(connection, supabase, order as QuickBooksInvoiceOrder, customerRef);
+  const invoice = await createQuickBooksInvoiceForOrder(cleanOrderId, { sendQuickBooksEmail: false });
+  const description = `Sobrew invoice ${invoice.docNumber || invoice.id}`;
+  const invoiceAuditUpdate = await supabase
+    .from('orders')
+    .update({
+      quickbooks_invoice_doc_number: invoice.docNumber,
+      quickbooks_invoice_email_to: invoice.emailTo,
+      quickbooks_invoice_id: invoice.id,
+      quickbooks_invoice_url: invoice.url,
+    })
+    .eq('id', cleanOrderId);
+  if (invoiceAuditUpdate.error) {
+    throw new Error(`Unable to save QuickBooks invoice details before payment: ${invoiceAuditUpdate.error.message}`);
+  }
+  let paymentChargeId = cleanText((order as any).quickbooks_payment_charge_id);
+  let paymentChargeStatus = cleanText((order as any).quickbooks_payment_status);
+  if (!paymentChargeId) {
+    const chargeResult = await createQuickBooksPaymentCharge(
+      connection,
+      cleanOrderId,
+      invoice.id,
+      method,
+      invoice.amountCents,
+      description
+    );
+    paymentChargeId = chargeResult.chargeId;
+    paymentChargeStatus = chargeResult.chargeStatus;
+    const chargeAuditUpdate = await supabase
+      .from('orders')
+      .update({
+        quickbooks_invoice_doc_number: invoice.docNumber,
+        quickbooks_invoice_email_to: invoice.emailTo,
+        quickbooks_invoice_id: invoice.id,
+        quickbooks_invoice_url: invoice.url,
+        quickbooks_payment_charge_id: paymentChargeId,
+        quickbooks_payment_charged_at: new Date().toISOString(),
+        quickbooks_payment_method_label: method.label,
+        quickbooks_payment_method_type: method.type,
+        quickbooks_payment_status: paymentChargeStatus,
+      })
+      .eq('id', cleanOrderId);
+    if (chargeAuditUpdate.error) {
+      throw new Error(`Unable to save QuickBooks payment charge details: ${chargeAuditUpdate.error.message}`);
+    }
+  }
+
+  const paymentPayload = buildQuickBooksInvoicePaymentPayload({
+    amountCents: invoice.amountCents,
+    chargeId: paymentChargeId,
+    chargeStatus: paymentChargeStatus,
+    customerRef,
+    invoiceId: invoice.id,
+    invoiceNumber: invoice.docNumber,
+    paymentMethodLabel: method.label,
+  });
+  const paymentResult = await quickBooksRequest(connection, '/payment', {
+    body: JSON.stringify(paymentPayload),
+    method: 'POST',
+  });
+  const paymentId = cleanText(paymentResult?.Payment?.Id);
+  if (!paymentId) throw new Error('QuickBooks did not return a payment ID.');
+
+  return {
+    ...invoice,
+    paymentChargeId,
+    paymentChargeStatus,
+    paymentId,
+    paymentMethodLabel: method.label,
+    paymentMethodType: method.type,
+  };
+}
+
 export async function getQuickBooksConnectionStatus(): Promise<QuickBooksConnectionStatus> {
   const config = getOAuthConfig();
   const connection = await getStoredConnection().catch(() => null);
@@ -1441,6 +1939,7 @@ export async function getQuickBooksConnectionStatus(): Promise<QuickBooksConnect
   return {
     connected: Boolean(connection?.realm_id),
     environment: connectionEnvironment ?? config.environment,
+    grantedScopes: cleanText(connection?.scope).split(/\s+/).filter(Boolean),
     missingConfig: config.missingConfig,
     realmId: connection?.realm_id ?? null,
   };
