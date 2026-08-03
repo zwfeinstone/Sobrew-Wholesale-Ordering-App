@@ -76,6 +76,27 @@ type LeadRow = {
   updated_at: string | null;
 };
 
+type MutationLeadRow = Pick<
+  LeadRow,
+  | 'address_line_1'
+  | 'address_line_2'
+  | 'assigned_profile_id'
+  | 'city'
+  | 'company_email'
+  | 'company_name'
+  | 'company_website'
+  | 'country'
+  | 'do_not_contact'
+  | 'id'
+  | 'next_follow_up_at'
+  | 'notes'
+  | 'phone'
+  | 'postal_code'
+  | 'priority'
+  | 'stage'
+  | 'state'
+>;
+
 type ContactRow = {
   email: string | null;
   full_name: string | null;
@@ -182,6 +203,18 @@ function cleanRecordId(value: FormDataEntryValue | null) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(text) ? text : '';
 }
 
+function contactFieldName(contactId: string, field: 'email' | 'full_name' | 'is_primary' | 'notes' | 'phone' | 'title') {
+  return `contact_${contactId}_${field}`;
+}
+
+function cleanRecordIds(formData: FormData, name: string) {
+  return Array.from(new Set(formData.getAll(name).map(cleanRecordId).filter(Boolean)));
+}
+
+function textChanged(previous: string | null | undefined, next: string | null | undefined) {
+  return (previous ?? null) !== (next ?? null);
+}
+
 function QueueContextFields({ context }: { context: ProspectingQueueContext }) {
   return (
     <>
@@ -195,11 +228,11 @@ function QueueContextFields({ context }: { context: ProspectingQueueContext }) {
 async function loadLeadForMutation(supabase: Awaited<ReturnType<typeof createClient>>, leadId: string, current: Awaited<ReturnType<typeof requireAdminSectionEdit>>) {
   let query = supabase
     .from('prospecting_leads')
-    .select('id,assigned_profile_id,stage,hubspot_status,company_name,notes,next_follow_up_at')
+    .select('id,address_line_1,address_line_2,assigned_profile_id,city,company_email,company_name,company_website,country,do_not_contact,next_follow_up_at,notes,phone,postal_code,priority,stage,state')
     .eq('id', leadId);
   if (!current.isOwner) query = query.eq('assigned_profile_id', current.profile.id).neq('stage', 'sample_requested');
   const { data } = await query.maybeSingle();
-  return data as { assigned_profile_id: string | null; company_name: string; hubspot_status: string | null; id: string; next_follow_up_at: string | null; notes: string | null; stage: string | null } | null;
+  return data as MutationLeadRow | null;
 }
 
 async function syncHubspotQueue({
@@ -279,7 +312,7 @@ async function shuckedRepRedirectHref({
   return destinationId ? leadHref(destinationId, toast, queueContext) : prospectingListHref(toast, queueContext);
 }
 
-async function saveLeadDetails(formData: FormData) {
+async function saveRecordData(formData: FormData) {
   'use server';
 
   const leadId = String(formData.get('lead_id') ?? '').trim();
@@ -303,32 +336,63 @@ async function saveLeadDetails(formData: FormData) {
   const shouldMoveToMaintenance = isMaintenanceStage(savedStage);
   const shouldMoveToSampleReview = savedStage === 'sample_requested';
   const shouldUnassign = shouldRecycle || shouldMoveToMaintenance;
+  let finalStage = savedStage;
+  let finalShouldRecycle = shouldRecycle;
+  let finalShouldMoveToMaintenance = shouldMoveToMaintenance;
+  let finalShouldMoveToSampleReview = shouldMoveToSampleReview;
   const assignedProfileId = shouldUnassign ? null : current.isOwner ? selectedRepId || null : before.assigned_profile_id;
   if (current.isOwner && assignedProfileId && assignedProfileId !== before.assigned_profile_id) {
     const isEligibleRep = await isEligibleProspectingSalesRep(supabase, assignedProfileId);
     if (!isEligibleRep) redirect(leadHref(leadId, 'invalid_rep', queueContext));
   }
   const nextFollowUp = shouldUnassign ? null : safeDateInput(formData.get('next_follow_up_at'));
+  const notes = cleanText(formData.get('notes'));
   const state = cleanText(formData.get('state'));
+  const addressLine1 = cleanText(formData.get('address_line_1'));
+  const addressLine2 = cleanText(formData.get('address_line_2'));
+  const city = cleanText(formData.get('city'));
+  const companyEmail = cleanText(formData.get('company_email'));
+  const companyWebsite = cleanText(formData.get('company_website'));
+  const country = cleanText(formData.get('country'));
+  const postalCode = cleanText(formData.get('postal_code'));
+  const stageChanged = normalizeStage(before.stage) !== savedStage;
+  const assignmentChanged = (before.assigned_profile_id ?? null) !== (assignedProfileId ?? null);
+  const leadDetailsChanged = [
+    textChanged(before.address_line_1, addressLine1),
+    textChanged(before.address_line_2, addressLine2),
+    textChanged(before.city, city),
+    textChanged(before.company_email, companyEmail),
+    textChanged(before.company_name, companyName),
+    textChanged(before.company_website, companyWebsite),
+    textChanged(before.country, country),
+    textChanged(before.next_follow_up_at, nextFollowUp),
+    textChanged(before.phone, phone),
+    textChanged(before.postal_code, postalCode),
+    textChanged(before.state, state),
+    Boolean(before.do_not_contact) !== doNotContact,
+    normalizePriority(before.priority) !== priority,
+    stageChanged,
+  ].some(Boolean);
+  const notesChanged = textChanged(before.notes, notes);
 
   const { error, data } = await supabaseAdmin
     .from('prospecting_leads')
     .update({
-      address_line_1: cleanText(formData.get('address_line_1')),
-      address_line_2: cleanText(formData.get('address_line_2')),
+      address_line_1: addressLine1,
+      address_line_2: addressLine2,
       assigned_profile_id: assignedProfileId,
-      city: cleanText(formData.get('city')),
-      company_email: cleanText(formData.get('company_email')),
+      city,
+      company_email: companyEmail,
       company_name: companyName,
       company_name_key: normalizeTextKey(companyName),
-      company_website: cleanText(formData.get('company_website')),
-      country: cleanText(formData.get('country')),
+      company_website: companyWebsite,
+      country,
       do_not_contact: doNotContact,
       next_follow_up_at: nextFollowUp,
-      notes: formData.has('notes') ? cleanText(formData.get('notes')) : before.notes,
+      notes,
       phone,
       phone_key: normalizePhoneKey(phone),
-      postal_code: cleanText(formData.get('postal_code')),
+      postal_code: postalCode,
       priority,
       stage: savedStage,
       state,
@@ -342,22 +406,20 @@ async function saveLeadDetails(formData: FormData) {
 
   if (error || !data) redirect(leadHref(leadId, 'save_error', queueContext));
 
-  const hubspotError = await syncHubspotQueue({ actorId: current.profile.id, leadId, stage: savedStage });
-  if (hubspotError) redirect(leadHref(leadId, 'save_error', queueContext));
-
-  const activityRows: Array<Record<string, unknown>> = [
-    {
-      activity_type: before.stage !== savedStage ? 'stage_change' : 'enrichment',
-      body: before.stage !== savedStage ? `Stage changed from ${stageLabel(before.stage)} to ${stageLabel(savedStage)}.` : 'Lead details updated.',
+  const activityRows: Array<Record<string, unknown>> = [];
+  if (leadDetailsChanged) {
+    activityRows.push({
+      activity_type: stageChanged ? 'stage_change' : 'enrichment',
+      body: stageChanged ? `Stage changed from ${stageLabel(before.stage)} to ${stageLabel(savedStage)}.` : 'Lead details updated.',
       created_by: current.profile.id,
       lead_id: leadId,
       next_stage: savedStage,
       previous_assigned_profile_id: shouldUnassign ? before.assigned_profile_id : null,
       previous_stage: before.stage,
-      result: before.stage !== savedStage ? 'Stage updated' : 'Lead updated',
-    },
-  ];
-  if (before.assigned_profile_id !== assignedProfileId) {
+      result: stageChanged ? 'Stage updated' : 'Lead updated',
+    });
+  }
+  if (assignmentChanged) {
     activityRows.push({
       activity_type: 'assignment',
       body: assignedProfileId ? 'Assigned sales rep changed.' : 'Lead unassigned.',
@@ -369,50 +431,9 @@ async function saveLeadDetails(formData: FormData) {
       result: assignedProfileId ? 'Assigned' : 'Unassigned',
     });
   }
-  const { error: activityError } = await supabaseAdmin.from('prospecting_activities').insert(activityRows);
-  if (activityError) redirect(leadHref(leadId, 'save_error', queueContext));
 
-  if (shouldMoveToSampleReview) {
-    redirect(sampleOrderHref({ leadId, nextRecordId, previousRecordId, queueContext, toast: 'sample_requested' }));
-  }
-
-  if ((shouldRecycle || shouldMoveToMaintenance) && !current.isOwner) {
-    redirect(await shuckedRepRedirectHref({
-      current,
-      nextRecordId,
-      previousRecordId,
-      queueContext,
-      toast: shouldRecycle ? 'lead_recycled' : shouldMoveToMaintenance ? 'lead_reviewed' : 'lead_saved',
-    }));
-  }
-  redirect(leadHref(leadId, 'lead_saved', queueContext));
-}
-
-async function updateLeadNotes(formData: FormData) {
-  'use server';
-
-  const leadId = String(formData.get('lead_id') ?? '').trim();
-  const queueContext = prospectingQueueContextFromParams(formData);
-  const current = await requireAdminSectionEdit('prospecting', leadHref(leadId, 'admin_write_denied', queueContext));
-  const supabase = await createClient();
-  const before = await loadLeadForMutation(supabase, leadId, current);
-  if (!before) redirect('/admin/sales/prospecting?toast=missing_lead');
-
-  const notes = cleanText(formData.get('notes'));
-  const now = new Date().toISOString();
-  const { error } = await supabaseAdmin
-    .from('prospecting_leads')
-    .update({
-      notes,
-      updated_at: now,
-      updated_by: current.profile.id,
-    })
-    .eq('id', leadId);
-
-  if (error) redirect(leadHref(leadId, 'notes_error', queueContext));
-
-  if ((before.notes ?? '') !== (notes ?? '')) {
-    const { error: activityError } = await supabaseAdmin.from('prospecting_activities').insert({
+  if (notesChanged) {
+    activityRows.push({
       activity_type: 'enrichment',
       body: 'Lead notes updated.',
       created_by: current.profile.id,
@@ -420,36 +441,80 @@ async function updateLeadNotes(formData: FormData) {
       previous_stage: before.stage,
       result: 'Notes updated',
     });
-    if (activityError) redirect(leadHref(leadId, 'notes_error', queueContext));
   }
 
-  redirect(leadHref(leadId, 'notes_saved', queueContext));
-}
+  const contactIds = cleanRecordIds(formData, 'record_contact_id');
+  if (contactIds.length) {
+    const { data: existingContactsData, error: contactLoadError } = await supabase
+      .from('prospecting_contacts')
+      .select('email,full_name,id,is_primary,notes,phone,title')
+      .eq('lead_id', leadId)
+      .in('id', contactIds);
+    if (contactLoadError) redirect(leadHref(leadId, 'save_error', queueContext));
 
-async function addContact(formData: FormData) {
-  'use server';
+    const existingContacts = new Map(((existingContactsData ?? []) as ContactRow[]).map((contact) => [contact.id, contact]));
+    for (const contactId of contactIds) {
+      const existing = existingContacts.get(contactId);
+      if (!existing) redirect(leadHref(leadId, 'save_error', queueContext));
 
-  const leadId = String(formData.get('lead_id') ?? '').trim();
-  const queueContext = prospectingQueueContextFromParams(formData);
-  const current = await requireAdminSectionEdit('prospecting', leadHref(leadId, 'admin_write_denied', queueContext));
-  const supabase = await createClient();
-  const before = await loadLeadForMutation(supabase, leadId, current);
-  if (!before) redirect('/admin/sales/prospecting?toast=missing_lead');
+      const contactUpdate = {
+        email: cleanText(formData.get(contactFieldName(contactId, 'email'))),
+        full_name: cleanText(formData.get(contactFieldName(contactId, 'full_name'))),
+        is_primary: formData.get(contactFieldName(contactId, 'is_primary')) === 'on',
+        notes: cleanText(formData.get(contactFieldName(contactId, 'notes'))),
+        phone: cleanText(formData.get(contactFieldName(contactId, 'phone'))),
+        title: cleanText(formData.get(contactFieldName(contactId, 'title'))),
+      };
+      const contactChanged = [
+        textChanged(existing.email, contactUpdate.email),
+        textChanged(existing.full_name, contactUpdate.full_name),
+        textChanged(existing.notes, contactUpdate.notes),
+        textChanged(existing.phone, contactUpdate.phone),
+        textChanged(existing.title, contactUpdate.title),
+        Boolean(existing.is_primary) !== contactUpdate.is_primary,
+      ].some(Boolean);
+      if (!contactChanged) continue;
 
-  const { error } = await supabase.from('prospecting_contacts').insert({
-    created_by: current.profile.id,
-    email: cleanText(formData.get('email')),
-    full_name: cleanText(formData.get('full_name')),
-    is_primary: formData.get('is_primary') === 'on',
-    lead_id: leadId,
-    notes: cleanText(formData.get('notes')),
-    phone: cleanText(formData.get('phone')),
-    title: cleanText(formData.get('title')),
-    updated_by: current.profile.id,
-  });
+      const { error: contactError } = await supabase
+        .from('prospecting_contacts')
+        .update({
+          ...contactUpdate,
+          updated_at: new Date().toISOString(),
+          updated_by: current.profile.id,
+        })
+        .eq('id', contactId)
+        .eq('lead_id', leadId);
+      if (contactError) redirect(leadHref(leadId, 'save_error', queueContext));
 
-  if (!error) {
-    await supabase.from('prospecting_activities').insert({
+      activityRows.push({
+        activity_type: 'enrichment',
+        body: 'Key contact updated.',
+        created_by: current.profile.id,
+        lead_id: leadId,
+        result: 'Contact updated',
+      });
+    }
+  }
+
+  const newContact = {
+    email: cleanText(formData.get('new_contact_email')),
+    full_name: cleanText(formData.get('new_contact_full_name')),
+    is_primary: formData.get('new_contact_is_primary') === 'on',
+    notes: cleanText(formData.get('new_contact_notes')),
+    phone: cleanText(formData.get('new_contact_phone')),
+    title: cleanText(formData.get('new_contact_title')),
+  };
+  const shouldAddContact = [newContact.email, newContact.full_name, newContact.notes, newContact.phone, newContact.title].some(Boolean);
+  if (shouldAddContact) {
+    const { error: newContactError } = await supabase.from('prospecting_contacts').insert({
+      ...newContact,
+      created_by: current.profile.id,
+      lead_id: leadId,
+      updated_by: current.profile.id,
+    });
+    if (newContactError) redirect(leadHref(leadId, 'save_error', queueContext));
+
+    activityRows.push({
       activity_type: 'enrichment',
       body: 'Key contact added.',
       created_by: current.profile.id,
@@ -458,46 +523,116 @@ async function addContact(formData: FormData) {
     });
   }
 
-  redirect(leadHref(leadId, error ? 'contact_error' : 'contact_added', queueContext));
-}
+  const activityTypeRaw = String(formData.get('activity_type') ?? 'note');
+  const activityType = PROSPECTING_ACTIVITY_TYPES.some((item) => item.id === activityTypeRaw) ? activityTypeRaw as ProspectingActivityType : 'note';
+  const activityResult = cleanText(formData.get('activity_result'));
+  const activityBody = cleanText(formData.get('activity_body'));
+  const activityContactId = cleanRecordId(formData.get('activity_contact_id'));
+  const activityExplicitStage = String(formData.get('activity_next_stage') ?? '');
+  const activityNextFollowUp = safeDateInput(formData.get('activity_next_follow_up_at'));
+  const activityBlockedByDoNotContact = Boolean(before.do_not_contact) && doNotContact;
+  const shouldLogActivity = Boolean(activityResult || activityBody || activityContactId || activityExplicitStage || activityNextFollowUp);
+  if (shouldLogActivity && !activityBlockedByDoNotContact) {
+    const activitySavedStage = resolveActivityStage({ currentStage: finalStage, explicitStage: activityExplicitStage, result: activityResult });
+    const activityDoNotContact = activitySavedStage === 'not_a_fit' && ['Do not contact', 'Unsubscribed', 'Wrong number', 'Bounced'].includes(activityResult ?? '');
+    const activityShouldRecycle = activitySavedStage === 'recycle_try_later';
+    const activityShouldMoveToMaintenance = isMaintenanceStage(activitySavedStage);
+    const activityShouldMoveToSampleReview = activitySavedStage === 'sample_requested';
+    const activityShouldUnassign = activityShouldRecycle || activityShouldMoveToMaintenance;
+    const now = new Date().toISOString();
+    const activitySavedNextFollowUp = resolveActivityNextFollowUp({
+      currentNextFollowUp: nextFollowUp,
+      requestedNextFollowUp: activityNextFollowUp,
+      shouldUnassign: activityShouldUnassign,
+    });
 
-async function updateContact(formData: FormData) {
-  'use server';
-
-  const leadId = String(formData.get('lead_id') ?? '').trim();
-  const contactId = String(formData.get('contact_id') ?? '').trim();
-  const queueContext = prospectingQueueContextFromParams(formData);
-  const current = await requireAdminSectionEdit('prospecting', leadHref(leadId, 'admin_write_denied', queueContext));
-  const supabase = await createClient();
-  const before = await loadLeadForMutation(supabase, leadId, current);
-  if (!before || !contactId) redirect('/admin/sales/prospecting?toast=missing_lead');
-
-  const { error } = await supabase
-    .from('prospecting_contacts')
-    .update({
-      email: cleanText(formData.get('email')),
-      full_name: cleanText(formData.get('full_name')),
-      is_primary: formData.get('is_primary') === 'on',
-      notes: cleanText(formData.get('notes')),
-      phone: cleanText(formData.get('phone')),
-      title: cleanText(formData.get('title')),
-      updated_at: new Date().toISOString(),
-      updated_by: current.profile.id,
-    })
-    .eq('id', contactId)
-    .eq('lead_id', leadId);
-
-  if (!error) {
-    await supabase.from('prospecting_activities').insert({
-      activity_type: 'enrichment',
-      body: 'Key contact updated.',
+    const { error: activityError } = await supabaseAdmin.from('prospecting_activities').insert({
+      activity_type: activityType,
+      body: activityBody,
+      contact_id: activityContactId || null,
       created_by: current.profile.id,
       lead_id: leadId,
-      result: 'Contact updated',
+      next_follow_up_at: activityNextFollowUp,
+      next_stage: activitySavedStage,
+      previous_assigned_profile_id: activityShouldUnassign ? assignedProfileId : null,
+      previous_stage: finalStage,
+      result: activityResult,
     });
+
+    if (activityError) redirect(leadHref(leadId, 'activity_error', queueContext));
+
+    const { error: leadUpdateError, data: updatedLead } = await supabaseAdmin
+      .from('prospecting_leads')
+      .update({
+        do_not_contact: activityDoNotContact || undefined,
+        assigned_profile_id: activityShouldUnassign ? null : undefined,
+        last_activity_at: now,
+        last_result: activityResult,
+        next_follow_up_at: activitySavedNextFollowUp,
+        stage: activitySavedStage,
+        updated_at: now,
+        updated_by: current.profile.id,
+      })
+      .eq('id', leadId)
+      .select('id')
+      .maybeSingle();
+
+    if (leadUpdateError || !updatedLead) redirect(leadHref(leadId, 'activity_error', queueContext));
+
+    if (activityShouldRecycle) {
+      activityRows.push({
+        activity_type: 'assignment',
+        body: 'Lead recycled to the unassigned pool.',
+        created_by: current.profile.id,
+        lead_id: leadId,
+        next_stage: activitySavedStage,
+        previous_assigned_profile_id: assignedProfileId,
+        previous_stage: finalStage,
+        result: 'Unassigned',
+      });
+    }
+
+    if (activityShouldMoveToMaintenance) {
+      activityRows.push({
+        activity_type: 'assignment',
+        body: `Lead moved to ${stageLabel(activitySavedStage)} review.`,
+        created_by: current.profile.id,
+        lead_id: leadId,
+        next_stage: activitySavedStage,
+        previous_assigned_profile_id: assignedProfileId,
+        previous_stage: finalStage,
+        result: 'Unassigned',
+      });
+    }
+
+    finalStage = activitySavedStage;
+    finalShouldRecycle = activityShouldRecycle;
+    finalShouldMoveToMaintenance = activityShouldMoveToMaintenance;
+    finalShouldMoveToSampleReview = activityShouldMoveToSampleReview;
   }
 
-  redirect(leadHref(leadId, error ? 'contact_error' : 'contact_saved', queueContext));
+  const hubspotError = await syncHubspotQueue({ actorId: current.profile.id, leadId, stage: finalStage });
+  if (hubspotError) redirect(leadHref(leadId, 'save_error', queueContext));
+
+  if (activityRows.length) {
+    const { error: activityError } = await supabaseAdmin.from('prospecting_activities').insert(activityRows);
+    if (activityError) redirect(leadHref(leadId, 'save_error', queueContext));
+  }
+
+  if (finalShouldMoveToSampleReview) {
+    redirect(sampleOrderHref({ leadId, nextRecordId, previousRecordId, queueContext, toast: 'sample_requested' }));
+  }
+
+  if ((finalShouldRecycle || finalShouldMoveToMaintenance) && !current.isOwner) {
+    redirect(await shuckedRepRedirectHref({
+      current,
+      nextRecordId,
+      previousRecordId,
+      queueContext,
+      toast: finalShouldRecycle ? 'lead_recycled' : finalShouldMoveToMaintenance ? 'lead_reviewed' : 'record_saved',
+    }));
+  }
+  redirect(leadHref(leadId, 'record_saved', queueContext));
 }
 
 async function deleteContact(formData: FormData) {
@@ -525,118 +660,6 @@ async function deleteContact(formData: FormData) {
   redirect(leadHref(leadId, error ? 'contact_error' : 'contact_deleted', queueContext));
 }
 
-async function logLeadActivity(formData: FormData) {
-  'use server';
-
-  const leadId = String(formData.get('lead_id') ?? '').trim();
-  const queueContext = prospectingQueueContextFromParams(formData);
-  const nextRecordId = cleanRecordId(formData.get('next_record_id'));
-  const previousRecordId = cleanRecordId(formData.get('previous_record_id'));
-  const current = await requireAdminSectionEdit('prospecting', leadHref(leadId, 'admin_write_denied', queueContext));
-  const supabase = await createClient();
-  const before = await loadLeadForMutation(supabase, leadId, current);
-  if (!before) redirect('/admin/sales/prospecting?toast=missing_lead');
-
-  const activityTypeRaw = String(formData.get('activity_type') ?? 'note');
-  const activityType = PROSPECTING_ACTIVITY_TYPES.some((item) => item.id === activityTypeRaw) ? activityTypeRaw as ProspectingActivityType : 'note';
-  const result = cleanText(formData.get('result'));
-  const body = cleanText(formData.get('body'));
-  const explicitStage = String(formData.get('next_stage') ?? '');
-  const nextFollowUp = safeDateInput(formData.get('next_follow_up_at'));
-  const savedStage = resolveActivityStage({ currentStage: before.stage, explicitStage, result });
-  const doNotContact = savedStage === 'not_a_fit' && ['Do not contact', 'Unsubscribed', 'Wrong number', 'Bounced'].includes(result ?? '');
-  const shouldRecycle = savedStage === 'recycle_try_later';
-  const shouldMoveToMaintenance = isMaintenanceStage(savedStage);
-  const shouldMoveToSampleReview = savedStage === 'sample_requested';
-  const shouldUnassign = shouldRecycle || shouldMoveToMaintenance;
-  const now = new Date().toISOString();
-  const savedNextFollowUp = resolveActivityNextFollowUp({
-    currentNextFollowUp: before.next_follow_up_at,
-    requestedNextFollowUp: nextFollowUp,
-    shouldUnassign,
-  });
-
-  const { error } = await supabaseAdmin.from('prospecting_activities').insert({
-    activity_type: activityType,
-    body,
-    contact_id: cleanText(formData.get('contact_id')),
-    created_by: current.profile.id,
-    lead_id: leadId,
-    next_follow_up_at: nextFollowUp,
-    next_stage: savedStage,
-    previous_assigned_profile_id: shouldUnassign ? before.assigned_profile_id : null,
-    previous_stage: before.stage,
-    result,
-  });
-
-  if (error) redirect(leadHref(leadId, 'activity_error', queueContext));
-
-  const { error: leadUpdateError, data: updatedLead } = await supabaseAdmin
-    .from('prospecting_leads')
-    .update({
-      do_not_contact: doNotContact || undefined,
-      assigned_profile_id: shouldUnassign ? null : undefined,
-      last_activity_at: now,
-      last_result: result,
-      next_follow_up_at: savedNextFollowUp,
-      stage: savedStage,
-      updated_at: now,
-      updated_by: current.profile.id,
-    })
-    .eq('id', leadId)
-    .select('id')
-    .maybeSingle();
-
-  if (leadUpdateError || !updatedLead) redirect(leadHref(leadId, 'activity_error', queueContext));
-
-  const hubspotError = await syncHubspotQueue({ actorId: current.profile.id, leadId, stage: savedStage });
-  if (hubspotError) redirect(leadHref(leadId, 'activity_error', queueContext));
-
-  if (shouldRecycle) {
-    const { error: assignmentError } = await supabaseAdmin.from('prospecting_activities').insert({
-      activity_type: 'assignment',
-      body: 'Lead recycled to the unassigned pool.',
-      created_by: current.profile.id,
-      lead_id: leadId,
-      next_stage: savedStage,
-      previous_assigned_profile_id: before.assigned_profile_id,
-      previous_stage: before.stage,
-      result: 'Unassigned',
-    });
-    if (assignmentError) redirect(leadHref(leadId, 'activity_error', queueContext));
-  }
-
-  if (shouldMoveToMaintenance) {
-    const { error: assignmentError } = await supabaseAdmin.from('prospecting_activities').insert({
-      activity_type: 'assignment',
-      body: `Lead moved to ${stageLabel(savedStage)} review.`,
-      created_by: current.profile.id,
-      lead_id: leadId,
-      next_stage: savedStage,
-      previous_assigned_profile_id: before.assigned_profile_id,
-      previous_stage: before.stage,
-      result: 'Unassigned',
-    });
-    if (assignmentError) redirect(leadHref(leadId, 'activity_error', queueContext));
-  }
-
-  if (shouldMoveToSampleReview) {
-    redirect(sampleOrderHref({ leadId, nextRecordId, previousRecordId, queueContext, toast: 'sample_requested' }));
-  }
-
-  if ((shouldRecycle || shouldMoveToMaintenance) && !current.isOwner) {
-    redirect(await shuckedRepRedirectHref({
-      current,
-      nextRecordId,
-      previousRecordId,
-      queueContext,
-      toast: shouldRecycle ? 'lead_recycled' : shouldMoveToMaintenance ? 'lead_reviewed' : 'activity_saved',
-    }));
-  }
-
-  redirect(leadHref(leadId, 'activity_saved', queueContext));
-}
-
 function Toasts({ toast }: { toast: string }) {
   const messages: Record<string, { message: string; tone: 'success' | 'error' }> = {
     activity_error: { message: 'Unable to save that activity.', tone: 'error' },
@@ -653,6 +676,7 @@ function Toasts({ toast }: { toast: string }) {
     lead_saved: { message: 'Lead saved.', tone: 'success' },
     notes_error: { message: 'Unable to save lead notes.', tone: 'error' },
     notes_saved: { message: 'Lead notes saved.', tone: 'success' },
+    record_saved: { message: 'Record data saved.', tone: 'success' },
     save_error: { message: 'Unable to save this lead. Check for duplicate company and phone values.', tone: 'error' },
     sample_order_created: { message: 'Sample order created. Moved to the next record.', tone: 'success' },
     sample_requested: { message: 'Sample requested. Moved to the next record.', tone: 'success' },
@@ -820,6 +844,7 @@ export default async function LeadDetailPage({
     ? queueIds[currentQueueIndex + 1] ?? null
     : queueIds.find((id) => id !== lead.id) ?? null;
   const leadNoteBlocks = noteBlocks(lead.notes);
+  const recordFormId = 'prospecting-record-data-form';
 
   return (
     <div className="space-y-6">
@@ -863,6 +888,22 @@ export default async function LeadDetailPage({
         </div>
       ) : null}
 
+      <form action={saveRecordData} className="sticky top-3 z-30" id={recordFormId}>
+        <input type="hidden" name="lead_id" value={lead.id} />
+        <QueueContextFields context={queueContext} />
+        <input type="hidden" name="next_record_id" value={nextLeadId ?? ''} />
+        <input type="hidden" name="previous_record_id" value={previousLeadId ?? ''} />
+        <div className="rounded-2xl border border-teal-200 bg-white/95 p-4 shadow-xl shadow-slate-900/10 backdrop-blur">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-teal-700">Record Updates</p>
+              <p className="mt-1 text-sm font-semibold text-slate-700">Company profile, contacts, and lead notes</p>
+            </div>
+            <PendingSubmitButton className="btn-primary min-h-14 w-full px-6 text-base sm:w-auto" label="Save All Record Data" pendingLabel="Saving Record..." />
+          </div>
+        </div>
+      </form>
+
       <ActivityTimeline activities={activities} />
 
       {missing.length ? (
@@ -875,95 +916,85 @@ export default async function LeadDetailPage({
       ) : null}
 
       <section className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_minmax(22rem,0.7fr)]">
-        <form action={saveLeadDetails} className="card space-y-5">
-          <input type="hidden" name="lead_id" value={lead.id} />
-          <QueueContextFields context={queueContext} />
-          <input type="hidden" name="next_record_id" value={nextLeadId ?? ''} />
-          <input type="hidden" name="previous_record_id" value={previousLeadId ?? ''} />
+        <section className="card space-y-5">
           <div>
             <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Company Profile</p>
             <h2 className="mt-2 text-xl font-semibold tracking-tight text-slate-950">Enrich lead details</h2>
           </div>
           <div className="grid gap-3 md:grid-cols-2">
-            <Field label="Company name"><input className="input" name="company_name" defaultValue={lead.company_name} required /></Field>
-            <Field label="Phone"><input className="input" name="phone" defaultValue={lead.phone ?? ''} /></Field>
-            <Field label="Company email"><input className="input" name="company_email" type="email" defaultValue={lead.company_email ?? ''} /></Field>
-            <Field label="Website"><input className="input" name="company_website" defaultValue={lead.company_website ?? ''} /></Field>
-            <Field label="Address 1"><input className="input" name="address_line_1" defaultValue={lead.address_line_1 ?? ''} /></Field>
-            <Field label="Address 2"><input className="input" name="address_line_2" defaultValue={lead.address_line_2 ?? ''} /></Field>
-            <Field label="City"><input className="input" name="city" defaultValue={lead.city ?? ''} /></Field>
-            <Field label="State"><input className="input" name="state" defaultValue={lead.state ?? ''} /></Field>
-            <Field label="Postal code"><input className="input" name="postal_code" defaultValue={lead.postal_code ?? ''} /></Field>
-            <Field label="Country"><input className="input" name="country" defaultValue={lead.country ?? ''} /></Field>
+            <Field label="Company name"><input className="input" form={recordFormId} name="company_name" defaultValue={lead.company_name} required /></Field>
+            <Field label="Phone"><input className="input" form={recordFormId} name="phone" defaultValue={lead.phone ?? ''} /></Field>
+            <Field label="Company email"><input className="input" form={recordFormId} name="company_email" type="email" defaultValue={lead.company_email ?? ''} /></Field>
+            <Field label="Website"><input className="input" form={recordFormId} name="company_website" defaultValue={lead.company_website ?? ''} /></Field>
+            <Field label="Address 1"><input className="input" form={recordFormId} name="address_line_1" defaultValue={lead.address_line_1 ?? ''} /></Field>
+            <Field label="Address 2"><input className="input" form={recordFormId} name="address_line_2" defaultValue={lead.address_line_2 ?? ''} /></Field>
+            <Field label="City"><input className="input" form={recordFormId} name="city" defaultValue={lead.city ?? ''} /></Field>
+            <Field label="State"><input className="input" form={recordFormId} name="state" defaultValue={lead.state ?? ''} /></Field>
+            <Field label="Postal code"><input className="input" form={recordFormId} name="postal_code" defaultValue={lead.postal_code ?? ''} /></Field>
+            <Field label="Country"><input className="input" form={recordFormId} name="country" defaultValue={lead.country ?? ''} /></Field>
             <Field label="Stage">
-              <select className="input" name="stage" defaultValue={normalizeStage(lead.stage)}>
+              <select className="input" form={recordFormId} name="stage" defaultValue={normalizeStage(lead.stage)}>
                 {PROSPECTING_STAGES.map((stage) => <option key={stage.id} value={stage.id}>{stage.label}</option>)}
               </select>
             </Field>
             <Field label="Priority">
-              <select className="input" name="priority" defaultValue={normalizePriority(lead.priority)}>
+              <select className="input" form={recordFormId} name="priority" defaultValue={normalizePriority(lead.priority)}>
                 {PROSPECTING_PRIORITIES.map((priority) => <option key={priority.id} value={priority.id}>{priority.label}</option>)}
               </select>
             </Field>
-            <Field label="Next follow-up"><input className="input" name="next_follow_up_at" type="date" defaultValue={lead.next_follow_up_at ?? ''} /></Field>
+            <Field label="Next follow-up"><input className="input" form={recordFormId} name="next_follow_up_at" type="date" defaultValue={lead.next_follow_up_at ?? ''} /></Field>
             {isOwner ? (
               <Field label="Assigned rep">
-                <select className="input" name="assigned_profile_id" defaultValue={lead.assigned_profile_id ?? ''}>
+                <select className="input" form={recordFormId} name="assigned_profile_id" defaultValue={lead.assigned_profile_id ?? ''}>
                   <option value="">Unassigned</option>
                   {assignedProfileOption ? <option value={assignedProfileOption.id} hidden>{profileLabel(assignedProfileOption)} (current)</option> : null}
                   {salesReps.map((rep) => <option key={rep.id} value={rep.id}>{profileLabel(rep)}</option>)}
                 </select>
               </Field>
-            ) : <input type="hidden" name="assigned_profile_id" value={lead.assigned_profile_id ?? ''} />}
+            ) : <input form={recordFormId} type="hidden" name="assigned_profile_id" value={lead.assigned_profile_id ?? ''} />}
           </div>
           <label className="flex items-center gap-2 rounded-lg bg-white/70 px-3 py-2 text-sm font-semibold text-slate-700">
-            <input type="checkbox" name="do_not_contact" defaultChecked={Boolean(lead.do_not_contact)} />
+            <input form={recordFormId} type="checkbox" name="do_not_contact" defaultChecked={Boolean(lead.do_not_contact)} />
             Do not contact
           </label>
-          <PendingSubmitButton className="btn-primary w-full sm:w-auto" label="Save Lead" pendingLabel="Saving..." />
-        </form>
+        </section>
 
-        <form action={logLeadActivity} className="card space-y-4">
-          <input type="hidden" name="lead_id" value={lead.id} />
-          <QueueContextFields context={queueContext} />
-          <input type="hidden" name="next_record_id" value={nextLeadId ?? ''} />
-          <input type="hidden" name="previous_record_id" value={previousLeadId ?? ''} />
+        <section className="card space-y-4">
           <div>
             <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Activity Log</p>
             <h2 className="mt-2 text-xl font-semibold tracking-tight text-slate-950">Record call, email, or note</h2>
           </div>
           <Field label="Activity type">
-            <select className="input" name="activity_type" defaultValue="call">
+            <select className="input" form={recordFormId} name="activity_type" defaultValue="call">
               {PROSPECTING_ACTIVITY_TYPES.map((type) => <option key={type.id} value={type.id}>{type.label}</option>)}
             </select>
           </Field>
           <Field label="Contact">
-            <select className="input" name="contact_id" defaultValue="">
+            <select className="input" form={recordFormId} name="activity_contact_id" defaultValue="">
               <option value="">Company level</option>
               {contacts.map((contact) => <option key={contact.id} value={contact.id}>{contact.full_name || contact.email || contact.phone || 'Unnamed contact'}</option>)}
             </select>
           </Field>
           <Field label="Canned result">
-            <select className="input" name="result" defaultValue="">
+            <select className="input" form={recordFormId} name="activity_result" defaultValue="">
               <option value="">No canned result</option>
               <optgroup label="Call results"><ResultOptions type="call" /></optgroup>
               <optgroup label="Email results"><ResultOptions type="email" /></optgroup>
             </select>
           </Field>
           <Field label="Move stage">
-            <select className="input" name="next_stage" defaultValue="">
+            <select className="input" form={recordFormId} name="activity_next_stage" defaultValue="">
               <option value="">Keep current stage</option>
               {PROSPECTING_STAGES.map((stage) => <option key={stage.id} value={stage.id}>{stage.label}</option>)}
             </select>
           </Field>
-          <Field label="Next follow-up"><input className="input" name="next_follow_up_at" type="date" /></Field>
-          <Field label="Notes after this activity"><textarea className="input min-h-32" name="body" placeholder="What happened, who you spoke with, and what should happen next." /></Field>
-          <PendingSubmitButton className="btn-primary w-full" disabled={Boolean(lead.do_not_contact)} disabledLabel="Do Not Contact" label="Save Activity" pendingLabel="Saving..." />
+          <Field label="Next follow-up"><input className="input" form={recordFormId} name="activity_next_follow_up_at" type="date" /></Field>
+          <Field label="Notes after this activity"><textarea className="input min-h-32" form={recordFormId} name="activity_body" placeholder="What happened, who you spoke with, and what should happen next." /></Field>
           <div className="grid gap-2 sm:grid-cols-2">
             {previousLeadId ? <Link className="btn-secondary inline-flex justify-center" href={leadHref(previousLeadId, undefined, queueContext)}>Previous Record</Link> : null}
             {nextLeadId ? <Link className="btn-secondary inline-flex justify-center" href={leadHref(nextLeadId, undefined, queueContext)}>Next Record</Link> : null}
           </div>
-        </form>
+        </section>
       </section>
 
       <section className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_minmax(22rem,0.7fr)]">
@@ -978,23 +1009,20 @@ export default async function LeadDetailPage({
                 <summary className="cursor-pointer text-sm font-semibold text-slate-950">
                   {contact.full_name || contact.email || contact.phone || 'Unnamed contact'} {contact.is_primary ? <span className="text-teal-700">- Primary</span> : null}
                 </summary>
-                <form action={updateContact} className="mt-4 grid gap-3 md:grid-cols-2">
-                  <input type="hidden" name="lead_id" value={lead.id} />
-                  <input type="hidden" name="contact_id" value={contact.id} />
-                  <QueueContextFields context={queueContext} />
-                  <Field label="Name"><input className="input" name="full_name" defaultValue={contact.full_name ?? ''} /></Field>
-                  <Field label="Title"><input className="input" name="title" defaultValue={contact.title ?? ''} /></Field>
-                  <Field label="Email"><input className="input" name="email" type="email" defaultValue={contact.email ?? ''} /></Field>
-                  <Field label="Phone"><input className="input" name="phone" defaultValue={contact.phone ?? ''} /></Field>
+                <div className="mt-4 grid gap-3 md:grid-cols-2">
+                  <input form={recordFormId} type="hidden" name="record_contact_id" value={contact.id} />
+                  <Field label="Name"><input className="input" form={recordFormId} name={contactFieldName(contact.id, 'full_name')} defaultValue={contact.full_name ?? ''} /></Field>
+                  <Field label="Title"><input className="input" form={recordFormId} name={contactFieldName(contact.id, 'title')} defaultValue={contact.title ?? ''} /></Field>
+                  <Field label="Email"><input className="input" form={recordFormId} name={contactFieldName(contact.id, 'email')} type="email" defaultValue={contact.email ?? ''} /></Field>
+                  <Field label="Phone"><input className="input" form={recordFormId} name={contactFieldName(contact.id, 'phone')} defaultValue={contact.phone ?? ''} /></Field>
                   <label className="flex items-center gap-2 rounded-lg bg-white/80 px-3 py-2 text-sm font-semibold text-slate-700 md:col-span-2">
-                    <input type="checkbox" name="is_primary" defaultChecked={Boolean(contact.is_primary)} />
+                    <input form={recordFormId} type="checkbox" name={contactFieldName(contact.id, 'is_primary')} defaultChecked={Boolean(contact.is_primary)} />
                     Primary contact
                   </label>
                   <div className="md:col-span-2">
-                    <Field label="Contact notes"><textarea className="input min-h-24" name="notes" defaultValue={contact.notes ?? ''} /></Field>
+                    <Field label="Contact notes"><textarea className="input min-h-24" form={recordFormId} name={contactFieldName(contact.id, 'notes')} defaultValue={contact.notes ?? ''} /></Field>
                   </div>
-                  <PendingSubmitButton className="btn-primary" label="Save Contact" pendingLabel="Saving..." />
-                </form>
+                </div>
                 <form action={deleteContact} className="mt-3">
                   <input type="hidden" name="lead_id" value={lead.id} />
                   <input type="hidden" name="contact_id" value={contact.id} />
@@ -1007,24 +1035,21 @@ export default async function LeadDetailPage({
           </div>
         </section>
 
-        <form action={addContact} className="card space-y-4">
-          <input type="hidden" name="lead_id" value={lead.id} />
-          <QueueContextFields context={queueContext} />
+        <section className="card space-y-4">
           <div>
             <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Add Contact</p>
             <h2 className="mt-2 text-xl font-semibold tracking-tight text-slate-950">New key contact</h2>
           </div>
-          <Field label="Name"><input className="input" name="full_name" /></Field>
-          <Field label="Title"><input className="input" name="title" /></Field>
-          <Field label="Email"><input className="input" name="email" type="email" /></Field>
-          <Field label="Phone"><input className="input" name="phone" /></Field>
+          <Field label="Name"><input className="input" form={recordFormId} name="new_contact_full_name" /></Field>
+          <Field label="Title"><input className="input" form={recordFormId} name="new_contact_title" /></Field>
+          <Field label="Email"><input className="input" form={recordFormId} name="new_contact_email" type="email" /></Field>
+          <Field label="Phone"><input className="input" form={recordFormId} name="new_contact_phone" /></Field>
           <label className="flex items-center gap-2 rounded-lg bg-white/70 px-3 py-2 text-sm font-semibold text-slate-700">
-            <input type="checkbox" name="is_primary" defaultChecked={!contacts.length} />
+            <input form={recordFormId} type="checkbox" name="new_contact_is_primary" defaultChecked={!contacts.length} />
             Primary contact
           </label>
-          <Field label="Notes"><textarea className="input min-h-24" name="notes" /></Field>
-          <PendingSubmitButton className="btn-primary w-full" label="Add Contact" pendingLabel="Adding..." />
-        </form>
+          <Field label="Notes"><textarea className="input min-h-24" form={recordFormId} name="new_contact_notes" /></Field>
+        </section>
       </section>
 
       <aside className="card space-y-4">
@@ -1082,16 +1107,13 @@ export default async function LeadDetailPage({
           )}
         </section>
 
-        <form action={updateLeadNotes} className="card space-y-4 border-slate-200 bg-white/80">
-          <input type="hidden" name="lead_id" value={lead.id} />
-          <QueueContextFields context={queueContext} />
+        <section className="card space-y-4 border-slate-200 bg-white/80">
           <div>
             <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Edit Notes</p>
             <h2 className="mt-2 text-xl font-semibold tracking-tight text-slate-950">Lead notes</h2>
           </div>
-          <textarea className="input min-h-44 text-[0.95rem] leading-7" name="notes" defaultValue={lead.notes ?? ''} />
-          <PendingSubmitButton className="btn-secondary w-full sm:w-auto" label="Save Notes" pendingLabel="Saving..." />
-        </form>
+          <textarea className="input min-h-44 text-[0.95rem] leading-7" form={recordFormId} name="notes" defaultValue={lead.notes ?? ''} />
+        </section>
       </section>
     </div>
   );
