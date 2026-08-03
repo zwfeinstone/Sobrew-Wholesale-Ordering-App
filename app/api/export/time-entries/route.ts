@@ -5,12 +5,14 @@ import {
   completedBreakMinutes,
   formatCentralDateTime,
   hoursFromMinutes,
-  isLaborWorkType,
-  normalizeWorkType,
+  isSalaryLaborWorkType,
+  normalizeSalaryLaborWorkType,
   paidMinutes,
   parseCentralDateInput,
   salaryCentsForDateRange,
+  salaryLaborWorkTypeLabel,
   salaryPayFrequencyLabel,
+  UNASSIGNED_WORK_TYPE,
   wageCentsForMinutes,
   workTypeLabel,
   type TimeClockBreakRow,
@@ -89,8 +91,11 @@ function adminProfileLabel(profile: ExportAdminProfile | null | undefined) {
   return profile?.full_name || profile?.email || 'Unknown admin';
 }
 
-function normalizeSalaryLaborWorkType(value: string | null | undefined) {
-  return isLaborWorkType(String(value ?? '')) ? String(value) : 'admin';
+function normalizeExportWorkTypeFilter(value: string | null | undefined) {
+  const raw = String(value ?? '').trim();
+  if (!raw) return '';
+  if (raw === UNASSIGNED_WORK_TYPE) return UNASSIGNED_WORK_TYPE;
+  return isSalaryLaborWorkType(raw) ? raw : '';
 }
 
 export async function GET(request: NextRequest) {
@@ -99,8 +104,8 @@ export async function GET(request: NextRequest) {
   const fromInput = request.nextUrl.searchParams.get('from');
   const toInput = request.nextUrl.searchParams.get('to');
   const adminId = request.nextUrl.searchParams.get('admin');
-  const workType = normalizeWorkType(request.nextUrl.searchParams.get('work_type'));
-  const hasWorkTypeFilter = Boolean(request.nextUrl.searchParams.get('work_type'));
+  const workType = normalizeExportWorkTypeFilter(request.nextUrl.searchParams.get('work_type'));
+  const hasWorkTypeFilter = Boolean(workType);
   const from = parseCentralDateInput(fromInput);
   const to = parseCentralDateInput(toInput, true);
   if (!from || !to || to < from) {
@@ -238,7 +243,7 @@ export async function GET(request: NextRequest) {
       'salary_estimate',
       adminProfileLabel(adminById.get(salary.profile_id)),
       'salary',
-      workTypeLabel(salary.workType),
+      salaryLaborWorkTypeLabel(salary.workType),
       '',
       '',
       '0.00',
@@ -261,7 +266,7 @@ export async function GET(request: NextRequest) {
       'salary_paid',
       adminProfileLabel(adminById.get(salary.profile_id)),
       'paid',
-      workTypeLabel(salary.workType),
+      salaryLaborWorkTypeLabel(salary.workType),
       '',
       '',
       '0.00',

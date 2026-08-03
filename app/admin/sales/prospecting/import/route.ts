@@ -14,6 +14,7 @@ import {
   type ProspectingPriority,
   type ProspectingStage,
 } from '@/lib/prospecting';
+import { loadProspectingSalesReps } from '@/lib/prospecting-sales-reps';
 
 type LeadRow = {
   address_line_1: string | null;
@@ -41,13 +42,6 @@ type LeadRow = {
   state: string | null;
   state_key: string | null;
   updated_at: string | null;
-};
-
-type ProfileRow = {
-  email: string | null;
-  full_name: string | null;
-  id: string;
-  is_active: boolean | null;
 };
 
 const PROSPECTING_ADMIN_PATH = '/admin/sales/prospecting/admin';
@@ -120,21 +114,6 @@ function mergeMissingFields(existing: LeadRow, incoming: ReturnType<typeof leadP
   return next;
 }
 
-async function loadSalesReps(supabase: Awaited<ReturnType<typeof createClient>>) {
-  const { data: settings } = await supabase
-    .from('admin_commission_settings')
-    .select('profile_id')
-    .eq('is_sales_rep', true);
-  const ids = [...new Set(((settings ?? []) as Array<{ profile_id: string | null }>).map((row) => row.profile_id).filter(Boolean))] as string[];
-  if (!ids.length) return [] as ProfileRow[];
-  const { data } = await supabase
-    .from('profiles')
-    .select('id,email,full_name,is_active')
-    .in('id', ids)
-    .eq('is_admin', true);
-  return (data ?? []) as ProfileRow[];
-}
-
 export async function POST(request: NextRequest) {
   const current = await requireAdminSectionEdit('prospecting', `${PROSPECTING_ADMIN_PATH}?tab=add&toast=admin_write_denied`);
   if (!current.isOwner) {
@@ -186,7 +165,7 @@ export async function POST(request: NextRequest) {
     .single();
   if (importError || !importRow) return redirectTo(request, 'import_error');
 
-  const salesReps = await loadSalesReps(supabase);
+  const salesReps = await loadProspectingSalesReps(supabase);
   const repByEmail = new Map(salesReps.map((rep) => [String(rep.email ?? '').trim().toLowerCase(), rep.id]));
   const prepared = parsed.rows.map((row, index) => {
     const assignedRepId = repByEmail.get(String(row.assigned_rep_email ?? '').trim().toLowerCase()) ?? null;

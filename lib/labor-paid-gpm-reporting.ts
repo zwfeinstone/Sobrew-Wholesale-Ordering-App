@@ -1,10 +1,9 @@
 import {
-  isLaborWorkType,
   normalizeMoneyCents,
+  normalizeSalaryLaborWorkType,
   normalizeWorkType,
   paidMinutes,
   wageCentsForMinutes,
-  type LaborWorkType,
   type TimeClockBreakRow,
   type TimeClockEntryRow,
   type TimeEntryWorkType,
@@ -64,10 +63,6 @@ export type LaborPaidGpmSummary = {
 function numericValue(value: unknown) {
   const parsed = Number(value ?? 0);
   return Number.isFinite(parsed) ? parsed : 0;
-}
-
-function normalizeSalaryLaborWorkType(value: string | null | undefined): LaborWorkType {
-  return isLaborWorkType(String(value ?? '')) ? String(value) as LaborWorkType : 'admin';
 }
 
 function marginPercent(revenueCents: number, grossProfitCents: number) {

@@ -43,6 +43,11 @@ import {
   type ProspectingQueueContext,
   type ProspectingStage,
 } from '@/lib/prospecting';
+import {
+  isEligibleProspectingSalesRep,
+  loadProspectingSalesReps,
+  type ProspectingSalesRepProfile,
+} from '@/lib/prospecting-sales-reps';
 
 type LeadRow = {
   address_line_1: string | null;
@@ -95,12 +100,7 @@ type ActivityRow = {
   result: string | null;
 };
 
-type ProfileRow = {
-  email: string | null;
-  full_name: string | null;
-  id: string;
-  is_active: boolean | null;
-};
+type ProfileRow = ProspectingSalesRepProfile;
 
 type ListLeadRow = {
   prospecting_lists?: { name: string | null } | { name: string | null }[] | null;
@@ -304,6 +304,10 @@ async function saveLeadDetails(formData: FormData) {
   const shouldMoveToSampleReview = savedStage === 'sample_requested';
   const shouldUnassign = shouldRecycle || shouldMoveToMaintenance;
   const assignedProfileId = shouldUnassign ? null : current.isOwner ? selectedRepId || null : before.assigned_profile_id;
+  if (current.isOwner && assignedProfileId && assignedProfileId !== before.assigned_profile_id) {
+    const isEligibleRep = await isEligibleProspectingSalesRep(supabase, assignedProfileId);
+    if (!isEligibleRep) redirect(leadHref(leadId, 'invalid_rep', queueContext));
+  }
   const nextFollowUp = shouldUnassign ? null : safeDateInput(formData.get('next_follow_up_at'));
   const state = cleanText(formData.get('state'));
 
@@ -643,6 +647,7 @@ function Toasts({ toast }: { toast: string }) {
     contact_deleted: { message: 'Contact removed.', tone: 'success' },
     contact_error: { message: 'Unable to save that contact.', tone: 'error' },
     contact_saved: { message: 'Contact saved.', tone: 'success' },
+    invalid_rep: { message: 'That user is not available for Prospecting assignment.', tone: 'error' },
     lead_recycled: { message: 'Lead recycled. Moved to the next record.', tone: 'success' },
     lead_reviewed: { message: 'Lead moved to review. Moved to the next record.', tone: 'success' },
     lead_saved: { message: 'Lead saved.', tone: 'success' },
@@ -760,23 +765,17 @@ export default async function LeadDetailPage({
   const activities = (activitiesData ?? []) as ActivityRow[];
   const listLinks = (listLinksData ?? []) as ListLeadRow[];
   const missing = missingLeadFields(lead, contacts);
-  const [salesRepsResult, assignedProfileResult] = await Promise.all([
-    isOwner
-      ? supabase
-          .from('admin_commission_settings')
-          .select('profile_id')
-          .eq('is_sales_rep', true)
-      : Promise.resolve({ data: [] }),
+  const [salesRepsData, assignedProfileResult] = await Promise.all([
+    isOwner ? loadProspectingSalesReps(supabase) : Promise.resolve([]),
     lead.assigned_profile_id
       ? supabase.from('profiles').select('id,email,full_name,is_active').eq('id', lead.assigned_profile_id).maybeSingle()
       : Promise.resolve({ data: null }),
   ]);
-  const salesRepIds = [...new Set(((salesRepsResult.data ?? []) as Array<{ profile_id: string | null }>).map((row) => row.profile_id).filter(Boolean))] as string[];
-  const { data: salesRepsData } = isOwner && salesRepIds.length
-    ? await supabase.from('profiles').select('id,email,full_name,is_active').in('id', salesRepIds).eq('is_admin', true)
-    : { data: [] };
-  const salesReps = ((salesRepsData ?? []) as ProfileRow[]).sort((a, b) => profileLabel(a).localeCompare(profileLabel(b)));
+  const salesReps = (salesRepsData as ProfileRow[]).sort((a, b) => profileLabel(a).localeCompare(profileLabel(b)));
   const assignedProfile = assignedProfileResult.data as ProfileRow | null;
+  const assignedProfileOption = assignedProfile && lead.assigned_profile_id && !salesReps.some((rep) => rep.id === lead.assigned_profile_id)
+    ? assignedProfile
+    : null;
   const today = formatCentralDateInput(new Date());
   const todayStart = parseCentralDateInput(today) ?? new Date();
   const queueProfileId = isOwner
@@ -911,6 +910,7 @@ export default async function LeadDetailPage({
               <Field label="Assigned rep">
                 <select className="input" name="assigned_profile_id" defaultValue={lead.assigned_profile_id ?? ''}>
                   <option value="">Unassigned</option>
+                  {assignedProfileOption ? <option value={assignedProfileOption.id} hidden>{profileLabel(assignedProfileOption)} (current)</option> : null}
                   {salesReps.map((rep) => <option key={rep.id} value={rep.id}>{profileLabel(rep)}</option>)}
                 </select>
               </Field>

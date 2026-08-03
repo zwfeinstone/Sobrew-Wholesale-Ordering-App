@@ -12,9 +12,15 @@ export const LABOR_WORK_TYPES = [
 ] as const;
 
 export const UNASSIGNED_WORK_TYPE = 'unassigned';
+export const OWNER_SALARY_LABOR_WORK_TYPE = 'owner';
+export const SALARY_LABOR_WORK_TYPES = [
+  ...LABOR_WORK_TYPES,
+  { label: 'Owner', value: OWNER_SALARY_LABOR_WORK_TYPE },
+] as const;
 
 export type LaborWorkType = (typeof LABOR_WORK_TYPES)[number]['value'];
 export type TimeEntryWorkType = LaborWorkType | typeof UNASSIGNED_WORK_TYPE;
+export type SalaryLaborWorkType = (typeof SALARY_LABOR_WORK_TYPES)[number]['value'];
 
 export const COMPENSATION_TYPES = [
   { label: 'Hourly', value: 'hourly' },
@@ -47,6 +53,7 @@ export type TimeClockEntryRow = {
 };
 
 const laborWorkTypeValues = new Set<string>(LABOR_WORK_TYPES.map((workType) => workType.value));
+const salaryLaborWorkTypeValues = new Set<string>(SALARY_LABOR_WORK_TYPES.map((workType) => workType.value));
 const compensationTypeValues = new Set<string>(COMPENSATION_TYPES.map((type) => type.value));
 const salaryPayFrequencyValues = new Set<string>(SALARY_PAY_FREQUENCIES.map((frequency) => frequency.value));
 
@@ -54,9 +61,18 @@ export function isLaborWorkType(value: string | null | undefined): value is Labo
   return laborWorkTypeValues.has(String(value ?? ''));
 }
 
+export function isSalaryLaborWorkType(value: string | null | undefined): value is SalaryLaborWorkType {
+  return salaryLaborWorkTypeValues.has(String(value ?? ''));
+}
+
 export function normalizeWorkType(value: string | null | undefined): TimeEntryWorkType {
   const raw = String(value ?? '').trim();
   return isLaborWorkType(raw) ? raw : UNASSIGNED_WORK_TYPE;
+}
+
+export function normalizeSalaryLaborWorkType(value: string | null | undefined): SalaryLaborWorkType {
+  const raw = String(value ?? '').trim();
+  return isSalaryLaborWorkType(raw) ? raw : 'admin';
 }
 
 export function normalizeCompensationType(value: string | null | undefined): CompensationType {
@@ -73,6 +89,11 @@ export function workTypeLabel(value: string | null | undefined) {
   const normalized = normalizeWorkType(value);
   if (normalized === UNASSIGNED_WORK_TYPE) return 'Unassigned';
   return LABOR_WORK_TYPES.find((workType) => workType.value === normalized)?.label ?? 'Unassigned';
+}
+
+export function salaryLaborWorkTypeLabel(value: string | null | undefined) {
+  const normalized = normalizeSalaryLaborWorkType(value);
+  return SALARY_LABOR_WORK_TYPES.find((workType) => workType.value === normalized)?.label ?? 'Admin';
 }
 
 export function compensationTypeLabel(value: string | null | undefined) {

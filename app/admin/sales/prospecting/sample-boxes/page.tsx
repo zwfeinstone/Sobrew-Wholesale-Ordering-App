@@ -8,6 +8,11 @@ import {
   normalizeInventoryNumber,
   type InventoryUnit,
 } from '@/lib/inventory';
+import {
+  filterProspectingSalesRepProfiles,
+  isEligibleProspectingSalesRep,
+  type ProspectingSalesRepProfile,
+} from '@/lib/prospecting-sales-reps';
 import { recordSampleBoxRun, type SampleBoxAddOn } from '@/lib/sample-boxes';
 import { createClient } from '@/lib/supabase/server';
 import { toCents, usd } from '@/lib/utils';
@@ -23,12 +28,7 @@ type CenterRow = {
   is_active: boolean | null;
 };
 
-type ProfileRow = {
-  email: string | null;
-  full_name: string | null;
-  id: string;
-  is_active: boolean | null;
-};
+type ProfileRow = ProspectingSalesRepProfile;
 
 type InventoryItemRow = {
   active: boolean | null;
@@ -177,6 +177,7 @@ function toastMessage(toast: string) {
     delete_item_error: { tone: 'border-rose-200 bg-rose-50 text-rose-700', text: 'Unable to remove that template item.' },
     invalid_money: { tone: 'border-rose-200 bg-rose-50 text-rose-700', text: 'Enter valid fixed cost amounts.' },
     invalid_quantity: { tone: 'border-rose-200 bg-rose-50 text-rose-700', text: 'Enter valid quantities greater than zero.' },
+    invalid_rep: { tone: 'border-rose-200 bg-rose-50 text-rose-700', text: 'That user is not available for Prospecting sample boxes.' },
     item_added: { tone: 'border-emerald-200 bg-emerald-50 text-emerald-800', text: 'Template item added.' },
     item_deleted: { tone: 'border-emerald-200 bg-emerald-50 text-emerald-800', text: 'Template item removed.' },
     item_updated: { tone: 'border-emerald-200 bg-emerald-50 text-emerald-800', text: 'Template item updated.' },
@@ -329,6 +330,10 @@ async function recordSampleBox(formData: FormData) {
 
   const selectedSalesProfileId = String(formData.get('sales_profile_id') ?? '').trim();
   const salesProfileId = current.isOwner && selectedSalesProfileId ? selectedSalesProfileId : current.profile.id;
+  if (current.isOwner && salesProfileId) {
+    const isEligibleRep = await isEligibleProspectingSalesRep(supabase, salesProfileId);
+    if (!isEligibleRep) redirect(sampleBoxesHref('invalid_rep', templateId));
+  }
   const addOns: SampleBoxAddOn[] = [];
   for (let index = 0; index < ADD_ON_ROWS; index += 1) {
     const productId = String(formData.get(`add_on_product_id_${index}`) ?? '').trim();
@@ -466,7 +471,11 @@ export default async function SampleBoxesPage({
   const salesRepsResult = current.isOwner && salesRepIds.length
     ? await supabase.from('profiles').select('id,email,full_name,is_active').in('id', salesRepIds).eq('is_admin', true)
     : { data: [], error: null };
-  const salesReps = ((salesRepsResult.data ?? []) as ProfileRow[]).sort((a, b) => adminLabel(a).localeCompare(adminLabel(b)));
+  const salesReps = filterProspectingSalesRepProfiles((salesRepsResult.data ?? []) as ProfileRow[])
+    .sort((a, b) => adminLabel(a).localeCompare(adminLabel(b)));
+  const defaultSalesRepId = salesReps.some((rep) => rep.id === current.profile.id)
+    ? current.profile.id
+    : salesReps[0]?.id ?? '';
 
   let runsQuery = supabase
     .from('sample_box_runs')
@@ -547,7 +556,7 @@ export default async function SampleBoxesPage({
               {current.isOwner ? (
                 <label className="text-sm font-semibold text-slate-700">
                   Sales rep
-                  <select className="input mt-2" name="sales_profile_id" defaultValue={current.profile.id} disabled={!canEdit}>
+                  <select className="input mt-2" name="sales_profile_id" defaultValue={defaultSalesRepId} disabled={!canEdit}>
                     {salesReps.map((rep) => (
                       <option key={rep.id} value={rep.id}>{adminLabel(rep)}</option>
                     ))}

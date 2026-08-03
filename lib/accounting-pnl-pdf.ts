@@ -367,7 +367,7 @@ function renderOperatingNotes(doc: SimplePdfDocument, statement: AccountingPnlSt
   financialRow(doc, 'AI Flagged Rows', String(statement.aiFlaggedCount));
   financialRow(doc, 'Total Labor Tagged', signedMoney(statement.payrollLaborSummary.totalLaborCents));
   financialRow(doc, 'Production Labor COGS', expenseMoney(statement.laborCogsCents));
-  financialRow(doc, 'Sales/Admin/Other Labor', expenseMoney(statement.salesAdminOtherLaborCents));
+  financialRow(doc, 'Sales/Admin/Owner/Other Labor', expenseMoney(statement.salesAdminOtherLaborCents));
 
   if (statement.payrollLaborSummary.byWorkType.length) {
     doc.moveDown(4);

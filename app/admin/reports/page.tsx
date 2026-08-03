@@ -79,6 +79,7 @@ import {
   type ReportingReorderSettingRow,
 } from '@/lib/reporting';
 import { stageLabel, type ProspectingStage } from '@/lib/prospecting';
+import { filterProspectingSalesRepProfiles } from '@/lib/prospecting-sales-reps';
 import { getSupabaseAdmin } from '@/lib/supabase/admin';
 import { createClient } from '@/lib/supabase/server';
 import { logServerTiming } from '@/lib/server-performance';
@@ -3264,7 +3265,9 @@ export default async function AdminReportsPage({
       .order('full_name', { ascending: true })
       .limit(ADMIN_QUERY_ROW_LIMIT)
     : { data: [], error: null };
-  const salesReps = ((salesRepsResult.data ?? []) as AdminRow[]).sort((a, b) => adminLabel(a).localeCompare(adminLabel(b)));
+  const salesRepRows = (salesRepsResult.data ?? []) as AdminRow[];
+  const salesReps = (activeReport === 'prospecting' ? filterProspectingSalesRepProfiles(salesRepRows) : salesRepRows)
+    .sort((a, b) => adminLabel(a).localeCompare(adminLabel(b)));
   const requestedSalesRepId = stringParam(searchParams?.sales_rep);
   const selectedSalesRepId = currentAccess.isOwner && activeReport !== 'labor_paid_gpm' && salesReps.some((admin) => admin.id === requestedSalesRepId) ? requestedSalesRepId : '';
   const centerScope = await getSalesScopedCenterIdsForAdmin({ current: currentAccess, selectedSalesProfileId: selectedSalesRepId, supabase });

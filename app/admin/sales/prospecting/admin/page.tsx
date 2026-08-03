@@ -20,6 +20,11 @@ import {
   summarizePipelineReview,
   type PipelineReviewLeadSummary,
 } from '@/lib/prospecting-pipeline-review';
+import {
+  isEligibleProspectingSalesRep,
+  loadProspectingSalesReps,
+  type ProspectingSalesRepProfile,
+} from '@/lib/prospecting-sales-reps';
 import { createClient } from '@/lib/supabase/server';
 import {
   ACTIVE_PROSPECTING_STAGES,
@@ -138,12 +143,7 @@ type ListLeadRow = {
   prospecting_lists?: { name: string | null } | { name: string | null }[] | null;
 };
 
-type ProfileRow = {
-  email: string | null;
-  full_name: string | null;
-  id: string;
-  is_active: boolean | null;
-};
+type ProfileRow = ProspectingSalesRepProfile;
 
 type ImportRow = {
   created_at: string | null;
@@ -398,7 +398,6 @@ function pipelineReviewListLabel(row: PipelineReviewListLeadRow) {
 
 function salesRepOptionRows(profiles: ProfileRow[]) {
   return profiles
-    .filter((profile) => profile.is_active !== false)
     .sort((a, b) => profileLabel(a).localeCompare(profileLabel(b)));
 }
 
@@ -482,21 +481,6 @@ async function requireProspectingOwner(redirectTo = prospectingHref({ tab: 'add'
   const current = await requireAdminSectionEdit('prospecting', redirectTo);
   if (!current.isOwner) redirect(redirectTo);
   return current;
-}
-
-async function loadSalesReps(supabase: Awaited<ReturnType<typeof createClient>>) {
-  const { data: settings } = await supabase
-    .from('admin_commission_settings')
-    .select('profile_id')
-    .eq('is_sales_rep', true);
-  const ids = [...new Set(((settings ?? []) as Array<{ profile_id: string | null }>).map((row) => row.profile_id).filter(Boolean))] as string[];
-  if (!ids.length) return [] as ProfileRow[];
-  const { data } = await supabase
-    .from('profiles')
-    .select('id,email,full_name,is_active')
-    .in('id', ids)
-    .eq('is_admin', true);
-  return (data ?? []) as ProfileRow[];
 }
 
 function filteredLeadQuery(
@@ -716,7 +700,7 @@ async function importLeadCsv(formData: FormData) {
     .single();
   if (importError || !importRow) redirect(prospectingHref({ tab: 'add', toast: 'import_error' }));
 
-  const salesReps = await loadSalesReps(supabase);
+  const salesReps = await loadProspectingSalesReps(supabase);
   const repByEmail = new Map(salesReps.map((rep) => [String(rep.email ?? '').trim().toLowerCase(), rep.id]));
   const prepared = parsed.rows.map((row, index) => {
     const assignedRepId = repByEmail.get(String(row.assigned_rep_email ?? '').trim().toLowerCase()) ?? null;
@@ -883,13 +867,8 @@ async function createSingleLead(formData: FormData) {
 
   const salesProfileId = String(formData.get('assigned_profile_id') ?? '').trim() || null;
   if (salesProfileId) {
-    const { data } = await supabase
-      .from('admin_commission_settings')
-      .select('profile_id,is_sales_rep')
-      .eq('profile_id', salesProfileId)
-      .eq('is_sales_rep', true)
-      .maybeSingle();
-    if (!data) redirect(prospectingHref({ tab: 'add', toast: 'invalid_rep' }));
+    const isEligibleRep = await isEligibleProspectingSalesRep(supabase, salesProfileId);
+    if (!isEligibleRep) redirect(prospectingHref({ tab: 'add', toast: 'invalid_rep' }));
   }
 
   const requestedListId = String(formData.get('existing_list_id') ?? '').trim();
@@ -1030,13 +1009,8 @@ async function bulkAssignLeads(formData: FormData) {
   const salesProfileId = String(formData.get('sales_profile_id') ?? '').trim() || null;
 
   if (salesProfileId) {
-    const { data } = await supabase
-      .from('admin_commission_settings')
-      .select('profile_id,is_sales_rep')
-      .eq('profile_id', salesProfileId)
-      .eq('is_sales_rep', true)
-      .maybeSingle();
-    if (!data) redirect(assignmentRedirectFromForm(formData, 'invalid_rep'));
+    const isEligibleRep = await isEligibleProspectingSalesRep(supabase, salesProfileId);
+    if (!isEligibleRep) redirect(assignmentRedirectFromForm(formData, 'invalid_rep'));
   }
 
   if (scope === 'all_filtered') {
@@ -1634,7 +1608,7 @@ export default async function ProspectingAdminPage({ searchParams }: { searchPar
   const activeTab = defaultAdminTab(searchParams);
 
   const [salesReps, { data: listsData }] = await Promise.all([
-    isOwner ? loadSalesReps(supabase) : Promise.resolve([current.profile as ProfileRow]),
+    isOwner ? loadProspectingSalesReps(supabase) : Promise.resolve([current.profile as ProfileRow]),
     supabase.from('prospecting_lists').select('id,name,description,source,created_at').order('created_at', { ascending: false }),
   ]);
 

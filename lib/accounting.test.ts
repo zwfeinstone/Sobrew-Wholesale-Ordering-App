@@ -363,6 +363,14 @@ describe('detailed accounting P&L statement', () => {
           salary_labor_work_type: 'sales',
           salary_pay_cents: 5000,
         },
+        {
+          id: 'salary-owner',
+          paid_at: '2026-07-15T12:00:00.000Z',
+          period_end_date: '2026-07-31',
+          period_start_date: '2026-07-01',
+          salary_labor_work_type: 'owner',
+          salary_pay_cents: 7000,
+        },
       ],
       transactions,
     });
@@ -375,6 +383,8 @@ describe('detailed accounting P&L statement', () => {
     expect(statement.retailSalesCents).toBe(25000);
     expect(statement.laborCogsCents).toBe(12000);
     expect(statement.laborReclassCents).toBe(12000);
+    expect(statement.payrollLaborSummary.ownerSalariesCents).toBe(7000);
+    expect(statement.salesAdminOtherLaborCents).toBe(12000);
     expect(statement.adjustedPnl.cogsCents).toBe(32000);
     expect(statement.adjustedPnl.operatingExpenseCents).toBe(18000);
     expect(statement.adjustedPnl.netIncomeCents).toBe(75000);
@@ -399,6 +409,7 @@ describe('detailed accounting P&L statement', () => {
     expect(content).toContain('/Type /Catalog');
     expect(content).toContain('Detailed Profit And Loss Statement');
     expect(content).toContain('Wholesale Sales');
+    expect(content).toContain('Owner');
     expect(content).toContain('Transaction Detail');
   });
 });

@@ -1282,7 +1282,7 @@ export default async function AccountingPage({
               <p className="mt-2 text-lg font-semibold text-slate-950">{money(laborCogsCents)}</p>
             </div>
             <div className="rounded-xl border border-slate-200 bg-white/60 p-3">
-              <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Sales/Admin/Other</p>
+              <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Sales/Admin/Owner/Other</p>
               <p className="mt-2 text-lg font-semibold text-slate-950">{money(salesAdminOtherLaborCents)}</p>
             </div>
             <div className="rounded-xl border border-slate-200 bg-white/60 p-3">
@@ -1307,6 +1307,10 @@ export default async function AccountingPage({
               <div className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2 text-sm">
                 <span className="font-medium text-slate-700">Admin salaries</span>
                 <span className="font-semibold text-slate-950">{money(payrollLaborSummary.adminSalariesCents)}</span>
+              </div>
+              <div className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2 text-sm">
+                <span className="font-medium text-slate-700">Owner salaries</span>
+                <span className="font-semibold text-slate-950">{money(payrollLaborSummary.ownerSalariesCents)}</span>
               </div>
               <div className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2 text-sm">
                 <span className="font-medium text-slate-700">Other salaries</span>

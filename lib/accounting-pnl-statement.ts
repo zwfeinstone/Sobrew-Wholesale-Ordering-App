@@ -8,13 +8,14 @@ import {
   type AccountingTransactionRow,
 } from '@/lib/accounting';
 import {
-  isLaborWorkType,
   normalizeMoneyCents,
+  normalizeSalaryLaborWorkType,
   normalizeWorkType,
   paidMinutes,
+  salaryLaborWorkTypeLabel,
   wageCentsForMinutes,
   workTypeLabel,
-  type LaborWorkType,
+  type SalaryLaborWorkType,
   type TimeClockBreakRow,
   type TimeClockEntryRow,
   type TimeEntryWorkType,
@@ -72,12 +73,15 @@ export type AccountingSalaryPaymentRow = {
 
 export type AccountingLaborSummary = {
   adminSalariesCents: number;
-  byWorkType: Array<{ amountCents: number; label: string; workType: TimeEntryWorkType }>;
+  byWorkType: Array<{ amountCents: number; label: string; workType: AccountingLaborWorkType }>;
   otherSalariesCents: number;
+  ownerSalariesCents: number;
   productionLaborCogsCents: number;
   salesSalariesCents: number;
   totalLaborCents: number;
 };
+
+type AccountingLaborWorkType = TimeEntryWorkType | SalaryLaborWorkType;
 
 export type AccountingPnlAdjustedTotals = {
   cogsCents: number;
@@ -180,20 +184,17 @@ export function productionLaborCogsForRuns(runs: ProductionRunLaborRow[]) {
   ), 0));
 }
 
-function normalizeSalaryLaborWorkType(value: string | null | undefined): LaborWorkType {
-  return isLaborWorkType(String(value ?? '')) ? String(value) as LaborWorkType : 'admin';
-}
-
-function accountingLaborBucket(workType: TimeEntryWorkType): 'admin' | 'other' | 'production' | 'sales' {
+function accountingLaborBucket(workType: AccountingLaborWorkType): 'admin' | 'other' | 'owner' | 'production' | 'sales' {
   if (workType === 'production') return 'production';
   if (workType === 'sales') return 'sales';
+  if (workType === 'owner') return 'owner';
   if (workType === 'admin') return 'admin';
   return 'other';
 }
 
 function addLaborAmount(
-  totalsByWorkType: Map<TimeEntryWorkType, number>,
-  workType: TimeEntryWorkType,
+  totalsByWorkType: Map<AccountingLaborWorkType, number>,
+  workType: AccountingLaborWorkType,
   amountCents: number,
 ) {
   if (!Number.isFinite(amountCents) || amountCents <= 0) return;
@@ -209,7 +210,7 @@ export function buildAccountingLaborSummary({
   salaryPayments: AccountingSalaryPaymentRow[];
   timeEntries: AccountingPayrollTimeEntryRow[];
 }): AccountingLaborSummary {
-  const totalsByWorkType = new Map<TimeEntryWorkType, number>();
+  const totalsByWorkType = new Map<AccountingLaborWorkType, number>();
   const allocationsByEntry = new Map<string, AccountingPayrollAllocationRow[]>();
 
   for (const allocation of allocations) {
@@ -251,6 +252,7 @@ export function buildAccountingLaborSummary({
 
   let adminSalariesCents = 0;
   let otherSalariesCents = 0;
+  let ownerSalariesCents = 0;
   let productionLaborCogsCents = 0;
   let salesSalariesCents = 0;
   let totalLaborCents = 0;
@@ -261,13 +263,15 @@ export function buildAccountingLaborSummary({
     if (bucket === 'production') productionLaborCogsCents += amountCents;
     if (bucket === 'sales') salesSalariesCents += amountCents;
     if (bucket === 'admin') adminSalariesCents += amountCents;
+    if (bucket === 'owner') ownerSalariesCents += amountCents;
     if (bucket === 'other') otherSalariesCents += amountCents;
   }
 
-  const workTypeOrder: TimeEntryWorkType[] = [
+  const workTypeOrder: AccountingLaborWorkType[] = [
     'production',
     'sales',
     'admin',
+    'owner',
     'packing',
     'receiving',
     'shipping',
@@ -278,7 +282,7 @@ export function buildAccountingLaborSummary({
   const byWorkType = Array.from(totalsByWorkType.entries())
     .map(([workType, amountCents]) => ({
       amountCents,
-      label: workTypeLabel(workType),
+      label: workType === 'owner' ? salaryLaborWorkTypeLabel(workType) : workTypeLabel(workType),
       workType,
     }))
     .sort((left, right) => workTypeOrder.indexOf(left.workType) - workTypeOrder.indexOf(right.workType));
@@ -287,6 +291,7 @@ export function buildAccountingLaborSummary({
     adminSalariesCents,
     byWorkType,
     otherSalariesCents,
+    ownerSalariesCents,
     productionLaborCogsCents,
     salesSalariesCents,
     totalLaborCents,
@@ -420,6 +425,7 @@ export function buildAccountingPnlStatement({
     : 'Production run labor estimate';
   const salesAdminOtherLaborCents = payrollLaborSummary.salesSalariesCents
     + payrollLaborSummary.adminSalariesCents
+    + payrollLaborSummary.ownerSalariesCents
     + payrollLaborSummary.otherSalariesCents;
   const payrollOperatingExpenseCents = transactions
     .filter((transaction) => {

@@ -11,6 +11,7 @@ import {
   COMPENSATION_TYPES,
   LABOR_WORK_TYPES,
   SALARY_PAY_FREQUENCIES,
+  SALARY_LABOR_WORK_TYPES,
   UNASSIGNED_WORK_TYPE,
   completedBreakMinutes,
   compensationTypeLabel,
@@ -24,23 +25,27 @@ import {
   minutesBetween,
   normalizeCompensationType,
   normalizeMoneyCents,
+  normalizeSalaryLaborWorkType,
   normalizeSalaryPayFrequency,
   normalizeWorkType,
   paidMinutes,
   parseCentralDateInput,
   parseCentralDateTimeInput,
   salaryCentsForDateRange,
+  salaryLaborWorkTypeLabel,
   salaryPayFrequencyLabel,
   wageCentsForMinutes,
   workTypeLabel,
   type CompensationType,
   type LaborWorkType,
+  type SalaryLaborWorkType,
   type SalaryPayFrequency,
   type TimeEntryWorkType,
 } from '@/lib/time-clock';
 import { usd } from '@/lib/utils';
 
 type PayrollTab = 'review' | 'payments' | 'time' | 'reports' | 'settings' | 'export';
+type PayrollSettingsView = 'active' | 'deactivated';
 
 type AdminProfileRow = {
   email: string | null;
@@ -127,12 +132,14 @@ type PayrollSegment = {
   workType: TimeEntryWorkType;
 };
 
+type PayrollReportWorkType = TimeEntryWorkType | SalaryLaborWorkType;
+
 type SalaryPayrollRow = {
   frequency: SalaryPayFrequency;
   profileId: string;
   salaryAmountCents: number;
   salaryCents: number;
-  workType: LaborWorkType;
+  workType: SalaryLaborWorkType;
 };
 
 type SalaryPaymentRow = {
@@ -166,7 +173,7 @@ type EmployeePayrollGroup = {
   minutes: number;
   salaryCents: number;
   spiffCents: number;
-  workTypes: Map<TimeEntryWorkType, number>;
+  workTypes: Map<PayrollReportWorkType, number>;
 };
 
 type WorkTypePayrollGroup = {
@@ -245,6 +252,10 @@ function activeTabParam(value: string | string[] | undefined): PayrollTab {
   return PAYROLL_TABS.some((tab) => tab.id === value) ? value as PayrollTab : 'review';
 }
 
+function settingsViewParam(value: string | string[] | undefined): PayrollSettingsView {
+  return value === 'deactivated' ? 'deactivated' : 'active';
+}
+
 function profileForEntry(entry: TimeEntry) {
   return Array.isArray(entry.admin_profile) ? entry.admin_profile[0] : entry.admin_profile;
 }
@@ -276,10 +287,6 @@ function isDateInput(value: string) {
   return /^\d{4}-\d{2}-\d{2}$/.test(value);
 }
 
-function normalizeSalaryLaborWorkType(value: string | null | undefined): LaborWorkType {
-  return isLaborWorkType(String(value ?? '')) ? String(value) as LaborWorkType : 'admin';
-}
-
 function statusTone(status: string | null | undefined) {
   if (status === 'void') return 'bg-rose-50 text-rose-700 ring-rose-100';
   if (status === 'locked') return 'bg-slate-100 text-slate-700 ring-slate-200';
@@ -294,6 +301,17 @@ function tabHref(tab: PayrollTab, params: Record<string, string>) {
 
 function returnToInput(value: string) {
   return <input name="return_to" type="hidden" value={value} />;
+}
+
+function normalizePayrollReportWorkType(value: string | null | undefined): PayrollReportWorkType | '' {
+  const raw = String(value ?? '').trim();
+  if (!raw) return '';
+  if (raw === UNASSIGNED_WORK_TYPE) return UNASSIGNED_WORK_TYPE;
+  return SALARY_LABOR_WORK_TYPES.some((workType) => workType.value === raw) ? raw as SalaryLaborWorkType : '';
+}
+
+function payrollReportWorkTypeLabel(value: PayrollReportWorkType | string | null | undefined) {
+  return String(value ?? '') === 'owner' ? salaryLaborWorkTypeLabel(value) : workTypeLabel(value);
 }
 
 function errorMessage(error: string) {
@@ -1369,7 +1387,7 @@ function buildSegments(entries: TimeEntry[], allocationsByEntry: Map<string, All
 function groupSegmentsByEmployee(segments: PayrollSegment[]) {
   const grouped = new Map<string, EmployeePayrollGroup>();
   for (const segment of segments) {
-    const row = grouped.get(segment.entry.profile_id) ?? { entryCount: new Set<string>(), hourlyWageCents: 0, minutes: 0, salaryCents: 0, spiffCents: 0, workTypes: new Map<TimeEntryWorkType, number>() };
+    const row = grouped.get(segment.entry.profile_id) ?? { entryCount: new Set<string>(), hourlyWageCents: 0, minutes: 0, salaryCents: 0, spiffCents: 0, workTypes: new Map<PayrollReportWorkType, number>() };
     row.entryCount.add(segment.entry.id);
     row.minutes += segment.minutes;
     row.hourlyWageCents += segment.wageCents;
@@ -1380,7 +1398,7 @@ function groupSegmentsByEmployee(segments: PayrollSegment[]) {
 }
 
 function groupSegmentsByWorkType(segments: PayrollSegment[]) {
-  const grouped = new Map<TimeEntryWorkType, WorkTypePayrollGroup>();
+  const grouped = new Map<PayrollReportWorkType, WorkTypePayrollGroup>();
   for (const segment of segments) {
     const row = grouped.get(segment.workType) ?? { entryCount: new Set<string>(), hourlyWageCents: 0, minutes: 0, salaryCents: 0, spiffCents: 0 };
     row.entryCount.add(segment.entry.id);
@@ -1445,7 +1463,7 @@ function buildSalaryRows({
   timeSettings,
   toDate,
 }: {
-  filterWorkType: TimeEntryWorkType | '';
+  filterWorkType: PayrollReportWorkType | '';
   fromDate: Date;
   selectedAdmin: string;
   timeSettings: TimeSettingRow[];
@@ -1478,14 +1496,14 @@ function buildSalaryRows({
 
 function applySalaryRowsToEmployeeGroups(grouped: Map<string, EmployeePayrollGroup>, salaryRows: SalaryPayrollRow[]) {
   for (const salary of salaryRows) {
-    const row = grouped.get(salary.profileId) ?? { entryCount: new Set<string>(), hourlyWageCents: 0, minutes: 0, salaryCents: 0, spiffCents: 0, workTypes: new Map<TimeEntryWorkType, number>() };
+    const row = grouped.get(salary.profileId) ?? { entryCount: new Set<string>(), hourlyWageCents: 0, minutes: 0, salaryCents: 0, spiffCents: 0, workTypes: new Map<PayrollReportWorkType, number>() };
     row.salaryCents += salary.salaryCents;
     if (!row.workTypes.has(salary.workType)) row.workTypes.set(salary.workType, 0);
     grouped.set(salary.profileId, row);
   }
 }
 
-function applySalaryRowsToWorkTypeGroups(grouped: Map<TimeEntryWorkType, WorkTypePayrollGroup>, salaryRows: SalaryPayrollRow[]) {
+function applySalaryRowsToWorkTypeGroups(grouped: Map<PayrollReportWorkType, WorkTypePayrollGroup>, salaryRows: SalaryPayrollRow[]) {
   for (const salary of salaryRows) {
     const row = grouped.get(salary.workType) ?? { entryCount: new Set<string>(), hourlyWageCents: 0, minutes: 0, salaryCents: 0, spiffCents: 0 };
     row.salaryCents += salary.salaryCents;
@@ -1495,13 +1513,13 @@ function applySalaryRowsToWorkTypeGroups(grouped: Map<TimeEntryWorkType, WorkTyp
 
 function applyWeeklySalesSpiffsToEmployeeGroups(grouped: Map<string, EmployeePayrollGroup>, spiffs: WeeklySalesSpiffRow[]) {
   for (const spiff of spiffs) {
-    const row = grouped.get(spiff.profile_id) ?? { entryCount: new Set<string>(), hourlyWageCents: 0, minutes: 0, salaryCents: 0, spiffCents: 0, workTypes: new Map<TimeEntryWorkType, number>() };
+    const row = grouped.get(spiff.profile_id) ?? { entryCount: new Set<string>(), hourlyWageCents: 0, minutes: 0, salaryCents: 0, spiffCents: 0, workTypes: new Map<PayrollReportWorkType, number>() };
     row.spiffCents += normalizeMoneyCents(spiff.amount_cents);
     grouped.set(spiff.profile_id, row);
   }
 }
 
-function applyWeeklySalesSpiffsToWorkTypeGroups(grouped: Map<TimeEntryWorkType, WorkTypePayrollGroup>, spiffs: WeeklySalesSpiffRow[]) {
+function applyWeeklySalesSpiffsToWorkTypeGroups(grouped: Map<PayrollReportWorkType, WorkTypePayrollGroup>, spiffs: WeeklySalesSpiffRow[]) {
   const spiffCents = spiffs.reduce((sum, spiff) => sum + normalizeMoneyCents(spiff.amount_cents), 0);
   if (!spiffCents) return;
   const row = grouped.get('sales') ?? { entryCount: new Set<string>(), hourlyWageCents: 0, minutes: 0, salaryCents: 0, spiffCents: 0 };
@@ -1907,6 +1925,7 @@ export default async function PayrollPage({
   const current = await requireAdminSectionView('payroll');
   const canEditPayroll = adminCanEdit(current.access, 'payroll');
   const activeTab = activeTabParam(searchParams?.tab);
+  const settingsView = settingsViewParam(searchParams?.settings_view);
   const success = stringParam(searchParams?.success);
   const error = stringParam(searchParams?.error);
   const todayInput = formatCentralDateInput();
@@ -1917,8 +1936,7 @@ export default async function PayrollPage({
   const fromInput = stringParam(searchParams?.from) || defaultFrom;
   const toInput = stringParam(searchParams?.to) || defaultTo;
   const selectedAdmin = stringParam(searchParams?.admin);
-  const selectedWorkType = normalizeWorkType(stringParam(searchParams?.work_type));
-  const filterWorkType = stringParam(searchParams?.work_type) ? selectedWorkType : '';
+  const filterWorkType = normalizePayrollReportWorkType(stringParam(searchParams?.work_type));
   const fromDate = parseCentralDateInput(fromInput) ?? parseCentralDateInput(defaultFrom)!;
   const toDate = parseCentralDateInput(toInput, true) ?? parseCentralDateInput(defaultTo, true)!;
   const currentParams = {
@@ -1927,7 +1945,11 @@ export default async function PayrollPage({
     to: toInput,
     work_type: filterWorkType,
   };
-  const currentUrl = payrollHref({ ...currentParams, tab: activeTab });
+  const currentUrl = payrollHref({
+    ...currentParams,
+    settings_view: activeTab === 'settings' && settingsView === 'deactivated' ? settingsView : '',
+    tab: activeTab,
+  });
 
   const [
     adminsResult,
@@ -2028,6 +2050,11 @@ export default async function PayrollPage({
   }
 
   const admins = ((adminsResult.data ?? []) as AdminProfileRow[]).sort((a, b) => profileLabel(a).localeCompare(profileLabel(b)));
+  const activeAdmins = admins.filter((admin) => admin.is_active !== false);
+  const deactivatedAdmins = admins.filter((admin) => admin.is_active === false);
+  const settingsAdmins = settingsView === 'deactivated' ? deactivatedAdmins : activeAdmins;
+  const activeSettingsHref = payrollHref({ ...currentParams, tab: 'settings' });
+  const deactivatedSettingsHref = payrollHref({ ...currentParams, settings_view: 'deactivated', tab: 'settings' });
   const adminById = new Map(admins.map((admin) => [admin.id, admin]));
   const timeSettings = (timeSettingsResult.data ?? []) as TimeSettingRow[];
   const timeByProfile = new Map(timeSettings.map((setting) => [setting.profile_id, setting]));
@@ -2176,6 +2203,7 @@ export default async function PayrollPage({
 
       <form className="card grid gap-3 md:grid-cols-5">
         <input name="tab" type="hidden" value={activeTab} />
+        {activeTab === 'settings' && settingsView === 'deactivated' ? <input name="settings_view" type="hidden" value="deactivated" /> : null}
         <label className="space-y-2 text-sm font-medium text-slate-700">
           From
           <input className="input" name="from" type="date" defaultValue={fromInput} />
@@ -2198,7 +2226,7 @@ export default async function PayrollPage({
           <select className="input" name="work_type" defaultValue={filterWorkType}>
             <option value="">All tags</option>
             <option value={UNASSIGNED_WORK_TYPE}>Unassigned</option>
-            {LABOR_WORK_TYPES.map((workType) => (
+            {SALARY_LABOR_WORK_TYPES.map((workType) => (
               <option key={workType.value} value={workType.value}>{workType.label}</option>
             ))}
           </select>
@@ -2369,7 +2397,7 @@ export default async function PayrollPage({
                   {[...byEmployee.entries()].map(([profileId, row]) => {
                     const topTags = [...row.workTypes.entries()]
                       .sort((a, b) => b[1] - a[1])
-                      .map(([workType, minutes]) => `${workTypeLabel(workType)} ${hoursLabel(minutes)}h`)
+                      .map(([workType, minutes]) => `${payrollReportWorkTypeLabel(workType)} ${hoursLabel(minutes)}h`)
                       .join(', ');
                     return (
                       <tr key={profileId} className="bg-white/70">
@@ -2409,7 +2437,7 @@ export default async function PayrollPage({
                       <tr key={payment.id} className="bg-white/70">
                         <td className="rounded-l-xl px-4 py-3 font-semibold text-slate-950">{profileLabel(adminById.get(payment.profile_id))}</td>
                         <td className="px-4 py-3 text-slate-700">{formatDateInputLabel(payment.period_start_date)} to {formatDateInputLabel(payment.period_end_date)}</td>
-                        <td className="px-4 py-3 text-slate-700">{workTypeLabel(payment.salary_labor_work_type)}</td>
+                        <td className="px-4 py-3 text-slate-700">{salaryLaborWorkTypeLabel(payment.salary_labor_work_type)}</td>
                         <td className="px-4 py-3 text-right font-semibold text-slate-950">{usd(normalizeMoneyCents(payment.salary_pay_cents))}</td>
                         <td className="rounded-r-xl px-4 py-3 text-slate-700">{formatCentralDateTime(payment.paid_at, 'Not paid')}</td>
                       </tr>
@@ -2454,13 +2482,13 @@ export default async function PayrollPage({
           <section className="card space-y-4">
             <h2 className="text-xl font-semibold text-slate-950">Labor by tag</h2>
             <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-              {[UNASSIGNED_WORK_TYPE, ...LABOR_WORK_TYPES.map((workType) => workType.value)].map((workType) => {
-                const row = byWorkType.get(workType as TimeEntryWorkType) ?? { entryCount: new Set<string>(), hourlyWageCents: 0, minutes: 0, salaryCents: 0, spiffCents: 0 };
+              {[UNASSIGNED_WORK_TYPE, ...SALARY_LABOR_WORK_TYPES.map((workType) => workType.value)].map((workType) => {
+                const row = byWorkType.get(workType as PayrollReportWorkType) ?? { entryCount: new Set<string>(), hourlyWageCents: 0, minutes: 0, salaryCents: 0, spiffCents: 0 };
                 const totalCents = row.hourlyWageCents + row.salaryCents + row.spiffCents;
                 return (
                   <StatTile
                     key={workType}
-                    label={workTypeLabel(workType)}
+                    label={payrollReportWorkTypeLabel(workType)}
                     value={usd(totalCents)}
                     detail={`${hoursLabel(row.minutes)} paid hours across ${row.entryCount.size} shift(s).${row.salaryCents ? ` Salary ${usd(row.salaryCents)}.` : ''}${row.spiffCents ? ` SPIFFs ${usd(row.spiffCents)}.` : ''}`}
                   />
@@ -2574,7 +2602,7 @@ export default async function PayrollPage({
                   <div key={row.profileId} className="grid gap-3 rounded-2xl border border-slate-200 bg-white/70 p-4 lg:grid-cols-[minmax(0,1fr)_8rem_9rem_14rem] lg:items-center">
                     <div>
                       <p className="font-semibold text-slate-950">{profileLabel(row.profile)}</p>
-                      <p className="mt-1 text-sm text-slate-500">{workTypeLabel(row.workType)} salary for {formatDateInputLabel(monthlySalaryWindow.periodStartInput)} to {formatDateInputLabel(monthlySalaryWindow.periodEndInput)}</p>
+                      <p className="mt-1 text-sm text-slate-500">{salaryLaborWorkTypeLabel(row.workType)} salary for {formatDateInputLabel(monthlySalaryWindow.periodStartInput)} to {formatDateInputLabel(monthlySalaryWindow.periodEndInput)}</p>
                     </div>
                     <p className="text-sm font-semibold text-slate-950 lg:text-right">{usd(row.salaryAmountCents)}</p>
                     <span className={`w-fit rounded-full px-3 py-1 text-xs font-semibold uppercase tracking-[0.12em] ${row.payment?.paid_at ? 'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-100' : 'bg-rose-50 text-rose-700 ring-1 ring-rose-100'}`}>
@@ -2738,12 +2766,29 @@ export default async function PayrollPage({
 
       {activeTab === 'settings' ? (
         <section className="space-y-4">
-          <section className="card space-y-2">
-            <h2 className="text-xl font-semibold text-slate-950">Rates, commissions, and labor tags</h2>
-            <p className="text-sm text-slate-500">Hourly rates snapshot when employees clock in. Salary pay is prorated into the selected payroll date range. Commission percentages apply to shipped-order gross profit and snapshot when orders ship.</p>
+          <section className="card space-y-4">
+            <div className="space-y-2">
+              <h2 className="text-xl font-semibold text-slate-950">Rates, commissions, and labor tags</h2>
+              <p className="text-sm text-slate-500">Hourly rates snapshot when employees clock in. Salary pay is prorated into the selected payroll date range. Commission percentages apply to shipped-order gross profit and snapshot when orders ship.</p>
+            </div>
+            <nav aria-label="Payroll settings account views" className="flex flex-wrap gap-2">
+              <Link
+                className={`rounded-2xl border px-4 py-2 text-sm font-semibold transition-all duration-200 ${settingsView === 'active' ? 'border-teal-200 bg-teal-50 text-teal-900' : 'border-slate-200 bg-white/70 text-slate-700 hover:border-teal-100 hover:bg-white'}`}
+                href={activeSettingsHref}
+              >
+                Active ({activeAdmins.length})
+              </Link>
+              <Link
+                className={`rounded-2xl border px-4 py-2 text-sm font-semibold transition-all duration-200 ${settingsView === 'deactivated' ? 'border-teal-200 bg-teal-50 text-teal-900' : 'border-slate-200 bg-white/70 text-slate-700 hover:border-teal-100 hover:bg-white'}`}
+                href={deactivatedSettingsHref}
+              >
+                Deactivated ({deactivatedAdmins.length})
+              </Link>
+            </nav>
           </section>
           {!admins.length ? <EmptyState message="No admin employees found." /> : null}
-          {admins.map((admin) => {
+          {admins.length && !settingsAdmins.length ? <EmptyState message={settingsView === 'deactivated' ? 'No deactivated admin employees found.' : 'No active admin employees found.'} /> : null}
+          {settingsAdmins.map((admin) => {
             const timeSetting = timeByProfile.get(admin.id);
             const commissionSetting = commissionByProfile.get(admin.id);
             const employeeTags = tagsByProfile.get(admin.id) ?? new Set<LaborWorkType>();
@@ -2791,7 +2836,7 @@ export default async function PayrollPage({
                   <label className="space-y-2 text-sm font-medium text-slate-700">
                     Salary labor tag
                     <select className="input" name="salary_labor_work_type" defaultValue={normalizeSalaryLaborWorkType(timeSetting?.salary_labor_work_type)}>
-                      {LABOR_WORK_TYPES.map((workType) => (
+                      {SALARY_LABOR_WORK_TYPES.map((workType) => (
                         <option key={workType.value} value={workType.value}>{workType.label}</option>
                       ))}
                     </select>
