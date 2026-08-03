@@ -3,6 +3,7 @@ import {
   accountingTransactionFingerprint,
   accountingTransactionFingerprintForOccurrence,
   buildAccountingPnlTotals,
+  buildAiAccountingReviewPrompt,
   parseAiAccountingReviewResponse,
   parseAccountingCsv,
   type AccountingCategoryRow,
@@ -403,6 +404,16 @@ describe('detailed accounting P&L statement', () => {
 });
 
 describe('AI accounting review parsing', () => {
+  it('tells AI that expense refunds reduce the original expense category', () => {
+    const prompt = buildAiAccountingReviewPrompt({
+      candidates: [],
+      categoryNames: ['Travel & Lodging'],
+    });
+    const developerText = prompt.input[0]?.content[0]?.text ?? '';
+
+    expect(developerText).toContain('same expense category as a negative amount');
+  });
+
   it('extracts flags from a fenced JSON response', () => {
     const parsed = parseAiAccountingReviewResponse(`
 \`\`\`json
@@ -449,5 +460,19 @@ describe('AI accounting review parsing', () => {
       flagType: 'other',
       recommendedAction: 'review',
     });
+  });
+
+  it('drops legacy inventory overlap flags for standalone accounting', () => {
+    const parsed = parseAiAccountingReviewResponse(JSON.stringify({
+      flags: [{
+        confidence: 99,
+        flagType: 'inventory_overlap',
+        reason: 'Possible inventory receipt match.',
+        recommendedAction: 'approve_inventory_match',
+        transactionId: 'txn-3',
+      }],
+    }));
+
+    expect(parsed.flags).toEqual([]);
   });
 });

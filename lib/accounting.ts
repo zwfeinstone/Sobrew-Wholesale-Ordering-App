@@ -1,7 +1,7 @@
 import { createHash } from 'crypto';
 import { AI_BUSINESS_OVERVIEW_DEFAULT_MODEL, extractOpenAiResponseText } from '@/lib/ai-business-overview';
 
-export const AI_ACCOUNTING_REVIEW_PROMPT_VERSION = 'ai-accounting-review-v1';
+export const AI_ACCOUNTING_REVIEW_PROMPT_VERSION = 'ai-accounting-review-v3';
 
 export const ACCOUNTING_ACCOUNT_TYPES = [
   { value: 'debit_card', label: 'Debit Card' },
@@ -102,7 +102,9 @@ Review uploaded bank and credit-card transactions and flag only rows that deserv
 Important accounting rules:
 - Positive amounts are money out. Negative amounts are money in.
 - Credit card payments, account transfers, owner draws, refunds, and deposits should generally be excluded from P&L expense unless the data says otherwise.
+- A refund or credit tied to an expense should usually stay in the same expense category as a negative amount so it reduces that expense.
 - Cash App, Zelle, and Venmo payments are often payroll, owner-pay, reimbursement, or transfer rows that can duplicate something already recorded elsewhere.
+- Accounting is standalone: do not compare transactions to inventory receipts, and do not flag inventory overlap.
 - Do not invent vendors, receipts, categories, or facts. Use only the supplied JSON.
 - Prefer fewer, higher-confidence flags over noisy guesses.
 
@@ -425,6 +427,7 @@ export function parseAiAccountingReviewResponse(text: string): AiAccountingRevie
     const rawFlagType = String(row.flagType ?? 'other').trim();
     const rawRecommendedAction = String(row.recommendedAction ?? 'review').trim();
     if (!transactionId || !reason) return [];
+    if (rawFlagType.toLowerCase() === 'inventory_overlap' || rawRecommendedAction.toLowerCase() === 'approve_inventory_match') return [];
 
     return [{
       categorySuggestion: typeof row.categorySuggestion === 'string' ? row.categorySuggestion.trim() || null : null,

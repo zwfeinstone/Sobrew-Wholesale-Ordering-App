@@ -37,6 +37,7 @@ import { getSupabaseAdmin } from '@/lib/supabase/admin';
 import { usd } from '@/lib/utils';
 
 const REVIEW_PAGE_SIZE = 12;
+const AI_REVIEW_LIMIT = 50;
 const BULK_REVIEW_BATCH_SIZE = 500;
 const REVIEW_SELECT_ALL_FETCH_SIZE = 1000;
 const BULK_ACCOUNTING_REVIEW_FORM_ID = 'bulk-accounting-review-form';
@@ -45,6 +46,7 @@ const ACCOUNTING_VIEWS = [
   { id: 'upload', label: 'Upload' },
   { id: 'last_updates', label: 'Last Updates' },
   { id: 'review', label: 'Review Transactions' },
+  { id: 'ai_reviews', label: 'AI Reviews' },
   { id: 'pnl', label: 'P&L' },
   { id: 'categories', label: 'Categories' },
   { id: 'imports', label: 'Imports' },
@@ -136,14 +138,17 @@ function reviewActionHref(toast: string, formData: FormData) {
   const category = String(formData.get('category') ?? '').trim();
   const search = String(formData.get('q') ?? '').trim();
   const page = Number.parseInt(String(formData.get('page') ?? ''), 10);
+  const returnView = String(formData.get('return_view') ?? '').trim() === 'ai_reviews' ? 'ai_reviews' : 'review';
 
-  params.set('view', 'review');
+  params.set('view', returnView);
   params.set('start', start);
   params.set('end', end);
   params.set('toast', toast);
-  if (category) params.set('category', category);
-  if (search) params.set('q', search);
-  if (Number.isFinite(page) && page > 1) params.set('page', String(page));
+  if (returnView === 'review') {
+    if (category) params.set('category', category);
+    if (search) params.set('q', search);
+    if (Number.isFinite(page) && page > 1) params.set('page', String(page));
+  }
 
   return `/admin/accounting?${params.toString()}`;
 }
@@ -427,7 +432,7 @@ function AccountingNav({
 }) {
   return (
     <section className="card">
-      <div className="grid gap-2 md:grid-cols-3 xl:grid-cols-7">
+      <div className="grid gap-2 md:grid-cols-4 xl:grid-cols-8">
         {ACCOUNTING_VIEWS.map((view) => (
           <Link
             key={view.id}
@@ -630,6 +635,14 @@ async function updateAccountingTransaction(formData: FormData) {
   const supabase = await createClient();
   const transactionId = String(formData.get('transaction_id') ?? '').trim();
   const actionType = String(formData.get('action_type') ?? '');
+  const reviewNote = String(formData.get('review_notes') ?? '').trim();
+  const reviewedAt = new Date().toISOString();
+  const resolveAiReview = String(formData.get('resolve_ai_review') ?? '') === '1';
+  const aiReviewResolution = resolveAiReview ? {
+    ai_review_flags: [],
+    ai_review_status: 'clean',
+    ai_review_summary: reviewNote ? `Resolved during accounting review: ${reviewNote}` : 'Resolved during accounting review.',
+  } : {};
   if (!transactionId) redirect(reviewActionHref('review_error', formData));
 
   if (actionType === 'categorize') {
@@ -640,10 +653,11 @@ async function updateAccountingTransaction(formData: FormData) {
       .update({
         category_id: categoryId,
         status: 'categorized',
-        review_notes: String(formData.get('review_notes') ?? '').trim() || null,
+        review_notes: reviewNote || null,
         reviewed_by: current.profile.id,
-        reviewed_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
+        reviewed_at: reviewedAt,
+        updated_at: reviewedAt,
+        ...aiReviewResolution,
       })
       .eq('id', transactionId);
     redirect(reviewActionHref(error ? 'review_error' : 'transaction_saved', formData));
@@ -654,13 +668,30 @@ async function updateAccountingTransaction(formData: FormData) {
       .from('accounting_transactions')
       .update({
         status: 'excluded',
-        review_notes: String(formData.get('review_notes') ?? '').trim() || 'Excluded from accounting reports',
+        review_notes: reviewNote || 'Excluded from accounting reports',
         reviewed_by: current.profile.id,
-        reviewed_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
+        reviewed_at: reviewedAt,
+        updated_at: reviewedAt,
+        ...aiReviewResolution,
       })
       .eq('id', transactionId);
     redirect(reviewActionHref(error ? 'review_error' : 'transaction_excluded', formData));
+  }
+
+  if (actionType === 'resolve_ai_review') {
+    const { error } = await supabase
+      .from('accounting_transactions')
+      .update({
+        ai_review_flags: [],
+        ai_review_status: 'clean',
+        ai_review_summary: reviewNote ? `Resolved during accounting review: ${reviewNote}` : 'Resolved during accounting review.',
+        review_notes: reviewNote || 'AI review resolved.',
+        reviewed_by: current.profile.id,
+        reviewed_at: reviewedAt,
+        updated_at: reviewedAt,
+      })
+      .eq('id', transactionId);
+    redirect(reviewActionHref(error ? 'review_error' : 'transaction_saved', formData));
   }
 
   redirect(reviewActionHref('review_error', formData));
@@ -871,6 +902,7 @@ export default async function AccountingPage({
   const [
     categoriesResult,
     transactionsResult,
+    flaggedTransactionsResult,
     pnlTransactionsResult,
     batchesResult,
     latestBankTransactionResult,
@@ -883,6 +915,14 @@ export default async function AccountingPage({
     transactionsQuery
       .order('transaction_date', { ascending: false })
       .range(reviewFrom, reviewTo),
+    supabase
+      .from('accounting_transactions')
+      .select('id,transaction_date,account_name,account_type,merchant_name,original_description,amount_cents,status,ai_review_status,ai_review_summary,ai_review_flags,ai_review_model,ai_reviewed_at,review_notes,category_id,accounting_categories(id,name,category_type,pnl_section)', { count: 'exact' })
+      .gte('transaction_date', start)
+      .lt('transaction_date', endExclusive)
+      .eq('ai_review_status', 'flagged')
+      .order('transaction_date', { ascending: false })
+      .limit(AI_REVIEW_LIMIT),
     supabase
       .from('accounting_transactions')
       .select('id,transaction_date,account_name,account_type,merchant_name,original_description,amount_cents,status,ai_review_status,ai_review_flags,category_id,accounting_categories(id,name,category_type,pnl_section)')
@@ -929,6 +969,11 @@ export default async function AccountingPage({
 
   const categories = (categoriesResult.data ?? []) as AccountingCategoryRow[];
   const transactions = (transactionsResult.data ?? []) as any[];
+  const flaggedTransactions = (flaggedTransactionsResult.data ?? []) as any[];
+  const aiReviewTransactions = flaggedTransactions.filter((transaction) => (
+    Array.isArray(transaction.ai_review_flags) && transaction.ai_review_flags.some(isStandaloneAccountingFlag)
+  ));
+  const flaggedAiTransactionTotal = flaggedTransactionsResult.count ?? aiReviewTransactions.length;
   const latestBankTransaction = (latestBankTransactionResult.data ?? null) as LastKnownAccountingTransaction | null;
   const latestCreditCardTransaction = (latestCreditCardTransactionResult.data ?? null) as LastKnownAccountingTransaction | null;
   const transactionTotal = transactionsResult.count ?? transactions.length;
@@ -957,7 +1002,6 @@ export default async function AccountingPage({
   });
   const {
     adjustedPnl,
-    aiFlaggedCount,
     basePnl: pnl,
     categoryBreakdown: pnlCategoryBreakdown,
     laborCogsCents,
@@ -982,7 +1026,7 @@ export default async function AccountingPage({
       {toast === 'category_error' ? <StatusToast message="Unable to add that category." tone="error" /> : null}
       {toast === 'transaction_saved' ? <StatusToast message="Transaction categorized." tone="success" /> : null}
       {toast === 'transaction_excluded' ? <StatusToast message="Transaction excluded from reports." tone="success" /> : null}
-      {toast === 'ai_review_saved' ? <StatusToast message="AI review complete. Flagged transactions are marked in the review queue." tone="success" /> : null}
+      {toast === 'ai_review_saved' ? <StatusToast message="AI review complete. Flagged transactions are marked in AI Reviews." tone="success" /> : null}
       {toast === 'review_error' ? <StatusToast message="Unable to update that transaction." tone="error" /> : null}
       {toast === 'admin_write_denied' ? <StatusToast message="Only admins with accounting access can make changes." tone="error" /> : null}
       {aiReviewErrorMessage(searchParams?.ai_error) ? <StatusToast message={aiReviewErrorMessage(searchParams?.ai_error) ?? ''} tone="error" /> : null}
@@ -1031,6 +1075,86 @@ export default async function AccountingPage({
         </div>
       </section> : null}
 
+      {activeView === 'ai_reviews' ? <section className="card space-y-4">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+          <div>
+            <span className="eyebrow">AI Reviews</span>
+            <h2 className="mt-3 text-2xl font-semibold tracking-tight text-slate-950">Flagged transactions</h2>
+            <p className="mt-2 text-sm text-slate-500">
+              Showing {aiReviewTransactions.length} of {flaggedAiTransactionTotal} flagged transactions in this range.
+            </p>
+          </div>
+          <Link className="btn-secondary w-full text-center sm:w-auto" href={accountingViewHref({ end, start, view: 'review' })}>All transactions</Link>
+        </div>
+
+        <div className="space-y-3">
+          {aiReviewTransactions.map((transaction) => {
+            const aiFlags = Array.isArray(transaction.ai_review_flags)
+              ? transaction.ai_review_flags.filter(isStandaloneAccountingFlag)
+              : [];
+            return (
+              <div key={transaction.id} className="rounded-xl border border-rose-100 bg-rose-50/40 p-4">
+                <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_auto]">
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <p className="font-semibold text-slate-950">{transaction.merchant_name || transaction.original_description}</p>
+                      <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ring-1 ${transactionTone(transaction.status)}`}>{accountingStatusLabel(transaction.status)}</span>
+                      <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ring-1 ${aiReviewTone(transaction.ai_review_status)}`}>{aiReviewLabel(transaction.ai_review_status)}</span>
+                    </div>
+                    <p className="mt-1 text-sm text-slate-500">{formatDate(transaction.transaction_date)} - {accountingAccountTypeLabel(transaction.account_type)}{transaction.account_name ? ` - ${transaction.account_name}` : ''}</p>
+                    {transaction.merchant_name ? <p className="mt-1 text-sm text-slate-500">{transaction.original_description}</p> : null}
+                    <p className="mt-2 text-sm font-medium text-slate-700">Category: {categoryLabel(transaction.accounting_categories)}</p>
+                    {transaction.ai_reviewed_at ? <p className="mt-1 text-xs text-slate-500">AI reviewed {formatDate(transaction.ai_reviewed_at)}{transaction.ai_review_model ? ` with ${transaction.ai_review_model}` : ''}</p> : null}
+                  </div>
+                  <p className={`text-2xl font-semibold ${normalizeAccountingNumber(transaction.amount_cents) < 0 ? 'text-emerald-700' : 'text-slate-950'}`}>
+                    {money(transaction.amount_cents)}
+                  </p>
+                </div>
+
+                <div className="mt-4 space-y-2 border-t border-rose-100 pt-4">
+                  {aiFlags.map((flag: any, index: number) => (
+                    <div key={`${transaction.id}-ai-review-${index}`} className="rounded-xl border border-rose-100 bg-white/80 p-3">
+                      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                        <div>
+                          <p className="text-sm font-semibold text-rose-950">{aiFlagActionLabel(flag.recommendedAction)} - {Math.round(normalizeAccountingNumber(flag.confidence))}% confidence</p>
+                          <p className="mt-1 text-sm text-rose-900">{flag.reason}</p>
+                        </div>
+                        <span className="w-fit rounded-full bg-rose-50 px-2.5 py-1 text-xs font-semibold text-rose-700 ring-1 ring-rose-100">{String(flag.flagType ?? 'review').replace(/_/g, ' ')}</span>
+                      </div>
+                      {flag.categorySuggestion ? <p className="mt-2 text-xs font-medium text-rose-800">Suggested category: {flag.categorySuggestion}</p> : null}
+                    </div>
+                  ))}
+                </div>
+
+                <form action={updateAccountingTransaction} className="mt-4 grid gap-3 border-t border-rose-100 pt-4 lg:grid-cols-[1fr_minmax(220px,0.8fr)_auto_auto_auto] lg:items-end">
+                  <input name="transaction_id" type="hidden" value={transaction.id} />
+                  <input name="return_view" type="hidden" value="ai_reviews" />
+                  <input name="resolve_ai_review" type="hidden" value="1" />
+                  <input name="start" type="hidden" value={start} />
+                  <input name="end" type="hidden" value={end} />
+                  <label className="space-y-1 text-sm font-medium text-slate-700">
+                    Category
+                    <select className="input" name="category_id" defaultValue={transaction.category_id ?? ''}>
+                      <option value="" disabled>Select category</option>
+                      {categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}
+                    </select>
+                  </label>
+                  <label className="space-y-1 text-sm font-medium text-slate-700">
+                    Notes
+                    <input className="input" name="review_notes" defaultValue={transaction.review_notes ?? ''} placeholder="Review note" />
+                  </label>
+                  <button className="btn-primary" name="action_type" type="submit" value="categorize">Save and resolve</button>
+                  <button className="btn-secondary" name="action_type" type="submit" value="resolve_ai_review">Mark resolved</button>
+                  <button className="btn-secondary" name="action_type" type="submit" value="exclude">Exclude</button>
+                </form>
+              </div>
+            );
+          })}
+          {!aiReviewTransactions.length ? <p className="rounded-xl border border-emerald-100 bg-emerald-50/60 p-4 text-sm font-medium text-emerald-800">No AI flagged transactions in this date range.</p> : null}
+          {flaggedAiTransactionTotal > AI_REVIEW_LIMIT ? <p className="text-sm text-slate-500">Showing the first {AI_REVIEW_LIMIT} flagged transactions.</p> : null}
+        </div>
+      </section> : null}
+
       {activeView === 'overview' ? <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
         <div className="stat-card">
           <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Revenue</p>
@@ -1054,7 +1178,7 @@ export default async function AccountingPage({
         </div>
         <div className="stat-card">
           <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">AI Flags</p>
-          <p className="mt-2 text-2xl font-semibold text-slate-950">{aiFlaggedCount}</p>
+          <p className="mt-2 text-2xl font-semibold text-slate-950">{flaggedAiTransactionTotal}</p>
           <p className="mt-1 text-sm text-slate-500">Rows needing attention</p>
         </div>
       </section> : null}
@@ -1245,6 +1369,7 @@ export default async function AccountingPage({
               <option value="cogs">COGS</option>
               <option value="asset">Asset</option>
               <option value="liability">Liability</option>
+              <option value="equity">Equity</option>
               <option value="other_income">Other Income</option>
               <option value="other_expense">Other Expense</option>
               <option value="excluded">Excluded</option>

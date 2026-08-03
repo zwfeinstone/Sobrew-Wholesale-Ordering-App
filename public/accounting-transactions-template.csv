@@ -1,16 +1,41 @@
 Date,Description,Amount,Merchant,Account,Likely Expense Category
-2026-07-14,Intuit deposit,-450.00,Intuit,Sobrew Checking,Sales Revenue
-2026-07-15,Mobile payment thank you,-500.00,American Express,Sobrew Checking,Transfer / Credit Card Payment
-2026-07-16,Pirate Ship postage,236.41,Pirate Ship,Business Amex,Shipping Labels & Postage COGS
-2026-07-17,Uline boxes,146.52,Uline,Business Amex,Packaging & Shipping Supplies COGS
-2026-07-18,Exploradora green coffee,550.00,Exploradora Coffee,Business Amex,Coffee & Ingredients COGS
-2026-07-19,Restaurant Depot ingredients,81.30,Restaurant Depot,Business Amex,Food & Beverage Ingredients COGS
-2026-07-20,Webstaurant equipment,1959.00,Webstaurant Store,Business Amex,Equipment & Smallwares
-2026-07-21,Home Star storage,231.00,Home Star Storage,Business Amex,Storage & Warehousing
-2026-07-22,AT&T internet,56.80,AT&T,Business Amex,Telecom & Internet
-2026-07-23,OpenAI subscription,87.80,OpenAI,Business Amex,AI & Automation Tools
-2026-07-24,Shopify platform fee,42.81,Shopify,Business Amex,Ecommerce Platform Fees
-2026-07-25,Custom Ink branded materials,45.67,Custom Ink,Business Amex,Printing & Branded Materials
-2026-07-26,QuickBooks subscription,126.21,Intuit QuickBooks,Business Amex,Software & Subscriptions
-2026-07-27,Canva design tools,158.04,Canva,Business Amex,Advertising & Marketing
-2026-07-28,Processing fee,12.75,Intuit,Sobrew Checking,Bank & Processing Fees
+2026-07-01,Wholesale invoice deposit,-450.00,Intuit,Sobrew Checking,Sales Revenue
+2026-07-02,Green coffee purchase,550.00,Exploradora Coffee,Business Amex,Coffee & Ingredients COGS
+2026-07-03,Uline boxes,146.52,Uline,Business Amex,Packaging & Shipping Supplies COGS
+2026-07-04,Pirate Ship postage,236.41,Pirate Ship,Business Amex,Shipping Labels & Postage COGS
+2026-07-05,Inbound freight,84.95,Freight Carrier,Business Amex,Freight In / Landed Cost
+2026-07-06,Restaurant Depot ingredients,81.30,Restaurant Depot,Business Amex,Food & Beverage Ingredients COGS
+2026-07-07,Inventory purchase,750.00,Inventory Vendor,Business Amex,Inventory Purchase / Asset
+2026-07-08,USPS postage,32.40,USPS,Sobrew Checking,Shipping & Postage
+2026-07-09,QuickBooks subscription,126.21,Intuit QuickBooks,Business Amex,Software & Subscriptions
+2026-07-10,Canva design tools,158.04,Canva,Business Amex,Advertising & Marketing
+2026-07-11,Sample box supplies,95.00,Sample Vendor,Business Amex,Marketing & Samples
+2026-07-12,Team meal,42.18,Restaurant,Business Amex,Meals & Travel
+2026-07-13,Customer lunch,67.32,Cafe,Business Amex,Business Meals & Entertainment
+2026-07-14,Hotel stay,368.64,Home2 Suites,Business Amex,Travel & Lodging
+2026-07-15,Fuel purchase,54.20,Shell,Business Amex,Fuel & Auto
+2026-07-16,Business insurance,214.00,Insurance Provider,Sobrew Checking,Insurance
+2026-07-17,Machine repair,189.75,Repair Vendor,Business Amex,Repairs & Maintenance
+2026-07-18,Small equipment,1959.00,Webstaurant Store,Business Amex,Equipment & Smallwares
+2026-07-19,Office supplies,658.47,Amazon.com,Business Amex,Office & Retail Supplies
+2026-07-20,Accounting fee,300.00,CPA Firm,Sobrew Checking,Professional Fees
+2026-07-21,Utility bill,231.00,Utility Provider,Sobrew Checking,Rent & Utilities
+2026-07-22,Storage unit,231.00,Home Star Storage,Business Amex,Storage & Warehousing
+2026-07-23,Internet service,56.80,AT&T,Business Amex,Telecom & Internet
+2026-07-24,OpenAI subscription,87.80,OpenAI,Business Amex,AI & Automation Tools
+2026-07-25,Processing fee,12.75,Intuit,Sobrew Checking,Bank & Processing Fees
+2026-07-26,Shopify platform fee,42.81,Shopify,Business Amex,Ecommerce Platform Fees
+2026-07-27,Branded materials,45.67,Custom Ink,Business Amex,Printing & Branded Materials
+2026-07-28,Business license renewal,125.00,City Office,Sobrew Checking,"Taxes, Licenses & Permits"
+2026-07-29,Payroll payment,1425.00,Payroll Provider,Sobrew Checking,Payroll Wages & Taxes
+2026-07-30,Owner salary payroll,0.00,Payroll Provider,Sobrew Checking,Owner W-2 Payroll
+2026-07-30,Contractor reimbursement,150.00,Contractor,Sobrew Checking,Contract Labor / Reimbursements
+2026-07-31,Misc operating expense,35.00,Misc Vendor,Business Amex,Other Operating Expense
+2026-08-01,Interest income,-4.25,Bank,Sobrew Checking,Other Income
+2026-08-02,Interest expense,18.50,Lender,Sobrew Checking,Other Expense
+2026-08-03,Credit card payment,500.00,American Express,Sobrew Checking,Transfer / Credit Card Payment
+2026-08-04,Vendor refund,-169.50,Home2 Suites,Business Amex,Refund / Credit
+2026-08-05,Owner draw,250.00,Zach Feinstone,Sobrew Checking,Owner Draw / Equity
+2026-08-06,Personal review item,75.00,Unknown Vendor,Sobrew Checking,Owner / Personal Review
+2026-08-07,Owner loan deposit,-2000.00,Zach Feinstone,Sobrew Checking,Owner Loan Payable
+2026-08-08,Uncategorized transaction,25.00,Unknown Vendor,Business Amex,Uncategorized
