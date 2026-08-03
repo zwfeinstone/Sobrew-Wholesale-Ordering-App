@@ -22,6 +22,7 @@ import {
   getQuickBooksInvoicePdf,
   getQuickBooksProductSummary,
   getQuickBooksSalesTaxSettings,
+  getQuickBooksSavedPaymentMethodLookups,
   linkPortalCenterToQuickBooksCustomer,
   normalizeQuickBooksSavedPaymentMethodType,
   QuickBooksConfigurationError,
@@ -1119,6 +1120,12 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
   const resetStatus = resetStatusResult.data as QuickBooksResetStatusRow | null;
   const quickBooksPaymentsAuthorized = hasQuickBooksPaymentsScope(quickBooksStatus.grantedScopes);
   const readyOrders = orders.filter(orderIsReadyToInvoice);
+  const savedPaymentLookups = activeView === 'queue' && quickBooksStatus.connected && quickBooksPaymentsAuthorized
+    ? await getQuickBooksSavedPaymentMethodLookups(
+        orders.map((order) => cleanText(relatedOne(order.centers)?.quickbooks_customer_id) || null)
+      )
+    : [];
+  const savedPaymentLookupByCustomerId = new Map(savedPaymentLookups.map((lookup) => [lookup.customerId, lookup]));
   const needsMappingOrders = orders.filter((order) => order.invoice_status !== 'invoicing' && !orderIsReadyToInvoice(order));
   const totalReadyCents = readyOrders.reduce((sum, order) => sum + Math.max(0, numericValue(order.subtotal_cents)), 0);
   const sentInvoiceTotalCents = sentInvoices.reduce((sum, order) => sum + Math.max(0, numericValue(order.subtotal_cents)), 0);
@@ -1939,7 +1946,22 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
           const readyToInvoice = orderIsReadyToInvoice(order);
           const paymentMethod = savedPaymentMethodInfo(center);
           const hasSavedPaymentMethod = Boolean(paymentMethod.id && paymentMethod.type);
+          const quickBooksCustomerId = cleanText(center?.quickbooks_customer_id);
+          const paymentLookup = quickBooksCustomerId ? savedPaymentLookupByCustomerId.get(quickBooksCustomerId) ?? null : null;
+          const quickBooksPaymentMethod = paymentLookup?.method ?? null;
+          const paymentLookupError = cleanText(paymentLookup?.error);
+          const hasKnownSavedPaymentMethod = hasSavedPaymentMethod || Boolean(quickBooksPaymentMethod);
+          const noSavedPaymentFound = Boolean(paymentLookup && !quickBooksPaymentMethod && !paymentLookupError);
+          const paymentLookupUnavailable = Boolean(paymentLookup && !quickBooksPaymentMethod && paymentLookupError);
           const hasRecordedPayment = Boolean(cleanText(order.quickbooks_payment_id));
+          const chargeSavedPaymentDisabled = !canInvoice
+            || !readyToInvoice
+            || !quickBooksStatus.connected
+            || !quickBooksPaymentsAuthorized
+            || Boolean(quickBooksStatus.missingConfig.length)
+            || hasRecordedPayment
+            || noSavedPaymentFound
+            || paymentLookupUnavailable;
           const taxStatus = center?.customer_tax_status === 'for_profit'
             ? 'For-profit'
             : center?.customer_tax_status === 'tax_exempt'
@@ -1957,9 +1979,17 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
                     <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${isTaxable ? 'bg-teal-100 text-teal-800' : 'bg-slate-100 text-slate-700'}`}>
                       {isTaxable ? 'Taxable in QuickBooks' : 'Non-taxable in QuickBooks'}
                     </span>
-                    {hasSavedPaymentMethod ? (
+                    {hasKnownSavedPaymentMethod ? (
                       <span className="rounded-full bg-indigo-100 px-2.5 py-1 text-xs font-semibold text-indigo-800">
-                        Saved payment
+                        Saved payment found
+                      </span>
+                    ) : noSavedPaymentFound ? (
+                      <span className="rounded-full bg-amber-100 px-2.5 py-1 text-xs font-semibold text-amber-800">
+                        No saved payment
+                      </span>
+                    ) : paymentLookupUnavailable ? (
+                      <span className="rounded-full bg-rose-100 px-2.5 py-1 text-xs font-semibold text-rose-800">
+                        Payment lookup unavailable
                       </span>
                     ) : null}
                     {hasRecordedPayment ? (
@@ -1971,7 +2001,19 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
                   <p className="mt-2 text-sm text-slate-500">Shipped {formatTimestamp(order.shipped_at)} · Ordered {formatTimestamp(order.created_at)}</p>
                   <p className="mt-1 text-sm text-slate-500">{taxStatus} · Ship-to state {order.shipping_state || 'missing'}</p>
                   {hasSavedPaymentMethod ? <p className="mt-1 text-sm text-slate-500">Saved payment: {paymentMethod.label}</p> : null}
-                  {!hasSavedPaymentMethod && !missingCustomerMapping ? <p className="mt-1 text-sm text-slate-500">QuickBooks will be checked for a saved card, checking, or ACH/eCheck method before charging.</p> : null}
+                  {!hasSavedPaymentMethod && quickBooksPaymentMethod ? (
+                    <p className="mt-1 text-sm text-slate-500">
+                      Saved payment in QuickBooks: {quickBooksPaymentMethod.label}
+                      {paymentLookup && paymentLookup.methodCount > 1 ? ` (${paymentLookup.methodCount} saved methods found)` : ''}
+                    </p>
+                  ) : null}
+                  {noSavedPaymentFound ? (
+                    <p className="mt-1 text-sm font-medium text-amber-700">No saved card, checking, or ACH/eCheck method found in QuickBooks.</p>
+                  ) : null}
+                  {paymentLookupUnavailable ? (
+                    <p className="mt-1 text-sm font-medium text-rose-700">Saved payment lookup unavailable: {paymentLookupError}</p>
+                  ) : null}
+                  {!hasSavedPaymentMethod && !quickBooksPaymentMethod && !noSavedPaymentFound && !paymentLookupUnavailable && !missingCustomerMapping ? <p className="mt-1 text-sm text-slate-500">QuickBooks will be checked for a saved card, checking, or ACH/eCheck method before charging.</p> : null}
                   <p className="mt-1 break-all text-sm text-slate-500">Order {order.id}</p>
                   {order.quickbooks_invoice_id ? (
                     <p className="mt-1 text-sm text-slate-500">
@@ -2021,22 +2063,32 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
                   <input type="hidden" name="order_id" value={order.id} />
                   <PendingSubmitButton
                     className="btn-primary w-full sm:w-auto"
-                    disabled={!canInvoice || !readyToInvoice || !quickBooksStatus.connected || !quickBooksPaymentsAuthorized || Boolean(quickBooksStatus.missingConfig.length) || hasRecordedPayment}
+                    disabled={chargeSavedPaymentDisabled}
                     disabledLabel={
                       hasRecordedPayment
                         ? 'Payment recorded'
-                        : isBusy
-                          ? 'Invoicing...'
-                          : noInvoiceableItems
-                            ? 'No invoiceable items'
-                            : mappingBlocked
-                              ? 'Needs mapping'
-                              : !quickBooksPaymentsAuthorized
-                                ? 'Reconnect QuickBooks'
-                                : 'Charge saved payment'
+                        : !canInvoice
+                          ? 'No invoicing access'
+                          : isBusy
+                            ? 'Invoicing...'
+                            : noInvoiceableItems
+                              ? 'No invoiceable items'
+                              : mappingBlocked
+                                ? 'Needs mapping'
+                                : !quickBooksStatus.connected
+                                  ? 'Connect QuickBooks'
+                                  : Boolean(quickBooksStatus.missingConfig.length)
+                                    ? 'Missing config'
+                                    : !quickBooksPaymentsAuthorized
+                                      ? 'Reconnect QuickBooks'
+                                      : noSavedPaymentFound
+                                        ? 'No saved payment'
+                                        : paymentLookupUnavailable
+                                          ? 'Lookup unavailable'
+                                          : 'Charge saved payment'
                     }
-                    label={order.quickbooks_payment_charge_id ? 'Record payment & send receipt' : hasSavedPaymentMethod ? 'Charge saved payment & send receipt' : 'Check QuickBooks & charge'}
-                    pendingLabel={order.quickbooks_payment_charge_id ? 'Recording...' : hasSavedPaymentMethod ? 'Charging...' : 'Checking...'}
+                    label={order.quickbooks_payment_charge_id ? 'Record payment & send receipt' : hasKnownSavedPaymentMethod ? 'Charge saved payment & send receipt' : 'Check QuickBooks & charge'}
+                    pendingLabel={order.quickbooks_payment_charge_id ? 'Recording...' : hasKnownSavedPaymentMethod ? 'Charging...' : 'Checking...'}
                   />
                 </form>
                 <form action={invoiceOrder}>

@@ -14,6 +14,7 @@ const QUICKBOOKS_TOKEN_ENDPOINT = 'https://oauth.platform.intuit.com/oauth2/v1/t
 const QUICKBOOKS_BUSINESS_TIME_ZONE = 'America/Chicago';
 const QUICKBOOKS_DEFAULT_SHIP_VIA = 'UPS';
 const QUICKBOOKS_DEFAULT_TRACKING_NOTE = 'See shipped order email';
+const QUICKBOOKS_SAVED_PAYMENT_LOOKUP_BATCH_SIZE = 4;
 
 type QuickBooksEnvironment = 'production' | 'sandbox';
 type CustomerTaxStatus = 'unknown' | 'for_profit' | 'tax_exempt';
@@ -145,6 +146,13 @@ export type QuickBooksSavedPaymentMethod = {
   label: string;
   last4?: string | null;
   type: QuickBooksSavedPaymentMethodType;
+};
+
+export type QuickBooksSavedPaymentMethodLookup = {
+  customerId: string;
+  error: string | null;
+  method: QuickBooksSavedPaymentMethod | null;
+  methodCount: number;
 };
 
 export type CreatedQuickBooksPaidInvoice = CreatedQuickBooksInvoice & {
@@ -484,6 +492,57 @@ async function getQuickBooksSavedPaymentMethodsForCustomer(connection: QuickBook
 
 function errorMessageForSavedPaymentRead(resource: string, error: unknown) {
   return `${resource}: ${error instanceof Error ? error.message : 'unavailable'}`;
+}
+
+function errorMessageForSavedPaymentLookup(error: unknown) {
+  return error instanceof Error ? error.message : 'Saved payment lookup unavailable.';
+}
+
+export async function getQuickBooksSavedPaymentMethodLookups(
+  customerIds: Array<string | null | undefined>
+): Promise<QuickBooksSavedPaymentMethodLookup[]> {
+  const uniqueCustomerIds = [...new Set(customerIds.map(cleanText).filter(Boolean))];
+  if (!uniqueCustomerIds.length) return [];
+
+  let connection: QuickBooksConnection;
+  try {
+    connection = await getAuthorizedConnection();
+  } catch (error) {
+    const message = errorMessageForSavedPaymentLookup(error);
+    return uniqueCustomerIds.map((customerId) => ({
+      customerId,
+      error: message,
+      method: null,
+      methodCount: 0,
+    }));
+  }
+
+  const lookups: QuickBooksSavedPaymentMethodLookup[] = [];
+  for (let index = 0; index < uniqueCustomerIds.length; index += QUICKBOOKS_SAVED_PAYMENT_LOOKUP_BATCH_SIZE) {
+    const batch = uniqueCustomerIds.slice(index, index + QUICKBOOKS_SAVED_PAYMENT_LOOKUP_BATCH_SIZE);
+    const batchLookups = await Promise.all(batch.map(async (customerId): Promise<QuickBooksSavedPaymentMethodLookup> => {
+      try {
+        const result = await getQuickBooksSavedPaymentMethodsForCustomer(connection, customerId);
+        const method = result.methods[0] ?? null;
+        return {
+          customerId,
+          error: method || !result.errors.length ? null : result.errors.join(' '),
+          method,
+          methodCount: result.methods.length,
+        };
+      } catch (error) {
+        return {
+          customerId,
+          error: errorMessageForSavedPaymentLookup(error),
+          method: null,
+          methodCount: 0,
+        };
+      }
+    }));
+    lookups.push(...batchLookups);
+  }
+
+  return lookups;
 }
 
 async function cacheQuickBooksSavedPaymentMethodForOrder(
