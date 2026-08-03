@@ -9,6 +9,7 @@ import {
 import { getSupabaseAdmin } from '@/lib/supabase/admin';
 
 const INVOICING_TIME_ZONE = 'America/Chicago';
+const QUICKBOOKS_INVOICING_START = { day: 1, month: 8, year: 2026 };
 
 function cleanText(value: unknown) {
   return String(value ?? '').trim();
@@ -52,13 +53,15 @@ function timeZoneOffsetMs(date: Date, timeZone: string) {
   return utcFromLocalParts - date.getTime();
 }
 
-function todayStartIso(timeZone = INVOICING_TIME_ZONE) {
-  const now = new Date();
-  const parts = timeZoneParts(now, timeZone);
-  const localMidnightAsUtc = Date.UTC(parts.year, parts.month - 1, parts.day, 0, 0, 0);
-  const firstGuess = new Date(localMidnightAsUtc - timeZoneOffsetMs(now, timeZone));
+function localDateStartIso({ day, month, year }: { day: number; month: number; year: number }, timeZone = INVOICING_TIME_ZONE) {
+  const localMidnightAsUtc = Date.UTC(year, month - 1, day, 0, 0, 0);
+  const firstGuess = new Date(localMidnightAsUtc);
   const offset = timeZoneOffsetMs(firstGuess, timeZone);
   return new Date(localMidnightAsUtc - offset).toISOString();
+}
+
+function quickBooksInvoicingStartIso(timeZone = INVOICING_TIME_ZONE) {
+  return localDateStartIso(QUICKBOOKS_INVOICING_START, timeZone);
 }
 
 function invoiceableLineItemCount(order: any) {
@@ -117,7 +120,7 @@ export async function POST(request: Request) {
     }
   }
 
-  const startIso = todayStartIso();
+  const startIso = quickBooksInvoicingStartIso();
   if ((order as any).archived_at || (order as any).status !== 'Shipped' || !(order as any).created_at || new Date((order as any).created_at) < new Date(startIso)) {
     return invoicingRedirect(request, 'invoice_not_ready', returnView);
   }

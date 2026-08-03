@@ -34,6 +34,8 @@ import { createClient } from '@/lib/supabase/server';
 import { usd } from '@/lib/utils';
 
 const INVOICING_TIME_ZONE = 'America/Chicago';
+const QUICKBOOKS_INVOICING_START = { day: 1, month: 8, year: 2026 };
+const QUICKBOOKS_INVOICING_START_LABEL = 'August 1, 2026';
 const INVOICING_VIEWS = [
   { id: 'queue', label: 'Ready to Invoice' },
   { id: 'accounts-receivable', label: 'Accounts Receivable' },
@@ -225,13 +227,15 @@ function timeZoneOffsetMs(date: Date, timeZone: string) {
   return utcFromLocalParts - date.getTime();
 }
 
-function todayStartIso(timeZone = INVOICING_TIME_ZONE) {
-  const now = new Date();
-  const parts = timeZoneParts(now, timeZone);
-  const localMidnightAsUtc = Date.UTC(parts.year, parts.month - 1, parts.day, 0, 0, 0);
-  const firstGuess = new Date(localMidnightAsUtc - timeZoneOffsetMs(now, timeZone));
+function localDateStartIso({ day, month, year }: { day: number; month: number; year: number }, timeZone = INVOICING_TIME_ZONE) {
+  const localMidnightAsUtc = Date.UTC(year, month - 1, day, 0, 0, 0);
+  const firstGuess = new Date(localMidnightAsUtc);
   const offset = timeZoneOffsetMs(firstGuess, timeZone);
   return new Date(localMidnightAsUtc - offset).toISOString();
+}
+
+function quickBooksInvoicingStartIso(timeZone = INVOICING_TIME_ZONE) {
+  return localDateStartIso(QUICKBOOKS_INVOICING_START, timeZone);
 }
 
 function formatTimestamp(value: string | null) {
@@ -358,7 +362,7 @@ function toastMessage(toast: string) {
     invoice_failed: { message: 'Unable to create that QuickBooks invoice.', tone: 'error' },
     invoice_mapping_required: { message: 'Map the QuickBooks customer and every product before invoicing.', tone: 'error' },
     invoice_no_line_items: { message: 'This order has no invoiceable line items.', tone: 'error' },
-    invoice_not_ready: { message: 'Only shipped orders from today or later can be invoiced here.', tone: 'error' },
+    invoice_not_ready: { message: `Only shipped orders from ${QUICKBOOKS_INVOICING_START_LABEL} or later can be invoiced here.`, tone: 'error' },
     invoice_download_failed: { message: 'Unable to download that QuickBooks invoice PDF.', tone: 'error' },
     invoice_pdf_failed: { message: 'QuickBooks invoice was created, but the PDF email was not sent. Check the billing email and email settings, then retry.', tone: 'error' },
     invoice_pdf_sent: { message: 'QuickBooks invoice created and PDF emailed.', tone: 'success' },
@@ -519,7 +523,7 @@ async function invoiceOrder(formData: FormData) {
   if (!orderId) redirect(invoicingHref('invoice_not_ready'));
 
   const supabase = getSupabaseAdmin();
-  const startIso = todayStartIso();
+  const startIso = quickBooksInvoicingStartIso();
   const { data: order } = await supabase
     .from('orders')
     .select('id,status,archived_at,created_at,quickbooks_invoice_id,invoice_status,centers(quickbooks_customer_id),order_items(line_total_cents,product_name_snapshot,products(name,quickbooks_item_id))')
@@ -739,7 +743,7 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
   const toast = typeof searchParams?.toast === 'string' ? searchParams.toast : '';
   const errorDetail = typeof searchParams?.error === 'string' ? searchParams.error : '';
   const selectedToast = toastMessage(toast);
-  const startIso = todayStartIso();
+  const startIso = quickBooksInvoicingStartIso();
   const supabase = await createClient();
   const [quickBooksStatus, quickBooksCompanyInfo, quickBooksProductSummary, quickBooksItemsResult, quickBooksCustomerSummary, quickBooksCustomersResult, salesTaxSettings, ordersResult, sentInvoicesResult, receivableOrdersResult, productsResult, centersResult, resetStatusResult] = await Promise.all([
     getQuickBooksConnectionStatus(),
@@ -864,7 +868,7 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
         <div>
           <span className="eyebrow">Finance</span>
           <h1 className="mt-3 text-3xl font-semibold tracking-tight text-slate-950">Invoicing</h1>
-          <p className="mt-2 max-w-2xl text-sm text-slate-500">Shipped orders from today forward appear here until QuickBooks has an invoice.</p>
+          <p className="mt-2 max-w-2xl text-sm text-slate-500">Shipped orders from {QUICKBOOKS_INVOICING_START_LABEL} forward appear here until QuickBooks has an invoice.</p>
         </div>
         <div className="flex flex-col gap-2 sm:flex-row">
           <Link className="btn-secondary text-center" href="/admin/orders">Orders</Link>
@@ -1674,7 +1678,7 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
 
           {!orders.length ? (
             <div className="card text-sm text-slate-600">
-              No shipped orders are ready to invoice today.
+              No shipped orders are ready to invoice from {QUICKBOOKS_INVOICING_START_LABEL} forward.
             </div>
           ) : null}
         </>
