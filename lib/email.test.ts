@@ -42,8 +42,8 @@ describe('buildCustomerWelcomeEmailContent', () => {
 
     expect(content.text).toContain('Hi Maya,');
     expect(content.html).toContain('Hi Maya,');
-    expect(content.html).toContain('Welcome to Sobrew, Maya!');
-    expect(content.html).toContain('Lakeview Recovery set up and ready to order');
+    expect(content.html).toContain('Welcome, Maya!');
+    expect(content.html).toContain("We've set up Sobrew ordering for Lakeview Recovery");
   });
 
   it('falls back to the first email prefix word when the name is blank', () => {
@@ -72,14 +72,16 @@ describe('buildCustomerWelcomeEmailContent', () => {
     expect(content.html).toContain('orders@example.com');
     expect(content.html).toContain('VisiblePass123!');
     expect(content.html).toContain('https://app.sobrew.com/sobrew-logo.png');
-    expect(content.html).toContain('Every order helps fund recovery');
+    expect(content.html).toContain("Every order helps fund recovery. It's at the heart of what we do");
     expect(content.html).toContain('width="64" height="64" alt="Sobrew"');
-    expect(content.html).toContain("We're happy to help with the portal or answer any questions.");
+    expect(content.html).toContain("Just reply to this email. We're happy to help.");
     expect(content.html).toContain('Thanks for being part of Sobrew.');
-    expect(content.text).toContain("We're happy to help with the portal or answer any questions.");
+    expect(content.text).toContain("Just reply to this email. We're happy to help.");
     expect(content.text).toContain('Thanks for being part of Sobrew.');
     expect(content.html).not.toContain('help with your first order');
     expect(content.html).not.toContain("Let's keep the coffee and the good work moving.");
+    expect(content.html.toLowerCase()).not.toContain('restock');
+    expect(content.text.toLowerCase()).not.toContain('restock');
     expectApprovedTextSocialFooter(content.html, content.text);
   });
 
@@ -89,11 +91,11 @@ describe('buildCustomerWelcomeEmailContent', () => {
       fullName: 'Mobile Test',
       password: 'A'.repeat(80),
     });
-    const credentials = htmlSectionBetween(content.html, "Here's how to get in", "Whenever you're ready");
+    const credentials = htmlSectionBetween(content.html, 'Your login details', 'Ordering is easy');
 
     expect(credentials).toContain('table-layout:fixed');
-    expect(credentials).toContain('width="34%"');
-    expect(credentials).toContain('width="66%"');
+    expect(credentials).toContain('colspan="2"');
+    expect(credentials).toContain('box-sizing:border-box');
     expect(credentials).toContain('overflow-wrap:anywhere');
     expect(credentials).toContain('word-break:break-all');
   });

@@ -160,155 +160,87 @@ export function buildCustomerWelcomeEmailContent(payload: WelcomeEmailPayload) {
   const html = emailShell({
     body: `
       <tr>
-        <td style="padding:30px 28px 10px 28px;">
+        <td style="padding:34px 32px 8px 32px;">
           <p style="margin:0 0 14px 0; color:#291f18; font-size:17px; line-height:1.55;">Hi ${safeName},</p>
-          <p style="margin:0; color:#594736; font-size:16px; line-height:1.65;">We've got ${safeCenterName} set up and ready to order. Whenever you need a restock, hop into the portal, grab what you need, and get on with your day.</p>
+          <p style="margin:0; color:#594f46; font-size:16px; line-height:1.7;">We've set up Sobrew ordering for ${safeCenterName}. Use the details below whenever you're ready to place an order.</p>
         </td>
       </tr>
       <tr>
-        <td style="padding:20px 28px 0 28px;">
-          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background:#e7f5f1; border:1px solid #b9ddd2; border-radius:14px;">
+        <td style="padding:22px 32px 0 32px;">
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%; table-layout:fixed; background:#f5f1e9; border:1px solid #ded8cc; border-radius:12px; overflow:hidden;">
+            <tr><td colspan="2" style="padding:18px 18px 10px 18px; color:#29382d; font-size:17px; font-weight:800;">Your login details</td></tr>
             <tr>
-              <td style="padding:18px;">
-                <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
-                  <tr>
-                    <td valign="middle" style="padding-right:14px;">
-                      <p style="margin:0 0 6px 0; color:#4f7250; font-size:12px; font-weight:700; letter-spacing:1.6px; text-transform:uppercase;">All set</p>
-                      <p style="margin:0; color:#241a12; font-size:22px; line-height:1.3; font-weight:800;">Your Sobrew portal is ready when you are.</p>
-                    </td>
-                    <td width="76" align="right" valign="middle">
-                      <table role="presentation" width="64" height="64" cellspacing="0" cellpadding="0" border="0" style="width:64px; height:64px; background:#4f7250; border-radius:999px;">
-                        <tr><td align="center" valign="middle" style="color:#ffffff; font-size:28px; font-weight:800;">&#10003;</td></tr>
-                      </table>
-                    </td>
-                  </tr>
-                </table>
+              <td colspan="2" style="box-sizing:border-box; padding:8px 18px;">
+                <p style="margin:0 0 4px 0; color:#73675c; font-size:12px; font-weight:700; text-transform:uppercase;">Portal</p>
+                <p style="margin:0; color:#241a12; font-size:15px; font-weight:700; overflow-wrap:anywhere; word-break:break-all; word-wrap:break-word;"><a href="${PORTAL_URL}" style="color:#29382d; text-decoration:none; overflow-wrap:anywhere; word-break:break-all; word-wrap:break-word;">app.sobrew.com</a></p>
+              </td>
+            </tr>
+            <tr>
+              <td colspan="2" style="box-sizing:border-box; padding:8px 18px;">
+                <p style="margin:0 0 4px 0; color:#73675c; font-size:12px; font-weight:700; text-transform:uppercase;">Email</p>
+                <p style="margin:0; color:#241a12; font-size:15px; font-weight:700; overflow-wrap:anywhere; word-break:break-all; word-wrap:break-word;">${safeEmail}</p>
+              </td>
+            </tr>
+            <tr>
+              <td colspan="2" style="box-sizing:border-box; padding:8px 18px 16px 18px;">
+                <p style="margin:0 0 4px 0; color:#73675c; font-size:12px; font-weight:700; text-transform:uppercase;">Password</p>
+                <p style="margin:0; color:#241a12; font-size:15px; font-weight:700; overflow-wrap:anywhere; word-break:break-all; word-wrap:break-word;">${safePassword}</p>
+              </td>
+            </tr>
+            <tr>
+              <td colspan="2" style="padding:0 18px 18px 18px;">
+                <a href="${PORTAL_URL}" style="display:block; background:#35563f; border-radius:8px; color:#ffffff; font-size:15px; font-weight:800; padding:14px 18px; text-align:center; text-decoration:none;">Open the ordering portal</a>
               </td>
             </tr>
           </table>
         </td>
       </tr>
       <tr>
-        <td style="padding:18px 28px 0 28px;">
-          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background:#fff7e8; border-left:5px solid #e56f5a; border-radius:12px;">
-            <tr>
-              <td style="padding:16px 18px;">
-                <p style="margin:0 0 7px 0; color:#241a12; font-size:15px; font-weight:800;">And here is the really good part.</p>
-                <p style="margin:0; color:#594736; font-size:14px; line-height:1.6;">Every order helps fund recovery. So keeping your shelves stocked helps keep that work moving too. Coffee with a little more purpose built in.</p>
-              </td>
-            </tr>
-          </table>
+        <td style="padding:30px 32px 0 32px;">
+          <p style="margin:0 0 9px 0; color:#29382d; font-size:18px; font-weight:800;">Ordering is easy</p>
+          <p style="margin:0; color:#594f46; font-size:15px; line-height:1.7;">Choose what you need from your catalog and send the order our way. You can also repeat a past order or set up recurring orders whenever that makes life easier.</p>
         </td>
       </tr>
       <tr>
-        <td style="padding:22px 28px 0 28px;">
-          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%; table-layout:fixed; background:#f7f3eb; border:1px solid #ded4c3; border-radius:14px; overflow:hidden;">
-            <tr><td colspan="2" style="background:#4f7250; color:#ffffff; padding:13px 16px; font-size:13px; font-weight:800; letter-spacing:1.4px; text-transform:uppercase;">Here's how to get in</td></tr>
-            <tr>
-              <td width="34%" style="width:34%; box-sizing:border-box; padding:15px 12px 8px 12px; color:#806144; font-size:12px; font-weight:700; text-transform:uppercase;">Portal</td>
-              <td width="66%" align="right" style="width:66%; box-sizing:border-box; padding:15px 12px 8px 12px; color:#241a12; font-size:15px; font-weight:800; overflow-wrap:anywhere; word-break:break-all; word-wrap:break-word;"><a href="${PORTAL_URL}" style="color:#241a12; text-decoration:none; overflow-wrap:anywhere; word-break:break-all; word-wrap:break-word;">app.sobrew.com</a></td>
-            </tr>
-            <tr>
-              <td width="34%" style="width:34%; box-sizing:border-box; padding:8px 12px; color:#806144; font-size:12px; font-weight:700; text-transform:uppercase;">Email</td>
-              <td width="66%" align="right" style="width:66%; box-sizing:border-box; padding:8px 12px; color:#241a12; font-size:15px; font-weight:800; overflow-wrap:anywhere; word-break:break-all; word-wrap:break-word;">${safeEmail}</td>
-            </tr>
-            <tr>
-              <td width="34%" style="width:34%; box-sizing:border-box; padding:8px 12px 15px 12px; color:#806144; font-size:12px; font-weight:700; text-transform:uppercase;">Password</td>
-              <td width="66%" align="right" style="width:66%; box-sizing:border-box; padding:8px 12px 15px 12px; color:#241a12; font-size:15px; font-weight:800; overflow-wrap:anywhere; word-break:break-all; word-wrap:break-word;">${safePassword}</td>
-            </tr>
-            <tr>
-              <td colspan="2" style="padding:0 16px 16px 16px;">
-                <a href="${PORTAL_URL}" style="display:block; background:#e56f5a; border-radius:12px; color:#ffffff; font-size:15px; font-weight:800; padding:14px 18px; text-align:center; text-decoration:none;">Head to the Sobrew portal</a>
-              </td>
-            </tr>
-          </table>
+        <td style="padding:26px 32px 0 32px;">
+          <div style="border-top:1px solid #ded8cc; line-height:1px; font-size:1px;">&nbsp;</div>
         </td>
       </tr>
       <tr>
-        <td style="padding:26px 28px 0 28px;">
-          <p style="margin:0 0 14px 0; color:#2f3d2b; font-size:18px; font-weight:800;">Whenever you're ready, here's the whole process</p>
-          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
-            <tr>
-              <td width="33.33%" valign="top" style="padding:15px 12px; background:#f5fbf9; border:1px solid #cbe2da; border-radius:12px;">
-                <p style="margin:0 0 9px 0; color:#4f7250; font-size:22px; font-weight:800;">1</p>
-                <p style="margin:0 0 5px 0; color:#241a12; font-size:14px; font-weight:800;">Log in</p>
-                <p style="margin:0; color:#6b4c35; font-size:12px; line-height:1.5;">Use the info above.</p>
-              </td>
-              <td width="10">&nbsp;</td>
-              <td width="33.33%" valign="top" style="padding:15px 12px; background:#f5fbf9; border:1px solid #cbe2da; border-radius:12px;">
-                <p style="margin:0 0 9px 0; color:#4f7250; font-size:22px; font-weight:800;">2</p>
-                <p style="margin:0 0 5px 0; color:#241a12; font-size:14px; font-weight:800;">Pick what you need</p>
-                <p style="margin:0; color:#6b4c35; font-size:12px; line-height:1.5;">Your catalog is waiting.</p>
-              </td>
-              <td width="10">&nbsp;</td>
-              <td width="33.33%" valign="top" style="padding:15px 12px; background:#f5fbf9; border:1px solid #cbe2da; border-radius:12px;">
-                <p style="margin:0 0 9px 0; color:#4f7250; font-size:22px; font-weight:800;">3</p>
-                <p style="margin:0 0 5px 0; color:#241a12; font-size:14px; font-weight:800;">Send it our way</p>
-                <p style="margin:0; color:#6b4c35; font-size:12px; line-height:1.5;">Order once or repeat it.</p>
-              </td>
-            </tr>
-          </table>
-        </td>
-      </tr>
-      <tr>
-        <td style="padding:24px 28px 0 28px;">
-          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="border:1px solid #d5e6df; border-radius:14px; overflow:hidden;">
-            <tr><td style="background:#2f4f3b; color:#ffffff; padding:12px 16px; font-size:13px; font-weight:800; letter-spacing:1.4px; text-transform:uppercase;">A few things that make life easier</td></tr>
-            <tr><td style="padding:15px 16px; background:#f5fbf9; border-bottom:1px solid #d5e6df; color:#594736; font-size:14px; line-height:1.55;"><strong style="color:#241a12;">Set it and forget it.</strong> Recurring orders keep the coffee coming without the last-minute scramble.</td></tr>
-            <tr><td style="padding:15px 16px; border-bottom:1px solid #d5e6df; color:#594736; font-size:14px; line-height:1.55;"><strong style="color:#241a12;">Change things anytime.</strong> Bump quantities up, dial them back, or adjust the timing whenever you need to.</td></tr>
-            <tr><td style="padding:15px 16px; background:#f5fbf9; color:#594736; font-size:14px; line-height:1.55;"><strong style="color:#241a12;">Run it back.</strong> A past order can be back in your cart in a few seconds.</td></tr>
-          </table>
-        </td>
-      </tr>
-      <tr>
-        <td style="padding:28px;">
-          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background:#fff7e8; border-left:5px solid #c6a15b; border-radius:12px;">
-            <tr>
-              <td style="padding:16px 18px;">
-                <p style="margin:0 0 8px 0; color:#241a12; font-size:15px; font-weight:800;">Need a hand? Just reply.</p>
-                <p style="margin:0; color:#594736; font-size:14px; line-height:1.6;">We're happy to help with the portal or answer any questions.</p>
-              </td>
-            </tr>
-          </table>
+        <td style="padding:24px 32px 34px 32px;">
+          <p style="margin:0 0 9px 0; color:#29382d; font-size:18px; font-weight:800;">A quick note about Sobrew</p>
+          <p style="margin:0 0 22px 0; color:#594f46; font-size:15px; line-height:1.7;">Every order helps fund recovery. It's at the heart of what we do, and we're glad to have you with us.</p>
+          <p style="margin:0; color:#594f46; font-size:15px; line-height:1.7;"><strong style="color:#291f18;">Questions?</strong> Just reply to this email. We're happy to help.</p>
         </td>
       </tr>
     `,
-    eyebrow: "Glad you're here",
+    eyebrow: 'Sobrew wholesale',
     footerMessage: 'Thanks for being part of Sobrew.',
     footerSignature: 'The Sobrew Team',
     logoSize: 64,
     preheader: 'Your Sobrew wholesale portal is ready.',
     showTextSocialFooter: true,
-    title: `Welcome to Sobrew, ${greetingName}!`,
+    title: `Welcome, ${greetingName}!`,
     variant: 'welcome',
   });
 
   const text = [
     `Hi ${greetingName},`,
     '',
-    `We've got ${centerName} set up and ready to order. Whenever you need a restock, hop into the portal, grab what you need, and get on with your day.`,
+    `We've set up Sobrew ordering for ${centerName}. Use the details below whenever you're ready to place an order.`,
     '',
-    'Your Sobrew portal is ready when you are.',
-    '',
-    'And here is the really good part.',
-    'Every order helps fund recovery. So keeping your shelves stocked helps keep that work moving too. Coffee with a little more purpose built in.',
-    '',
-    "Here's how to get in",
+    'Your login details',
     `Portal: ${PORTAL_URL}`,
     `Email: ${payload.email}`,
     `Password: ${payload.password}`,
     '',
-    "Whenever you're ready, here's the whole process:",
-    '1. Log in using the info above.',
-    '2. Pick what you need from your catalog.',
-    '3. Send the order our way once or set it to repeat.',
+    'Ordering is easy',
+    'Choose what you need from your catalog and send the order our way. You can also repeat a past order or set up recurring orders whenever that makes life easier.',
     '',
-    'A few things that make life easier:',
-    '- Set it and forget it. Recurring orders keep the coffee coming without the last-minute scramble.',
-    '- Change things anytime. Bump quantities up, dial them back, or adjust the timing whenever you need to.',
-    '- Run it back. A past order can be back in your cart in a few seconds.',
+    'A quick note about Sobrew',
+    "Every order helps fund recovery. It's at the heart of what we do, and we're glad to have you with us.",
     '',
-    "Need a hand? Just reply. We're happy to help with the portal or answer any questions.",
+    "Questions? Just reply to this email. We're happy to help.",
     '',
     'Thanks for being part of Sobrew.',
     '',
@@ -375,12 +307,12 @@ const EMAIL_SHELL_THEMES: Record<EmailShellVariant, {
     title: '#2f4f3b',
   },
   welcome: {
-    background: '#edf7f7',
+    background: '#f4f2ed',
     eyebrow: '#4f7250',
-    header: '#f4e6cb',
-    logoBorder: '#4f7250',
+    header: '#ffffff',
+    logoBorder: '#d7d0c3',
     stripes: ['#4f7250', '#4f7250', '#4f7250', '#4f7250'],
-    title: '#2f3d2b',
+    title: '#29382d',
   },
 };
 
@@ -422,7 +354,7 @@ function emailShell({
         <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%; background:${theme.background}; margin:0;">
           <tr>
             <td align="center" style="padding:28px 12px;">
-              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%; max-width:640px; box-sizing:border-box; background:#ffffff; border:1px solid #cbe2da; border-radius:18px; overflow:hidden;">
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%; max-width:640px; box-sizing:border-box; background:#ffffff; border:1px solid ${variant === 'welcome' ? '#ded8cc' : '#cbe2da'}; border-radius:18px; overflow:hidden;">
                 <tr>
                   <td style="background:${theme.header}; padding:26px 28px 22px 28px;">
                     <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
@@ -457,7 +389,7 @@ function emailShell({
                 <tr>
                   <td align="center" style="background:#2f4f3b; padding:24px 28px;">
                     <p style="margin:0 0 ${footerSignature ? '8px' : hasSocialFooter ? '14px' : '10px'} 0; color:${variant === 'welcome' ? '#ffffff' : '#f3e8d3'}; font-size:14px; line-height:1.6;">${escapeHtml(footerMessage)}</p>
-                    ${footerSignature ? `<p style="margin:0 0 12px 0; color:#f2c85b; font-size:13px; line-height:1.6;">${escapeHtml(footerSignature)}</p>` : ''}
+                    ${footerSignature ? `<p style="margin:0 0 12px 0; color:${variant === 'welcome' ? '#dbe3d8' : '#f2c85b'}; font-size:13px; line-height:1.6;">${escapeHtml(footerSignature)}</p>` : ''}
                     ${showTextSocialFooter ? `
                       <p style="margin:0 0 13px 0; color:#f3e8d3; font-size:13px; line-height:1.8;">
                         <span style="color:#f3e8d3;">Follow Sobrew:</span>&nbsp;
