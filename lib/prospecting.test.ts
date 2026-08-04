@@ -163,6 +163,13 @@ describe('prospecting queue filtering rules', () => {
     expect(prospectingQueueStageFilter(prospectingQueueContextFromParams({ tab: 'tasks' }))).not.toContain('sample_requested');
   });
 
+  it('keeps Recycle / Try Later out of active rep and assignment queues', () => {
+    expect(ACTIVE_PROSPECTING_STAGES).not.toContain('recycle_try_later');
+    expect(REP_PIPELINE_STAGES).not.toContain('recycle_try_later');
+    expect(prospectingQueueStageFilter(prospectingQueueContextFromParams({ tab: 'list' }))).not.toContain('recycle_try_later');
+    expect(prospectingQueueStageFilter(prospectingQueueContextFromParams({ tab: 'tasks' }))).not.toContain('recycle_try_later');
+  });
+
   it('uses stable queue ordering for due tasks and next-record navigation', () => {
     expect(prospectingQueueOrderFields(prospectingQueueContextFromParams({ tab: 'tasks' }))).toEqual([
       { column: 'next_follow_up_at', ascending: true },
@@ -228,17 +235,15 @@ describe('prospecting activity stage resolution', () => {
 });
 
 describe('prospecting activity follow-up resolution', () => {
-  it('preserves the existing follow-up date when an activity is saved without a new date', () => {
+  it('clears the due task when an activity is saved without a new follow-up date', () => {
     expect(resolveActivityNextFollowUp({
-      currentNextFollowUp: '2026-07-31',
       requestedNextFollowUp: null,
       shouldUnassign: false,
-    })).toBe('2026-07-31');
+    })).toBeNull();
   });
 
   it('uses a newly entered follow-up date when one is provided', () => {
     expect(resolveActivityNextFollowUp({
-      currentNextFollowUp: '2026-07-31',
       requestedNextFollowUp: '2026-08-07',
       shouldUnassign: false,
     })).toBe('2026-08-07');
@@ -246,7 +251,6 @@ describe('prospecting activity follow-up resolution', () => {
 
   it('clears the follow-up date when the lead is unassigned from the rep queue', () => {
     expect(resolveActivityNextFollowUp({
-      currentNextFollowUp: '2026-07-31',
       requestedNextFollowUp: '2026-08-07',
       shouldUnassign: true,
     })).toBeNull();

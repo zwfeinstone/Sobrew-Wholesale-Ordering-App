@@ -32,6 +32,7 @@ import {
   HUBSPOT_QUEUE_STAGES,
   MAINTENANCE_PROSPECTING_STAGES,
   MISSING_STATE_FILTER,
+  PARKED_PROSPECTING_STAGES,
   PROSPECTING_CSV_HEADERS,
   PROSPECTING_IMPORT_MAX_BYTES,
   PROSPECTING_IMPORT_MAX_ROWS,
@@ -630,7 +631,7 @@ async function updateLeadAssignments({
 }) {
   const now = new Date().toISOString();
   for (const batch of chunkArray(leadIds, 500)) {
-    const { error } = await supabase
+    let updateQuery = supabase
       .from('prospecting_leads')
       .update({
         assigned_profile_id: salesProfileId,
@@ -638,15 +639,21 @@ async function updateLeadAssignments({
         updated_by: actorId,
       })
       .in('id', batch);
+    if (salesProfileId) {
+      updateQuery = updateQuery.not('stage', 'in', `(${PARKED_PROSPECTING_STAGES.join(',')})`);
+    }
+    const { data: updatedRows, error } = await updateQuery.select('id');
     if (error) return error;
 
-    const activityRows = batch.map((leadId) => ({
+    const updatedLeadIds = ((updatedRows ?? []) as Array<{ id: string }>).map((row) => row.id);
+    const activityRows = updatedLeadIds.map((leadId) => ({
       activity_type: 'assignment',
       body: salesProfileId ? 'Lead assigned from bulk action.' : 'Lead unassigned from bulk action.',
       created_by: actorId,
       lead_id: leadId,
       result: salesProfileId ? 'Assigned' : 'Unassigned',
     }));
+    if (!activityRows.length) continue;
     const { error: activityError } = await supabase.from('prospecting_activities').insert(activityRows);
     if (activityError) return activityError;
   }
@@ -895,10 +902,11 @@ async function createSingleLead(formData: FormData) {
   const companyNameKey = normalizeTextKey(companyName);
   const phoneKey = normalizePhoneKey(phone);
   const stage = normalizeStage(String(formData.get('stage') ?? 'new'));
+  const shouldParkLead = PARKED_PROSPECTING_STAGES.includes(stage);
   const payload = {
     address_line_1: cleanText(formData.get('address_line_1')),
     address_line_2: cleanText(formData.get('address_line_2')),
-    assigned_profile_id: salesProfileId,
+    assigned_profile_id: shouldParkLead ? null : salesProfileId,
     city: cleanText(formData.get('city')),
     company_email: cleanText(formData.get('company_email')),
     company_name: companyName,
@@ -907,7 +915,7 @@ async function createSingleLead(formData: FormData) {
     country: cleanText(formData.get('country')) || 'US',
     created_by: current.profile.id,
     last_result: cleanText(formData.get('last_result')),
-    next_follow_up_at: safeDateInput(formData.get('next_follow_up_at')),
+    next_follow_up_at: shouldParkLead ? null : safeDateInput(formData.get('next_follow_up_at')),
     notes: cleanText(formData.get('notes')),
     phone,
     phone_key: phoneKey,

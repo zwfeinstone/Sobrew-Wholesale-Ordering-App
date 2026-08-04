@@ -1005,7 +1005,7 @@ async function addWeeklySalesSpiff(formData: FormData) {
     redirect(`${returnTo}${returnTo.includes('?') ? '&' : '?'}error=spiff_invalid`);
   }
 
-  const [{ data: profile }, { data: setting }, { data: existing }] = await Promise.all([
+  const [{ data: profile }, { data: setting }] = await Promise.all([
     supabaseAdmin
       .from('profiles')
       .select('id,email,full_name,is_active,is_admin')
@@ -1017,13 +1017,6 @@ async function addWeeklySalesSpiff(formData: FormData) {
       .select('profile_id,active,is_sales_rep')
       .eq('profile_id', profileId)
       .maybeSingle(),
-    supabaseAdmin
-      .from('admin_weekly_sales_spiffs')
-      .select('id,amount_cents,notes,paid_at,paid_by')
-      .eq('profile_id', profileId)
-      .eq('week_start_date', weekStartDate)
-      .eq('week_end_date', weekEndDate)
-      .maybeSingle(),
   ]);
 
   if (!profile || profile.is_active === false || setting?.active === false || !setting?.is_sales_rep) {
@@ -1033,19 +1026,17 @@ async function addWeeklySalesSpiff(formData: FormData) {
   const now = new Date().toISOString();
   const spiffPayload = {
     amount_cents: amountCents,
+    created_by: current.profile.id,
     notes,
-    paid_at: existing?.paid_at ?? null,
-    paid_by: existing?.paid_by ?? null,
     profile_id: profileId,
     updated_at: now,
     updated_by: current.profile.id,
     week_end_date: weekEndDate,
     week_start_date: weekStartDate,
-    ...(existing?.id ? {} : { created_by: current.profile.id }),
   };
   const result = await supabaseAdmin
     .from('admin_weekly_sales_spiffs')
-    .upsert(spiffPayload, { onConflict: 'profile_id,week_start_date,week_end_date' })
+    .insert(spiffPayload)
     .select('id')
     .single();
 
@@ -1060,7 +1051,6 @@ async function addWeeklySalesSpiff(formData: FormData) {
         week_end_date: weekEndDate,
         week_start_date: weekStartDate,
       },
-      before: existing,
       sectionKey: 'payroll',
       supabase: supabaseAdmin,
       targetProfileId: profileId,

@@ -17,7 +17,6 @@ import {
   cleanText,
   formatDate,
   formatDateTime,
-  isHubspotQueueStage,
   isMaintenanceStage,
   missingLeadFields,
   normalizePhoneKey,
@@ -95,6 +94,7 @@ type MutationLeadRow = Pick<
   | 'priority'
   | 'stage'
   | 'state'
+  | 'updated_at'
 >;
 
 type ContactRow = {
@@ -228,36 +228,11 @@ function QueueContextFields({ context }: { context: ProspectingQueueContext }) {
 async function loadLeadForMutation(supabase: Awaited<ReturnType<typeof createClient>>, leadId: string, current: Awaited<ReturnType<typeof requireAdminSectionEdit>>) {
   let query = supabase
     .from('prospecting_leads')
-    .select('id,address_line_1,address_line_2,assigned_profile_id,city,company_email,company_name,company_website,country,do_not_contact,next_follow_up_at,notes,phone,postal_code,priority,stage,state')
+    .select('id,address_line_1,address_line_2,assigned_profile_id,city,company_email,company_name,company_website,country,do_not_contact,next_follow_up_at,notes,phone,postal_code,priority,stage,state,updated_at')
     .eq('id', leadId);
   if (!current.isOwner) query = query.eq('assigned_profile_id', current.profile.id).neq('stage', 'sample_requested');
   const { data } = await query.maybeSingle();
   return data as MutationLeadRow | null;
-}
-
-async function syncHubspotQueue({
-  actorId,
-  leadId,
-  stage,
-}: {
-  actorId: string;
-  leadId: string;
-  stage: ProspectingStage;
-}) {
-  if (isHubspotQueueStage(stage)) {
-    const { error: queueError } = await supabaseAdmin.from('prospecting_hubspot_queue').upsert({
-      lead_id: leadId,
-      queued_by: actorId,
-      queued_stage: stage,
-      status: 'queued',
-    }, { onConflict: 'lead_id' });
-    const { error: leadError } = await supabaseAdmin.from('prospecting_leads').update({ hubspot_status: 'queued' }).eq('id', leadId);
-    return queueError ?? leadError;
-  } else {
-    const { error: queueError } = await supabaseAdmin.from('prospecting_hubspot_queue').delete().eq('lead_id', leadId).eq('status', 'queued');
-    const { error: leadError } = await supabaseAdmin.from('prospecting_leads').update({ hubspot_status: 'not_queued' }).eq('id', leadId).eq('hubspot_status', 'queued');
-    return queueError ?? leadError;
-  }
 }
 
 async function shuckedRepRedirectHref({
@@ -375,37 +350,6 @@ async function saveRecordData(formData: FormData) {
   ].some(Boolean);
   const notesChanged = textChanged(before.notes, notes);
 
-  const { error, data } = await supabaseAdmin
-    .from('prospecting_leads')
-    .update({
-      address_line_1: addressLine1,
-      address_line_2: addressLine2,
-      assigned_profile_id: assignedProfileId,
-      city,
-      company_email: companyEmail,
-      company_name: companyName,
-      company_name_key: normalizeTextKey(companyName),
-      company_website: companyWebsite,
-      country,
-      do_not_contact: doNotContact,
-      next_follow_up_at: nextFollowUp,
-      notes,
-      phone,
-      phone_key: normalizePhoneKey(phone),
-      postal_code: postalCode,
-      priority,
-      stage: savedStage,
-      state,
-      state_key: normalizeStateKey(state),
-      updated_at: new Date().toISOString(),
-      updated_by: current.profile.id,
-    })
-    .eq('id', leadId)
-    .select('id')
-    .maybeSingle();
-
-  if (error || !data) redirect(leadHref(leadId, 'save_error', queueContext));
-
   const activityRows: Array<Record<string, unknown>> = [];
   if (leadDetailsChanged) {
     activityRows.push({
@@ -443,6 +387,7 @@ async function saveRecordData(formData: FormData) {
     });
   }
 
+  const contactUpdates: Array<Record<string, unknown>> = [];
   const contactIds = cleanRecordIds(formData, 'record_contact_id');
   if (contactIds.length) {
     const { data: existingContactsData, error: contactLoadError } = await supabase
@@ -475,16 +420,7 @@ async function saveRecordData(formData: FormData) {
       ].some(Boolean);
       if (!contactChanged) continue;
 
-      const { error: contactError } = await supabase
-        .from('prospecting_contacts')
-        .update({
-          ...contactUpdate,
-          updated_at: new Date().toISOString(),
-          updated_by: current.profile.id,
-        })
-        .eq('id', contactId)
-        .eq('lead_id', leadId);
-      if (contactError) redirect(leadHref(leadId, 'save_error', queueContext));
+      contactUpdates.push({ id: contactId, ...contactUpdate });
 
       activityRows.push({
         activity_type: 'enrichment',
@@ -506,14 +442,6 @@ async function saveRecordData(formData: FormData) {
   };
   const shouldAddContact = [newContact.email, newContact.full_name, newContact.notes, newContact.phone, newContact.title].some(Boolean);
   if (shouldAddContact) {
-    const { error: newContactError } = await supabase.from('prospecting_contacts').insert({
-      ...newContact,
-      created_by: current.profile.id,
-      lead_id: leadId,
-      updated_by: current.profile.id,
-    });
-    if (newContactError) redirect(leadHref(leadId, 'save_error', queueContext));
-
     activityRows.push({
       activity_type: 'enrichment',
       body: 'Key contact added.',
@@ -532,6 +460,10 @@ async function saveRecordData(formData: FormData) {
   const activityNextFollowUp = safeDateInput(formData.get('activity_next_follow_up_at'));
   const activityBlockedByDoNotContact = Boolean(before.do_not_contact) && doNotContact;
   const shouldLogActivity = Boolean(activityResult || activityBody || activityContactId || activityExplicitStage || activityNextFollowUp);
+  let activityPayload: Record<string, unknown> | null = null;
+  let finalAssignedProfileId = assignedProfileId;
+  let finalDoNotContact = doNotContact;
+  let finalNextFollowUp = nextFollowUp;
   if (shouldLogActivity && !activityBlockedByDoNotContact) {
     const activitySavedStage = resolveActivityStage({ currentStage: finalStage, explicitStage: activityExplicitStage, result: activityResult });
     const activityDoNotContact = activitySavedStage === 'not_a_fit' && ['Do not contact', 'Unsubscribed', 'Wrong number', 'Bounced'].includes(activityResult ?? '');
@@ -539,45 +471,21 @@ async function saveRecordData(formData: FormData) {
     const activityShouldMoveToMaintenance = isMaintenanceStage(activitySavedStage);
     const activityShouldMoveToSampleReview = activitySavedStage === 'sample_requested';
     const activityShouldUnassign = activityShouldRecycle || activityShouldMoveToMaintenance;
-    const now = new Date().toISOString();
     const activitySavedNextFollowUp = resolveActivityNextFollowUp({
-      currentNextFollowUp: nextFollowUp,
       requestedNextFollowUp: activityNextFollowUp,
       shouldUnassign: activityShouldUnassign,
     });
 
-    const { error: activityError } = await supabaseAdmin.from('prospecting_activities').insert({
+    activityPayload = {
       activity_type: activityType,
       body: activityBody,
       contact_id: activityContactId || null,
-      created_by: current.profile.id,
-      lead_id: leadId,
       next_follow_up_at: activityNextFollowUp,
       next_stage: activitySavedStage,
       previous_assigned_profile_id: activityShouldUnassign ? assignedProfileId : null,
       previous_stage: finalStage,
       result: activityResult,
-    });
-
-    if (activityError) redirect(leadHref(leadId, 'activity_error', queueContext));
-
-    const { error: leadUpdateError, data: updatedLead } = await supabaseAdmin
-      .from('prospecting_leads')
-      .update({
-        do_not_contact: activityDoNotContact || undefined,
-        assigned_profile_id: activityShouldUnassign ? null : undefined,
-        last_activity_at: now,
-        last_result: activityResult,
-        next_follow_up_at: activitySavedNextFollowUp,
-        stage: activitySavedStage,
-        updated_at: now,
-        updated_by: current.profile.id,
-      })
-      .eq('id', leadId)
-      .select('id')
-      .maybeSingle();
-
-    if (leadUpdateError || !updatedLead) redirect(leadHref(leadId, 'activity_error', queueContext));
+    };
 
     if (activityShouldRecycle) {
       activityRows.push({
@@ -606,17 +514,47 @@ async function saveRecordData(formData: FormData) {
     }
 
     finalStage = activitySavedStage;
+    finalAssignedProfileId = activityShouldUnassign ? null : assignedProfileId;
+    finalDoNotContact = doNotContact || activityDoNotContact;
+    finalNextFollowUp = activitySavedNextFollowUp;
     finalShouldRecycle = activityShouldRecycle;
     finalShouldMoveToMaintenance = activityShouldMoveToMaintenance;
     finalShouldMoveToSampleReview = activityShouldMoveToSampleReview;
   }
 
-  const hubspotError = await syncHubspotQueue({ actorId: current.profile.id, leadId, stage: finalStage });
-  if (hubspotError) redirect(leadHref(leadId, 'save_error', queueContext));
+  const { data: savedLead, error: saveError } = await supabaseAdmin.rpc('save_prospecting_record_v1', {
+    p_actor_id: current.profile.id,
+    p_activity: activityPayload,
+    p_audit_activities: activityRows,
+    p_contact_updates: contactUpdates,
+    p_expected_updated_at: before.updated_at,
+    p_lead: {
+      address_line_1: addressLine1,
+      address_line_2: addressLine2,
+      assigned_profile_id: finalAssignedProfileId,
+      city,
+      company_email: companyEmail,
+      company_name: companyName,
+      company_name_key: normalizeTextKey(companyName),
+      company_website: companyWebsite,
+      country,
+      do_not_contact: finalDoNotContact,
+      next_follow_up_at: finalNextFollowUp,
+      notes,
+      phone,
+      phone_key: normalizePhoneKey(phone),
+      postal_code: postalCode,
+      priority,
+      stage: finalStage,
+      state,
+      state_key: normalizeStateKey(state),
+    },
+    p_lead_id: leadId,
+    p_new_contact: shouldAddContact ? newContact : null,
+  });
 
-  if (activityRows.length) {
-    const { error: activityError } = await supabaseAdmin.from('prospecting_activities').insert(activityRows);
-    if (activityError) redirect(leadHref(leadId, 'save_error', queueContext));
+  if (saveError || !savedLead) {
+    redirect(leadHref(leadId, saveError?.code === '40001' ? 'record_stale' : 'save_error', queueContext));
   }
 
   if (finalShouldMoveToSampleReview) {
@@ -677,6 +615,7 @@ function Toasts({ toast }: { toast: string }) {
     notes_error: { message: 'Unable to save lead notes.', tone: 'error' },
     notes_saved: { message: 'Lead notes saved.', tone: 'success' },
     record_saved: { message: 'Record data saved.', tone: 'success' },
+    record_stale: { message: 'This lead changed while you were editing it. Reload and try again.', tone: 'error' },
     save_error: { message: 'Unable to save this lead. Check for duplicate company and phone values.', tone: 'error' },
     sample_order_created: { message: 'Sample order created. Moved to the next record.', tone: 'success' },
     sample_requested: { message: 'Sample requested. Moved to the next record.', tone: 'success' },
@@ -984,8 +923,10 @@ export default async function LeadDetailPage({
           </Field>
           <Field label="Move stage">
             <select className="input" form={recordFormId} name="activity_next_stage" defaultValue="">
-              <option value="">Keep current stage</option>
-              {PROSPECTING_STAGES.map((stage) => <option key={stage.id} value={stage.id}>{stage.label}</option>)}
+              <option value="">{stageLabel(lead.stage)} (current)</option>
+              {PROSPECTING_STAGES
+                .filter((stage) => stage.id !== normalizeStage(lead.stage))
+                .map((stage) => <option key={stage.id} value={stage.id}>{stage.label}</option>)}
             </select>
           </Field>
           <Field label="Next follow-up"><input className="input" form={recordFormId} name="activity_next_follow_up_at" type="date" /></Field>

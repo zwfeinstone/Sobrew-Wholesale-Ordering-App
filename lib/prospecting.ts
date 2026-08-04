@@ -12,10 +12,11 @@ export const PROSPECTING_STAGES = [
 
 export type ProspectingStage = (typeof PROSPECTING_STAGES)[number]['id'];
 
-export const ACTIVE_PROSPECTING_STAGES: ProspectingStage[] = ['new', 'working', 'follow_up', 'recycle_try_later'];
+export const ACTIVE_PROSPECTING_STAGES: ProspectingStage[] = ['new', 'working', 'follow_up'];
 export const HUBSPOT_QUEUE_STAGES: ProspectingStage[] = ['interested', 'sample_requested'];
 export const REP_PIPELINE_STAGES: ProspectingStage[] = [...ACTIVE_PROSPECTING_STAGES, 'interested'];
 export const MAINTENANCE_PROSPECTING_STAGES: ProspectingStage[] = ['not_a_fit', 'lost'];
+export const PARKED_PROSPECTING_STAGES: ProspectingStage[] = ['recycle_try_later', ...MAINTENANCE_PROSPECTING_STAGES];
 
 export const PROSPECTING_PRIORITIES = [
   { id: 'low', label: 'Low' },
@@ -556,16 +557,14 @@ export function resolveActivityStage({
 }
 
 export function resolveActivityNextFollowUp({
-  currentNextFollowUp,
   requestedNextFollowUp,
   shouldUnassign,
 }: {
-  currentNextFollowUp: string | null | undefined;
   requestedNextFollowUp: string | null | undefined;
   shouldUnassign: boolean;
 }) {
   if (shouldUnassign) return null;
-  return requestedNextFollowUp ?? currentNextFollowUp ?? null;
+  return requestedNextFollowUp ?? null;
 }
 
 export function prospectingContactPayloadsFromCsv(row: Record<string, string>, leadId: string, createdBy: string) {
