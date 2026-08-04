@@ -1,6 +1,7 @@
 import 'server-only';
 
 import { Resend } from 'resend';
+import { normalizeShipmentTrackingLines, type ShipmentTrackingLine } from '@/lib/shipment-tracking';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { usd } from '@/lib/utils';
 
@@ -41,7 +42,7 @@ export function getResend() {
 
 type Line = { name: string; qty: number; price: number; line: number };
 type ShippedLine = { name: string; qty: number };
-type TrackingLine = { carrier?: string | null; service?: string | null; trackingCode: string; trackingUrl?: string | null };
+type TrackingLine = ShipmentTrackingLine;
 type SendEmailResult = { ok: true } | { error: unknown; ok: false };
 
 type OrderEmailPayload = {
@@ -69,17 +70,19 @@ type ShippedEmailContext = {
 };
 
 type InvoicePdfEmailPayload = {
+  cc?: string | string[] | null;
   customerName: string;
   invoiceNumber: string;
   orderId: string;
   pdf: Buffer;
-  to: string;
+  to: string | string[];
 };
 
 type InvoicePdfEmailContentPayload = Pick<InvoicePdfEmailPayload, 'customerName' | 'invoiceNumber'>;
 
 type PaymentReceiptEmailPayload = {
   amountCents: number;
+  cc?: string | string[] | null;
   customerName: string;
   invoiceNumber: string;
   orderId: string;
@@ -87,7 +90,7 @@ type PaymentReceiptEmailPayload = {
   paymentStatus: string;
   paymentMethodType: string;
   pdf: Buffer;
-  to: string;
+  to: string | string[];
 };
 
 type PaymentReceiptEmailContentPayload = Omit<PaymentReceiptEmailPayload, 'orderId' | 'pdf' | 'to'>;
@@ -99,6 +102,31 @@ function escapeHtml(value: string) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
+}
+
+function splitEmailAddresses(value: string | string[] | null | undefined) {
+  const values = Array.isArray(value) ? value : [value];
+  return values
+    .flatMap((item) => String(item ?? '').split(/[,;\n]+/))
+    .map((address) => address.trim())
+    .filter(Boolean);
+}
+
+export function outgoingEmailRecipients(to: string | string[] | null | undefined, cc?: string | string[] | null) {
+  const seen = new Set<string>();
+  const unique = (addresses: string[]) => {
+    const result: string[] = [];
+    for (const address of addresses) {
+      const key = address.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      result.push(address);
+    }
+    return result;
+  };
+  const toRecipients = unique(splitEmailAddresses(to));
+  const ccRecipients = unique(splitEmailAddresses(cc));
+  return { cc: ccRecipients, to: toRecipients };
 }
 
 function titleCaseWord(value: string) {
@@ -744,7 +772,7 @@ export function buildShippedEmailContent(
       <td colspan="2" style="padding:14px 16px; color:#594736; font-size:15px;">Unavailable</td>
     </tr>
   `;
-  const validTrackingLines = trackingLines.filter((tracking) => cleanEmailText(tracking.trackingCode));
+  const validTrackingLines = normalizeShipmentTrackingLines(trackingLines);
   const trackingCards = validTrackingLines
     .map((tracking, index) => {
       const carrier = [tracking.carrier, tracking.service].map((value) => cleanEmailText(value)).filter(Boolean).join(' ');
@@ -910,7 +938,7 @@ export function buildShippedEmailText(
 ) {
   const customerName = cleanEmailText(context.customerName) || 'there';
   const orderId = cleanEmailText(context.orderId) || 'Not available';
-  const validTrackingLines = trackingLines.filter((tracking) => cleanEmailText(tracking.trackingCode));
+  const validTrackingLines = normalizeShipmentTrackingLines(trackingLines);
   const trackingText = validTrackingLines.length
     ? validTrackingLines.flatMap((tracking, index) => {
         const carrier = [tracking.carrier, tracking.service].map(cleanEmailText).filter(Boolean).join(' ');
@@ -1097,7 +1125,7 @@ export function buildPaymentReceiptEmailContent(payload: PaymentReceiptEmailCont
 }
 
 export async function sendShippedEmail(
-  to: string | string[],
+  to: string | string[] | null | undefined,
   items: ShippedLine[],
   trackingLines: TrackingLine[] = [],
   context: ShippedEmailContext = {},
@@ -1108,8 +1136,8 @@ export async function sendShippedEmail(
     return;
   }
 
-  const recipients = Array.isArray(to) ? to.filter(Boolean) : [to].filter(Boolean);
-  if (!recipients.length) {
+  const recipients = outgoingEmailRecipients(to);
+  if (!recipients.to.length) {
     console.error('Shipped email skipped: missing recipient');
     return;
   }
@@ -1121,7 +1149,7 @@ export async function sendShippedEmail(
     const response = await resend.emails.send({
       from: RESEND_FROM,
       replyTo: REPLY_TO_EMAIL,
-      to: recipients,
+      to: recipients.to,
       subject: 'Your Order Has Been Shipped!',
       html,
       text,
@@ -1140,7 +1168,8 @@ export async function sendInvoicePdfEmail(payload: InvoicePdfEmailPayload): Prom
     return { error, ok: false };
   }
 
-  if (!payload.to) {
+  const recipients = outgoingEmailRecipients(payload.to, payload.cc);
+  if (!recipients.to.length) {
     const error = new Error('Invoice PDF email skipped: missing recipient');
     console.error(error.message);
     return { error, ok: false };
@@ -1175,7 +1204,8 @@ export async function sendInvoicePdfEmail(payload: InvoicePdfEmailPayload): Prom
       ],
       from: RESEND_FROM,
       replyTo: REPLY_TO_EMAIL,
-      to: payload.to,
+      ...(recipients.cc.length ? { cc: recipients.cc } : {}),
+      to: recipients.to,
       subject: `Sobrew Invoice ${payload.invoiceNumber}`,
       html,
       text,
@@ -1196,7 +1226,8 @@ export async function sendPaymentReceiptEmail(payload: PaymentReceiptEmailPayloa
     return { error, ok: false };
   }
 
-  if (!payload.to) {
+  const recipients = outgoingEmailRecipients(payload.to, payload.cc);
+  if (!recipients.to.length) {
     const error = new Error('Payment receipt email skipped: missing recipient');
     console.error(error.message);
     return { error, ok: false };
@@ -1235,7 +1266,8 @@ export async function sendPaymentReceiptEmail(payload: PaymentReceiptEmailPayloa
       ],
       from: RESEND_FROM,
       replyTo: REPLY_TO_EMAIL,
-      to: payload.to,
+      ...(recipients.cc.length ? { cc: recipients.cc } : {}),
+      to: recipients.to,
       subject: `Sobrew Receipt ${payload.invoiceNumber}`,
       html,
       text,

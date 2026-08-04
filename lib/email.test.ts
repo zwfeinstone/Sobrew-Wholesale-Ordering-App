@@ -7,6 +7,7 @@ import {
   buildPaymentReceiptEmailContent,
   buildShippedEmailContent,
   buildShippedEmailText,
+  outgoingEmailRecipients,
 } from '@/lib/email';
 
 function expectApprovedTextSocialFooter(html: string, text: string) {
@@ -185,6 +186,18 @@ describe('adminOrderCcForAssignedSalesEmail', () => {
   });
 });
 
+describe('outgoingEmailRecipients', () => {
+  it('trims and dedupes to and cc recipients case-insensitively', () => {
+    expect(outgoingEmailRecipients(
+      ['orders@example.com', ' Orders@Example.com ', 'billing@example.com'],
+      'billing@example.com; updates@example.com',
+    )).toEqual({
+      to: ['orders@example.com', 'billing@example.com'],
+      cc: ['updates@example.com'],
+    });
+  });
+});
+
 describe('buildInvoicePdfEmailContent', () => {
   it('builds a polished invoice PDF email with payment and reply instructions', () => {
     const content = buildInvoicePdfEmailContent({
@@ -326,5 +339,21 @@ describe('buildShippedEmailContent', () => {
     expect(tracking).toContain('overflow-wrap:anywhere');
     expect(tracking).toContain('word-break:break-all');
     expect(tracking).toContain(trackingCode);
+  });
+
+  it('deduplicates repeated tracking numbers before rendering tracking cards', () => {
+    const html = buildShippedEmailContent(
+      [{ name: 'Sample Box', qty: 3 }],
+      [
+        { carrier: 'UPS', trackingCode: '1Z999AA10123456784' },
+        { carrier: 'UPS', trackingCode: '1z999aa10123456784' },
+        { carrier: 'UPS', trackingCode: '1Z999AA10123456785' },
+      ],
+    );
+
+    expect(html.match(/UPS tracking number/g)).toHaveLength(2);
+    expect(html).toContain('Track package 1');
+    expect(html).toContain('Track package 2');
+    expect(html).not.toContain('Track package 3');
   });
 });

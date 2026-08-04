@@ -9,5 +9,18 @@ export async function getCenterLoginEmails(supabase: any, centerId: string) {
     .eq('is_active', true)
     .order('created_at', { ascending: true });
 
-  return [...new Set((data ?? []).map((profile: any) => profile.email).filter(Boolean))];
+  const seen = new Set<string>();
+  const emails: string[] = [];
+  for (const profile of data ?? []) {
+    const email = String((profile as any).email ?? '').trim();
+    if (!email) continue;
+
+    const key = email.toLowerCase();
+    if (seen.has(key)) continue;
+
+    seen.add(key);
+    emails.push(email);
+  }
+
+  return emails;
 }

@@ -3,6 +3,7 @@ import {
   buildQuickBooksReceivablesSummary,
   buildQuickBooksCustomerMatches,
   buildQuickBooksCustomerPayloadFromCenter,
+  buildQuickBooksInvoiceEmailRecipients,
   buildQuickBooksInvoicePayload,
   buildQuickBooksInvoicePaymentPayload,
   buildQuickBooksSavedPaymentChargePayload,
@@ -49,6 +50,7 @@ describe('quickbooks invoice payload', () => {
     expect(payload.ShipMethodRef).toEqual({ value: 'UPS' });
     expect(payload.TrackingNum).toBe('See shipped order email');
     expect(payload.BillEmail).toEqual({ Address: 'buyer@example.com' });
+    expect(payload.BillEmailCc).toBeUndefined();
     expect(payload.Line).toEqual([
       {
         Amount: 72,
@@ -96,6 +98,74 @@ describe('quickbooks invoice payload', () => {
     );
 
     expect(payload.Line[0].SalesItemLineDetail.TaxCodeRef).toEqual({ value: 'TAX' });
+  });
+
+  it('uses QuickBooks customer primary and cc recipients on invoices', () => {
+    const order = {
+      centers: { billing_email: 'portal@example.com', name: 'Lakeview Recovery' },
+      created_at: '2026-08-01T15:00:00.000Z',
+      id: 'order-qbo-email',
+      notes: null,
+      order_items: [
+        {
+          line_total_cents: 2400,
+          product_name_snapshot: 'Cold Brew Case',
+          products: { name: 'Cold Brew Case', quickbooks_item_id: '9', quickbooks_item_name: 'Cold Brew Case', sku: 'CB-CASE' },
+          qty: 1,
+          unit_price_cents: 2400,
+        },
+      ],
+      profiles: { email: 'profile@example.com', full_name: 'Buyer Name' },
+      shipping_address1: '123 Main St',
+      shipping_address2: null,
+      shipping_city: 'Chicago',
+      shipping_company: null,
+      shipping_name: 'Lakeview Recovery',
+      shipping_state: 'IL',
+      shipping_zip: '60601',
+    };
+    const recipients = buildQuickBooksInvoiceEmailRecipients(order, {
+      BillEmailCc: { Address: 'ap@example.com, owner@example.com' },
+      PrimaryEmailAddr: { Address: 'primary@example.com' },
+    });
+
+    const payload = buildQuickBooksInvoicePayload(order, { name: 'Lakeview Recovery', value: '42' }, { emailRecipients: recipients });
+
+    expect(recipients).toEqual({
+      all: ['primary@example.com', 'ap@example.com', 'owner@example.com'],
+      cc: ['ap@example.com', 'owner@example.com'],
+      display: 'primary@example.com, ap@example.com, owner@example.com',
+      to: ['primary@example.com'],
+    });
+    expect(payload.BillEmail).toEqual({ Address: 'primary@example.com' });
+    expect(payload.BillEmailCc).toEqual({ Address: 'ap@example.com, owner@example.com' });
+  });
+
+  it('treats extra QuickBooks primary email addresses as cc recipients', () => {
+    const recipients = buildQuickBooksInvoiceEmailRecipients(
+      {
+        centers: { billing_email: 'portal@example.com', name: 'Lakeview Recovery' },
+        created_at: '2026-08-01T15:00:00.000Z',
+        id: 'order-qbo-multiple-emails',
+        notes: null,
+        order_items: [],
+        profiles: { email: 'profile@example.com', full_name: 'Buyer Name' },
+        shipping_address1: '123 Main St',
+        shipping_address2: null,
+        shipping_city: 'Chicago',
+        shipping_company: null,
+        shipping_name: 'Lakeview Recovery',
+        shipping_state: 'IL',
+        shipping_zip: '60601',
+      },
+      {
+        PrimaryEmailAddr: { Address: 'primary@example.com, ap@example.com; owner@example.com' },
+      }
+    );
+
+    expect(recipients.to).toEqual(['primary@example.com']);
+    expect(recipients.cc).toEqual(['ap@example.com', 'owner@example.com']);
+    expect(recipients.display).toBe('primary@example.com, ap@example.com, owner@example.com');
   });
 
   it('uses mapped product item refs on invoice lines', () => {

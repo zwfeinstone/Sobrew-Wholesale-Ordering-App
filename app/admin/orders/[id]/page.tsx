@@ -14,6 +14,7 @@ import { centsFromDollars, isWholeCountQuantity, normalizeInventoryNumber, round
 import { snapshotOrderCogsForShipment } from '@/lib/order-cogs';
 import { donationCogsCentsForRevenue, processingFeeCentsForRevenue } from '@/lib/order-fees';
 import { getOrderItemSummaries } from '@/lib/order-items';
+import { shipmentTrackingLinesFromFormData } from '@/lib/shipment-tracking';
 import { createClient } from '@/lib/supabase/server';
 import { usd } from '@/lib/utils';
 
@@ -61,15 +62,6 @@ function isMissingFulfillmentMethodColumn(error: unknown) {
 
 function cleanText(value: unknown) {
   return String(value ?? '').trim();
-}
-
-function trackingRowsFromFormData(formData: FormData) {
-  return formData
-    .getAll('tracking_numbers')
-    .flatMap((value) => String(value ?? '').split(/[\n,;]+/))
-    .map(cleanText)
-    .filter(Boolean)
-    .map((trackingCode) => ({ carrier: 'UPS', trackingCode }));
 }
 
 function orderToastHref(id: string, toast: string) {
@@ -125,7 +117,7 @@ async function shipOrder(formData: FormData) {
   const fulfillmentMethod = String(formData.get('fulfillment_method') ?? '');
   const localDeliveryConfirmed = formData.get('local_delivery_zero_confirm') === 'on';
   const zeroBoxesConfirmed = formData.get('zero_boxes_confirmed') === 'on';
-  const manualTrackingRows = trackingRowsFromFormData(formData);
+  const manualTrackingRows = shipmentTrackingLinesFromFormData(formData);
   if (!['carrier', 'local_delivery'].includes(fulfillmentMethod)) redirect(`/admin/orders/${id}?toast=fulfillment_required`);
   if (fulfillmentMethod === 'carrier' && shippingCostCents <= 0) redirect(`/admin/orders/${id}?toast=shipping_required`);
   if (fulfillmentMethod === 'local_delivery' && shippingCostCents === 0 && !localDeliveryConfirmed) {
@@ -138,6 +130,7 @@ async function shipOrder(formData: FormData) {
     .eq('id', id)
     .single();
   if (!order || order.archived_at) redirect(`/admin/orders/${id}?toast=ship_error`);
+  if (order.status === 'Shipped') redirect(`/admin/orders/${id}?toast=order_shipped`);
   if (fulfillmentMethod === 'carrier' && !manualTrackingRows.length) {
     redirect(`/admin/orders/${id}?toast=tracking_required`);
   }
@@ -269,6 +262,7 @@ async function shipOrder(formData: FormData) {
     .from('orders')
     .update(orderUpdatePayload)
     .eq('id', id)
+    .neq('status', 'Shipped')
     .select('id');
 
   if (orderUpdateResult.error && isMissingFulfillmentMethodColumn(orderUpdateResult.error)) {
@@ -278,15 +272,17 @@ async function shipOrder(formData: FormData) {
       .from('orders')
       .update(fallbackPayload)
       .eq('id', id)
+      .neq('status', 'Shipped')
       .select('id');
   }
 
-  if (orderUpdateResult.error || !orderUpdateResult.data?.length) {
+  if (orderUpdateResult.error) {
     if (orderUpdateResult.error) console.error('[orders] shipment status update failed', orderUpdateResult.error);
     redirect(`/admin/orders/${id}?toast=ship_error`);
   }
 
-  if (order.status !== 'Shipped') {
+  const claimedShipment = Boolean(orderUpdateResult.data?.length);
+  if (claimedShipment) {
     const items = await getOrderItemSummaries(supabase, id);
     const centerEmails = await getCenterLoginEmails(supabase, (order as any).center_id);
     const orderProfile = relatedOne((order as any).profiles);

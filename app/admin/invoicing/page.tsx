@@ -662,6 +662,7 @@ async function invoiceOrder(formData: FormData) {
       } else {
         const pdf = await getQuickBooksInvoicePdf(invoice.id);
         const emailResult = await sendInvoicePdfEmail({
+          cc: invoice.emailCc,
           customerName: invoice.customerName,
           invoiceNumber: invoice.docNumber || invoice.id,
           orderId,
@@ -683,7 +684,7 @@ async function invoiceOrder(formData: FormData) {
         invoice_status: emailError ? 'invoice_error' : 'invoiced',
         invoiced_at: new Date().toISOString(),
         quickbooks_invoice_email_sent_at: emailSentAt,
-        quickbooks_invoice_email_to: invoice.emailTo,
+        quickbooks_invoice_email_to: invoice.emailRecipients ?? invoice.emailTo,
         quickbooks_invoice_doc_number: invoice.docNumber,
         quickbooks_invoice_id: invoice.id,
         quickbooks_invoice_url: invoice.url,
@@ -781,6 +782,7 @@ async function chargeSavedPaymentForOrder(formData: FormData) {
       const pdf = await getQuickBooksInvoicePdf(invoice.id);
       const emailResult = await sendPaymentReceiptEmail({
         amountCents: invoice.amountCents,
+        cc: invoice.emailCc,
         customerName: invoice.customerName,
         invoiceNumber: invoice.docNumber || invoice.id,
         orderId,
@@ -804,7 +806,7 @@ async function chargeSavedPaymentForOrder(formData: FormData) {
         invoice_status: 'invoiced',
         invoiced_at: new Date().toISOString(),
         quickbooks_invoice_doc_number: invoice.docNumber,
-        quickbooks_invoice_email_to: invoice.emailTo,
+        quickbooks_invoice_email_to: invoice.emailRecipients ?? invoice.emailTo,
         quickbooks_invoice_id: invoice.id,
         quickbooks_invoice_url: invoice.url,
         quickbooks_payment_charge_id: invoice.paymentChargeId,
@@ -814,7 +816,7 @@ async function chargeSavedPaymentForOrder(formData: FormData) {
         quickbooks_payment_method_type: invoice.paymentMethodType,
         quickbooks_payment_status: invoice.paymentChargeStatus,
         quickbooks_receipt_email_sent_at: receiptEmailSentAt,
-        quickbooks_receipt_email_to: invoice.emailTo,
+        quickbooks_receipt_email_to: invoice.emailRecipients ?? invoice.emailTo,
       })
       .eq('id', orderId);
     if (updateError) throw updateError;
@@ -862,7 +864,7 @@ async function resendQuickBooksInvoice(formData: FormData) {
         invoice_error: invoice.emailError,
         invoice_status: 'invoiced',
         quickbooks_invoice_email_sent_at: invoice.emailSentAt,
-        quickbooks_invoice_email_to: invoice.emailTo,
+        quickbooks_invoice_email_to: invoice.emailRecipients ?? invoice.emailTo,
         quickbooks_invoice_doc_number: invoice.docNumber,
         quickbooks_invoice_id: invoice.id,
         quickbooks_invoice_url: invoice.url,

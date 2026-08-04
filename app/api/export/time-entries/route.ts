@@ -134,6 +134,7 @@ export async function GET(request: NextRequest) {
     .select('profile_id,week_start_date,week_end_date,amount_cents,paid_at,notes')
     .lte('week_start_date', toInput ?? '')
     .gte('week_end_date', fromInput ?? '')
+    .not('paid_at', 'is', null)
     .order('week_start_date', { ascending: true });
 
   if (adminId) weeklySalesSpiffsQuery = weeklySalesSpiffsQuery.eq('profile_id', adminId);
@@ -184,6 +185,7 @@ export async function GET(request: NextRequest) {
     }))
     .filter((payment) => !hasWorkTypeFilter || payment.workType === workType);
   const paidWeeklySalesSpiffs = ((weeklySalesSpiffsResult.error ? [] : weeklySalesSpiffsResult.data ?? []) as ExportWeeklySalesSpiff[])
+    .filter((spiff) => spiff.paid_at)
     .filter(() => !hasWorkTypeFilter || workType === 'sales');
 
   const rows = [

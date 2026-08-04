@@ -124,7 +124,9 @@ export type CreatedQuickBooksInvoice = {
   amountCents: number;
   customerName: string;
   docNumber: string | null;
+  emailCc: string | null;
   emailError: string | null;
+  emailRecipients: string | null;
   emailSentAt: string | null;
   emailTo: string | null;
   id: string;
@@ -153,6 +155,13 @@ export type QuickBooksSavedPaymentMethodLookup = {
   error: string | null;
   method: QuickBooksSavedPaymentMethod | null;
   methodCount: number;
+};
+
+export type QuickBooksInvoiceEmailRecipients = {
+  all: string[];
+  cc: string[];
+  display: string | null;
+  to: string[];
 };
 
 export type CreatedQuickBooksPaidInvoice = CreatedQuickBooksInvoice & {
@@ -890,6 +899,20 @@ async function quickBooksQuery(connection: QuickBooksConnection, query: string) 
   return quickBooksRequest(connection, `/query?query=${encodeURIComponent(query)}`);
 }
 
+async function readQuickBooksCustomer(connection: QuickBooksConnection, customerId: string) {
+  const payload = await quickBooksRequest(connection, `/customer/${encodeURIComponent(customerId)}`);
+  return payload?.Customer ?? null;
+}
+
+async function tryReadQuickBooksCustomer(connection: QuickBooksConnection, customerId: string) {
+  try {
+    return await readQuickBooksCustomer(connection, customerId);
+  } catch (error) {
+    console.error('[quickbooks] unable to read customer email defaults', { customerId, error });
+    return null;
+  }
+}
+
 function quickBooksQueryItems(payload: any) {
   const items = payload?.QueryResponse?.Item;
   return Array.isArray(items) ? items : [];
@@ -1332,6 +1355,109 @@ function invoiceEmailForOrder(order: QuickBooksInvoiceOrder) {
   return cleanText(center?.billing_email) || cleanText(profile?.email);
 }
 
+function splitEmailAddresses(value: unknown) {
+  return cleanText(value)
+    .split(/[,;\n]+/)
+    .map((address) => address.trim())
+    .filter(Boolean);
+}
+
+function emailAddressesFromValue(value: unknown): string[] {
+  if (!value) return [];
+  if (typeof value === 'string' || typeof value === 'number') return splitEmailAddresses(value);
+  if (Array.isArray(value)) return value.flatMap(emailAddressesFromValue);
+  if (typeof value === 'object') {
+    const objectValue = value as Record<string, unknown>;
+    return [
+      ...emailAddressesFromValue(objectValue.Address),
+      ...emailAddressesFromValue(objectValue.address),
+      ...emailAddressesFromValue(objectValue.EmailAddress),
+      ...emailAddressesFromValue(objectValue.emailAddress),
+      ...emailAddressesFromValue(objectValue.Email),
+      ...emailAddressesFromValue(objectValue.email),
+      ...emailAddressesFromValue(objectValue.Value),
+      ...emailAddressesFromValue(objectValue.value),
+    ];
+  }
+  return [];
+}
+
+function uniqueEmailAddresses(addresses: string[]) {
+  const seen = new Set<string>();
+  const unique: string[] = [];
+  for (const address of addresses.map(cleanText).filter(Boolean)) {
+    const key = address.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(address);
+  }
+  return unique;
+}
+
+function emailAddressString(addresses: string[]) {
+  return uniqueEmailAddresses(addresses).join(', ');
+}
+
+function emailAddressPayload(addresses: string[]) {
+  const address = emailAddressString(addresses);
+  return address ? { Address: address } : undefined;
+}
+
+function quickBooksCustomerCcEmails(customer: unknown) {
+  const record = customer && typeof customer === 'object' ? customer as Record<string, unknown> : {};
+  const directCcEmails = [
+    record.BillEmailCc,
+    record.BillEmailCC,
+    record.CcEmailAddr,
+    record.CCEmailAddr,
+    record.CcEmailAddress,
+    record.CCEmailAddress,
+    record.Cc,
+    record.CC,
+    (record.EmailDeliveryInfo as Record<string, unknown> | undefined)?.DeliveryAddressCc,
+    (record.DeliveryInfo as Record<string, unknown> | undefined)?.DeliveryAddressCc,
+  ].flatMap(emailAddressesFromValue);
+  const contactInfo = Array.isArray(record.OtherContactInfo) ? record.OtherContactInfo : [];
+  const contactCcEmails = contactInfo.flatMap((contact) => {
+    const contactRecord = contact && typeof contact === 'object' ? contact as Record<string, unknown> : {};
+    const label = [
+      contactRecord.Name,
+      contactRecord.Type,
+      contactRecord.ContactType,
+      contactRecord.Label,
+    ].map(cleanText).join(' ').toLowerCase();
+    return label.includes('cc') ? emailAddressesFromValue(contact) : [];
+  });
+  return uniqueEmailAddresses([...directCcEmails, ...contactCcEmails]);
+}
+
+export function buildQuickBooksInvoiceEmailRecipients(
+  order: QuickBooksInvoiceOrder,
+  quickBooksCustomer?: unknown
+): QuickBooksInvoiceEmailRecipients {
+  const quickBooksCustomerRecord = quickBooksCustomer && typeof quickBooksCustomer === 'object'
+    ? quickBooksCustomer as Record<string, unknown>
+    : {};
+  const quickBooksPrimaryEmails = uniqueEmailAddresses([
+    ...emailAddressesFromValue(quickBooksCustomerRecord.PrimaryEmailAddr),
+    ...emailAddressesFromValue(quickBooksCustomerRecord.BillEmail),
+  ]);
+  const portalFallbackEmails = splitEmailAddresses(invoiceEmailForOrder(order));
+  const to = quickBooksPrimaryEmails.length ? quickBooksPrimaryEmails.slice(0, 1) : portalFallbackEmails;
+  const cc = uniqueEmailAddresses([
+    ...quickBooksPrimaryEmails.slice(1),
+    ...quickBooksCustomerCcEmails(quickBooksCustomerRecord),
+  ]
+    .filter((address) => !to.some((toAddress) => toAddress.toLowerCase() === address.toLowerCase())));
+  const all = uniqueEmailAddresses([...to, ...cc]);
+  return {
+    all,
+    cc,
+    display: all.length ? emailAddressString(all) : null,
+    to,
+  };
+}
+
 function quickBooksCustomerRefFromCenter(order: QuickBooksInvoiceOrder): QuickBooksRef {
   const center = relatedOne(order.centers);
   const quickBooksCustomerId = cleanText(center?.quickbooks_customer_id);
@@ -1471,7 +1597,7 @@ export function buildQuickBooksCustomerPayloadFromCenter(center: QuickBooksPorta
 export function buildQuickBooksInvoicePayload(
   order: QuickBooksInvoiceOrder,
   customerRef: QuickBooksRef,
-  options: { docNumber?: string; invoiceDate?: Date; taxableStates?: string[] } = {}
+  options: { docNumber?: string; emailRecipients?: QuickBooksInvoiceEmailRecipients; invoiceDate?: Date; taxableStates?: string[] } = {}
 ) {
   const shouldCollectSalesTax = shouldCollectQuickBooksSalesTax(order, options.taxableStates ?? DEFAULT_QUICKBOOKS_SALES_TAX_STATES);
   const lineTaxCode = shouldCollectSalesTax ? QUICKBOOKS_LINE_TAXABLE_CODE : QUICKBOOKS_LINE_NON_TAXABLE_CODE;
@@ -1493,14 +1619,15 @@ export function buildQuickBooksInvoicePayload(
   }).filter((line) => line.Amount > 0);
   if (!lineItems.length) throw new Error('This order has no invoiceable line items.');
 
-  const email = invoiceEmailForOrder(order);
+  const emailRecipients = options.emailRecipients ?? buildQuickBooksInvoiceEmailRecipients(order);
   const shippingAddress = addressForOrder(order);
   const privateNoteParts = [`Sobrew order ${order.id}`];
   const orderNotes = cleanText(order.notes);
   if (orderNotes) privateNoteParts.push(orderNotes);
 
   return {
-    BillEmail: email ? { Address: email } : undefined,
+    BillEmail: emailAddressPayload(emailRecipients.to),
+    BillEmailCc: emailAddressPayload(emailRecipients.cc),
     CustomerMemo: {
       value: `Invoice for Sobrew order ${order.id.slice(0, 8)}.`,
     },
@@ -1671,8 +1798,39 @@ async function assignQuickBooksInvoiceDocNumber(orderId: string) {
   return docNumber;
 }
 
-async function sendQuickBooksInvoiceEmail(connection: QuickBooksConnection, invoiceId: string, sendTo: string) {
-  if (!sendTo) throw new Error('Add a billing email before sending the QuickBooks invoice.');
+async function readQuickBooksInvoice(connection: QuickBooksConnection, invoiceId: string) {
+  const payload = await quickBooksRequest(connection, `/invoice/${encodeURIComponent(invoiceId)}`);
+  return payload?.Invoice ?? null;
+}
+
+async function updateQuickBooksInvoiceEmailRecipients(
+  connection: QuickBooksConnection,
+  invoiceId: string,
+  recipients: QuickBooksInvoiceEmailRecipients,
+  existingInvoice?: QuickBooksInvoiceRecord | null
+) {
+  if (!recipients.to.length && !recipients.cc.length) return;
+  const invoice = cleanText(existingInvoice?.Id) && cleanText(existingInvoice?.SyncToken)
+    ? existingInvoice
+    : await readQuickBooksInvoice(connection, invoiceId);
+  const id = cleanText(invoice?.Id);
+  const syncToken = cleanText(invoice?.SyncToken);
+  if (!id || !syncToken) throw new Error('QuickBooks invoice is missing the update token needed to add email recipients.');
+  await quickBooksRequest(connection, '/invoice?operation=update', {
+    body: JSON.stringify({
+      BillEmail: emailAddressPayload(recipients.to),
+      BillEmailCc: emailAddressPayload(recipients.cc),
+      Id: id,
+      SyncToken: syncToken,
+      sparse: true,
+    }),
+    method: 'POST',
+  });
+}
+
+async function sendQuickBooksInvoiceEmail(connection: QuickBooksConnection, invoiceId: string, recipients: QuickBooksInvoiceEmailRecipients) {
+  const sendTo = emailAddressString(recipients.to);
+  if (!sendTo) throw new Error('Add a primary billing email before sending the QuickBooks invoice.');
   await quickBooksRequest(connection, `/invoice/${encodeURIComponent(invoiceId)}/send?sendTo=${encodeURIComponent(sendTo)}`, {
     headers: {
       'Content-Type': 'application/octet-stream',
@@ -1682,11 +1840,24 @@ async function sendQuickBooksInvoiceEmail(connection: QuickBooksConnection, invo
   return new Date().toISOString();
 }
 
-async function trySendQuickBooksInvoiceEmail(connection: QuickBooksConnection, invoiceId: string, sendTo: string) {
+async function trySendQuickBooksInvoiceEmail(
+  connection: QuickBooksConnection,
+  invoiceId: string,
+  recipients: QuickBooksInvoiceEmailRecipients,
+  options: { updateInvoice?: QuickBooksInvoiceRecord | true } = {}
+) {
   try {
+    if (options.updateInvoice) {
+      await updateQuickBooksInvoiceEmailRecipients(
+        connection,
+        invoiceId,
+        recipients,
+        options.updateInvoice === true ? null : options.updateInvoice
+      );
+    }
     return {
       emailError: null,
-      emailSentAt: await sendQuickBooksInvoiceEmail(connection, invoiceId, sendTo),
+      emailSentAt: await sendQuickBooksInvoiceEmail(connection, invoiceId, recipients),
     };
   } catch (error) {
     return {
@@ -1781,7 +1952,11 @@ export async function createQuickBooksInvoiceForOrder(
   const connection = await getAuthorizedConnection();
   const environment = connection.environment === 'production' ? 'production' : 'sandbox';
   const customerName = customerNameForOrder(order as QuickBooksInvoiceOrder);
-  const emailTo = invoiceEmailForOrder(order as QuickBooksInvoiceOrder);
+  const customerRef = quickBooksCustomerRefFromCenter(order as QuickBooksInvoiceOrder);
+  const quickBooksCustomer = await tryReadQuickBooksCustomer(connection, customerRef.value);
+  const emailRecipients = buildQuickBooksInvoiceEmailRecipients(order as QuickBooksInvoiceOrder, quickBooksCustomer);
+  const emailTo = emailAddressString(emailRecipients.to) || null;
+  const emailCc = emailAddressString(emailRecipients.cc) || null;
   const amountCents = invoiceableTotalCents(order as QuickBooksInvoiceOrder);
   if ((order as any).quickbooks_invoice_id) {
     const portalDocNumber = await assignQuickBooksInvoiceDocNumber(orderId);
@@ -1795,7 +1970,9 @@ export async function createQuickBooksInvoiceForOrder(
         amountCents,
         customerName,
         docNumber: null,
+        emailCc,
         emailError: `QuickBooks invoice was not emailed because no invoice number could be assigned. ${docNumberResult.error}`,
+        emailRecipients: emailRecipients.display,
         emailSentAt: null,
         emailTo,
         id: String((order as any).quickbooks_invoice_id),
@@ -1803,13 +1980,15 @@ export async function createQuickBooksInvoiceForOrder(
       };
     }
     const emailResult = sendQuickBooksEmailOption
-      ? await trySendQuickBooksInvoiceEmail(connection, String((order as any).quickbooks_invoice_id), emailTo)
+      ? await trySendQuickBooksInvoiceEmail(connection, String((order as any).quickbooks_invoice_id), emailRecipients, { updateInvoice: true })
       : { emailError: null, emailSentAt: null };
     return {
       amountCents,
       customerName,
       docNumber: docNumberResult.docNumber,
+      emailCc,
       emailError: emailResult.emailError,
+      emailRecipients: emailRecipients.display,
       emailSentAt: emailResult.emailSentAt,
       emailTo,
       id: String((order as any).quickbooks_invoice_id),
@@ -1827,9 +2006,8 @@ export async function createQuickBooksInvoiceForOrder(
   if (!((order as any).order_items ?? []).some((item: QuickBooksOrderItem) => amountFromCents(item.line_total_cents) > 0)) {
     throw new Error('This order has no invoiceable line items.');
   }
-  const customerRef = quickBooksCustomerRefFromCenter(order as QuickBooksInvoiceOrder);
   const portalDocNumber = await assignQuickBooksInvoiceDocNumber(orderId);
-  const invoicePayload = buildQuickBooksInvoicePayload(order as QuickBooksInvoiceOrder, customerRef, { docNumber: portalDocNumber, taxableStates: salesTaxSettings.states });
+  const invoicePayload = buildQuickBooksInvoicePayload(order as QuickBooksInvoiceOrder, customerRef, { docNumber: portalDocNumber, emailRecipients, taxableStates: salesTaxSettings.states });
   const created = await quickBooksRequest(connection, '/invoice', {
     body: JSON.stringify(invoicePayload),
     method: 'POST',
@@ -1842,7 +2020,9 @@ export async function createQuickBooksInvoiceForOrder(
       amountCents,
       customerName,
       docNumber: null,
+      emailCc,
       emailError: `QuickBooks invoice was created, but it was not emailed because no invoice number could be assigned. ${docNumberResult.error}`,
+      emailRecipients: emailRecipients.display,
       emailSentAt: null,
       emailTo,
       id: String(invoice.Id),
@@ -1850,13 +2030,15 @@ export async function createQuickBooksInvoiceForOrder(
     };
   }
   const emailResult = sendQuickBooksEmailOption
-    ? await trySendQuickBooksInvoiceEmail(connection, String(invoice.Id), emailTo)
+    ? await trySendQuickBooksInvoiceEmail(connection, String(invoice.Id), emailRecipients)
     : { emailError: null, emailSentAt: null };
   return {
     amountCents,
     customerName,
     docNumber: docNumberResult.docNumber,
+    emailCc,
     emailError: emailResult.emailError,
+    emailRecipients: emailRecipients.display,
     emailSentAt: emailResult.emailSentAt,
     emailTo,
     id: String(invoice.Id),
@@ -1925,7 +2107,7 @@ export async function createQuickBooksPaidInvoiceForOrder(orderId: string): Prom
     .from('orders')
     .update({
       quickbooks_invoice_doc_number: invoice.docNumber,
-      quickbooks_invoice_email_to: invoice.emailTo,
+      quickbooks_invoice_email_to: invoice.emailRecipients ?? invoice.emailTo,
       quickbooks_invoice_id: invoice.id,
       quickbooks_invoice_url: invoice.url,
     })
@@ -1950,7 +2132,7 @@ export async function createQuickBooksPaidInvoiceForOrder(orderId: string): Prom
       .from('orders')
       .update({
         quickbooks_invoice_doc_number: invoice.docNumber,
-        quickbooks_invoice_email_to: invoice.emailTo,
+        quickbooks_invoice_email_to: invoice.emailRecipients ?? invoice.emailTo,
         quickbooks_invoice_id: invoice.id,
         quickbooks_invoice_url: invoice.url,
         quickbooks_payment_charge_id: paymentChargeId,
