@@ -40,6 +40,7 @@ import { usd } from '@/lib/utils';
 const INVOICING_TIME_ZONE = 'America/Chicago';
 const QUICKBOOKS_INVOICING_START = { day: 1, month: 8, year: 2026 };
 const QUICKBOOKS_INVOICING_START_LABEL = 'August 1, 2026';
+const PROSPECTING_SAMPLE_ORDER_KIND = 'prospecting_sample';
 const INVOICING_VIEWS = [
   { id: 'queue', label: 'Ready to Invoice' },
   { id: 'accounts-receivable', label: 'Accounts Receivable' },
@@ -103,7 +104,7 @@ const US_STATE_OPTIONS = [
   ['WY', 'Wyoming'],
 ] as const;
 
-const INVOICE_ORDER_SELECT = 'id,created_at,shipped_at,subtotal_cents,shipping_company,shipping_name,shipping_state,invoice_status,invoice_error,invoiced_at,quickbooks_invoice_id,quickbooks_invoice_doc_number,quickbooks_invoice_url,quickbooks_invoice_email_to,quickbooks_invoice_email_sent_at,quickbooks_payment_charge_id,quickbooks_payment_error,quickbooks_payment_id,quickbooks_payment_method_label,quickbooks_payment_method_type,quickbooks_payment_status,quickbooks_receipt_email_to,quickbooks_receipt_email_sent_at,profiles(email,full_name),centers(name,customer_tax_status,quickbooks_customer_id,quickbooks_display_name,quickbooks_payment_method_brand,quickbooks_payment_method_exp_month,quickbooks_payment_method_exp_year,quickbooks_payment_method_id,quickbooks_payment_method_last4,quickbooks_payment_method_type),order_items(qty,line_total_cents,product_name_snapshot,products(name,sku,quickbooks_item_id))';
+const INVOICE_ORDER_SELECT = 'id,order_kind,created_at,shipped_at,subtotal_cents,shipping_company,shipping_name,shipping_state,invoice_status,invoice_error,invoiced_at,quickbooks_invoice_id,quickbooks_invoice_doc_number,quickbooks_invoice_url,quickbooks_invoice_email_to,quickbooks_invoice_email_sent_at,quickbooks_payment_charge_id,quickbooks_payment_error,quickbooks_payment_id,quickbooks_payment_method_label,quickbooks_payment_method_type,quickbooks_payment_status,quickbooks_receipt_email_to,quickbooks_receipt_email_sent_at,profiles(email,full_name),centers(name,customer_tax_status,quickbooks_customer_id,quickbooks_display_name,quickbooks_payment_method_brand,quickbooks_payment_method_exp_month,quickbooks_payment_method_exp_year,quickbooks_payment_method_id,quickbooks_payment_method_last4,quickbooks_payment_method_type),order_items(qty,line_total_cents,product_name_snapshot,products(name,sku,quickbooks_item_id))';
 const CUSTOMER_SYNC_SELECT = 'id,name,is_active,created_at,quickbooks_customer_id,quickbooks_display_name,quickbooks_company_name,quickbooks_fully_qualified_name,legal_name,billing_email,billing_address1,billing_city,billing_state,billing_zip,quickbooks_sync_status,quickbooks_synced_at,quickbooks_sync_error,quickbooks_mapping_note,quickbooks_payment_method_brand,quickbooks_payment_method_exp_month,quickbooks_payment_method_exp_year,quickbooks_payment_method_id,quickbooks_payment_method_last4,quickbooks_payment_method_note,quickbooks_payment_method_type,quickbooks_payment_method_updated_at';
 
 type SearchParams = Record<string, string | string[] | undefined>;
@@ -129,6 +130,7 @@ type InvoiceQueueOrder = {
   invoice_error: string | null;
   invoice_status: string | null;
   invoiced_at?: string | null;
+  order_kind?: string | null;
   order_items?: Array<{
     line_total_cents: number | string | null;
     product_name_snapshot: string | null;
@@ -338,7 +340,8 @@ function invoiceableLineItemCount(order: InvoiceQueueOrder) {
 }
 
 function orderIsReadyToInvoice(order: InvoiceQueueOrder) {
-  return order.invoice_status !== 'invoicing'
+  return order.order_kind !== PROSPECTING_SAMPLE_ORDER_KIND
+    && order.invoice_status !== 'invoicing'
     && !missingOrderCustomerMapping(order)
     && missingOrderProductMappings(order).length === 0
     && invoiceableLineItemCount(order) > 0;
@@ -405,7 +408,7 @@ function toastMessage(toast: string) {
     invoice_failed: { message: 'Unable to create that QuickBooks invoice.', tone: 'error' },
     invoice_mapping_required: { message: 'Map the QuickBooks customer and every product before invoicing.', tone: 'error' },
     invoice_no_line_items: { message: 'This order has no invoiceable line items.', tone: 'error' },
-    invoice_not_ready: { message: `Only shipped orders from ${QUICKBOOKS_INVOICING_START_LABEL} or later can be invoiced here.`, tone: 'error' },
+    invoice_not_ready: { message: `Only standard shipped orders from ${QUICKBOOKS_INVOICING_START_LABEL} or later can be invoiced here. Sample orders are excluded.`, tone: 'error' },
     invoice_download_failed: { message: 'Unable to download that QuickBooks invoice PDF.', tone: 'error' },
     invoice_pdf_failed: { message: 'QuickBooks invoice was created, but the PDF email was not sent. Check the billing email and email settings, then retry.', tone: 'error' },
     invoice_pdf_sent: { message: 'QuickBooks invoice created and PDF emailed.', tone: 'success' },
@@ -612,11 +615,11 @@ async function invoiceOrder(formData: FormData) {
   const startIso = quickBooksInvoicingStartIso();
   const { data: order } = await supabase
     .from('orders')
-    .select('id,status,archived_at,created_at,quickbooks_invoice_id,invoice_status,centers(quickbooks_customer_id),order_items(line_total_cents,product_name_snapshot,products(name,quickbooks_item_id))')
+    .select('id,order_kind,status,archived_at,created_at,quickbooks_invoice_id,invoice_status,centers(quickbooks_customer_id),order_items(line_total_cents,product_name_snapshot,products(name,quickbooks_item_id))')
     .eq('id', orderId)
     .single();
 
-  if (!order || order.archived_at || order.status !== 'Shipped' || !order.created_at || new Date(order.created_at) < new Date(startIso)) {
+  if (!order || order.order_kind === PROSPECTING_SAMPLE_ORDER_KIND || order.archived_at || order.status !== 'Shipped' || !order.created_at || new Date(order.created_at) < new Date(startIso)) {
     redirect(invoicingHref('invoice_not_ready'));
   }
   if (order.quickbooks_invoice_id && order.invoice_status !== 'invoice_error') redirect(invoicingHref('invoice_already_created'));
@@ -642,6 +645,7 @@ async function invoiceOrder(formData: FormData) {
     .update({ invoice_error: null, invoice_status: 'invoicing' })
     .eq('id', orderId)
     .eq('status', 'Shipped')
+    .neq('order_kind', PROSPECTING_SAMPLE_ORDER_KIND)
     .is('archived_at', null)
     .in('invoice_status', ['not_invoiced', 'invoice_error']);
   const claimResult = order.quickbooks_invoice_id
@@ -725,11 +729,11 @@ async function chargeSavedPaymentForOrder(formData: FormData) {
   const startIso = quickBooksInvoicingStartIso();
   const { data: order } = await supabase
     .from('orders')
-    .select('id,status,archived_at,created_at,quickbooks_invoice_id,invoice_status,quickbooks_payment_id,centers(quickbooks_customer_id,quickbooks_payment_method_id,quickbooks_payment_method_type),order_items(line_total_cents,product_name_snapshot,products(name,quickbooks_item_id))')
+    .select('id,order_kind,status,archived_at,created_at,quickbooks_invoice_id,invoice_status,quickbooks_payment_id,centers(quickbooks_customer_id,quickbooks_payment_method_id,quickbooks_payment_method_type),order_items(line_total_cents,product_name_snapshot,products(name,quickbooks_item_id))')
     .eq('id', orderId)
     .single();
 
-  if (!order || (order as any).archived_at || (order as any).status !== 'Shipped' || !(order as any).created_at || new Date((order as any).created_at) < new Date(startIso)) {
+  if (!order || (order as any).order_kind === PROSPECTING_SAMPLE_ORDER_KIND || (order as any).archived_at || (order as any).status !== 'Shipped' || !(order as any).created_at || new Date((order as any).created_at) < new Date(startIso)) {
     redirect(invoicingHref('invoice_not_ready'));
   }
   if (cleanText((order as any).quickbooks_payment_id)) redirect(invoicingHref('payment_already_recorded'));
@@ -761,6 +765,7 @@ async function chargeSavedPaymentForOrder(formData: FormData) {
     })
     .eq('id', orderId)
     .eq('status', 'Shipped')
+    .neq('order_kind', PROSPECTING_SAMPLE_ORDER_KIND)
     .is('archived_at', null)
     .is('quickbooks_payment_id', null)
     .in('invoice_status', ['not_invoiced', 'invoice_error']);
@@ -1043,6 +1048,7 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
       .from('orders')
       .select(INVOICE_ORDER_SELECT)
       .eq('status', 'Shipped')
+      .neq('order_kind', PROSPECTING_SAMPLE_ORDER_KIND)
       .is('archived_at', null)
       .or('quickbooks_invoice_id.is.null,invoice_status.eq.invoice_error')
       .gte('created_at', startIso)

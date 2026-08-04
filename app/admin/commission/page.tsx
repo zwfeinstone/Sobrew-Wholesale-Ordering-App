@@ -16,7 +16,7 @@ import {
 } from '@/lib/commissions';
 import { adminCanEdit, requireAdminSectionView } from '@/lib/admin-permissions';
 import { supabaseAdmin } from '@/lib/supabase/admin';
-import { usd } from '@/lib/utils';
+import { formatAppDate, usd } from '@/lib/utils';
 
 type AdminRow = {
   email: string | null;
@@ -401,7 +401,7 @@ export default async function CommissionPage({
                 <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
                   <div>
                     <p className="font-semibold text-slate-950">{center?.name || 'Unknown center'}</p>
-                    <p className="mt-1 text-sm text-slate-500">{snapshot.shipped_at ? new Date(snapshot.shipped_at).toLocaleDateString('en-US') : 'Unknown ship date'}</p>
+                    <p className="mt-1 text-sm text-slate-500">{formatAppDate(snapshot.shipped_at, 'Unknown ship date')}</p>
                   </div>
                   <div className="text-sm sm:text-right">
                     <p className="font-semibold text-slate-950">{money(snapshot.commission_cents)} commission</p>

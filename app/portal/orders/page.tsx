@@ -4,16 +4,12 @@ import { OrderStatusBadge } from '@/components/order-status';
 import { requireUser } from '@/lib/auth';
 import { cartStorageKeyForUser } from '@/lib/cart';
 import { createClient } from '@/lib/supabase/server';
-import { usd } from '@/lib/utils';
+import { formatAppDateTime, usd } from '@/lib/utils';
 
 const PAGE_SIZE = 25;
 
 function formatOrderTimestamp(value: string | null) {
-  if (!value) return 'Unknown';
-  return new Date(value).toLocaleString('en-US', {
-    dateStyle: 'medium',
-    timeStyle: 'short',
-  });
+  return formatAppDateTime(value);
 }
 
 export default async function OrdersPage({

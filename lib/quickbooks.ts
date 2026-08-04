@@ -14,6 +14,7 @@ const QUICKBOOKS_TOKEN_ENDPOINT = 'https://oauth.platform.intuit.com/oauth2/v1/t
 const QUICKBOOKS_BUSINESS_TIME_ZONE = 'America/Chicago';
 const QUICKBOOKS_DEFAULT_SHIP_VIA = 'UPS';
 const QUICKBOOKS_DEFAULT_TRACKING_NOTE = 'See shipped order email';
+const QUICKBOOKS_INVOICE_CREATE_MAX_ATTEMPTS = 5;
 const QUICKBOOKS_SAVED_PAYMENT_LOOKUP_BATCH_SIZE = 4;
 
 type QuickBooksEnvironment = 'production' | 'sandbox';
@@ -102,6 +103,11 @@ type QuickBooksInvoiceRecord = {
   DocNumber?: string | null;
   Id?: string | number | null;
   SyncToken?: string | number | null;
+};
+
+export type QuickBooksDuplicateDocNumberError = {
+  docNumber: string;
+  txnId: string | null;
 };
 
 export type QuickBooksConnectionStatus = {
@@ -702,6 +708,24 @@ function quickBooksErrorMessage(payload: any, fallback: string, intuitTid?: stri
     ? `${faultMessage}: ${faultDetail}`
     : faultMessage || faultDetail || cleanText(payload?.error_description) || cleanText(payload?.error) || fallback;
   return intuitTid ? `${message} (QuickBooks request ${intuitTid})` : message;
+}
+
+export function quickBooksDuplicateDocNumberError(
+  error: unknown,
+  expectedDocNumber: string
+): QuickBooksDuplicateDocNumberError | null {
+  const expected = cleanText(expectedDocNumber);
+  if (!expected) return null;
+  const message = error instanceof Error ? error.message : cleanText(error);
+  if (!/duplicate document number error/i.test(message)) return null;
+
+  const docNumber = cleanText(message.match(/DocNumber\s*=\s*([^\s,;)]+)/i)?.[1]);
+  if (docNumber && docNumber !== expected) return null;
+  const txnId = cleanText(message.match(/TxnId\s*=\s*([^\s,)]+)/i)?.[1]) || null;
+  return {
+    docNumber: docNumber || expected,
+    txnId,
+  };
 }
 
 async function tokenRequest(body: URLSearchParams) {
@@ -1798,6 +1822,23 @@ async function assignQuickBooksInvoiceDocNumber(orderId: string) {
   return docNumber;
 }
 
+async function reassignQuickBooksInvoiceDocNumber(orderId: string, staleDocNumber: string) {
+  const docNumber = cleanText(staleDocNumber);
+  if (!docNumber) throw new Error('Unable to reassign QuickBooks invoice number.');
+  const supabase = getSupabaseAdmin();
+  const { data, error } = await supabase
+    .from('orders')
+    .update({ quickbooks_invoice_doc_number: null })
+    .eq('id', orderId)
+    .eq('quickbooks_invoice_doc_number', docNumber)
+    .is('quickbooks_invoice_id', null)
+    .select('id')
+    .maybeSingle();
+  if (error) throw new Error(`Unable to clear duplicate QuickBooks invoice number: ${error.message}`);
+  if (!data) throw new Error('Unable to clear duplicate QuickBooks invoice number for this order.');
+  return assignQuickBooksInvoiceDocNumber(orderId);
+}
+
 async function readQuickBooksInvoice(connection: QuickBooksConnection, invoiceId: string) {
   const payload = await quickBooksRequest(connection, `/invoice/${encodeURIComponent(invoiceId)}`);
   return payload?.Invoice ?? null;
@@ -2006,13 +2047,23 @@ export async function createQuickBooksInvoiceForOrder(
   if (!((order as any).order_items ?? []).some((item: QuickBooksOrderItem) => amountFromCents(item.line_total_cents) > 0)) {
     throw new Error('This order has no invoiceable line items.');
   }
-  const portalDocNumber = await assignQuickBooksInvoiceDocNumber(orderId);
-  const invoicePayload = buildQuickBooksInvoicePayload(order as QuickBooksInvoiceOrder, customerRef, { docNumber: portalDocNumber, emailRecipients, taxableStates: salesTaxSettings.states });
-  const created = await quickBooksRequest(connection, '/invoice', {
-    body: JSON.stringify(invoicePayload),
-    method: 'POST',
-  });
-  const invoice = created?.Invoice;
+  let portalDocNumber = await assignQuickBooksInvoiceDocNumber(orderId);
+  let invoice: QuickBooksInvoiceRecord | null = null;
+  for (let attempt = 1; attempt <= QUICKBOOKS_INVOICE_CREATE_MAX_ATTEMPTS; attempt += 1) {
+    const invoicePayload = buildQuickBooksInvoicePayload(order as QuickBooksInvoiceOrder, customerRef, { docNumber: portalDocNumber, emailRecipients, taxableStates: salesTaxSettings.states });
+    try {
+      const created = await quickBooksRequest(connection, '/invoice', {
+        body: JSON.stringify(invoicePayload),
+        method: 'POST',
+      });
+      invoice = created?.Invoice ?? null;
+      break;
+    } catch (error) {
+      const duplicateDocNumber = quickBooksDuplicateDocNumberError(error, portalDocNumber);
+      if (!duplicateDocNumber || attempt >= QUICKBOOKS_INVOICE_CREATE_MAX_ATTEMPTS) throw error;
+      portalDocNumber = await reassignQuickBooksInvoiceDocNumber(orderId, duplicateDocNumber.docNumber);
+    }
+  }
   if (!invoice?.Id) throw new Error('QuickBooks did not return an invoice ID.');
   const docNumberResult = await tryEnsureQuickBooksInvoiceDocNumber(connection, String(invoice.Id), portalDocNumber, invoice);
   if (!docNumberResult.docNumber) {

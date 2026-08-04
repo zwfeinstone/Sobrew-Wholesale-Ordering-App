@@ -1,7 +1,7 @@
 'use client';
 
 import { useMemo } from 'react';
-import { usd } from '@/lib/utils';
+import { formatAppDate, usd } from '@/lib/utils';
 
 type Line = {
   product_id: string;
@@ -43,7 +43,7 @@ export function OrderFormPrint({
             <p className="text-sm text-slate-600">Center: {centerLabel}</p>
             <p className="text-sm text-slate-600">Email: {center.email || 'No active login on file'}</p>
           </div>
-          <div className="text-right text-sm text-slate-600">Date: {new Date().toLocaleDateString()}</div>
+          <div className="text-right text-sm text-slate-600">Date: {formatAppDate(new Date())}</div>
         </div>
 
         <div className="mb-4 grid gap-3 md:grid-cols-2">

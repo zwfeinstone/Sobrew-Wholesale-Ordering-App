@@ -1,3 +1,5 @@
+import { formatAppDate, formatAppDateTime } from '@/lib/utils';
+
 export const PROSPECTING_STAGES = [
   { id: 'new', label: 'New' },
   { id: 'working', label: 'Working' },
@@ -693,15 +695,9 @@ export function csvLine(values: unknown[]) {
 }
 
 export function formatDate(value: string | null | undefined) {
-  if (!value) return 'No date';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return 'No date';
-  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  return formatAppDate(value, 'No date', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
 export function formatDateTime(value: string | null | undefined) {
-  if (!value) return 'No activity';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return 'No activity';
-  return date.toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' });
+  return formatAppDateTime(value, 'No activity');
 }

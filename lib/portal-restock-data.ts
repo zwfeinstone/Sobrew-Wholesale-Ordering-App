@@ -4,7 +4,7 @@ import type {
   PortalRestockProduct,
 } from '@/components/portal-restock-workspace';
 import { nextRecurringOrderDate } from '@/lib/recurring';
-import { usd } from '@/lib/utils';
+import { formatAppDate, usd } from '@/lib/utils';
 
 export type PortalProductRow = {
   product_id: string;
@@ -42,12 +42,8 @@ export type PortalRestockData = {
   recurringSummary: PortalRecurringSummary;
 };
 
-const shortDateFormatter = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric' });
-
 function formatShortDate(value: string | null | undefined) {
-  if (!value) return 'recently';
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? 'recently' : shortDateFormatter.format(date);
+  return formatAppDate(value, 'recently', { month: 'short', day: 'numeric' });
 }
 
 export function buildPortalRestockData({
@@ -112,7 +108,7 @@ export function buildPortalRestockData({
     recentOrder: recentOrderSummary,
     recurringSummary: {
       activeCount: recurringOrderRows.length,
-      nextDateLabel: nextDates[0] ? shortDateFormatter.format(nextDates[0]) : null,
+      nextDateLabel: nextDates[0] ? formatAppDate(nextDates[0], 'Unknown', { month: 'short', day: 'numeric' }) : null,
     },
   };
 }

@@ -84,7 +84,7 @@ import { getSupabaseAdmin } from '@/lib/supabase/admin';
 import { createClient } from '@/lib/supabase/server';
 import { logServerTiming } from '@/lib/server-performance';
 import { convertInventoryQuantity } from '@/lib/inventory';
-import { usd } from '@/lib/utils';
+import { formatAppDateTime, usd } from '@/lib/utils';
 
 const ROW_LIMIT = 12;
 const AI_QA_ACTIVE_KEEP_COUNT = 25;
@@ -433,10 +433,7 @@ function aiQaHref({
 }
 
 function aiQaTimestamp(value: string) {
-  return new Date(value).toLocaleString('en-US', {
-    dateStyle: 'medium',
-    timeStyle: 'short',
-  });
+  return formatAppDateTime(value);
 }
 
 async function loadAiBusinessSnapshotForReports({
@@ -3941,10 +3938,7 @@ export default async function AdminReportsPage({
                     <span className="eyebrow">Saved report</span>
                     <h2 className="mt-2 text-xl font-semibold text-slate-950">AI Overview for {dateLabel(aiOverviewAsOfDate)}</h2>
                     <p className="mt-2 text-sm text-slate-600">
-                      Generated {new Date(aiOverviewReport.generated_at).toLocaleString('en-US', {
-                        dateStyle: 'medium',
-                        timeStyle: 'short',
-                      })} by {adminLabel(aiOverviewGeneratedBy ?? undefined)}.
+                      Generated {formatAppDateTime(aiOverviewReport.generated_at)} by {adminLabel(aiOverviewGeneratedBy ?? undefined)}.
                     </p>
                   </div>
                   <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">

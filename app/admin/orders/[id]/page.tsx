@@ -16,7 +16,7 @@ import { donationCogsCentsForRevenue, processingFeeCentsForRevenue } from '@/lib
 import { getOrderItemSummaries } from '@/lib/order-items';
 import { shipmentTrackingLinesFromFormData } from '@/lib/shipment-tracking';
 import { createClient } from '@/lib/supabase/server';
-import { usd } from '@/lib/utils';
+import { formatAppDateTime, usd } from '@/lib/utils';
 
 const ORDER_STATUSES = ['New', 'Processing', 'Shipped'] as const;
 
@@ -27,11 +27,7 @@ function isOrderStatus(value: string): value is OrderStatus {
 }
 
 function formatOrderTimestamp(value: string | null) {
-  if (!value) return 'Unknown';
-  return new Date(value).toLocaleString('en-US', {
-    dateStyle: 'medium',
-    timeStyle: 'short',
-  });
+  return formatAppDateTime(value);
 }
 
 function relatedOne<T>(value: T | T[] | null | undefined): T | null {

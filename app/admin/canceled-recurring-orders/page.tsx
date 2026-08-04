@@ -1,17 +1,11 @@
 import Link from 'next/link';
 import { requireAdminSectionView } from '@/lib/admin-permissions';
 import { createClient } from '@/lib/supabase/server';
-
-const adminDateFormatter = new Intl.DateTimeFormat('en-US', {
-  month: 'short',
-  day: 'numeric',
-  year: 'numeric',
-});
+import { formatAppDate } from '@/lib/utils';
 
 function formatAdminDate(value: string | null) {
   if (!value) return 'Never';
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? 'Unknown' : adminDateFormatter.format(date);
+  return formatAppDate(value, 'Unknown');
 }
 
 export default async function AdminCanceledRecurringOrdersPage() {

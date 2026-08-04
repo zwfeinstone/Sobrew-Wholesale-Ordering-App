@@ -2,7 +2,7 @@ import Link from 'next/link';
 import { getSalesScopedCenterIdsForAdmin, scopeCenterRelatedQueryForAdmin, scopeCentersForAdmin } from '@/lib/admin-center-scope';
 import { requireAdminSectionView } from '@/lib/admin-permissions';
 import { createClient } from '@/lib/supabase/server';
-import { usd } from '@/lib/utils';
+import { formatAppDate, usd } from '@/lib/utils';
 
 const DAY_IN_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_LOOKBACK_MONTHS = 6;
@@ -145,8 +145,7 @@ function addDays(date: Date, days: number) {
 }
 
 function formatDate(value: Date | null) {
-  if (!value) return 'Never ordered';
-  return value.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  return formatAppDate(value, 'Never ordered', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
 function formatDayValue(value: number | null) {

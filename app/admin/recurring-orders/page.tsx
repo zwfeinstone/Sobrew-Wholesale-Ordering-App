@@ -5,17 +5,11 @@ import { requireAdminSectionView } from '@/lib/admin-permissions';
 import { requireAdminWriteAccess } from '@/lib/admin-write-access';
 import { isRecurringFrequency, RECURRING_FREQUENCY_OPTIONS } from '@/lib/recurring';
 import { createClient } from '@/lib/supabase/server';
-
-const adminDateFormatter = new Intl.DateTimeFormat('en-US', {
-  month: 'short',
-  day: 'numeric',
-  year: 'numeric',
-});
+import { formatAppDate } from '@/lib/utils';
 
 function formatAdminDate(value: string | null) {
   if (!value) return 'Never';
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? 'Unknown' : adminDateFormatter.format(date);
+  return formatAppDate(value, 'Unknown');
 }
 
 async function updateRecurringOrder(formData: FormData) {

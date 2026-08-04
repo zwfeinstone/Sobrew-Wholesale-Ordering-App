@@ -10,6 +10,7 @@ import { getSupabaseAdmin } from '@/lib/supabase/admin';
 
 const INVOICING_TIME_ZONE = 'America/Chicago';
 const QUICKBOOKS_INVOICING_START = { day: 1, month: 8, year: 2026 };
+const PROSPECTING_SAMPLE_ORDER_KIND = 'prospecting_sample';
 
 function cleanText(value: unknown) {
   return String(value ?? '').trim();
@@ -104,7 +105,7 @@ export async function POST(request: Request) {
   const supabase = getSupabaseAdmin();
   const { data: order, error: readError } = await supabase
     .from('orders')
-    .select('id,status,archived_at,created_at,quickbooks_invoice_id,quickbooks_invoice_doc_number,quickbooks_invoice_url,invoice_status,centers(quickbooks_customer_id),order_items(line_total_cents,product_name_snapshot,products(name,quickbooks_item_id))')
+    .select('id,order_kind,status,archived_at,created_at,quickbooks_invoice_id,quickbooks_invoice_doc_number,quickbooks_invoice_url,invoice_status,centers(quickbooks_customer_id),order_items(line_total_cents,product_name_snapshot,products(name,quickbooks_item_id))')
     .eq('id', orderId)
     .single();
 
@@ -121,7 +122,7 @@ export async function POST(request: Request) {
   }
 
   const startIso = quickBooksInvoicingStartIso();
-  if ((order as any).archived_at || (order as any).status !== 'Shipped' || !(order as any).created_at || new Date((order as any).created_at) < new Date(startIso)) {
+  if ((order as any).order_kind === PROSPECTING_SAMPLE_ORDER_KIND || (order as any).archived_at || (order as any).status !== 'Shipped' || !(order as any).created_at || new Date((order as any).created_at) < new Date(startIso)) {
     return invoicingRedirect(request, 'invoice_not_ready', returnView);
   }
   if (invoiceableLineItemCount(order) === 0) {
@@ -143,6 +144,7 @@ export async function POST(request: Request) {
     .update({ invoice_error: null, invoice_status: 'invoicing' })
     .eq('id', orderId)
     .eq('status', 'Shipped')
+    .neq('order_kind', PROSPECTING_SAMPLE_ORDER_KIND)
     .is('archived_at', null)
     .is('quickbooks_invoice_id', null)
     .in('invoice_status', ['not_invoiced', 'invoice_error'])

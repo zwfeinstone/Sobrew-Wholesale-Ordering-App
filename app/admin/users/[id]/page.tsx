@@ -11,7 +11,7 @@ import { sendCustomerWelcomeEmail } from '@/lib/email';
 import { productCategoryGroupKey, productCategoryLabel, productCategorySortRank, type ProductCategoryGroup } from '@/lib/product-categories';
 import { createClient } from '@/lib/supabase/server';
 import { supabaseAdmin } from '@/lib/supabase/admin';
-import { toCents } from '@/lib/utils';
+import { formatAppDateTime, toCents } from '@/lib/utils';
 
 type CenterProductRow = {
   id: string;
@@ -739,7 +739,7 @@ export default async function UserDetailPage({
             <div key={row.id} className="rounded-2xl border border-slate-200 bg-white/70 px-4 py-3 text-sm">
               <p className="font-semibold text-slate-950">{row.action.replaceAll('_', ' ')}</p>
               <p className="mt-1 text-slate-500">
-                {row.section_key ?? 'admin'} - {row.created_at ? new Date(row.created_at).toLocaleString('en-US') : 'Unknown time'}
+                {row.section_key ?? 'admin'} - {formatAppDateTime(row.created_at, 'Unknown time')}
               </p>
             </div>
           ))}

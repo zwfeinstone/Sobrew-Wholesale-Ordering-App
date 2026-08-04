@@ -15,7 +15,7 @@ import {
 } from '@/lib/prospecting-sales-reps';
 import { recordSampleBoxRun, type SampleBoxAddOn } from '@/lib/sample-boxes';
 import { createClient } from '@/lib/supabase/server';
-import { toCents, usd } from '@/lib/utils';
+import { formatAppDate, toCents, usd } from '@/lib/utils';
 
 const ADD_ON_ROWS = 4;
 const INVENTORY_UNITS: InventoryUnit[] = ['lb', 'oz', 'each', 'case'];
@@ -140,10 +140,7 @@ function runItemName(item: RunItemRow) {
 }
 
 function formatDate(value: string | null | undefined) {
-  if (!value) return 'No date';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return 'No date';
-  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  return formatAppDate(value, 'No date', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
 function parsePositiveNumber(value: FormDataEntryValue | null, fallback = 0) {

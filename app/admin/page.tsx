@@ -8,7 +8,7 @@ import { requireAdminSectionView } from '@/lib/admin-permissions';
 import { ADMIN_QUERY_ROW_LIMIT, queryReachedAdminRowLimit } from '@/lib/admin-query-limits';
 import { getCachedPayrollStatus } from '@/lib/payroll-status';
 import { createClient } from '@/lib/supabase/server';
-import { usd } from '@/lib/utils';
+import { formatAppDateTime, usd } from '@/lib/utils';
 
 const TIME_RANGE_OPTIONS = [
   { value: 'week', label: 'This week' },
@@ -180,11 +180,7 @@ function formatCompactCurrency(cents: number) {
 }
 
 function formatOrderTimestamp(value: string | null) {
-  if (!value) return 'Unknown';
-  return new Date(value).toLocaleString('en-US', {
-    dateStyle: 'medium',
-    timeStyle: 'short',
-  });
+  return formatAppDateTime(value);
 }
 
 function formatDateInputLabel(value: string) {

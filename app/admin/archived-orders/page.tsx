@@ -1,15 +1,12 @@
 import Link from 'next/link';
 import { requireAdminSectionView } from '@/lib/admin-permissions';
 import { createClient } from '@/lib/supabase/server';
+import { formatAppDateTime } from '@/lib/utils';
 
 const PAGE_SIZE = 25;
 
 function formatOrderTimestamp(value: string | null) {
-  if (!value) return 'Unknown';
-  return new Date(value).toLocaleString('en-US', {
-    dateStyle: 'medium',
-    timeStyle: 'short',
-  });
+  return formatAppDateTime(value);
 }
 
 function buildPageHref(page: number, sort: string, nameFilter: string) {

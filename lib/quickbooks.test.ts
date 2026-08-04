@@ -10,9 +10,29 @@ import {
   normalizeCustomerMatchText,
   normalizeQuickBooksInvoiceReceivable,
   normalizeQuickBooksSavedPaymentMethodType,
+  quickBooksDuplicateDocNumberError,
   quickBooksSavedPaymentMethodLabel,
   scoreQuickBooksCustomerMatch,
 } from '@/lib/quickbooks';
+
+describe('quickbooks duplicate invoice numbers', () => {
+  it('extracts the duplicate document number without treating the existing QuickBooks invoice as the portal invoice', () => {
+    const error = new Error(
+      'Duplicate Document Number Error: You must specify a different number. DocNumber=SO-1277 is assigned to TxnType=Invoice with TxnId=1184 (QuickBooks request abc)'
+    );
+
+    expect(quickBooksDuplicateDocNumberError(error, 'SO-1277')).toEqual({
+      docNumber: 'SO-1277',
+      txnId: '1184',
+    });
+  });
+
+  it('ignores duplicate document errors for a different assigned portal number', () => {
+    const error = new Error('Duplicate Document Number Error: DocNumber=SO-1278 is assigned to TxnType=Invoice with TxnId=1185');
+
+    expect(quickBooksDuplicateDocNumberError(error, 'SO-1279')).toBeNull();
+  });
+});
 
 describe('quickbooks invoice payload', () => {
   it('maps Sobrew order lines into QuickBooks invoice lines', () => {
