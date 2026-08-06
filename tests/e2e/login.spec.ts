@@ -2,6 +2,15 @@ import AxeBuilder from '@axe-core/playwright';
 import { expect, test } from '@playwright/test';
 
 test.describe('public login', () => {
+  test('serves the login page from the root URL without redirecting', async ({ page }) => {
+    const response = await page.goto('/');
+
+    expect(response?.status()).toBe(200);
+    expect(new URL(page.url()).pathname).toBe('/');
+    await expect(page).toHaveTitle(/Sobrew Coffee Wholesale Ordering Portal/);
+    await expect(page.getByRole('heading', { name: 'Welcome back' })).toBeVisible();
+  });
+
   test('keeps sign-in first, keyboard accessible, and free of serious accessibility violations', async ({ page }) => {
     await page.goto('/login');
 
