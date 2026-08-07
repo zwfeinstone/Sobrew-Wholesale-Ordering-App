@@ -27,6 +27,8 @@ export type LaborPaidGpmAllocationRow = {
 export type LaborPaidGpmSalaryPaymentRow = {
   id: string;
   paid_at: string | null;
+  period_end_date?: string | null;
+  period_start_date?: string | null;
   salary_labor_work_type: string | null;
   salary_pay_cents: number | string | null;
 };

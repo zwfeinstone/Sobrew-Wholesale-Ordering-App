@@ -111,6 +111,17 @@ const REPORTS = [
 
 type ReportId = AdminReportId;
 type SimulatorTab = 'labor' | 'raw' | 'supplies';
+type LaborDifferenceTrendInterval = 'day' | 'week' | 'month';
+
+type LaborDifferenceTrendPoint = {
+  actualLaborPaidCents: number;
+  endExclusive: Date;
+  id: string;
+  label: string;
+  laborDifferenceCents: number;
+  shippedLaborCogsCents: number;
+  start: Date;
+};
 
 type AiBusinessReportRow = {
   as_of_date: string;
@@ -2130,7 +2141,287 @@ function CogsTimingGrid({
   );
 }
 
-function LaborPaidGpmReport({ summary }: { summary: ReturnType<typeof buildLaborPaidGpmSummary> }) {
+const LABOR_TREND_DAY_MS = 24 * 60 * 60 * 1000;
+
+function trendPeriodDays(rangeStart: Date, rangeEndExclusive: Date) {
+  return Math.max(1, Math.round((startOfDay(rangeEndExclusive).getTime() - startOfDay(rangeStart).getTime()) / LABOR_TREND_DAY_MS));
+}
+
+function laborTrendInterval(rangeStart: Date, rangeEndExclusive: Date): LaborDifferenceTrendInterval {
+  const days = trendPeriodDays(rangeStart, rangeEndExclusive);
+  if (days <= 45) return 'day';
+  if (days <= 180) return 'week';
+  return 'month';
+}
+
+function compactDateLabel(value: Date) {
+  return value.toLocaleDateString('en-US', { day: 'numeric', month: 'short' });
+}
+
+function laborTrendBucketLabel(start: Date, endExclusive: Date, interval: LaborDifferenceTrendInterval) {
+  if (interval === 'month') return shortMonthLabel(start);
+  const endInclusive = addDays(endExclusive, -1);
+  if (formatDateInput(start) === formatDateInput(endInclusive)) return compactDateLabel(start);
+  return `${compactDateLabel(start)}-${compactDateLabel(endInclusive)}`;
+}
+
+function laborTrendBuckets(rangeStart: Date, rangeEndExclusive: Date) {
+  const interval = laborTrendInterval(rangeStart, rangeEndExclusive);
+  const buckets: Array<{ endExclusive: Date; id: string; label: string; start: Date }> = [];
+  let cursor = startOfDay(rangeStart);
+
+  while (cursor < rangeEndExclusive) {
+    const next =
+      interval === 'month'
+        ? new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1)
+        : addDays(cursor, interval === 'week' ? 7 : 1);
+    const endExclusive = next > rangeEndExclusive ? rangeEndExclusive : next;
+    buckets.push({
+      endExclusive,
+      id: `${formatDateInput(cursor)}-${formatDateInput(addDays(endExclusive, -1))}`,
+      label: laborTrendBucketLabel(cursor, endExclusive, interval),
+      start: cursor,
+    });
+    cursor = endExclusive;
+  }
+
+  return buckets;
+}
+
+function dateInRange(value: string | null | undefined, start: Date, endExclusive: Date) {
+  if (!value) return false;
+  const date = new Date(value);
+  return !Number.isNaN(date.getTime()) && date >= start && date < endExclusive;
+}
+
+function laterDate(first: Date, second: Date) {
+  return first > second ? first : second;
+}
+
+function earlierDate(first: Date, second: Date) {
+  return first < second ? first : second;
+}
+
+function overlapDays(start: Date, endExclusive: Date) {
+  if (endExclusive <= start) return 0;
+  return Math.max(0, Math.round((startOfDay(endExclusive).getTime() - startOfDay(start).getTime()) / LABOR_TREND_DAY_MS));
+}
+
+function salaryPaymentCentsForBucket({
+  bucketEndExclusive,
+  bucketStart,
+  payment,
+  rangeEndExclusive,
+  rangeStart,
+}: {
+  bucketEndExclusive: Date;
+  bucketStart: Date;
+  payment: LaborPaidGpmSalaryPaymentRow;
+  rangeEndExclusive: Date;
+  rangeStart: Date;
+}) {
+  const salaryCents = normalizeReportNumber(payment.salary_pay_cents);
+  if (salaryCents <= 0) return 0;
+  const periodStart = parseDateInput(payment.period_start_date ?? undefined);
+  const periodEnd = parseDateInput(payment.period_end_date ?? undefined);
+
+  if (!periodStart || !periodEnd) {
+    return dateInRange(payment.paid_at, bucketStart, bucketEndExclusive) ? salaryCents : 0;
+  }
+
+  const periodEndExclusive = addDays(periodEnd, 1);
+  const selectedStart = laterDate(periodStart, rangeStart);
+  const selectedEndExclusive = earlierDate(periodEndExclusive, rangeEndExclusive);
+  const selectedDays = overlapDays(selectedStart, selectedEndExclusive);
+  if (selectedDays <= 0) return 0;
+
+  const bucketOverlapStart = laterDate(selectedStart, bucketStart);
+  const bucketOverlapEndExclusive = earlierDate(selectedEndExclusive, bucketEndExclusive);
+  const bucketDays = overlapDays(bucketOverlapStart, bucketOverlapEndExclusive);
+  return bucketDays > 0 ? salaryCents * (bucketDays / selectedDays) : 0;
+}
+
+function buildLaborDifferenceTrend({
+  allocations,
+  centers,
+  entries,
+  orderItems,
+  orders,
+  products,
+  productionRuns,
+  rangeEndExclusive,
+  rangeStart,
+  salaryPayments,
+}: {
+  allocations: LaborPaidGpmAllocationRow[];
+  centers: ReportingCenterRow[];
+  entries: LaborPaidGpmTimeEntryRow[];
+  orderItems: ProfitabilityOrderItemRow[];
+  orders: ProfitabilityOrderRow[];
+  products: ReportingProductRow[];
+  productionRuns: any[];
+  rangeEndExclusive: Date;
+  rangeStart: Date;
+  salaryPayments: LaborPaidGpmSalaryPaymentRow[];
+}): LaborDifferenceTrendPoint[] {
+  return laborTrendBuckets(rangeStart, rangeEndExclusive).map((bucket) => {
+    const current = buildProfitabilityDashboard({
+      centerId: undefined,
+      centers,
+      inventoryItems: [],
+      inventoryLots: [],
+      nonInventoryExpenses: [],
+      orderItems,
+      orders,
+      productId: undefined,
+      productionRunInputs: [],
+      productionRuns,
+      products,
+      rangeEndExclusive: bucket.endExclusive,
+      rangeStart: bucket.start,
+      recipes: [],
+      shortageMovements: [],
+    }).current;
+    const bucketEntries = entries.filter((entry) => dateInRange(entry.clock_in_at, bucket.start, bucket.endExclusive));
+    const bucketSalaryPayments = salaryPayments
+      .map((payment) => ({
+        ...payment,
+        paid_at: payment.paid_at ?? bucket.start.toISOString(),
+        salary_pay_cents: salaryPaymentCentsForBucket({
+          bucketEndExclusive: bucket.endExclusive,
+          bucketStart: bucket.start,
+          payment,
+          rangeEndExclusive,
+          rangeStart,
+        }),
+      }))
+      .filter((payment) => normalizeReportNumber(payment.salary_pay_cents) > 0);
+    const summary = buildLaborPaidGpmSummary({
+      allocations,
+      current,
+      entries: bucketEntries,
+      productionRunLaborCogsCents: 0,
+      productionRuns: [],
+      salaryPayments: bucketSalaryPayments,
+    });
+
+    return {
+      ...bucket,
+      actualLaborPaidCents: summary.actualLaborPaidCents,
+      laborDifferenceCents: summary.laborDifferenceCents,
+      shippedLaborCogsCents: summary.shippedLaborCogsCents,
+    };
+  });
+}
+
+function LaborDifferenceTrendChart({ points }: { points: LaborDifferenceTrendPoint[] }) {
+  if (!points.length) return <EmptyState message="No labor difference data found for the selected range." />;
+
+  const values = points.map((point) => point.laborDifferenceCents);
+  const maxValue = Math.max(...values, 0);
+  const minValue = Math.min(...values, 0);
+  const valueRange = maxValue - minValue;
+  const domainPadding = valueRange > 0 ? valueRange * 0.14 : 100;
+  const domainMin = minValue - domainPadding;
+  const domainMax = maxValue + domainPadding;
+  const width = 760;
+  const height = 260;
+  const chartLeft = 74;
+  const chartRight = 22;
+  const chartTop = 24;
+  const chartBottom = 42;
+  const chartWidth = width - chartLeft - chartRight;
+  const chartHeight = height - chartTop - chartBottom;
+  const xFor = (index: number) => chartLeft + (points.length === 1 ? chartWidth / 2 : (index / (points.length - 1)) * chartWidth);
+  const yFor = (value: number) => chartTop + ((domainMax - value) / (domainMax - domainMin || 1)) * chartHeight;
+  const path = points
+    .map((point, index) => `${index === 0 ? 'M' : 'L'} ${xFor(index).toFixed(2)} ${yFor(point.laborDifferenceCents).toFixed(2)}`)
+    .join(' ');
+  const zeroY = yFor(0);
+  const lastPoint = points[points.length - 1];
+  const highPoint = points.reduce((best, point) => point.laborDifferenceCents > best.laborDifferenceCents ? point : best, points[0]);
+  const lowPoint = points.reduce((best, point) => point.laborDifferenceCents < best.laborDifferenceCents ? point : best, points[0]);
+  const stroke = lastPoint.laborDifferenceCents <= 0 ? '#0f766e' : '#be123c';
+  const labelIndexes = [...new Set([0, Math.floor((points.length - 1) / 2), points.length - 1])];
+  const axisLabels = [
+    { id: 'max', value: maxValue },
+    { id: 'zero', value: 0 },
+    { id: 'min', value: minValue },
+  ].filter((label, index, labels) => labels.findIndex((candidate) => Math.round(candidate.value) === Math.round(label.value)) === index);
+
+  return (
+    <section className="card space-y-4">
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Labor difference trend</p>
+          <h2 className="mt-2 text-xl font-semibold text-slate-950">Labor difference over time</h2>
+          <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-500">Actual Production-tagged payroll labor minus shipped labor COGS, bucketed across the selected range.</p>
+        </div>
+        <div className="grid gap-3 sm:grid-cols-3 lg:min-w-[30rem]">
+          <div className="rounded-xl border border-slate-200/70 bg-white/60 px-4 py-3">
+            <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Latest</p>
+            <p className="mt-2 text-lg font-semibold text-slate-950">{signedMoney(lastPoint.laborDifferenceCents)}</p>
+            <p className="mt-1 text-xs text-slate-500">{lastPoint.label}</p>
+          </div>
+          <div className="rounded-xl border border-slate-200/70 bg-white/60 px-4 py-3">
+            <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">High</p>
+            <p className="mt-2 text-lg font-semibold text-slate-950">{signedMoney(highPoint.laborDifferenceCents)}</p>
+            <p className="mt-1 text-xs text-slate-500">{highPoint.label}</p>
+          </div>
+          <div className="rounded-xl border border-slate-200/70 bg-white/60 px-4 py-3">
+            <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Low</p>
+            <p className="mt-2 text-lg font-semibold text-slate-950">{signedMoney(lowPoint.laborDifferenceCents)}</p>
+            <p className="mt-1 text-xs text-slate-500">{lowPoint.label}</p>
+          </div>
+        </div>
+      </div>
+
+      <div className="overflow-x-auto">
+        <svg
+          aria-label="Labor difference over time"
+          className="h-72 w-full min-w-[42rem]"
+          role="img"
+          viewBox={`0 0 ${width} ${height}`}
+        >
+          <line x1={chartLeft} x2={width - chartRight} y1={yFor(maxValue)} y2={yFor(maxValue)} stroke="#e2e8f0" strokeDasharray="4 8" />
+          <line x1={chartLeft} x2={width - chartRight} y1={zeroY} y2={zeroY} stroke="#94a3b8" strokeWidth="1.2" />
+          <line x1={chartLeft} x2={width - chartRight} y1={yFor(minValue)} y2={yFor(minValue)} stroke="#e2e8f0" strokeDasharray="4 8" />
+          {axisLabels.map((label) => (
+            <text key={label.id} x={chartLeft - 10} y={yFor(label.value) + 4} textAnchor="end" className="fill-slate-500 text-[11px] font-semibold">
+              {signedMoney(label.value)}
+            </text>
+          ))}
+          <path d={path} fill="none" stroke={stroke} strokeLinecap="round" strokeLinejoin="round" strokeWidth="4" />
+          {points.map((point, index) => (
+            <circle key={point.id} cx={xFor(index)} cy={yFor(point.laborDifferenceCents)} r="4.5" fill="#ffffff" stroke={stroke} strokeWidth="3" />
+          ))}
+          {labelIndexes.map((index) => (
+            <text key={points[index].id} x={xFor(index)} y={height - 12} textAnchor={index === 0 ? 'start' : index === points.length - 1 ? 'end' : 'middle'} className="fill-slate-500 text-[11px] font-semibold">
+              {points[index].label}
+            </text>
+          ))}
+        </svg>
+      </div>
+
+      <div className="grid gap-2 text-xs text-slate-500 sm:grid-cols-3 xl:grid-cols-6">
+        {points.slice(-6).map((point) => (
+          <div key={`${point.id}-summary`} className="rounded-xl bg-white/55 px-3 py-2 text-center">
+            <div className="font-semibold text-slate-700">{point.label}</div>
+            <div className="mt-1">{signedMoney(point.laborDifferenceCents)}</div>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function LaborPaidGpmReport({
+  summary,
+  trend,
+}: {
+  summary: ReturnType<typeof buildLaborPaidGpmSummary>;
+  trend: LaborDifferenceTrendPoint[];
+}) {
   const gpmDelta = summary.actualLaborGpmPercent - summary.shippedGpmPercent;
   const gpmDeltaLabel = `${gpmDelta > 0 ? '+' : ''}${number(gpmDelta, 1)}`;
   const reviewCount = summary.unlockedProductionEntryCount + summary.unapprovedProductionEntryCount;
@@ -2188,6 +2479,8 @@ function LaborPaidGpmReport({ summary }: { summary: ReturnType<typeof buildLabor
         <StatTile label="Production Hours" value={`${number(summary.productionHours, 2)} hrs`} detail={`${number(summary.hourlyEntryCount)} completed Production-tagged time entr${summary.hourlyEntryCount === 1 ? 'y' : 'ies'}.`} />
         <StatTile label="Production Run Labor" value={money(summary.productionRunLaborCogsCents)} detail="Actual labor stored on production runs in the range." />
       </div>
+
+      <LaborDifferenceTrendChart points={trend} />
 
       {reviewCount ? (
         <div className="rounded-xl border border-amber-200 bg-amber-50/70 p-4 text-sm leading-6 text-amber-900">
@@ -3583,6 +3876,20 @@ export default async function AdminReportsPage({
     productionRuns: dataNeeds.laborPaidGpm && !productionRunsResult.error ? (productionRunsResult.data ?? []) as any[] : [],
     salaryPayments: dataNeeds.laborPaidGpm ? laborPaidSalaryPayments : [],
   });
+  const laborPaidGpmTrend = dataNeeds.laborPaidGpm
+    ? buildLaborDifferenceTrend({
+      allocations: laborPaidAllocations,
+      centers,
+      entries: laborPaidTimeEntries,
+      orderItems: (orderItemsResult.data ?? []) as ProfitabilityOrderItemRow[],
+      orders: (ordersResult.data ?? []) as ProfitabilityOrderRow[],
+      products,
+      productionRuns: productionRunsResult.error ? [] : (productionRunsResult.data ?? []) as any[],
+      rangeEndExclusive,
+      rangeStart,
+      salaryPayments: laborPaidSalaryPayments,
+    })
+    : [];
   const recentOrderGpmRows = activeReport === 'recent_order_gpm'
     ? buildRecentOrderGpmRows({
       centerId,
@@ -4185,7 +4492,7 @@ export default async function AdminReportsPage({
       ) : null}
 
       {activeReport === 'labor_paid_gpm' ? (
-        <LaborPaidGpmReport summary={laborPaidGpmSummary} />
+        <LaborPaidGpmReport summary={laborPaidGpmSummary} trend={laborPaidGpmTrend} />
       ) : null}
 
       {activeReport === 'simulator' ? (
