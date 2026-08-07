@@ -81,6 +81,7 @@ describe('buildLaborPaidGpmSummary', () => {
     expect(summary.actualLaborGpmPercent).toBe(70);
     expect(summary.hourlyEntryCount).toBe(1);
     expect(summary.productionRunLaborCogsCents).toBe(3000);
+    expect(summary.laborDifferenceCents).toBe(7000);
   });
 
   it('uses allocation rows before entry-level work tags and wages', () => {
@@ -114,5 +115,34 @@ describe('buildLaborPaidGpmSummary', () => {
     expect(summary.hourlyLaborPaidCents).toBe(1500);
     expect(summary.productionHours).toBe(0.5);
     expect(summary.unlockedProductionEntryCount).toBe(1);
+  });
+
+  it('uses explicit production run labor COGS for labor difference when provided', () => {
+    const summary = buildLaborPaidGpmSummary({
+      allocations: [],
+      current: totals({ laborCents: 10000 }),
+      entries: [],
+      productionRunLaborCogsCents: 2500,
+      productionRuns: [
+        {
+          actual_labor_cost_cents: 9000,
+          quantity_produced: 10,
+          quantity_voided: 0,
+          status: 'completed',
+        },
+      ],
+      salaryPayments: [
+        {
+          id: 'salary-production',
+          paid_at: '2026-07-31T15:00:00.000Z',
+          salary_labor_work_type: 'production',
+          salary_pay_cents: 6000,
+        },
+      ],
+    });
+
+    expect(summary.actualLaborPaidCents).toBe(6000);
+    expect(summary.productionRunLaborCogsCents).toBe(2500);
+    expect(summary.laborDifferenceCents).toBe(3500);
   });
 });

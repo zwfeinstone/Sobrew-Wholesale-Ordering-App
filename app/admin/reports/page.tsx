@@ -119,6 +119,7 @@ type LaborDifferenceTrendPoint = {
   id: string;
   label: string;
   laborDifferenceCents: number;
+  productionRunLaborCogsCents: number;
   shippedLaborCogsCents: number;
   start: Date;
 };
@@ -2265,7 +2266,7 @@ function buildLaborDifferenceTrend({
   salaryPayments: LaborPaidGpmSalaryPaymentRow[];
 }): LaborDifferenceTrendPoint[] {
   return laborTrendBuckets(rangeStart, rangeEndExclusive).map((bucket) => {
-    const current = buildProfitabilityDashboard({
+    const bucketDashboard = buildProfitabilityDashboard({
       centerId: undefined,
       centers,
       inventoryItems: [],
@@ -2281,7 +2282,7 @@ function buildLaborDifferenceTrend({
       rangeStart: bucket.start,
       recipes: [],
       shortageMovements: [],
-    }).current;
+    });
     const bucketEntries = entries.filter((entry) => dateInRange(entry.clock_in_at, bucket.start, bucket.endExclusive));
     const bucketSalaryPayments = salaryPayments
       .map((payment) => ({
@@ -2298,10 +2299,10 @@ function buildLaborDifferenceTrend({
       .filter((payment) => normalizeReportNumber(payment.salary_pay_cents) > 0);
     const summary = buildLaborPaidGpmSummary({
       allocations,
-      current,
+      current: bucketDashboard.current,
       entries: bucketEntries,
-      productionRunLaborCogsCents: 0,
-      productionRuns: [],
+      productionRunLaborCogsCents: bucketDashboard.productionSummary.laborCostCents,
+      productionRuns,
       salaryPayments: bucketSalaryPayments,
     });
 
@@ -2309,6 +2310,7 @@ function buildLaborDifferenceTrend({
       ...bucket,
       actualLaborPaidCents: summary.actualLaborPaidCents,
       laborDifferenceCents: summary.laborDifferenceCents,
+      productionRunLaborCogsCents: summary.productionRunLaborCogsCents,
       shippedLaborCogsCents: summary.shippedLaborCogsCents,
     };
   });
@@ -2351,26 +2353,26 @@ function LaborDifferenceTrendChart({ points }: { points: LaborDifferenceTrendPoi
 
   return (
     <section className="card space-y-4">
-      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+      <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
         <div>
           <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Labor difference trend</p>
           <h2 className="mt-2 text-xl font-semibold text-slate-950">Labor difference over time</h2>
-          <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-500">Actual Production-tagged payroll labor minus shipped labor COGS, bucketed across the selected range.</p>
+          <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-500">Production labor paid minus production run labor COGS, bucketed across the selected range.</p>
         </div>
-        <div className="grid gap-3 sm:grid-cols-3 lg:min-w-[30rem]">
-          <div className="rounded-xl border border-slate-200/70 bg-white/60 px-4 py-3">
-            <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Latest</p>
-            <p className="mt-2 text-lg font-semibold text-slate-950">{signedMoney(lastPoint.laborDifferenceCents)}</p>
+        <div className="grid w-full gap-3 sm:grid-cols-3 xl:w-auto xl:min-w-[36rem]">
+          <div className="min-w-0 rounded-xl border border-slate-200/70 bg-white/60 px-4 py-3">
+            <p className="whitespace-nowrap text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Latest</p>
+            <p className="mt-2 whitespace-nowrap text-lg font-semibold tabular-nums tracking-tight text-slate-950">{signedMoney(lastPoint.laborDifferenceCents)}</p>
             <p className="mt-1 text-xs text-slate-500">{lastPoint.label}</p>
           </div>
-          <div className="rounded-xl border border-slate-200/70 bg-white/60 px-4 py-3">
-            <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">High</p>
-            <p className="mt-2 text-lg font-semibold text-slate-950">{signedMoney(highPoint.laborDifferenceCents)}</p>
+          <div className="min-w-0 rounded-xl border border-slate-200/70 bg-white/60 px-4 py-3">
+            <p className="whitespace-nowrap text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">High</p>
+            <p className="mt-2 whitespace-nowrap text-lg font-semibold tabular-nums tracking-tight text-slate-950">{signedMoney(highPoint.laborDifferenceCents)}</p>
             <p className="mt-1 text-xs text-slate-500">{highPoint.label}</p>
           </div>
-          <div className="rounded-xl border border-slate-200/70 bg-white/60 px-4 py-3">
-            <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Low</p>
-            <p className="mt-2 text-lg font-semibold text-slate-950">{signedMoney(lowPoint.laborDifferenceCents)}</p>
+          <div className="min-w-0 rounded-xl border border-slate-200/70 bg-white/60 px-4 py-3">
+            <p className="whitespace-nowrap text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Low</p>
+            <p className="mt-2 whitespace-nowrap text-lg font-semibold tabular-nums tracking-tight text-slate-950">{signedMoney(lowPoint.laborDifferenceCents)}</p>
             <p className="mt-1 text-xs text-slate-500">{lowPoint.label}</p>
           </div>
         </div>
@@ -2407,7 +2409,7 @@ function LaborDifferenceTrendChart({ points }: { points: LaborDifferenceTrendPoi
         {points.slice(-6).map((point) => (
           <div key={`${point.id}-summary`} className="rounded-xl bg-white/55 px-3 py-2 text-center">
             <div className="font-semibold text-slate-700">{point.label}</div>
-            <div className="mt-1">{signedMoney(point.laborDifferenceCents)}</div>
+            <div className="mt-1 whitespace-nowrap tabular-nums">{signedMoney(point.laborDifferenceCents)}</div>
           </div>
         ))}
       </div>
@@ -2475,9 +2477,9 @@ function LaborPaidGpmReport({
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <StatTile label="Shipped Labor COGS" value={money(summary.shippedLaborCogsCents)} detail="Labor already recognized on shipped order lines." />
-        <StatTile label="Labor Difference" value={signedMoney(summary.laborDifferenceCents)} detail="Actual Production-tagged payroll labor minus shipped labor COGS." />
+        <StatTile label="Labor Difference" value={signedMoney(summary.laborDifferenceCents)} detail="Production labor paid minus production run labor COGS." />
         <StatTile label="Production Hours" value={`${number(summary.productionHours, 2)} hrs`} detail={`${number(summary.hourlyEntryCount)} completed Production-tagged time entr${summary.hourlyEntryCount === 1 ? 'y' : 'ies'}.`} />
-        <StatTile label="Production Run Labor" value={money(summary.productionRunLaborCogsCents)} detail="Actual labor stored on production runs in the range." />
+        <StatTile label="Production Run Labor COGS" value={money(summary.productionRunLaborCogsCents)} detail="Actual labor stored on production runs in the range." />
       </div>
 
       <LaborDifferenceTrendChart points={trend} />

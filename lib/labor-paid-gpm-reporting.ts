@@ -178,7 +178,7 @@ export function buildLaborPaidGpmSummary({
     actualTotalCogsCents,
     hourlyEntryCount: productionEntryIds.size,
     hourlyLaborPaidCents,
-    laborDifferenceCents: actualLaborPaidCents - shippedLaborCogsCents,
+    laborDifferenceCents: actualLaborPaidCents - safeProductionRunLaborCogsCents,
     productionHours: Math.round((productionMinutes / 60) * 100) / 100,
     productionRunLaborCogsCents: safeProductionRunLaborCogsCents,
     revenueCents: current.revenueCents,
