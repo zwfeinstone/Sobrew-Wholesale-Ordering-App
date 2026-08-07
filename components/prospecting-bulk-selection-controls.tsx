@@ -3,6 +3,8 @@
 import { useEffect, useState } from 'react';
 
 type ProspectingBulkSelectionControlsProps = {
+  allFilteredMessage?: string;
+  allowAllFiltered?: boolean;
   formId: string;
   pageCount: number;
   totalCount: number;
@@ -18,6 +20,8 @@ function setScope(form: HTMLFormElement, scope: 'selected' | 'all_filtered') {
 }
 
 export default function ProspectingBulkSelectionControls({
+  allFilteredMessage,
+  allowAllFiltered = true,
   formId,
   pageCount,
   totalCount,
@@ -67,13 +71,15 @@ export default function ProspectingBulkSelectionControls({
         <button className="btn-secondary w-full sm:w-auto" type="button" onClick={() => updatePageSelection(false)}>
           Clear page
         </button>
-        <button className="btn-secondary w-full sm:w-auto" type="button" onClick={useAllFiltered}>
-          Use all filtered ({totalCount.toLocaleString()})
-        </button>
+        {allowAllFiltered ? (
+          <button className="btn-secondary w-full sm:w-auto" type="button" onClick={useAllFiltered}>
+            Use all filtered ({totalCount.toLocaleString()})
+          </button>
+        ) : null}
       </div>
       <p className="text-sm font-semibold text-slate-700">
         {scope === 'all_filtered'
-          ? `All ${totalCount.toLocaleString()} filtered leads will be assigned.`
+          ? allFilteredMessage ?? `All ${totalCount.toLocaleString()} filtered leads will be assigned.`
           : `${selectedCount.toLocaleString()} selected on this page.`}
       </p>
     </div>

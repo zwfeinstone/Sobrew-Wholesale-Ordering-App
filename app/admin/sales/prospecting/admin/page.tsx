@@ -363,6 +363,30 @@ function assignmentRedirectFromForm(formData: FormData, toast: string) {
   });
 }
 
+function pipelineReviewRedirectFromForm(formData: FormData, toast: string) {
+  return prospectingHref({
+    bucket: normalizeBucket(String(formData.get('bucket') ?? 'active')),
+    list: String(formData.get('list') ?? '').trim(),
+    page: normalizePageNumber(String(formData.get('page') ?? '1')),
+    pageSize: normalizePageSize(String(formData.get('page_size') ?? String(DEFAULT_PROSPECTING_PAGE_SIZE))),
+    priority: String(formData.get('priority') ?? '').trim(),
+    q: String(formData.get('q') ?? '').trim(),
+    recyclePage: normalizePageNumber(String(formData.get('recycle_page') ?? '1')),
+    recyclePageSize: normalizePageSize(String(formData.get('recycle_page_size') ?? String(DEFAULT_PROSPECTING_PAGE_SIZE))),
+    rep: String(formData.get('rep') ?? '').trim(),
+    reviewPage: normalizePageNumber(String(formData.get('review_page') ?? '1')),
+    reviewPageSize: normalizePageSize(String(formData.get('review_page_size') ?? String(DEFAULT_PROSPECTING_PAGE_SIZE))),
+    reviewRep: String(formData.get('review_rep') ?? '').trim(),
+    reviewStage: String(formData.get('review_stage') ?? '').trim(),
+    samplePage: normalizePageNumber(String(formData.get('sample_page') ?? '1')),
+    samplePageSize: normalizePageSize(String(formData.get('sample_page_size') ?? String(DEFAULT_PROSPECTING_PAGE_SIZE))),
+    stage: String(formData.get('stage') ?? '').trim(),
+    state: normalizeStateFilter(String(formData.get('state') ?? '')),
+    tab: 'pipeline',
+    toast,
+  });
+}
+
 function leadDetailHref(leadId: string, stateKey: '' | ProspectingStateFilter = '') {
   const query = new URLSearchParams();
   if (stateKey) query.set('state', stateKey);
@@ -1051,6 +1075,151 @@ async function bulkAssignLeads(formData: FormData) {
   redirect(assignmentRedirectFromForm(formData, error ? 'bulk_error' : 'bulk_saved'));
 }
 
+async function bulkUpdatePipelineReviewLeads(formData: FormData) {
+  'use server';
+
+  const current = await requireProspectingOwner(pipelineReviewRedirectFromForm(formData, 'admin_write_denied'));
+  const supabase = await createClient();
+  const leadIds = [...new Set(formData.getAll('lead_id').map(String).filter(Boolean))];
+  if (!leadIds.length) redirect(pipelineReviewRedirectFromForm(formData, 'pipeline_bulk_missing'));
+
+  const bulkAction = String(formData.get('bulk_action') ?? 'reassign') === 'move_stage' ? 'move_stage' : 'reassign';
+
+  if (bulkAction === 'reassign') {
+    const salesProfileId = String(formData.get('sales_profile_id') ?? '').trim() || null;
+    if (salesProfileId) {
+      const isEligibleRep = await isEligibleProspectingSalesRep(supabase, salesProfileId);
+      if (!isEligibleRep) redirect(pipelineReviewRedirectFromForm(formData, 'invalid_rep'));
+    }
+    const error = await updateLeadAssignments({
+      actorId: current.profile.id,
+      leadIds,
+      salesProfileId,
+      supabase,
+    });
+    redirect(pipelineReviewRedirectFromForm(formData, error ? 'pipeline_bulk_error' : 'pipeline_bulk_assignment_saved'));
+  }
+
+  const requestedStage = String(formData.get('target_stage') ?? '').trim();
+  if (!PROSPECTING_STAGES.some((stage) => stage.id === requestedStage)) {
+    redirect(pipelineReviewRedirectFromForm(formData, 'pipeline_bulk_invalid_stage'));
+  }
+
+  const targetStage = requestedStage as ProspectingStage;
+  const shouldUnassign = PARKED_PROSPECTING_STAGES.includes(targetStage);
+  const shouldQueueHubspot = HUBSPOT_QUEUE_STAGES.includes(targetStage);
+  const now = new Date().toISOString();
+  const changedLeadIds: string[] = [];
+
+  for (const batch of chunkArray(leadIds, 400)) {
+    const { data: beforeData, error: loadError } = await supabase
+      .from('prospecting_leads')
+      .select('id,assigned_profile_id,hubspot_status,stage')
+      .is('archived_at', null)
+      .in('id', batch);
+    if (loadError) redirect(pipelineReviewRedirectFromForm(formData, 'pipeline_bulk_error'));
+
+    const beforeRows = (beforeData ?? []) as Array<Pick<LeadRow, 'assigned_profile_id' | 'hubspot_status' | 'id' | 'stage'>>;
+    const batchIds = beforeRows.map((lead) => lead.id);
+    if (!batchIds.length) continue;
+
+    const updatePayload: Record<string, string | null> = {
+      stage: targetStage,
+      updated_at: now,
+      updated_by: current.profile.id,
+    };
+    if (shouldUnassign) {
+      updatePayload.assigned_profile_id = null;
+      updatePayload.next_follow_up_at = null;
+    }
+    if (shouldQueueHubspot) {
+      updatePayload.hubspot_status = 'queued';
+    }
+
+    const { data: updatedData, error: updateError } = await supabase
+      .from('prospecting_leads')
+      .update(updatePayload)
+      .is('archived_at', null)
+      .in('id', batchIds)
+      .select('id');
+    if (updateError) redirect(pipelineReviewRedirectFromForm(formData, 'pipeline_bulk_error'));
+
+    const updatedIds = new Set(((updatedData ?? []) as Array<{ id: string }>).map((lead) => lead.id));
+    if (!updatedIds.size) continue;
+    changedLeadIds.push(...updatedIds);
+
+    const stageActivityRows = beforeRows
+      .filter((lead) => updatedIds.has(lead.id) && normalizeStage(lead.stage) !== targetStage)
+      .map((lead) => ({
+        activity_type: 'stage_change',
+        body: `Stage changed from ${stageLabel(lead.stage)} to ${stageLabel(targetStage)} from pipeline review.`,
+        created_by: current.profile.id,
+        lead_id: lead.id,
+        next_stage: targetStage,
+        previous_assigned_profile_id: shouldUnassign ? lead.assigned_profile_id : null,
+        previous_stage: lead.stage,
+        result: 'Stage updated',
+      }));
+    const assignmentActivityRows = shouldUnassign
+      ? beforeRows
+        .filter((lead) => updatedIds.has(lead.id) && Boolean(lead.assigned_profile_id))
+        .map((lead) => ({
+          activity_type: 'assignment',
+          body: `Lead moved to ${stageLabel(targetStage)} and unassigned from pipeline review.`,
+          created_by: current.profile.id,
+          lead_id: lead.id,
+          next_stage: targetStage,
+          previous_assigned_profile_id: lead.assigned_profile_id,
+          previous_stage: lead.stage,
+          result: 'Unassigned',
+        }))
+      : [];
+
+    const activityRows = [...stageActivityRows, ...assignmentActivityRows];
+    for (const activityBatch of chunkArray(activityRows, 500)) {
+      const { error: activityError } = await supabase.from('prospecting_activities').insert(activityBatch);
+      if (activityError) redirect(pipelineReviewRedirectFromForm(formData, 'pipeline_bulk_error'));
+    }
+
+    if (shouldQueueHubspot) {
+      const { error: queueError } = await supabase.from('prospecting_hubspot_queue').upsert(
+        [...updatedIds].map((leadId) => ({
+          lead_id: leadId,
+          queued_by: current.profile.id,
+          queued_stage: targetStage,
+          status: 'queued',
+        })),
+        { onConflict: 'lead_id' },
+      );
+      if (queueError) redirect(pipelineReviewRedirectFromForm(formData, 'pipeline_bulk_error'));
+    } else {
+      const { error: queueDeleteError } = await supabase
+        .from('prospecting_hubspot_queue')
+        .delete()
+        .eq('status', 'queued')
+        .in('lead_id', [...updatedIds]);
+      if (queueDeleteError) redirect(pipelineReviewRedirectFromForm(formData, 'pipeline_bulk_error'));
+
+      const queuedLeadIds = beforeRows
+        .filter((lead) => updatedIds.has(lead.id) && lead.hubspot_status === 'queued')
+        .map((lead) => lead.id);
+      if (queuedLeadIds.length) {
+        const { error: hubspotStatusError } = await supabase
+          .from('prospecting_leads')
+          .update({
+            hubspot_status: 'not_queued',
+            updated_at: now,
+            updated_by: current.profile.id,
+          })
+          .in('id', queuedLeadIds);
+        if (hubspotStatusError) redirect(pipelineReviewRedirectFromForm(formData, 'pipeline_bulk_error'));
+      }
+    }
+  }
+
+  redirect(pipelineReviewRedirectFromForm(formData, changedLeadIds.length ? 'pipeline_bulk_stage_saved' : 'pipeline_bulk_missing'));
+}
+
 async function markHubspotExported(formData: FormData) {
   'use server';
 
@@ -1533,6 +1702,11 @@ function Toasts({ toast }: { toast: string }) {
     maintenance_error: { message: 'Unable to update that maintenance lead.', tone: 'error' },
     maintenance_missing: { message: 'That maintenance lead could not be found.', tone: 'error' },
     maintenance_recycled: { message: 'Lead moved to Recycle / Try Later and returned to the unassigned pool.', tone: 'success' },
+    pipeline_bulk_assignment_saved: { message: 'Pipeline review lead assignments updated.', tone: 'success' },
+    pipeline_bulk_error: { message: 'Unable to update those pipeline review leads.', tone: 'error' },
+    pipeline_bulk_invalid_stage: { message: 'Choose a valid stage before moving selected leads.', tone: 'error' },
+    pipeline_bulk_missing: { message: 'Select at least one pipeline review lead first.', tone: 'error' },
+    pipeline_bulk_stage_saved: { message: 'Pipeline review lead stages updated.', tone: 'success' },
     sample_outcome_error: { message: 'Unable to save that sample outcome.', tone: 'error' },
     sample_outcome_lost: { message: 'Sample lead marked lost.', tone: 'success' },
     sample_outcome_missing: { message: 'That sample-requested lead could not be found.', tone: 'error' },
@@ -2072,7 +2246,25 @@ export default async function ProspectingAdminPage({ searchParams }: { searchPar
           <StatCard label="Data Gaps" value={pipelineReview.metrics.dataGaps.toLocaleString()} detail="Missing phone, email, state, or contact." />
         </section>
 
-        <div className="card space-y-4">
+        <form id="pipeline-review-bulk-actions" action={bulkUpdatePipelineReviewLeads} className="card space-y-4">
+          <input type="hidden" name="tab" value="pipeline" />
+          <input type="hidden" name="bucket" value={bucket} />
+          <input type="hidden" name="list" value={selectedListId} />
+          <input type="hidden" name="rep" value={selectedRepId} />
+          <input type="hidden" name="priority" value={selectedPriority} />
+          <input type="hidden" name="stage" value={selectedStage} />
+          <input type="hidden" name="state" value={selectedStateKey} />
+          <input type="hidden" name="q" value={q} />
+          <input type="hidden" name="page" value={page} />
+          <input type="hidden" name="page_size" value={pageSize} />
+          <input type="hidden" name="recycle_page" value={recyclePage} />
+          <input type="hidden" name="recycle_page_size" value={recyclePageSize} />
+          <input type="hidden" name="review_page" value={reviewPage} />
+          <input type="hidden" name="review_page_size" value={reviewPageSize} />
+          <input type="hidden" name="review_rep" value={selectedReviewRepId} />
+          <input type="hidden" name="review_stage" value={selectedReviewStage} />
+          <input type="hidden" name="sample_page" value={samplePage} />
+          <input type="hidden" name="sample_page_size" value={samplePageSize} />
           <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
             <div>
               <h3 className="text-lg font-semibold tracking-tight text-slate-950">Stage review</h3>
@@ -2205,10 +2397,52 @@ export default async function ProspectingAdminPage({ searchParams }: { searchPar
             </div>
           ) : null}
 
+          <section className="rounded-lg border border-slate-200 bg-white/60 p-3">
+            <div className="grid gap-3 xl:grid-cols-[11rem_minmax(12rem,1fr)_minmax(12rem,1fr)_auto] xl:items-end">
+              <label className="text-sm font-semibold text-slate-700">
+                Bulk action
+                <select className="input mt-2" name="bulk_action" defaultValue="reassign">
+                  <option value="reassign">Reassign selected</option>
+                  <option value="move_stage">Move selected</option>
+                </select>
+              </label>
+              <label className="text-sm font-semibold text-slate-700">
+                Assign to
+                <select className="input mt-2" name="sales_profile_id" defaultValue="">
+                  <option value="">Unassigned</option>
+                  {salesRepsRows.map((rep) => <option key={rep.id} value={rep.id}>{profileLabel(rep)}</option>)}
+                </select>
+              </label>
+              <label className="text-sm font-semibold text-slate-700">
+                Move to stage
+                <select className="input mt-2" name="target_stage" defaultValue="">
+                  <option value="">Choose stage</option>
+                  {PROSPECTING_STAGES.map((stage) => <option key={stage.id} value={stage.id}>{stage.label}</option>)}
+                </select>
+              </label>
+              <PendingSubmitButton
+                className="btn-primary w-full xl:w-auto"
+                disabled={!canEdit || !visiblePipelineReviewRows.length}
+                disabledLabel={!canEdit ? 'No edit access' : 'No leads'}
+                label="Apply bulk update"
+                pendingLabel="Updating..."
+              />
+            </div>
+            <div className="mt-3">
+              <ProspectingBulkSelectionControls
+                allowAllFiltered={false}
+                formId="pipeline-review-bulk-actions"
+                pageCount={visiblePipelineReviewRows.length}
+                totalCount={reviewTotalRows}
+              />
+            </div>
+          </section>
+
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[86rem] border-separate border-spacing-y-2 text-left text-sm">
+            <table className="w-full min-w-[90rem] border-separate border-spacing-y-2 text-left text-sm">
               <thead>
                 <tr className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+                  <th className="px-3 py-2">Select</th>
                   <th className="px-3 py-2">Lead</th>
                   <th className="px-3 py-2">Stage</th>
                   <th className="px-3 py-2">Priority</th>
@@ -2232,6 +2466,16 @@ export default async function ProspectingAdminPage({ searchParams }: { searchPar
                   return (
                     <tr key={lead.id} className="bg-white/70">
                       <td className="rounded-l-lg px-3 py-3">
+                        <input
+                          aria-label={`Select ${lead.company_name}`}
+                          className="h-6 w-6 accent-teal-600"
+                          data-lead-select="true"
+                          name="lead_id"
+                          type="checkbox"
+                          value={lead.id}
+                        />
+                      </td>
+                      <td className="px-3 py-3">
                         <p className="font-semibold text-slate-950">{lead.company_name}</p>
                         <p className="mt-1 text-slate-500">{cityState}</p>
                       </td>
@@ -2266,7 +2510,7 @@ export default async function ProspectingAdminPage({ searchParams }: { searchPar
                 })}
                 {!visiblePipelineReviewRows.length ? (
                   <tr>
-                    <td colSpan={10} className="rounded-lg border border-dashed border-slate-200 px-3 py-8 text-center text-sm text-slate-500">
+                    <td colSpan={11} className="rounded-lg border border-dashed border-slate-200 px-3 py-8 text-center text-sm text-slate-500">
                       No assigned open leads match this pipeline review.
                     </td>
                   </tr>
@@ -2274,7 +2518,7 @@ export default async function ProspectingAdminPage({ searchParams }: { searchPar
               </tbody>
             </table>
           </div>
-        </div>
+        </form>
       </section>
       ) : null}
 
