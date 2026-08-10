@@ -13,8 +13,7 @@ async function loadNewOrderCount() {
       .from('orders')
       .select('id', { count: 'exact', head: true })
       .eq('status', 'New')
-      .is('archived_at', null)
-      .neq('order_kind', 'prospecting_sample'),
+      .is('archived_at', null),
     'center_id',
     current.centerScope,
   );
