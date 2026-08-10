@@ -451,6 +451,10 @@ export function prospectingQueueRequiresFollowUp(context: ProspectingQueueContex
   return context.tab === 'tasks';
 }
 
+export function prospectingQueueExcludesFollowUpDue(context: ProspectingQueueContext) {
+  return context.tab === 'pipeline' && context.stage === 'new';
+}
+
 export function prospectingQueueSkipsTouchedToday(context: ProspectingQueueContext) {
   return context.tab === 'pipeline' && context.stage === 'new';
 }

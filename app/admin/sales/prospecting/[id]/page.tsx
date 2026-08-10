@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import ConfirmSubmitButton from '@/components/confirm-submit-button';
 import PendingSubmitButton from '@/components/pending-submit-button';
+import ProspectingRecordNavLink from '@/components/prospecting-record-nav-link';
 import StatusToast from '@/components/status-toast';
 import { requireAdminSectionEdit, requireAdminSectionView } from '@/lib/admin-permissions';
 import { supabaseAdmin } from '@/lib/supabase/admin';
@@ -29,6 +30,7 @@ import {
   prospectingLeadPath,
   prospectingPath,
   prospectingQueueContextFromParams,
+  prospectingQueueExcludesFollowUpDue,
   prospectingQueueHiddenFields,
   prospectingQueueOrderFields,
   prospectingQueueQueryString,
@@ -294,6 +296,8 @@ async function saveRecordData(formData: FormData) {
   const queueContext = prospectingQueueContextFromParams(formData);
   const nextRecordId = cleanRecordId(formData.get('next_record_id'));
   const previousRecordId = cleanRecordId(formData.get('previous_record_id'));
+  const requestedSaveRedirectRecordId = cleanRecordId(formData.get('save_redirect_record_id'));
+  const saveRedirectRecordId = [nextRecordId, previousRecordId].includes(requestedSaveRedirectRecordId) ? requestedSaveRedirectRecordId : '';
   const current = await requireAdminSectionEdit('prospecting', leadHref(leadId, 'admin_write_denied', queueContext));
   const supabase = await createClient();
   const before = await loadLeadForMutation(supabase, leadId, current);
@@ -562,14 +566,17 @@ async function saveRecordData(formData: FormData) {
   }
 
   if ((finalShouldRecycle || finalShouldMoveToMaintenance) && !current.isOwner) {
+    const preferredRecordId = saveRedirectRecordId || nextRecordId;
+    const fallbackRecordId = saveRedirectRecordId === previousRecordId ? nextRecordId : previousRecordId;
     redirect(await shuckedRepRedirectHref({
       current,
-      nextRecordId,
-      previousRecordId,
+      nextRecordId: preferredRecordId,
+      previousRecordId: fallbackRecordId,
       queueContext,
       toast: finalShouldRecycle ? 'lead_recycled' : finalShouldMoveToMaintenance ? 'lead_reviewed' : 'record_saved',
     }));
   }
+  if (saveRedirectRecordId) redirect(leadHref(saveRedirectRecordId, 'record_saved', queueContext));
   redirect(leadHref(leadId, 'record_saved', queueContext));
 }
 
@@ -756,6 +763,7 @@ export default async function LeadDetailPage({
   if (!isOwner) nextQueueQuery = nextQueueQuery.eq('assigned_profile_id', current.profile.id);
   nextQueueQuery = nextQueueQuery.in('stage', prospectingQueueStageFilter(queueContext));
   if (prospectingQueueRequiresFollowUp(queueContext)) nextQueueQuery = nextQueueQuery.not('next_follow_up_at', 'is', null).lte('next_follow_up_at', today);
+  if (prospectingQueueExcludesFollowUpDue(queueContext)) nextQueueQuery = nextQueueQuery.or(`next_follow_up_at.is.null,next_follow_up_at.gt.${today}`);
   if (prospectingQueueSkipsTouchedToday(queueContext)) nextQueueQuery = nextQueueQuery.or(`last_activity_at.is.null,last_activity_at.lt.${todayStart.toISOString()}`);
   if (queueContext.priority) nextQueueQuery = nextQueueQuery.eq('priority', queueContext.priority);
   if (queueContext.state === MISSING_STATE_FILTER) nextQueueQuery = nextQueueQuery.is('state_key', null);
@@ -792,8 +800,28 @@ export default async function LeadDetailPage({
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
           <Link className="btn-secondary inline-flex self-start" href={prospectingBackHref(queueContext)}>Back to Main Prospecting List</Link>
           <div className="flex flex-col gap-2 sm:flex-row">
-            {previousLeadId ? <Link className="btn-secondary inline-flex" href={leadHref(previousLeadId, undefined, queueContext)}>Previous Record</Link> : null}
-            {nextLeadId ? <Link className="btn-primary inline-flex" href={leadHref(nextLeadId, undefined, queueContext)}>Next Record</Link> : null}
+            {previousLeadId ? (
+              <ProspectingRecordNavLink
+                className="btn-secondary inline-flex"
+                formId={recordFormId}
+                href={leadHref(previousLeadId, undefined, queueContext)}
+                targetLabel="the previous record"
+                targetRecordId={previousLeadId}
+              >
+                Previous Record
+              </ProspectingRecordNavLink>
+            ) : null}
+            {nextLeadId ? (
+              <ProspectingRecordNavLink
+                className="btn-primary inline-flex"
+                formId={recordFormId}
+                href={leadHref(nextLeadId, undefined, queueContext)}
+                targetLabel="the next record"
+                targetRecordId={nextLeadId}
+              >
+                Next Record
+              </ProspectingRecordNavLink>
+            ) : null}
           </div>
         </div>
         <div className="mt-4 grid gap-5 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
@@ -932,8 +960,28 @@ export default async function LeadDetailPage({
           <Field label="Next follow-up"><input className="input" form={recordFormId} name="activity_next_follow_up_at" type="date" /></Field>
           <Field label="Notes after this activity"><textarea className="input min-h-32" form={recordFormId} name="activity_body" placeholder="What happened, who you spoke with, and what should happen next." /></Field>
           <div className="grid gap-2 sm:grid-cols-2">
-            {previousLeadId ? <Link className="btn-secondary inline-flex justify-center" href={leadHref(previousLeadId, undefined, queueContext)}>Previous Record</Link> : null}
-            {nextLeadId ? <Link className="btn-secondary inline-flex justify-center" href={leadHref(nextLeadId, undefined, queueContext)}>Next Record</Link> : null}
+            {previousLeadId ? (
+              <ProspectingRecordNavLink
+                className="btn-secondary inline-flex justify-center"
+                formId={recordFormId}
+                href={leadHref(previousLeadId, undefined, queueContext)}
+                targetLabel="the previous record"
+                targetRecordId={previousLeadId}
+              >
+                Previous Record
+              </ProspectingRecordNavLink>
+            ) : null}
+            {nextLeadId ? (
+              <ProspectingRecordNavLink
+                className="btn-secondary inline-flex justify-center"
+                formId={recordFormId}
+                href={leadHref(nextLeadId, undefined, queueContext)}
+                targetLabel="the next record"
+                targetRecordId={nextLeadId}
+              >
+                Next Record
+              </ProspectingRecordNavLink>
+            ) : null}
           </div>
         </section>
       </section>

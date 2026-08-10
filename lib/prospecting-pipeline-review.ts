@@ -92,6 +92,20 @@ function normalizeReviewStage(stage: string | null | undefined): ProspectingStag
   return PROSPECTING_STAGES.find((candidate) => candidate.id === stage)?.id ?? 'new';
 }
 
+export function pipelineReviewFollowUpDateInput(lead: Pick<PipelineReviewLeadInput, 'next_follow_up_at'>) {
+  return String(lead.next_follow_up_at ?? '').slice(0, 10);
+}
+
+export function pipelineReviewHasDueFollowUp(lead: Pick<PipelineReviewLeadInput, 'next_follow_up_at'>, today: string) {
+  const followUp = pipelineReviewFollowUpDateInput(lead);
+  return Boolean(followUp) && followUp <= today;
+}
+
+export function pipelineReviewStageMatches(lead: Pick<PipelineReviewLeadInput, 'next_follow_up_at' | 'stage'>, stage: ProspectingStage, today: string) {
+  const normalizedStage = normalizeReviewStage(lead.stage);
+  return normalizedStage === stage && (stage !== 'new' || !pipelineReviewHasDueFollowUp(lead, today));
+}
+
 function isOutboundTouchType(value: string | null | undefined) {
   return value === 'call' || value === 'email';
 }
@@ -150,10 +164,10 @@ export function summarizePipelineReview<TLead extends PipelineReviewLeadInput>({
     const stage = normalizeReviewStage(lead.stage);
     const leadContacts = contactsByLead.get(lead.id) ?? [];
     const hasDataGap = hasContactDataGap(lead, leadContacts);
-    const followUp = String(lead.next_follow_up_at ?? '').slice(0, 10);
+    const followUp = pipelineReviewFollowUpDateInput(lead);
     const result = String(lead.last_result ?? '').trim();
 
-    countsByStage.set(stage, (countsByStage.get(stage) ?? 0) + 1);
+    if (pipelineReviewStageMatches(lead, stage, today)) countsByStage.set(stage, (countsByStage.get(stage) ?? 0) + 1);
     if (result) countsByResult.set(result, (countsByResult.get(result) ?? 0) + 1);
     if (hasDataGap) dataGaps += 1;
     if (followUp && followUp < today) overdueFollowUps += 1;

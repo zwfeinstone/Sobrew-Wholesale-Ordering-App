@@ -17,6 +17,8 @@ import {
 } from '@/lib/hubspot-prospecting';
 import {
   PIPELINE_REVIEW_STAGES,
+  pipelineReviewFollowUpDateInput,
+  pipelineReviewStageMatches,
   summarizePipelineReview,
   type PipelineReviewLeadSummary,
 } from '@/lib/prospecting-pipeline-review';
@@ -67,6 +69,7 @@ import {
   type ProspectingStateFilter,
   type ProspectingStage,
 } from '@/lib/prospecting';
+import { formatCentralDateInput } from '@/lib/time-clock';
 
 type SearchParams = Record<string, string | string[] | undefined>;
 
@@ -431,9 +434,8 @@ function safeDateInput(value: FormDataEntryValue | null) {
   return /^\d{4}-\d{2}-\d{2}$/.test(text) ? text : null;
 }
 
-function pipelineReviewUrgencyScore(summary: PipelineReviewLeadSummary<LeadRow>) {
-  const followUpDate = String(summary.lead.next_follow_up_at ?? '').slice(0, 10);
-  const today = new Date().toISOString().slice(0, 10);
+function pipelineReviewUrgencyScore(summary: PipelineReviewLeadSummary<LeadRow>, today: string) {
+  const followUpDate = pipelineReviewFollowUpDateInput(summary.lead);
   if (followUpDate && followUpDate < today) return 0;
   if (followUpDate && followUpDate === today) return 1;
   if (summary.totalTouches === 0) return 2;
@@ -1983,6 +1985,8 @@ export default async function ProspectingAdminPage({ searchParams }: { searchPar
   }
   const sampleProfileById = new Map(((sampleProfilesData ?? []) as ProfileRow[]).map((profile) => [profile.id, profile]));
 
+  const pipelineReviewNow = new Date();
+  const pipelineReviewToday = formatCentralDateInput(pipelineReviewNow);
   const pipelineReviewLeadResult = await fetchPipelineReviewLeads(supabase, selectedReviewRepId);
   const pipelineReviewLeadRows = pipelineReviewLeadResult.leads;
   const pipelineReviewLeadIds = pipelineReviewLeadRows.map((lead) => lead.id);
@@ -2004,6 +2008,7 @@ export default async function ProspectingAdminPage({ searchParams }: { searchPar
   const pipelineReview = summarizePipelineReview({
     contacts: pipelineReviewContactsResult.contacts,
     leads: pipelineReviewLeadRows,
+    now: pipelineReviewNow,
     touches: pipelineReviewTouchesResult.touches,
   });
   const pipelineReviewErrors = [
@@ -2017,11 +2022,11 @@ export default async function ProspectingAdminPage({ searchParams }: { searchPar
     reviewListLabelsByLead.set(row.lead_id, [...(reviewListLabelsByLead.get(row.lead_id) ?? []), pipelineReviewListLabel(row)]);
   }
   const pipelineReviewRows = pipelineReview.leadSummaries
-    .filter((summary) => !selectedReviewStage || normalizeStage(summary.lead.stage) === selectedReviewStage)
+    .filter((summary) => !selectedReviewStage || pipelineReviewStageMatches(summary.lead, selectedReviewStage, pipelineReviewToday))
     .sort((a, b) => {
       const stageDiff = PIPELINE_REVIEW_STAGES.indexOf(normalizeStage(a.lead.stage)) - PIPELINE_REVIEW_STAGES.indexOf(normalizeStage(b.lead.stage));
       if (stageDiff !== 0) return stageDiff;
-      const urgencyDiff = pipelineReviewUrgencyScore(a) - pipelineReviewUrgencyScore(b);
+      const urgencyDiff = pipelineReviewUrgencyScore(a, pipelineReviewToday) - pipelineReviewUrgencyScore(b, pipelineReviewToday);
       if (urgencyDiff !== 0) return urgencyDiff;
       const aFollowUp = a.lead.next_follow_up_at ? Date.parse(a.lead.next_follow_up_at) : Number.MAX_SAFE_INTEGER;
       const bFollowUp = b.lead.next_follow_up_at ? Date.parse(b.lead.next_follow_up_at) : Number.MAX_SAFE_INTEGER;
@@ -2347,13 +2352,13 @@ export default async function ProspectingAdminPage({ searchParams }: { searchPar
               <span className="mt-1 block text-xs font-medium opacity-75">{pipelineReview.metrics.totalOpen.toLocaleString()} leads</span>
             </Link>
             {pipelineReview.stageSummaries.map((stageSummary) => {
-              const staleInStage = pipelineReview.leadSummaries.filter((summary) => {
-                const sameStage = normalizeStage(summary.lead.stage) === stageSummary.stage;
-                return sameStage && (summary.totalTouches === 0 || (summary.daysSinceLastTouch !== null && summary.daysSinceLastTouch >= 14));
-              }).length;
-              const overdueInStage = pipelineReview.leadSummaries.filter((summary) => {
-                const followUp = String(summary.lead.next_follow_up_at ?? '').slice(0, 10);
-                return normalizeStage(summary.lead.stage) === stageSummary.stage && Boolean(followUp) && followUp < new Date().toISOString().slice(0, 10);
+              const summariesInStage = pipelineReview.leadSummaries.filter((summary) => pipelineReviewStageMatches(summary.lead, stageSummary.stage, pipelineReviewToday));
+              const staleInStage = summariesInStage.filter((summary) => (
+                summary.totalTouches === 0 || (summary.daysSinceLastTouch !== null && summary.daysSinceLastTouch >= 14)
+              )).length;
+              const overdueInStage = summariesInStage.filter((summary) => {
+                const followUp = pipelineReviewFollowUpDateInput(summary.lead);
+                return Boolean(followUp) && followUp < pipelineReviewToday;
               }).length;
               return (
                 <Link
@@ -2460,9 +2465,8 @@ export default async function ProspectingAdminPage({ searchParams }: { searchPar
                   const lead = summary.lead;
                   const cityState = [lead.city, lead.state_key || lead.state].filter(Boolean).join(', ') || 'Missing city/state';
                   const listLabels = reviewListLabelsByLead.get(lead.id) ?? [];
-                  const followUp = String(lead.next_follow_up_at ?? '').slice(0, 10);
-                  const today = new Date().toISOString().slice(0, 10);
-                  const followUpTone = followUp && followUp < today ? 'text-rose-700' : followUp === today ? 'text-amber-700' : 'text-slate-700';
+                  const followUp = pipelineReviewFollowUpDateInput(lead);
+                  const followUpTone = followUp && followUp < pipelineReviewToday ? 'text-rose-700' : followUp === pipelineReviewToday ? 'text-amber-700' : 'text-slate-700';
                   return (
                     <tr key={lead.id} className="bg-white/70">
                       <td className="rounded-l-lg px-3 py-3">

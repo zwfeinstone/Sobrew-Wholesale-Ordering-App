@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { summarizePipelineReview } from '@/lib/prospecting-pipeline-review';
+import { pipelineReviewStageMatches, summarizePipelineReview } from '@/lib/prospecting-pipeline-review';
 
 const NOW = new Date('2026-07-19T18:00:00.000Z');
 
@@ -113,5 +113,31 @@ describe('summarizePipelineReview', () => {
       { result: 'No answer', count: 1 },
       { result: 'Sample requested', count: 1 },
     ]);
+  });
+
+  it('does not count due follow-ups in the New review stage', () => {
+    const summary = summarizePipelineReview({
+      contacts: [],
+      leads: [
+        {
+          id: 'lead-fresh-new',
+          next_follow_up_at: null,
+          stage: 'new',
+        },
+        {
+          id: 'lead-due-new',
+          next_follow_up_at: '2026-07-19',
+          stage: 'new',
+        },
+      ],
+      now: NOW,
+      touches: [],
+    });
+
+    expect(summary.metrics.totalOpen).toBe(2);
+    expect(summary.metrics.dueToday).toBe(1);
+    expect(summary.stageSummaries.find((item) => item.stage === 'new')?.count).toBe(1);
+    expect(pipelineReviewStageMatches(summary.leadSummaries[0].lead, 'new', '2026-07-19')).toBe(true);
+    expect(pipelineReviewStageMatches(summary.leadSummaries[1].lead, 'new', '2026-07-19')).toBe(false);
   });
 });

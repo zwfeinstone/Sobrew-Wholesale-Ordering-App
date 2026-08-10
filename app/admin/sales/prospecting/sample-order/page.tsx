@@ -14,6 +14,7 @@ import {
   prospectingLeadPath,
   prospectingPath,
   prospectingQueueContextFromParams,
+  prospectingQueueExcludesFollowUpDue,
   prospectingQueueHiddenFields,
   prospectingQueueOrderFields,
   prospectingQueueQueryString,
@@ -124,6 +125,7 @@ async function sampleOrderCompletionHref({
   }
   query = query.in('stage', prospectingQueueStageFilter(queueContext));
   if (prospectingQueueRequiresFollowUp(queueContext)) query = query.not('next_follow_up_at', 'is', null).lte('next_follow_up_at', today);
+  if (prospectingQueueExcludesFollowUpDue(queueContext)) query = query.or(`next_follow_up_at.is.null,next_follow_up_at.gt.${today}`);
   if (prospectingQueueSkipsTouchedToday(queueContext)) query = query.or(`last_activity_at.is.null,last_activity_at.lt.${todayStart.toISOString()}`);
   if (queueContext.priority) query = query.eq('priority', queueContext.priority);
   if (queueContext.state === MISSING_STATE_FILTER) query = query.is('state_key', null);

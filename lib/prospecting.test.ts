@@ -5,6 +5,7 @@ import {
   prospectingLeadPath,
   prospectingPath,
   prospectingQueueContextFromParams,
+  prospectingQueueExcludesFollowUpDue,
   prospectingQueueHiddenFields,
   prospectingQueueOrderFields,
   prospectingQueueRequiresFollowUp,
@@ -200,6 +201,13 @@ describe('prospecting queue filtering rules', () => {
     expect(prospectingQueueSkipsTouchedToday(prospectingQueueContextFromParams({ stage: 'working', tab: 'pipeline' }))).toBe(false);
     expect(prospectingQueueSkipsTouchedToday(prospectingQueueContextFromParams({ tab: 'tasks' }))).toBe(false);
     expect(prospectingQueueSkipsTouchedToday(prospectingQueueContextFromParams({ list: LIST_ID, tab: 'list' }))).toBe(false);
+  });
+
+  it('keeps due follow-ups out of the New pipeline queue only', () => {
+    expect(prospectingQueueExcludesFollowUpDue(prospectingQueueContextFromParams({ stage: 'new', tab: 'pipeline' }))).toBe(true);
+    expect(prospectingQueueExcludesFollowUpDue(prospectingQueueContextFromParams({ stage: 'working', tab: 'pipeline' }))).toBe(false);
+    expect(prospectingQueueExcludesFollowUpDue(prospectingQueueContextFromParams({ tab: 'tasks' }))).toBe(false);
+    expect(prospectingQueueExcludesFollowUpDue(prospectingQueueContextFromParams({ list: LIST_ID, tab: 'list' }))).toBe(false);
   });
 });
 

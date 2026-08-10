@@ -21,6 +21,7 @@ import {
   prospectingLeadPath,
   prospectingPath,
   prospectingQueueContextFromParams,
+  prospectingQueueExcludesFollowUpDue,
   prospectingQueueOrderFields,
   prospectingQueueRequiresFollowUp,
   prospectingQueueSkipsTouchedToday,
@@ -285,6 +286,7 @@ export default async function ProspectingPage({ searchParams }: { searchParams?:
   let leadsQuery = assignedLeadQuery(supabase, current.profile.id, q, selectedPriority, selectedStateKey, selectedListId, '*', { count: 'exact' });
   leadsQuery = leadsQuery.in('stage', prospectingQueueStageFilter(queueContext));
   if (prospectingQueueRequiresFollowUp(queueContext)) leadsQuery = leadsQuery.not('next_follow_up_at', 'is', null).lte('next_follow_up_at', today);
+  if (prospectingQueueExcludesFollowUpDue(queueContext)) leadsQuery = leadsQuery.or(`next_follow_up_at.is.null,next_follow_up_at.gt.${today}`);
   if (prospectingQueueSkipsTouchedToday(queueContext)) leadsQuery = leadsQuery.or(`last_activity_at.is.null,last_activity_at.lt.${todayStart.toISOString()}`);
 
   for (const order of prospectingQueueOrderFields(queueContext)) {
@@ -318,9 +320,12 @@ export default async function ProspectingPage({ searchParams }: { searchParams?:
       .eq('activity_type', 'call')
       .gte('created_at', weekStart.toISOString())
       .lt('created_at', tomorrowStart.toISOString()),
-    ...REP_PIPELINE_STAGES.map((stage) => (
-      assignedLeadQuery(supabase, current.profile.id, q, selectedPriority, selectedStateKey, selectedListId, 'id', { count: 'exact', head: true }).eq('stage', stage)
-    )),
+    ...REP_PIPELINE_STAGES.map((stage) => {
+      const stageContext = { ...queueContext, stage, tab: 'pipeline' as const };
+      let stageQuery = assignedLeadQuery(supabase, current.profile.id, q, selectedPriority, selectedStateKey, selectedListId, 'id', { count: 'exact', head: true }).eq('stage', stage);
+      if (prospectingQueueExcludesFollowUpDue(stageContext)) stageQuery = stageQuery.or(`next_follow_up_at.is.null,next_follow_up_at.gt.${today}`);
+      return stageQuery;
+    }),
   ]);
 
   const stageCounts = new Map<ProspectingStage, number>();
