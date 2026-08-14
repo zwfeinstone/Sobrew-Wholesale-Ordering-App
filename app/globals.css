@@ -2185,7 +2185,7 @@ body::before {
   display: grid;
   grid-template-columns: 4.75rem minmax(0, 1fr) auto minmax(11.25rem, auto);
   gap: 1rem;
-  align-items: center;
+  align-items: start;
   min-width: 0;
   padding: 0.8rem 1rem;
   border-bottom: 1px solid rgba(48, 34, 25, 0.075);
@@ -2209,33 +2209,32 @@ body::before {
 
 .restock-product-copy {
   min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .restock-product-copy h3 {
-  overflow: hidden;
   color: #17211f;
   font-size: 0.98rem;
   font-weight: 720;
-  letter-spacing: -0.02em;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 1.25;
+  letter-spacing: 0;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .restock-product-copy p {
-  display: -webkit-box;
-  overflow: hidden;
   margin-top: 0.25rem;
   color: #6b7772;
   font-size: 0.78rem;
   line-height: 1.15rem;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
+  overflow-wrap: anywhere;
 }
 
 .restock-product-price {
   color: #302219;
   font-size: 0.9rem;
   font-weight: 760;
+  line-height: 1.25;
   white-space: nowrap;
 }
 
@@ -3049,7 +3048,6 @@ body::before {
 
   .restock-product-price {
     align-self: start;
-    padding-top: 0.1rem;
   }
 
   .catalog-row-control {
@@ -3128,10 +3126,6 @@ body::before {
   .restock-filter-bar {
     margin-inline: -0.2rem;
     padding: 0.6rem;
-  }
-
-  .restock-product-copy p {
-    -webkit-line-clamp: 1;
   }
 
   .catalog-in-cart-label {

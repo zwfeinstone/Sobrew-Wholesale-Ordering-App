@@ -1,22 +1,13 @@
 import { cache } from 'react';
-import { scopeCenterRelatedQueryForAdmin } from '@/lib/admin-center-scope';
-import { getCurrentAdminAccess } from '@/lib/admin-permissions';
 import { createClient } from '@/lib/supabase/server';
 
 async function loadNewOrderCount() {
-  const [supabase, current] = await Promise.all([
-    createClient(),
-    getCurrentAdminAccess(),
-  ]);
-  const query = scopeCenterRelatedQueryForAdmin(
-    supabase
-      .from('orders')
-      .select('id', { count: 'exact', head: true })
-      .eq('status', 'New')
-      .is('archived_at', null),
-    'center_id',
-    current.centerScope,
-  );
+  const supabase = await createClient();
+  const query = supabase
+    .from('orders')
+    .select('id', { count: 'exact', head: true })
+    .eq('status', 'New')
+    .is('archived_at', null);
   const { count, error } = await query;
 
   if (error) {

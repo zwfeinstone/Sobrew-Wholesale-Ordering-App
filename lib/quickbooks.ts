@@ -1987,7 +1987,6 @@ export async function createQuickBooksInvoiceForOrder(
     .eq('id', orderId)
     .single();
   if (error || !order) throw new Error(error?.message || 'Order not found.');
-  if ((order as any).archived_at) throw new Error('Archived orders cannot be invoiced.');
   if ((order as any).status !== 'Shipped') throw new Error('Only shipped orders can be invoiced.');
 
   const connection = await getAuthorizedConnection();
@@ -2143,7 +2142,6 @@ export async function createQuickBooksPaidInvoiceForOrder(orderId: string): Prom
     .eq('id', cleanOrderId)
     .single();
   if (error || !order) throw new Error(error?.message || 'Order not found.');
-  if ((order as any).archived_at) throw new Error('Archived orders cannot be invoiced.');
   if ((order as any).status !== 'Shipped') throw new Error('Only shipped orders can be invoiced.');
   if (cleanText((order as any).quickbooks_payment_id)) {
     throw new Error('This order already has a recorded QuickBooks payment.');

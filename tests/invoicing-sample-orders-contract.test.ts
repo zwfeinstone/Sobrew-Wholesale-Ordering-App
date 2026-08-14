@@ -10,14 +10,28 @@ const invoiceDownloadRoute = readFileSync(
   fileURLToPath(new URL('../app/api/admin/quickbooks/invoices/download/route.ts', import.meta.url)),
   'utf8'
 );
+const quickBooksLib = readFileSync(
+  fileURLToPath(new URL('../lib/quickbooks.ts', import.meta.url)),
+  'utf8'
+);
 
 describe('invoicing sample order exclusion contract', () => {
   it('keeps prospecting sample orders out of the ready-to-invoice queue', () => {
     expect(invoicingPage).toContain("const PROSPECTING_SAMPLE_ORDER_KIND = 'prospecting_sample';");
     expect(invoicingPage).toContain('order.order_kind !== PROSPECTING_SAMPLE_ORDER_KIND');
     expect(invoicingPage).toMatch(
-      /\.select\(INVOICE_ORDER_SELECT\)[\s\S]*?\.eq\('status', 'Shipped'\)[\s\S]*?\.neq\('order_kind', PROSPECTING_SAMPLE_ORDER_KIND\)[\s\S]*?\.is\('archived_at', null\)[\s\S]*?\.or\('quickbooks_invoice_id\.is\.null,invoice_status\.eq\.invoice_error'\)/
+      /\.select\(INVOICE_ORDER_SELECT\)[\s\S]*?\.eq\('status', 'Shipped'\)[\s\S]*?\.neq\('order_kind', PROSPECTING_SAMPLE_ORDER_KIND\)[\s\S]*?\.or\('quickbooks_invoice_id\.is\.null,invoice_status\.eq\.invoice_error'\)/
     );
+  });
+
+  it('keeps archived shipped orders invoiceable until a QuickBooks invoice exists', () => {
+    expect(invoicingPage).toContain('Archived order');
+    expect(invoicingPage).not.toContain(".is('archived_at', null)");
+    expect(invoicingPage).not.toContain('order.archived_at ||');
+    expect(invoicingPage).not.toContain('(order as any).archived_at ||');
+    expect(invoiceDownloadRoute).not.toContain(".is('archived_at', null)");
+    expect(invoiceDownloadRoute).not.toContain('(order as any).archived_at ||');
+    expect(quickBooksLib).not.toContain('Archived orders cannot be invoiced.');
   });
 
   it('blocks invoice creation actions from claiming prospecting sample orders', () => {

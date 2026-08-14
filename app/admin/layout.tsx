@@ -6,15 +6,17 @@ import { AdminShell } from '@/components/admin-shell';
 
 export default async function AdminLayout({ children }: { children: React.ReactNode }) {
   const current = await getCurrentAdminAccess();
+  const canSeeOrderAlerts = canViewAdminSection(current.access, 'orders')
+    || canViewAdminSection(current.access, 'planning')
+    || canViewAdminSection(current.access, 'production');
   const [newOrders, payrollStatus] = await Promise.all([
-    canViewAdminSection(current.access, 'orders') ? getCachedNewOrderCount() : Promise.resolve(0),
+    canSeeOrderAlerts ? getCachedNewOrderCount() : Promise.resolve(0),
     canViewAdminSection(current.access, 'payroll') ? getCachedPayrollStatus() : Promise.resolve(null),
   ]);
 
   return (
     <AdminShell
       access={current.access}
-      centerScope={current.centerScope}
       isOwner={current.isOwner}
       newOrders={newOrders}
       payrollBadgeCount={payrollStatus?.badgeCount ?? 0}

@@ -610,7 +610,7 @@ export default async function RecurringOrdersPage({ searchParams }: { searchPara
           const orderItems = itemsByOrderId.get(order.id) ?? [];
           const projectedSubtotal = orderItems.reduce((sum, item) => sum + item.qty * item.unit_price_cents, 0) || order.amount_cents || 0;
           const resumeInterval = frequencyWeeksLabel(order.frequency);
-          const resumeMessage = `This will trigger an order today. The next automatic order will be ${resumeInterval} from today.`;
+          const resumeMessage = `This shipment is paused, so no automatic orders will be placed while it stays paused. Resuming today will create an order now and restart the schedule. The next automatic order will be ${resumeInterval} from today.`;
           return (
             <div key={order.id} className="recurring-card recurring-order-card space-y-5">
               <div className="recurring-card-header grid gap-4 xl:grid-cols-[minmax(0,1fr)_auto] xl:items-start">
@@ -735,7 +735,7 @@ export default async function RecurringOrdersPage({ searchParams }: { searchPara
               </div>
               {currentStatus === 'paused' ? (
                 <p className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-                  Resuming this shipment will trigger an order today. The next automatic order will be {resumeInterval} from today.
+                  This shipment is paused. No automatic orders will be placed while it stays paused. Resuming today will create an order now and restart the schedule. The next automatic order will be {resumeInterval} from today.
                 </p>
               ) : null}
             </div>

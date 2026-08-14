@@ -60,4 +60,41 @@ describe('report math', () => {
       quantitySold: 2,
     });
   });
+
+  it('uses Central time for daily snapshot order counts', () => {
+    const dashboard = buildReportingDashboard({
+      centers: [{ id: 'center-1', name: 'Recovery Center', is_active: true, created_at: '2026-08-01T12:00:00.000Z' }],
+      filters: {
+        selectedMonth: new Date('2026-08-10T18:00:00.000Z'),
+        rangeStart: new Date('2026-08-01T05:00:00.000Z'),
+        rangeEndExclusive: new Date('2026-09-01T05:00:00.000Z'),
+      },
+      now: new Date('2026-08-10T18:00:00.000Z'),
+      orderItems: [],
+      orders: [
+        {
+          id: 'late-yesterday-central',
+          center_id: 'center-1',
+          status: 'Shipped',
+          subtotal_cents: 26480,
+          shipping_cost_cents: 0,
+          created_at: '2026-08-10T02:28:00.000Z',
+        },
+        {
+          id: 'today-central',
+          center_id: 'center-1',
+          status: 'New',
+          subtotal_cents: 16500,
+          shipping_cost_cents: 0,
+          created_at: '2026-08-10T18:04:00.000Z',
+        },
+      ],
+      products: [],
+    });
+
+    expect(dashboard.dailySnapshot.ordersToday).toBe(1);
+    expect(dashboard.dailySnapshot.revenueTodayCents).toBe(16500);
+    expect(dashboard.dailySnapshot.ordersMonthToDate).toBe(2);
+    expect(dashboard.dailySnapshot.revenueMonthToDateCents).toBe(42980);
+  });
 });

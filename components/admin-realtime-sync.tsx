@@ -1,6 +1,6 @@
 'use client';
 
-import { startTransition, useEffect, useRef } from 'react';
+import { startTransition, useCallback, useEffect, useRef, useState } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase/browser';
 
@@ -41,33 +41,36 @@ function hasFocusedFormField() {
   return activeElement instanceof HTMLElement && activeElement.isContentEditable;
 }
 
-export function AdminRealtimeSync({ centerScope }: { centerScope: string[] | null }) {
+export function AdminRealtimeSync({ enabled }: { enabled: boolean }) {
   const pathname = usePathname();
   const router = useRouter();
   const audioContextRef = useRef<AudioContext | null>(null);
   const lastDingAtRef = useRef(0);
   const pendingRefreshRef = useRef(false);
   const refreshTimeoutRef = useRef<number | null>(null);
-  const centerScopeKey = centerScope === null ? '*' : [...centerScope].sort().join(',');
+  const [soundReady, setSoundReady] = useState(false);
+  const shouldShowSoundControl = enabled && isLiveOrderWorkspace(pathname) && !soundReady;
+
+  const getAudioContext = useCallback(() => {
+    const AudioContextCtor = audioContextConstructor();
+    if (!AudioContextCtor) return null;
+    audioContextRef.current ??= new AudioContextCtor();
+    return audioContextRef.current;
+  }, []);
+
+  const unlockAudio = useCallback(() => {
+    const context = getAudioContext();
+    if (!context) return;
+    void context.resume()
+      .then(() => setSoundReady(context.state === 'running'))
+      .catch(() => undefined);
+  }, [getAudioContext]);
 
   useEffect(() => {
-    if (!isLiveOrderWorkspace(pathname)) return;
+    if (!enabled || !isLiveOrderWorkspace(pathname)) return;
 
     const supabase = createClient();
     let focusOutTimeout: number | null = null;
-
-    const getAudioContext = () => {
-      const AudioContextCtor = audioContextConstructor();
-      if (!AudioContextCtor) return null;
-      audioContextRef.current ??= new AudioContextCtor();
-      return audioContextRef.current;
-    };
-
-    const unlockAudio = () => {
-      const context = getAudioContext();
-      if (!context) return;
-      void context.resume().catch(() => undefined);
-    };
 
     const playNewOrderDing = () => {
       const now = Date.now();
@@ -84,6 +87,7 @@ export function AdminRealtimeSync({ centerScope }: { centerScope: string[] | nul
         gain.gain.exponentialRampToValueAtTime(0.16, startAt + 0.02);
         gain.gain.exponentialRampToValueAtTime(0.0001, startAt + 0.48);
         gain.connect(context.destination);
+        setSoundReady(context.state === 'running');
 
         for (const [index, frequency] of [880, 1174].entries()) {
           const oscillator = context.createOscillator();
@@ -145,26 +149,14 @@ export function AdminRealtimeSync({ centerScope }: { centerScope: string[] | nul
     document.addEventListener('visibilitychange', handleVisibilityChange);
     window.addEventListener('focus', refreshWhenSafe);
 
-    const scopedCenterIds = centerScopeKey === '*' ? null : centerScopeKey.split(',').filter(Boolean);
-    const channels = scopedCenterIds === null
-      ? [
-          supabase
-            .channel(`admin-order-workspace-global-${Date.now()}`)
-            .on(
-              'postgres_changes',
-              { event: '*', schema: 'public', table: 'orders' },
-              handleOrderChange,
-            )
-            .subscribe(),
-        ]
-      : scopedCenterIds.map((centerId) => supabase
-          .channel(`admin-order-workspace-center-${centerId}-${Date.now()}`)
-          .on(
-            'postgres_changes',
-            { event: '*', schema: 'public', table: 'orders', filter: `center_id=eq.${centerId}` },
-            handleOrderChange,
-          )
-          .subscribe());
+    const channel = supabase
+      .channel(`admin-order-workspace-global-${Date.now()}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'orders' },
+        handleOrderChange,
+      )
+      .subscribe();
 
     return () => {
       if (refreshTimeoutRef.current !== null) {
@@ -180,13 +172,19 @@ export function AdminRealtimeSync({ centerScope }: { centerScope: string[] | nul
       document.removeEventListener('pointerdown', unlockAudio);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       window.removeEventListener('focus', refreshWhenSafe);
-      channels.forEach((channel) => {
-        void supabase.removeChannel(channel);
-      });
+      void supabase.removeChannel(channel);
       void audioContextRef.current?.close();
       audioContextRef.current = null;
     };
-  }, [centerScopeKey, pathname, router]);
+  }, [enabled, getAudioContext, pathname, router, unlockAudio]);
 
-  return null;
+  return shouldShowSoundControl ? (
+    <button
+      className="fixed bottom-4 right-4 z-50 rounded-full bg-slate-950 px-4 py-2 text-sm font-semibold text-white shadow-xl transition hover:bg-slate-800"
+      onClick={unlockAudio}
+      type="button"
+    >
+      Enable Sound
+    </button>
+  ) : null;
 }

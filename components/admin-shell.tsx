@@ -19,14 +19,12 @@ const ADMIN_NAV_GROUPS: Array<{ label: string; sections: AdminPermissionKey[] }>
 
 export function AdminShell({
   access,
-  centerScope,
   children,
   isOwner,
   newOrders,
   payrollBadgeCount = 0,
 }: {
   access: AdminAccessMap;
-  centerScope: string[] | null;
   children: ReactNode;
   isOwner: boolean;
   newOrders: number;
@@ -34,10 +32,18 @@ export function AdminShell({
 }) {
   const links = ADMIN_NAV_LINKS.filter((link) => canViewAdminSection(access, link.sectionKey));
   const editableSections = Object.fromEntries(Object.entries(access).map(([key, state]) => [key, state.canEdit])) as Record<string, boolean>;
+  const orderBadgeSection = links.some((link) => link.sectionKey === 'orders')
+    ? 'orders'
+    : links.some((link) => link.sectionKey === 'production')
+      ? 'production'
+      : links.some((link) => link.sectionKey === 'planning')
+        ? 'planning'
+        : '';
+  const orderAlertsEnabled = Boolean(orderBadgeSection);
 
   return (
     <div className="admin-shell min-h-screen md:flex" data-admin-can-write={isOwner ? 'true' : 'false'}>
-      <AdminRealtimeSync centerScope={centerScope} />
+      <AdminRealtimeSync enabled={orderAlertsEnabled} />
       <AdminReadOnlyGuard editableSections={editableSections} isOwner={isOwner} />
       <aside className="admin-sidebar border-b border-white/40 bg-white/70 p-3 backdrop-blur-xl sm:p-4 md:min-h-screen md:w-72 md:border-b-0 md:border-r md:px-5 md:py-6">
         <div className="admin-summary-card card space-y-6 p-4 sm:p-5">
@@ -67,7 +73,7 @@ export function AdminShell({
             return (
               <section key={group.label} className="admin-nav-group">
                 <p className="admin-nav-group-label">{group.label}</p>
-                {groupLinks.map(({ name, href, exact, child }) => (
+                {groupLinks.map(({ name, href, exact, child, sectionKey }) => (
                   <ActiveNavLink
                     key={href}
                     className={`sidebar-link ${child ? 'md:ml-3 md:min-h-[2.5rem] md:text-sm' : ''}`}
@@ -75,7 +81,7 @@ export function AdminShell({
                     href={href}
                   >
                     <span>{name}</span>
-                    {name === 'Orders' && newOrders > 0 ? <span className="rounded-full bg-rose-400 px-2.5 py-1 text-xs font-semibold text-white">{newOrders}</span> : null}
+                    {sectionKey === orderBadgeSection && newOrders > 0 ? <span className="rounded-full bg-rose-400 px-2.5 py-1 text-xs font-semibold text-white">{newOrders}</span> : null}
                     {name === 'Payroll' && payrollBadgeCount > 0 ? <span className="rounded-full bg-rose-400 px-2.5 py-1 text-xs font-semibold text-white">{payrollBadgeCount}</span> : null}
                   </ActiveNavLink>
                 ))}

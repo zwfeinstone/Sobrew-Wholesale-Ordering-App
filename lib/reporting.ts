@@ -2,6 +2,7 @@ import {
   recommendInventoryAction,
   type PlanningConfidence,
 } from '@/lib/inventory-planning';
+import { formatCentralDateInput, parseCentralDateInput } from '@/lib/time-clock';
 
 const DAY_IN_MS = 24 * 60 * 60 * 1000;
 const FORECAST_HISTORY_MONTHS = 3;
@@ -261,52 +262,72 @@ type MetricScope = {
   centerId?: string;
 };
 
+function dateInputParts(value: string) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!match) return null;
+  return {
+    day: Number.parseInt(match[3], 10),
+    month: Number.parseInt(match[2], 10),
+    year: Number.parseInt(match[1], 10),
+  };
+}
+
+function dateInputFromCalendarDate(date: Date) {
+  const year = date.getUTCFullYear();
+  const month = String(date.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(date.getUTCDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function calendarDateFromInput(value: string) {
+  const parts = dateInputParts(value);
+  if (!parts) return null;
+  return new Date(Date.UTC(parts.year, parts.month - 1, parts.day));
+}
+
 export function startOfDay(date: Date) {
-  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  return parseCentralDateInput(formatCentralDateInput(date)) ?? new Date(date);
 }
 
 export function startOfMonth(date: Date) {
-  return new Date(date.getFullYear(), date.getMonth(), 1);
+  const parts = dateInputParts(formatCentralDateInput(date));
+  return parts ? parseCentralDateInput(`${parts.year}-${String(parts.month).padStart(2, '0')}-01`) ?? startOfDay(date) : startOfDay(date);
 }
 
 export function addDays(date: Date, days: number) {
-  return new Date(date.getFullYear(), date.getMonth(), date.getDate() + days);
+  const calendarDate = calendarDateFromInput(formatCentralDateInput(date));
+  if (!calendarDate) return new Date(date.getTime() + days * DAY_IN_MS);
+  calendarDate.setUTCDate(calendarDate.getUTCDate() + days);
+  return parseCentralDateInput(dateInputFromCalendarDate(calendarDate)) ?? new Date(date.getTime() + days * DAY_IN_MS);
 }
 
 export function addMonths(date: Date, months: number) {
-  return new Date(date.getFullYear(), date.getMonth() + months, 1);
+  const parts = dateInputParts(formatCentralDateInput(date));
+  if (!parts) return date;
+  const calendarDate = new Date(Date.UTC(parts.year, parts.month - 1 + months, 1));
+  return parseCentralDateInput(dateInputFromCalendarDate(calendarDate)) ?? date;
 }
 
 export function formatDateInput(date: Date) {
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const day = String(date.getDate()).padStart(2, '0');
-  return `${date.getFullYear()}-${month}-${day}`;
+  return formatCentralDateInput(date);
 }
 
 export function formatMonthInput(date: Date) {
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  return `${date.getFullYear()}-${month}`;
+  return formatDateInput(date).slice(0, 7);
 }
 
 export function parseDateInput(value: string | string[] | undefined) {
   if (typeof value !== 'string') return null;
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
-  if (!match) return null;
-  const year = Number.parseInt(match[1], 10);
-  const month = Number.parseInt(match[2], 10) - 1;
-  const day = Number.parseInt(match[3], 10);
-  const date = new Date(year, month, day);
-  return date.getFullYear() === year && date.getMonth() === month && date.getDate() === day ? date : null;
+  const parsed = parseCentralDateInput(value);
+  return parsed && formatDateInput(parsed) === value ? parsed : null;
 }
 
 export function parseMonthInput(value: string | string[] | undefined, now: Date) {
   if (typeof value !== 'string') return startOfMonth(now);
   const match = /^(\d{4})-(\d{2})$/.exec(value);
   if (!match) return startOfMonth(now);
-  const year = Number.parseInt(match[1], 10);
-  const month = Number.parseInt(match[2], 10) - 1;
-  const date = new Date(year, month, 1);
-  return date.getFullYear() === year && date.getMonth() === month ? date : startOfMonth(now);
+  const parsed = parseCentralDateInput(`${value}-01`);
+  return parsed && formatMonthInput(parsed) === value ? parsed : startOfMonth(now);
 }
 
 export function defaultRangeForMonth(monthStart: Date) {
@@ -328,13 +349,16 @@ function validDate(value: string | null | undefined) {
 }
 
 function daysBetween(later: Date, earlier: Date) {
-  return Math.floor((startOfDay(later).getTime() - startOfDay(earlier).getTime()) / DAY_IN_MS);
+  const laterCalendarDate = calendarDateFromInput(formatDateInput(later));
+  const earlierCalendarDate = calendarDateFromInput(formatDateInput(earlier));
+  if (!laterCalendarDate || !earlierCalendarDate) return 0;
+  return Math.floor((laterCalendarDate.getTime() - earlierCalendarDate.getTime()) / DAY_IN_MS);
 }
 
 function daysInMonth(monthStart: Date) {
-  return addMonths(monthStart, 1).getDate() === 1
-    ? Math.round((addMonths(monthStart, 1).getTime() - monthStart.getTime()) / DAY_IN_MS)
-    : new Date(monthStart.getFullYear(), monthStart.getMonth() + 1, 0).getDate();
+  const parts = dateInputParts(formatDateInput(monthStart));
+  if (!parts) return 30;
+  return new Date(Date.UTC(parts.year, parts.month, 0)).getUTCDate();
 }
 
 function percentChange(current: number, previous: number) {
@@ -471,7 +495,7 @@ function selectedMtdBounds(selectedMonthStart: Date, now: Date) {
   const selectedDays = daysInMonth(selectedMonthStart);
   const previousMonthStart = addMonths(selectedMonthStart, -1);
   const previousDays = daysInMonth(previousMonthStart);
-  const anchorDay = Math.max(1, now.getDate());
+  const anchorDay = Math.max(1, dateInputParts(formatDateInput(now))?.day ?? 1);
   const selectedPeriodEndDay = Math.min(anchorDay, selectedDays);
   const previousPeriodEndDay = Math.min(anchorDay, previousDays);
 
@@ -1041,11 +1065,12 @@ function buildDailySnapshot({
   const tomorrow = addDays(today, 1);
   const currentMonthStart = startOfMonth(now);
   const previousMonthStart = addMonths(currentMonthStart, -1);
-  const previousSameDayEnd = addDays(previousMonthStart, Math.min(now.getDate(), daysInMonth(previousMonthStart)));
+  const currentDay = Math.max(1, dateInputParts(formatDateInput(now))?.day ?? 1);
+  const previousSameDayEnd = addDays(previousMonthStart, Math.min(currentDay, daysInMonth(previousMonthStart)));
   const todayMetric = metricForPeriod({ end: tomorrow, firstOrderDateByCenterId, lines, orders, scope, start: today });
   const monthToDateMetric = metricForPeriod({ end: tomorrow, firstOrderDateByCenterId, lines, orders, scope, start: currentMonthStart });
   const previousSameDayMetric = metricForPeriod({ end: previousSameDayEnd, firstOrderDateByCenterId, lines, orders, scope, start: previousMonthStart });
-  const elapsedDays = Math.max(1, now.getDate());
+  const elapsedDays = currentDay;
   const currentMonthDays = daysInMonth(currentMonthStart);
   const productTotals = new Map<string, { name: string; qty: number; revenueCents: number }>();
   for (const line of lines) {

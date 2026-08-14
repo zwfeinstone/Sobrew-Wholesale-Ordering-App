@@ -122,7 +122,7 @@ export async function POST(request: Request) {
   }
 
   const startIso = quickBooksInvoicingStartIso();
-  if ((order as any).order_kind === PROSPECTING_SAMPLE_ORDER_KIND || (order as any).archived_at || (order as any).status !== 'Shipped' || !(order as any).created_at || new Date((order as any).created_at) < new Date(startIso)) {
+  if ((order as any).order_kind === PROSPECTING_SAMPLE_ORDER_KIND || (order as any).status !== 'Shipped' || !(order as any).created_at || new Date((order as any).created_at) < new Date(startIso)) {
     return invoicingRedirect(request, 'invoice_not_ready', returnView);
   }
   if (invoiceableLineItemCount(order) === 0) {
@@ -145,7 +145,6 @@ export async function POST(request: Request) {
     .eq('id', orderId)
     .eq('status', 'Shipped')
     .neq('order_kind', PROSPECTING_SAMPLE_ORDER_KIND)
-    .is('archived_at', null)
     .is('quickbooks_invoice_id', null)
     .in('invoice_status', ['not_invoiced', 'invoice_error'])
     .select('id')

@@ -104,7 +104,7 @@ const US_STATE_OPTIONS = [
   ['WY', 'Wyoming'],
 ] as const;
 
-const INVOICE_ORDER_SELECT = 'id,order_kind,created_at,shipped_at,subtotal_cents,shipping_company,shipping_name,shipping_state,invoice_status,invoice_error,invoiced_at,quickbooks_invoice_id,quickbooks_invoice_doc_number,quickbooks_invoice_url,quickbooks_invoice_email_to,quickbooks_invoice_email_sent_at,quickbooks_payment_charge_id,quickbooks_payment_error,quickbooks_payment_id,quickbooks_payment_method_label,quickbooks_payment_method_type,quickbooks_payment_status,quickbooks_receipt_email_to,quickbooks_receipt_email_sent_at,profiles(email,full_name),centers(name,customer_tax_status,quickbooks_customer_id,quickbooks_display_name,quickbooks_payment_method_brand,quickbooks_payment_method_exp_month,quickbooks_payment_method_exp_year,quickbooks_payment_method_id,quickbooks_payment_method_last4,quickbooks_payment_method_type),order_items(qty,line_total_cents,product_name_snapshot,products(name,sku,quickbooks_item_id))';
+const INVOICE_ORDER_SELECT = 'id,order_kind,archived_at,created_at,shipped_at,subtotal_cents,shipping_company,shipping_name,shipping_state,invoice_status,invoice_error,invoiced_at,quickbooks_invoice_id,quickbooks_invoice_doc_number,quickbooks_invoice_url,quickbooks_invoice_email_to,quickbooks_invoice_email_sent_at,quickbooks_payment_charge_id,quickbooks_payment_error,quickbooks_payment_id,quickbooks_payment_method_label,quickbooks_payment_method_type,quickbooks_payment_status,quickbooks_receipt_email_to,quickbooks_receipt_email_sent_at,profiles(email,full_name),centers(name,customer_tax_status,quickbooks_customer_id,quickbooks_display_name,quickbooks_payment_method_brand,quickbooks_payment_method_exp_month,quickbooks_payment_method_exp_year,quickbooks_payment_method_id,quickbooks_payment_method_last4,quickbooks_payment_method_type),order_items(qty,line_total_cents,product_name_snapshot,products(name,sku,quickbooks_item_id))';
 const CUSTOMER_SYNC_SELECT = 'id,name,is_active,created_at,quickbooks_customer_id,quickbooks_display_name,quickbooks_company_name,quickbooks_fully_qualified_name,legal_name,billing_email,billing_address1,billing_city,billing_state,billing_zip,quickbooks_sync_status,quickbooks_synced_at,quickbooks_sync_error,quickbooks_mapping_note,quickbooks_payment_method_brand,quickbooks_payment_method_exp_month,quickbooks_payment_method_exp_year,quickbooks_payment_method_id,quickbooks_payment_method_last4,quickbooks_payment_method_note,quickbooks_payment_method_type,quickbooks_payment_method_updated_at';
 
 type SearchParams = Record<string, string | string[] | undefined>;
@@ -124,6 +124,7 @@ type InvoiceQueueCenter = {
 };
 
 type InvoiceQueueOrder = {
+  archived_at?: string | null;
   centers?: InvoiceQueueCenter | InvoiceQueueCenter[] | null;
   created_at: string | null;
   id: string;
@@ -619,7 +620,7 @@ async function invoiceOrder(formData: FormData) {
     .eq('id', orderId)
     .single();
 
-  if (!order || order.order_kind === PROSPECTING_SAMPLE_ORDER_KIND || order.archived_at || order.status !== 'Shipped' || !order.created_at || new Date(order.created_at) < new Date(startIso)) {
+  if (!order || order.order_kind === PROSPECTING_SAMPLE_ORDER_KIND || order.status !== 'Shipped' || !order.created_at || new Date(order.created_at) < new Date(startIso)) {
     redirect(invoicingHref('invoice_not_ready'));
   }
   if (order.quickbooks_invoice_id && order.invoice_status !== 'invoice_error') redirect(invoicingHref('invoice_already_created'));
@@ -646,7 +647,6 @@ async function invoiceOrder(formData: FormData) {
     .eq('id', orderId)
     .eq('status', 'Shipped')
     .neq('order_kind', PROSPECTING_SAMPLE_ORDER_KIND)
-    .is('archived_at', null)
     .in('invoice_status', ['not_invoiced', 'invoice_error']);
   const claimResult = order.quickbooks_invoice_id
     ? await claimQuery.eq('quickbooks_invoice_id', order.quickbooks_invoice_id).select('id').single()
@@ -733,7 +733,7 @@ async function chargeSavedPaymentForOrder(formData: FormData) {
     .eq('id', orderId)
     .single();
 
-  if (!order || (order as any).order_kind === PROSPECTING_SAMPLE_ORDER_KIND || (order as any).archived_at || (order as any).status !== 'Shipped' || !(order as any).created_at || new Date((order as any).created_at) < new Date(startIso)) {
+  if (!order || (order as any).order_kind === PROSPECTING_SAMPLE_ORDER_KIND || (order as any).status !== 'Shipped' || !(order as any).created_at || new Date((order as any).created_at) < new Date(startIso)) {
     redirect(invoicingHref('invoice_not_ready'));
   }
   if (cleanText((order as any).quickbooks_payment_id)) redirect(invoicingHref('payment_already_recorded'));
@@ -766,7 +766,6 @@ async function chargeSavedPaymentForOrder(formData: FormData) {
     .eq('id', orderId)
     .eq('status', 'Shipped')
     .neq('order_kind', PROSPECTING_SAMPLE_ORDER_KIND)
-    .is('archived_at', null)
     .is('quickbooks_payment_id', null)
     .in('invoice_status', ['not_invoiced', 'invoice_error']);
   const claimResult = (order as any).quickbooks_invoice_id
@@ -1049,7 +1048,6 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
       .select(INVOICE_ORDER_SELECT)
       .eq('status', 'Shipped')
       .neq('order_kind', PROSPECTING_SAMPLE_ORDER_KIND)
-      .is('archived_at', null)
       .or('quickbooks_invoice_id.is.null,invoice_status.eq.invoice_error')
       .gte('created_at', startIso)
       .order('shipped_at', { ascending: true, nullsFirst: false })
@@ -1987,6 +1985,11 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
                     <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${isTaxable ? 'bg-teal-100 text-teal-800' : 'bg-slate-100 text-slate-700'}`}>
                       {isTaxable ? 'Taxable in QuickBooks' : 'Non-taxable in QuickBooks'}
                     </span>
+                    {order.archived_at ? (
+                      <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-700">
+                        Archived order
+                      </span>
+                    ) : null}
                     {hasKnownSavedPaymentMethod ? (
                       <span className="rounded-full bg-indigo-100 px-2.5 py-1 text-xs font-semibold text-indigo-800">
                         Saved payment found
