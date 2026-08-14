@@ -24,11 +24,14 @@ describe('invoicing sample order exclusion contract', () => {
     );
   });
 
-  it('keeps archived shipped orders invoiceable until a QuickBooks invoice exists', () => {
+  it('reconciles archived shipped orders against paid QuickBooks invoices before rendering the queue', () => {
     expect(invoicingPage).toContain('Archived order');
-    expect(invoicingPage).not.toContain(".is('archived_at', null)");
-    expect(invoicingPage).not.toContain('order.archived_at ||');
-    expect(invoicingPage).not.toContain('(order as any).archived_at ||');
+    expect(invoicingPage).toContain('reconcileQuickBooksPaidInvoicesForOrders');
+    expect(invoicingPage).toContain('const queueOrders = orders.filter((order) => !reconciledOrderIds.has(order.id));');
+    expect(invoicingPage).toContain('{queueOrders.map((order) => {');
+    expect(quickBooksLib).toContain('export async function reconcileQuickBooksPaidInvoicesForOrders');
+    expect(quickBooksLib).toContain('order.archived_at');
+    expect(quickBooksLib).toContain("invoice_status: 'invoiced'");
     expect(invoiceDownloadRoute).not.toContain(".is('archived_at', null)");
     expect(invoiceDownloadRoute).not.toContain('(order as any).archived_at ||');
     expect(quickBooksLib).not.toContain('Archived orders cannot be invoiced.');

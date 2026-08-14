@@ -27,6 +27,7 @@ import {
   normalizeQuickBooksSavedPaymentMethodType,
   QuickBooksConfigurationError,
   quickBooksSavedPaymentMethodLabel,
+  reconcileQuickBooksPaidInvoicesForOrders,
   type QuickBooksCustomerRecord,
   resetQuickBooksProductsFromPortal,
   saveQuickBooksSalesTaxSettings,
@@ -1125,17 +1126,22 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
   const quickBooksCustomers = quickBooksCustomersResult.customers;
   const resetStatus = resetStatusResult.data as QuickBooksResetStatusRow | null;
   const quickBooksPaymentsAuthorized = hasQuickBooksPaymentsScope(quickBooksStatus.grantedScopes);
-  const readyOrders = orders.filter(orderIsReadyToInvoice);
+  const paidInvoiceReconciliation = activeView === 'queue' && quickBooksStatus.connected
+    ? await reconcileQuickBooksPaidInvoicesForOrders(orders)
+    : { error: null, reconciled: [] };
+  const reconciledOrderIds = new Set(paidInvoiceReconciliation.reconciled.map((order) => order.orderId));
+  const queueOrders = orders.filter((order) => !reconciledOrderIds.has(order.id));
+  const readyOrders = queueOrders.filter(orderIsReadyToInvoice);
   const savedPaymentLookups = activeView === 'queue' && quickBooksStatus.connected && quickBooksPaymentsAuthorized
     ? await getQuickBooksSavedPaymentMethodLookups(
-        orders.map((order) => cleanText(relatedOne(order.centers)?.quickbooks_customer_id) || null)
+        queueOrders.map((order) => cleanText(relatedOne(order.centers)?.quickbooks_customer_id) || null)
       )
     : [];
   const savedPaymentLookupByCustomerId = new Map(savedPaymentLookups.map((lookup) => [lookup.customerId, lookup]));
-  const needsMappingOrders = orders.filter((order) => order.invoice_status !== 'invoicing' && !orderIsReadyToInvoice(order));
+  const needsMappingOrders = queueOrders.filter((order) => order.invoice_status !== 'invoicing' && !orderIsReadyToInvoice(order));
   const totalReadyCents = readyOrders.reduce((sum, order) => sum + Math.max(0, numericValue(order.subtotal_cents)), 0);
   const sentInvoiceTotalCents = sentInvoices.reduce((sum, order) => sum + Math.max(0, numericValue(order.subtotal_cents)), 0);
-  const waitingCount = orders.filter((order) => order.invoice_status === 'invoicing').length;
+  const waitingCount = queueOrders.filter((order) => order.invoice_status === 'invoicing').length;
   const activeProducts = products.filter((product) => product.active !== false);
   const mappedProducts = activeProducts.filter((product) => Boolean(product.quickbooks_item_id));
   const unmappedProducts = activeProducts.filter((product) => !product.quickbooks_item_id && product.quickbooks_sync_status !== 'ignored');
@@ -1217,6 +1223,18 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
       {quickBooksStatus.connected && !quickBooksPaymentsAuthorized ? (
         <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-900">
           Reconnect QuickBooks to authorize Payments before charging saved cards, checking accounts, or ACH/eCheck methods.
+        </div>
+      ) : null}
+
+      {activeView === 'queue' && paidInvoiceReconciliation.reconciled.length ? (
+        <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-medium text-emerald-900">
+          Linked {paidInvoiceReconciliation.reconciled.length} existing paid QuickBooks invoice{paidInvoiceReconciliation.reconciled.length === 1 ? '' : 's'} and removed {paidInvoiceReconciliation.reconciled.length === 1 ? 'it' : 'them'} from Ready to Invoice.
+        </div>
+      ) : null}
+
+      {activeView === 'queue' && paidInvoiceReconciliation.error ? (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-900">
+          Unable to check QuickBooks for existing paid invoices: {paidInvoiceReconciliation.error}
         </div>
       ) : null}
 
@@ -1940,7 +1958,7 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
       ) : (
         <>
           <div className="space-y-4">
-        {orders.map((order) => {
+        {queueOrders.map((order) => {
           const isBusy = order.invoice_status === 'invoicing';
           const hasError = order.invoice_status === 'invoice_error';
           const missingMappedProducts = missingOrderProductMappings(order);
@@ -2139,7 +2157,7 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
         })}
           </div>
 
-          {!orders.length ? (
+          {!queueOrders.length ? (
             <div className="card text-sm text-slate-600">
               No shipped orders are ready to invoice from {QUICKBOOKS_INVOICING_START_LABEL} forward.
             </div>

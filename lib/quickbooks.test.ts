@@ -7,6 +7,7 @@ import {
   buildQuickBooksInvoicePayload,
   buildQuickBooksInvoicePaymentPayload,
   buildQuickBooksSavedPaymentChargePayload,
+  findQuickBooksPaidInvoiceMatchForOrder,
   normalizeCustomerMatchText,
   normalizeQuickBooksInvoiceReceivable,
   normalizeQuickBooksSavedPaymentMethodType,
@@ -486,6 +487,66 @@ describe('quickbooks invoice receivables', () => {
       overdueCents: 16000,
       paidCents: 8000,
       unpaidCents: 59610,
+    });
+  });
+});
+
+describe('quickbooks paid invoice reconciliation', () => {
+  const order = {
+    archived_at: '2026-08-04T13:28:13.724+00:00',
+    centers: { quickbooks_customer_id: '185' },
+    created_at: '2026-08-03T17:01:32.234007+00:00',
+    id: 'bdcdecfb-918b-4f2e-a0fd-a0b3a648c0a8',
+    order_items: [{ line_total_cents: 32400 }],
+    quickbooks_invoice_id: null,
+    quickbooks_payment_id: null,
+    shipped_at: '2026-08-03T22:18:54.994+00:00',
+    subtotal_cents: 32400,
+  };
+
+  it('matches a unique paid QuickBooks invoice by amount and linked payment', () => {
+    const match = findQuickBooksPaidInvoiceMatchForOrder(order, [
+      {
+        Balance: 0,
+        DocNumber: 'SO-1277',
+        Id: '1184',
+        LinkedTxn: [{ TxnId: '1188', TxnType: 'Payment' }],
+        MetaData: { CreateTime: '2026-08-04T06:39:32-07:00' },
+        TotalAmt: 324,
+        TxnDate: '2026-08-04',
+      },
+    ]);
+
+    expect(match).toEqual({
+      amountCents: 32400,
+      createdAt: '2026-08-04T13:39:32.000Z',
+      docNumber: 'SO-1277',
+      emailTo: null,
+      invoiceId: '1184',
+      paymentId: '1188',
+      txnDate: '2026-08-04',
+    });
+  });
+
+  it('ignores unpaid and amount-mismatched invoices', () => {
+    expect(findQuickBooksPaidInvoiceMatchForOrder(order, [
+      { Balance: 10, DocNumber: 'SO-1277', Id: '1184', TotalAmt: 324 },
+      { Balance: 0, DocNumber: 'SO-1278', Id: '1185', TotalAmt: 62 },
+    ])).toBeNull();
+  });
+
+  it('refuses ambiguous same-amount paid invoices unless one mentions the Sobrew order', () => {
+    expect(findQuickBooksPaidInvoiceMatchForOrder(order, [
+      { Balance: 0, DocNumber: 'SO-1277', Id: '1184', TotalAmt: 324 },
+      { Balance: 0, DocNumber: 'SO-1279', Id: '1189', TotalAmt: 324 },
+    ])).toBeNull();
+
+    expect(findQuickBooksPaidInvoiceMatchForOrder(order, [
+      { Balance: 0, DocNumber: 'SO-1277', Id: '1184', TotalAmt: 324 },
+      { Balance: 0, DocNumber: 'SO-1279', Id: '1189', PrivateNote: `Sobrew order ${order.id}`, TotalAmt: 324 },
+    ])).toMatchObject({
+      docNumber: 'SO-1279',
+      invoiceId: '1189',
     });
   });
 });

@@ -99,6 +99,24 @@ type QuickBooksInvoiceOrder = {
   subtotal_cents?: number | string | null;
 };
 
+export type QuickBooksPaidInvoiceReconciliationOrder = {
+  archived_at?: string | null;
+  centers?: {
+    quickbooks_customer_id?: string | null;
+  } | Array<{
+    quickbooks_customer_id?: string | null;
+  }> | null;
+  created_at: string | null;
+  id: string;
+  order_items?: Array<{
+    line_total_cents: number | string | null;
+  }> | null;
+  quickbooks_invoice_id?: string | null;
+  quickbooks_payment_id?: string | null;
+  shipped_at: string | null;
+  subtotal_cents?: number | string | null;
+};
+
 type QuickBooksInvoiceRecord = {
   DocNumber?: string | null;
   Id?: string | number | null;
@@ -255,6 +273,25 @@ export type QuickBooksInvoiceReceivablesResult = {
   missingIds: string[];
 };
 
+export type QuickBooksPaidInvoiceMatch = {
+  amountCents: number;
+  createdAt: string | null;
+  docNumber: string | null;
+  emailTo: string | null;
+  invoiceId: string;
+  paymentId: string | null;
+  txnDate: string | null;
+};
+
+export type QuickBooksPaidInvoiceReconciliation = QuickBooksPaidInvoiceMatch & {
+  orderId: string;
+};
+
+export type QuickBooksPaidInvoiceReconciliationResult = {
+  error: string | null;
+  reconciled: QuickBooksPaidInvoiceReconciliation[];
+};
+
 export type QuickBooksReceivablesSummary = {
   notDueYetCents: number;
   overdueCents: number;
@@ -360,7 +397,10 @@ function centsFromAmount(value: number | string | null | undefined) {
   return Math.round(parsed * 100);
 }
 
-function invoiceableTotalCents(order: Pick<QuickBooksInvoiceOrder, 'order_items' | 'subtotal_cents'>) {
+function invoiceableTotalCents(order: {
+  order_items?: Array<{ line_total_cents: number | string | null }> | null;
+  subtotal_cents?: number | string | null;
+}) {
   const lineTotal = (order.order_items ?? [])
     .reduce((sum, item) => sum + Math.max(0, numericValue(item.line_total_cents)), 0);
   return Math.round(lineTotal || Math.max(0, numericValue(order.subtotal_cents)));
@@ -1090,6 +1130,151 @@ export function buildQuickBooksReceivablesSummary(invoices: QuickBooksInvoiceRec
     paidCents: 0,
     unpaidCents: 0,
   });
+}
+
+function invoiceLinkedPaymentId(invoice: any) {
+  const linkedTransactions = Array.isArray(invoice?.LinkedTxn) ? invoice.LinkedTxn : [];
+  const payment = linkedTransactions.find((txn: any) => cleanText(txn?.TxnType).toLowerCase() === 'payment');
+  return cleanText(payment?.TxnId) || null;
+}
+
+function quickBooksInvoiceMentionsOrder(invoice: any, orderId: string) {
+  const orderText = cleanText(orderId);
+  if (!orderText) return false;
+  const customerMemo = cleanText(invoice?.CustomerMemo?.value);
+  const lineDescriptions = Array.isArray(invoice?.Line)
+    ? invoice.Line.map((line: any) => cleanText(line?.Description)).filter(Boolean)
+    : [];
+  return [
+    invoice?.PrivateNote,
+    customerMemo,
+    ...lineDescriptions,
+  ].map(cleanText).some((value) => value.includes(orderText));
+}
+
+function quickBooksInvoiceCreatedAt(invoice: any) {
+  const value = cleanText(invoice?.MetaData?.CreateTime);
+  if (!value) return null;
+  const timestamp = new Date(value);
+  return Number.isFinite(timestamp.getTime()) ? timestamp.toISOString() : null;
+}
+
+export function findQuickBooksPaidInvoiceMatchForOrder(
+  order: QuickBooksPaidInvoiceReconciliationOrder,
+  invoices: any[]
+): QuickBooksPaidInvoiceMatch | null {
+  const amountCents = invoiceableTotalCents(order);
+  if (amountCents <= 0) return null;
+
+  const paidAmountMatches = invoices
+    .map((invoice) => ({ invoice, receivable: normalizeQuickBooksInvoiceReceivable(invoice) }))
+    .filter((candidate): candidate is { invoice: any; receivable: QuickBooksInvoiceReceivable } => {
+      const receivable = candidate.receivable;
+      return Boolean(receivable && receivable.status === 'paid' && receivable.amountCents === amountCents);
+    });
+
+  const directOrderMatches = paidAmountMatches.filter(({ invoice }) => quickBooksInvoiceMentionsOrder(invoice, order.id));
+  const selected = directOrderMatches.length === 1
+    ? directOrderMatches[0]
+    : directOrderMatches.length > 1
+      ? null
+      : paidAmountMatches.length === 1
+        ? paidAmountMatches[0]
+        : null;
+  if (!selected) return null;
+
+  return {
+    amountCents: selected.receivable.amountCents,
+    createdAt: quickBooksInvoiceCreatedAt(selected.invoice),
+    docNumber: selected.receivable.docNumber,
+    emailTo: cleanText(selected.invoice?.BillEmail?.Address) || null,
+    invoiceId: selected.receivable.id,
+    paymentId: invoiceLinkedPaymentId(selected.invoice),
+    txnDate: selected.receivable.txnDate,
+  };
+}
+
+function quickBooksDateWindowForOrder(order: QuickBooksPaidInvoiceReconciliationOrder) {
+  const timestamps = [order.created_at, order.shipped_at]
+    .map((value) => new Date(cleanText(value)).getTime())
+    .filter((value) => Number.isFinite(value));
+  if (!timestamps.length) return null;
+
+  const start = new Date(Math.min(...timestamps) - 86_400_000);
+  const end = new Date(Math.max(...timestamps) + 7 * 86_400_000);
+  return {
+    end: quickBooksDate(end),
+    start: quickBooksDate(start),
+  };
+}
+
+async function readQuickBooksInvoicesForOrderReconciliation(
+  connection: QuickBooksConnection,
+  order: QuickBooksPaidInvoiceReconciliationOrder
+) {
+  const customerId = cleanText(relatedOne(order.centers)?.quickbooks_customer_id);
+  const dateWindow = quickBooksDateWindowForOrder(order);
+  if (!customerId || !dateWindow) return [];
+
+  const result = await quickBooksQuery(
+    connection,
+    `SELECT * FROM Invoice WHERE CustomerRef = '${escapeQueryString(customerId)}' AND TxnDate >= '${dateWindow.start}' AND TxnDate <= '${dateWindow.end}' MAXRESULTS 100`
+  );
+  return quickBooksQueryInvoices(result);
+}
+
+export async function reconcileQuickBooksPaidInvoicesForOrders(
+  orders: QuickBooksPaidInvoiceReconciliationOrder[]
+): Promise<QuickBooksPaidInvoiceReconciliationResult> {
+  const candidates = orders.filter((order) => (
+    order.archived_at
+    && !cleanText(order.quickbooks_invoice_id)
+    && !cleanText(order.quickbooks_payment_id)
+    && cleanText(relatedOne(order.centers)?.quickbooks_customer_id)
+  ));
+  if (!candidates.length) return { error: null, reconciled: [] };
+
+  const reconciled: QuickBooksPaidInvoiceReconciliation[] = [];
+  try {
+    const connection = await getAuthorizedConnection();
+    const environment = connection.environment === 'production' ? 'production' : 'sandbox';
+    const supabase = getSupabaseAdmin();
+
+    for (const order of candidates) {
+      const invoices = await readQuickBooksInvoicesForOrderReconciliation(connection, order);
+      const match = findQuickBooksPaidInvoiceMatchForOrder(order, invoices);
+      if (!match) continue;
+
+      const { data, error } = await supabase
+        .from('orders')
+        .update({
+          invoice_error: null,
+          invoice_status: 'invoiced',
+          invoiced_at: match.createdAt ?? new Date().toISOString(),
+          quickbooks_invoice_doc_number: match.docNumber,
+          quickbooks_invoice_email_to: match.emailTo,
+          quickbooks_invoice_id: match.invoiceId,
+          quickbooks_invoice_url: quickBooksAppInvoiceUrl(environment, match.invoiceId),
+          quickbooks_payment_error: null,
+          quickbooks_payment_id: match.paymentId,
+          quickbooks_payment_method_label: match.paymentId ? 'QuickBooks payment' : null,
+          quickbooks_payment_status: match.paymentId ? 'PAID' : null,
+        })
+        .eq('id', order.id)
+        .is('quickbooks_invoice_id', null)
+        .select('id')
+        .maybeSingle();
+      if (error) throw error;
+      if (data) reconciled.push({ ...match, orderId: order.id });
+    }
+
+    return { error: null, reconciled };
+  } catch (error) {
+    return {
+      error: error instanceof Error ? error.message : 'Unable to reconcile paid QuickBooks invoices.',
+      reconciled,
+    };
+  }
 }
 
 function tokenSet(value: string) {
