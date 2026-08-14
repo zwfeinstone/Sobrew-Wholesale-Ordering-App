@@ -20,8 +20,16 @@ describe('invoicing sample order exclusion contract', () => {
     expect(invoicingPage).toContain("const PROSPECTING_SAMPLE_ORDER_KIND = 'prospecting_sample';");
     expect(invoicingPage).toContain('order.order_kind !== PROSPECTING_SAMPLE_ORDER_KIND');
     expect(invoicingPage).toMatch(
-      /\.select\(INVOICE_ORDER_SELECT\)[\s\S]*?\.eq\('status', 'Shipped'\)[\s\S]*?\.neq\('order_kind', PROSPECTING_SAMPLE_ORDER_KIND\)[\s\S]*?\.or\('quickbooks_invoice_id\.is\.null,invoice_status\.eq\.invoice_error'\)/
+      /\.select\(INVOICE_ORDER_SELECT\)[\s\S]*?\.eq\('status', 'Shipped'\)[\s\S]*?\.neq\('order_kind', PROSPECTING_SAMPLE_ORDER_KIND\)[\s\S]*?\.in\('invoice_status', \['not_invoiced', 'invoicing', 'invoice_error'\]\)/
     );
+  });
+
+  it('lets admins mark manually sent QuickBooks invoices out of the ready queue', () => {
+    expect(invoicingPage).toContain('async function markInvoiceSentManually');
+    expect(invoicingPage).toContain("invoice_status: 'invoiced'");
+    expect(invoicingPage).toContain('quickbooks_invoice_id: invoiceId || null');
+    expect(invoicingPage).toContain('Mark sent manually in QuickBooks');
+    expect(invoicingPage).toContain('Latest invoices recorded from the portal or marked sent manually.');
   });
 
   it('reconciles archived shipped orders against paid QuickBooks invoices before rendering the queue', () => {

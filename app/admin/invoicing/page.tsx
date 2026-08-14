@@ -343,7 +343,7 @@ function invoiceableLineItemCount(order: InvoiceQueueOrder) {
 
 function orderIsReadyToInvoice(order: InvoiceQueueOrder) {
   return order.order_kind !== PROSPECTING_SAMPLE_ORDER_KIND
-    && order.invoice_status !== 'invoicing'
+    && (order.invoice_status === 'not_invoiced' || order.invoice_status === 'invoice_error')
     && !missingOrderCustomerMapping(order)
     && missingOrderProductMappings(order).length === 0
     && invoiceableLineItemCount(order) > 0;
@@ -380,7 +380,14 @@ function invoicingViewHref(view: InvoicingView) {
 }
 
 function invoiceNumberLabel(order: InvoiceQueueOrder) {
-  return cleanText(order.quickbooks_invoice_doc_number) || cleanText(order.quickbooks_invoice_id) || 'Missing invoice number';
+  return cleanText(order.quickbooks_invoice_doc_number)
+    || cleanText(order.quickbooks_invoice_id)
+    || (order.invoice_status === 'invoiced' ? 'Manual invoice' : 'Missing invoice number');
+}
+
+function quickBooksInvoiceHref(invoiceId: string, environment: string) {
+  const host = environment === 'sandbox' ? 'app.sandbox.qbo.intuit.com' : 'app.qbo.intuit.com';
+  return `https://${host}/app/invoice?txnId=${encodeURIComponent(invoiceId)}`;
 }
 
 function hasQuickBooksPaymentsScope(grantedScopes: string[]) {
@@ -408,6 +415,7 @@ function toastMessage(toast: string) {
     invoice_created: { message: 'QuickBooks invoice created.', tone: 'success' },
     invoice_email_failed: { message: 'QuickBooks invoice was created, but the email was not sent. Fix the billing email or QuickBooks email settings and retry.', tone: 'error' },
     invoice_failed: { message: 'Unable to create that QuickBooks invoice.', tone: 'error' },
+    invoice_marked_sent: { message: 'Invoice marked as already sent in QuickBooks.', tone: 'success' },
     invoice_mapping_required: { message: 'Map the QuickBooks customer and every product before invoicing.', tone: 'error' },
     invoice_no_line_items: { message: 'This order has no invoiceable line items.', tone: 'error' },
     invoice_not_ready: { message: `Only standard shipped orders from ${QUICKBOOKS_INVOICING_START_LABEL} or later can be invoiced here. Sample orders are excluded.`, tone: 'error' },
@@ -604,6 +612,48 @@ async function resetQuickBooksProducts(formData: FormData) {
     redirect(productsInvoicingHref('product_reset_failed', message));
   }
   redirect(`/admin/invoicing?view=products&toast=${toast}`);
+}
+
+async function markInvoiceSentManually(formData: FormData) {
+  'use server';
+  const orderId = cleanText(formData.get('order_id'));
+  const invoiceId = cleanText(formData.get('quickbooks_invoice_id'));
+  const invoiceNumber = cleanText(formData.get('quickbooks_invoice_doc_number'));
+  await requireAdminWriteAccess(invoicingHref('admin_write_denied'), 'invoicing');
+  if (!orderId) redirect(invoicingHref('invoice_not_ready'));
+
+  const supabase = getSupabaseAdmin();
+  const startIso = quickBooksInvoicingStartIso();
+  const { data: order } = await supabase
+    .from('orders')
+    .select('id,order_kind,status,created_at,invoice_status')
+    .eq('id', orderId)
+    .single();
+
+  if (!order || order.order_kind === PROSPECTING_SAMPLE_ORDER_KIND || order.status !== 'Shipped' || !order.created_at || new Date(order.created_at) < new Date(startIso)) {
+    redirect(invoicingHref('invoice_not_ready'));
+  }
+
+  const quickBooksStatus = await getQuickBooksConnectionStatus();
+  const { error } = await supabase
+    .from('orders')
+    .update({
+      invoice_error: null,
+      invoice_status: 'invoiced',
+      invoiced_at: new Date().toISOString(),
+      quickbooks_invoice_doc_number: invoiceNumber || invoiceId || null,
+      quickbooks_invoice_id: invoiceId || null,
+      quickbooks_invoice_url: invoiceId ? quickBooksInvoiceHref(invoiceId, quickBooksStatus.environment) : null,
+      quickbooks_payment_error: null,
+    })
+    .eq('id', orderId)
+    .in('invoice_status', ['not_invoiced', 'invoicing', 'invoice_error']);
+  if (error) {
+    console.error('[invoicing] manual invoice mark failed', { error, orderId });
+    redirect(invoicingHref('invoice_failed'));
+  }
+
+  redirect(invoicingHref('invoice_marked_sent'));
 }
 
 async function invoiceOrder(formData: FormData) {
@@ -1049,7 +1099,7 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
       .select(INVOICE_ORDER_SELECT)
       .eq('status', 'Shipped')
       .neq('order_kind', PROSPECTING_SAMPLE_ORDER_KIND)
-      .or('quickbooks_invoice_id.is.null,invoice_status.eq.invoice_error')
+      .in('invoice_status', ['not_invoiced', 'invoicing', 'invoice_error'])
       .gte('created_at', startIso)
       .order('shipped_at', { ascending: true, nullsFirst: false })
       .order('created_at', { ascending: true }),
@@ -1057,7 +1107,6 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
       .from('orders')
       .select(INVOICE_ORDER_SELECT)
       .eq('invoice_status', 'invoiced')
-      .not('quickbooks_invoice_id', 'is', null)
       .order('quickbooks_invoice_email_sent_at', { ascending: false, nullsFirst: false })
       .order('invoiced_at', { ascending: false, nullsFirst: false })
       .limit(100),
@@ -1400,7 +1449,7 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
         <div className="card space-y-5">
           <div>
             <h2 className="text-xl font-semibold tracking-tight text-slate-950">Invoice archive</h2>
-            <p className="mt-1 text-sm text-slate-500">Latest QuickBooks invoices created from the portal.</p>
+            <p className="mt-1 text-sm text-slate-500">Latest invoices recorded from the portal or marked sent manually.</p>
           </div>
 
           {sentInvoices.length ? (
@@ -1421,11 +1470,16 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-200">
-                  {sentInvoices.map((order) => (
+                  {sentInvoices.map((order) => {
+                    const hasQuickBooksInvoice = Boolean(cleanText(order.quickbooks_invoice_id));
+                    const hasRecordedPayment = Boolean(cleanText(order.quickbooks_payment_id));
+                    return (
                     <tr key={order.id} className="align-top">
                       <td className="px-3 py-3">
                         <p className="font-mono text-sm font-semibold text-slate-950">{invoiceNumberLabel(order)}</p>
-                        <p className="mt-1 break-all font-mono text-xs text-slate-500">QB {order.quickbooks_invoice_id}</p>
+                        <p className="mt-1 break-all font-mono text-xs text-slate-500">
+                          {hasQuickBooksInvoice ? `QB ${order.quickbooks_invoice_id}` : 'Marked sent manually'}
+                        </p>
                       </td>
                       <td className="px-3 py-3">
                         <p className="font-semibold text-slate-950">{customerLabel(order)}</p>
@@ -1435,7 +1489,7 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
                       <td className="px-3 py-3 text-slate-600">{formatTimestamp(order.quickbooks_invoice_email_sent_at ?? order.invoiced_at ?? null)}</td>
                       <td className="max-w-[14rem] break-all px-3 py-3 text-slate-600">{order.quickbooks_invoice_email_to || relatedOne(order.profiles)?.email || '—'}</td>
                       <td className="min-w-[220px] px-3 py-3">
-                        {order.quickbooks_payment_id ? (
+                        {hasRecordedPayment ? (
                           <div>
                             <span className="inline-flex rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-semibold text-emerald-800">
                               {order.quickbooks_payment_status || 'Recorded'}
@@ -1465,18 +1519,18 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
                             <input type="hidden" name="view" value="sent" />
                             <button
                               className="btn-secondary w-full whitespace-nowrap text-center text-xs disabled:opacity-60"
-                              disabled={!canInvoice || !quickBooksStatus.connected}
+                              disabled={!canInvoice || !quickBooksStatus.connected || !hasQuickBooksInvoice}
                               type="submit"
                             >
-                              Download PDF
+                              {hasQuickBooksInvoice ? 'Download PDF' : 'Manual invoice'}
                             </button>
                           </form>
                           <form action={resendQuickBooksInvoice} className="w-full">
                             <input type="hidden" name="order_id" value={order.id} />
                             <PendingSubmitButton
                               className="btn-secondary w-full whitespace-nowrap text-center text-xs"
-                              disabled={!canInvoice || !quickBooksStatus.connected || Boolean(order.quickbooks_payment_id)}
-                              disabledLabel={order.quickbooks_payment_id ? 'Use receipt' : 'Resend invoice'}
+                              disabled={!canInvoice || !quickBooksStatus.connected || !hasQuickBooksInvoice || hasRecordedPayment}
+                              disabledLabel={!hasQuickBooksInvoice ? 'Manual invoice' : hasRecordedPayment ? 'Use receipt' : 'Resend invoice'}
                               label="Resend invoice"
                               pendingLabel="Resending..."
                             />
@@ -1485,13 +1539,13 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
                             <input type="hidden" name="order_id" value={order.id} />
                             <PendingSubmitButton
                               className="btn-secondary w-full whitespace-nowrap text-center text-xs"
-                              disabled={!canInvoice || !quickBooksStatus.connected || Boolean(order.quickbooks_payment_id)}
-                              disabledLabel={order.quickbooks_payment_id ? 'Use receipt' : 'Resend PDF'}
+                              disabled={!canInvoice || !quickBooksStatus.connected || !hasQuickBooksInvoice || hasRecordedPayment}
+                              disabledLabel={!hasQuickBooksInvoice ? 'Manual invoice' : hasRecordedPayment ? 'Use receipt' : 'Resend PDF'}
                               label="Resend PDF"
                               pendingLabel="Sending PDF..."
                             />
                           </form>
-                          {order.quickbooks_payment_id ? (
+                          {hasRecordedPayment && hasQuickBooksInvoice ? (
                             <form action={resendPaymentReceipt} className="w-full">
                               <input type="hidden" name="order_id" value={order.id} />
                               <PendingSubmitButton
@@ -1506,7 +1560,8 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
                         </div>
                       </td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -2152,6 +2207,27 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
                   </button>
                 </form>
               </div>
+
+              <details className="rounded-xl border border-slate-200 bg-white/60 px-4 py-3">
+                <summary className="cursor-pointer text-sm font-semibold text-slate-700">Mark sent manually in QuickBooks</summary>
+                <form action={markInvoiceSentManually} className="mt-3 grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] lg:items-end">
+                  <input type="hidden" name="order_id" value={order.id} />
+                  <label className="space-y-1 text-sm font-medium text-slate-700">
+                    <span>QuickBooks invoice ID</span>
+                    <input className="input h-11" name="quickbooks_invoice_id" placeholder="Optional" />
+                  </label>
+                  <label className="space-y-1 text-sm font-medium text-slate-700">
+                    <span>Invoice number</span>
+                    <input className="input h-11" name="quickbooks_invoice_doc_number" placeholder="SO-####" />
+                  </label>
+                  <PendingSubmitButton
+                    className="btn-secondary w-full lg:w-auto"
+                    disabled={!canInvoice}
+                    label="Mark sent"
+                    pendingLabel="Saving..."
+                  />
+                </form>
+              </details>
             </article>
           );
         })}
