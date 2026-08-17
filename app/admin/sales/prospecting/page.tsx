@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import StatusToast from '@/components/status-toast';
 import { requireAdminSectionView } from '@/lib/admin-permissions';
+import { supabaseAdmin } from '@/lib/supabase/admin';
 import { createClient } from '@/lib/supabase/server';
 import { formatCentralDateInput, parseCentralDateInput } from '@/lib/time-clock';
 import {
@@ -306,14 +307,15 @@ export default async function ProspectingPage({ searchParams }: { searchParams?:
     assignedLeadQuery(supabase, current.profile.id, q, selectedPriority, selectedStateKey, selectedListId, 'id', { count: 'exact', head: true }),
     assignedLeadQuery(supabase, current.profile.id, q, selectedPriority, selectedStateKey, selectedListId, 'id', { count: 'exact', head: true }).in('stage', ACTIVE_PROSPECTING_STAGES),
     assignedLeadQuery(supabase, current.profile.id, q, selectedPriority, selectedStateKey, selectedListId, 'id', { count: 'exact', head: true }).not('next_follow_up_at', 'is', null).lte('next_follow_up_at', today),
-    supabase
+    // Count calls by creator even if the lead was recycled/unassigned afterward.
+    supabaseAdmin
       .from('prospecting_activities')
       .select('id', { count: 'exact', head: true })
       .eq('created_by', current.profile.id)
       .eq('activity_type', 'call')
       .gte('created_at', todayStart.toISOString())
       .lt('created_at', tomorrowStart.toISOString()),
-    supabase
+    supabaseAdmin
       .from('prospecting_activities')
       .select('id', { count: 'exact', head: true })
       .eq('created_by', current.profile.id)

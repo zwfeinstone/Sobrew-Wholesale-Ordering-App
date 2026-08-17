@@ -559,7 +559,8 @@ export function resolveActivityStage({
   const normalizedResult = String(result ?? '').trim().toLowerCase();
   if (['do not contact', 'unsubscribed', 'wrong number', 'bounced'].includes(normalizedResult)) return 'not_a_fit';
   const requestedStage = String(explicitStage ?? '').trim();
-  return requestedStage ? normalizeStage(requestedStage) : normalizeStage(currentStage);
+  if (requestedStage) return normalizeStage(requestedStage);
+  return stageFromResult(result) ?? normalizeStage(currentStage);
 }
 
 export function resolveActivityNextFollowUp({

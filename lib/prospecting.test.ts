@@ -212,16 +212,29 @@ describe('prospecting queue filtering rules', () => {
 });
 
 describe('prospecting activity stage resolution', () => {
-  it('keeps the current stage when a canned result is selected without an explicit stage move', () => {
+  it('uses canned results to advance the stage when no explicit stage is selected', () => {
     expect(resolveActivityStage({
-      currentStage: 'interested',
+      currentStage: 'new',
       explicitStage: '',
-      result: 'Interested',
-    })).toBe('interested');
+      result: 'Left voicemail',
+    })).toBe('follow_up');
+    expect(resolveActivityStage({
+      currentStage: 'new',
+      explicitStage: '',
+      result: 'Reached gatekeeper',
+    })).toBe('working');
     expect(resolveActivityStage({
       currentStage: 'working',
       explicitStage: '',
       result: 'Interested',
+    })).toBe('interested');
+  });
+
+  it('keeps the current stage when a canned result has no stage mapping', () => {
+    expect(resolveActivityStage({
+      currentStage: 'working',
+      explicitStage: '',
+      result: 'Custom note',
     })).toBe('working');
   });
 
