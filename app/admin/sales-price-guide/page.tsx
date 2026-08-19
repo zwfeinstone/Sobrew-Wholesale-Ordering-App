@@ -159,7 +159,7 @@ export default async function SalesPriceGuidePage() {
     supabase.from('inventory_lots').select('inventory_item_id,quantity_remaining,unit_cost_cents').limit(50000),
     supabase.from('product_recipes').select('product_id,output_qty,waste_percent,labor_minutes,labor_rate_cents,shipping_label_qty,branding_label_qty,product_recipe_components(inventory_item_id,quantity,unit,component_role,inventory_items(id,base_unit,sku,name,item_type))').limit(50000),
     supabase.from('production_runs').select('product_id,quantity_produced,quantity_voided,status,actual_unit_cost_cents,produced_at').order('produced_at', { ascending: false }).limit(50000),
-    supabase.from('orders').select('id,status,shipping_cost_cents').eq('status', 'Shipped').limit(50000),
+    supabase.from('orders').select('id,status,fulfillment_method,shipping_cost_cents').eq('status', 'Shipped').limit(50000),
     supabase.from('order_items').select('id,order_id,product_id,qty,unit_price_cents,line_total_cents,shipping_boxes_used,cogs_shipping_cents,cogs_snapshot_at').limit(50000),
   ]);
 

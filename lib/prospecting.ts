@@ -542,7 +542,7 @@ export function stageFromResult(result: string | null | undefined): ProspectingS
   if (['interested', 'reply interested', 'requested pricing'].includes(normalized)) return 'interested';
   if (['sample requested', 'requested sample'].includes(normalized)) return 'sample_requested';
   if (['not interested', 'wrong number', 'bounced', 'unsubscribed', 'do not contact'].includes(normalized)) return 'not_a_fit';
-  if (['call back later', 'requested info', 'follow-up sent', 'intro sent', 'out of office', 'left voicemail'].includes(normalized)) return 'follow_up';
+  if (['call back later', 'requested info', 'follow-up sent', 'intro sent', 'out of office', 'left voicemail', 'no answer'].includes(normalized)) return 'follow_up';
   if (['reached decision maker', 'reached gatekeeper'].includes(normalized)) return 'working';
   return null;
 }

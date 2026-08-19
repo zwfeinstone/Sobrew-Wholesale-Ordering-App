@@ -216,6 +216,11 @@ describe('prospecting activity stage resolution', () => {
     expect(resolveActivityStage({
       currentStage: 'new',
       explicitStage: '',
+      result: 'No answer',
+    })).toBe('follow_up');
+    expect(resolveActivityStage({
+      currentStage: 'new',
+      explicitStage: '',
       result: 'Left voicemail',
     })).toBe('follow_up');
     expect(resolveActivityStage({

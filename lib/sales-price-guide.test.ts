@@ -75,6 +75,39 @@ describe('sales price guide calculations', () => {
     });
   });
 
+  it('excludes zero-dollar local delivery orders from historical shipping averages', () => {
+    const summaries = historicalShippingByProduct({
+      orderItems: [
+        {
+          cogs_shipping_cents: 938,
+          id: 'carrier-line',
+          order_id: 'carrier-order',
+          product_id: 'product-1',
+          qty: 1,
+        },
+        {
+          cogs_shipping_cents: 0,
+          id: 'local-line',
+          order_id: 'local-order',
+          product_id: 'product-1',
+          qty: 1,
+        },
+      ],
+      orders: [
+        { fulfillment_method: 'carrier', id: 'carrier-order', shipping_cost_cents: 938, status: 'Shipped' },
+        { fulfillment_method: 'local_delivery', id: 'local-order', shipping_cost_cents: 0, status: 'Shipped' },
+      ],
+    });
+
+    expect(summaries.get('product-1')).toMatchObject({
+      averageShippingCents: 938,
+      lineCount: 1,
+      orderCount: 1,
+      shippingCents: 938,
+      unitsSold: 1,
+    });
+  });
+
   it('allocates order shipping by revenue for unsnapshotted historical lines', () => {
     const summaries = historicalShippingByProduct({
       orderItems: [

@@ -42,6 +42,7 @@ export type SalesPriceGuideProductRow = {
 };
 
 export type SalesPriceGuideOrderRow = {
+  fulfillment_method?: string | null;
   id: string;
   shipping_cost_cents?: number | string | null;
   status?: string | null;
@@ -220,6 +221,7 @@ export function historicalShippingByProduct({
   const summaries = new Map<string, SalesPriceGuideShippingSummary & { orderIds: Set<string> }>();
   for (const order of orders) {
     if (order.status !== 'Shipped') continue;
+    if (order.fulfillment_method === 'local_delivery' && normalizeInventoryNumber(order.shipping_cost_cents) <= 0) continue;
     const items = itemsByOrderId.get(order.id) ?? [];
     const allocations = allocateShippingCents(items, normalizeInventoryNumber(order.shipping_cost_cents));
 
