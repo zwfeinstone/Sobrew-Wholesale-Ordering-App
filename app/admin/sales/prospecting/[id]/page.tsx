@@ -37,6 +37,7 @@ import {
   prospectingQueueRequiresFollowUp,
   prospectingQueueSkipsTouchedToday,
   prospectingQueueStageFilter,
+  prospectingQueueWithoutStateFilter,
   resolveActivityNextFollowUp,
   resolveActivityStage,
   stageLabel,
@@ -251,29 +252,66 @@ async function shuckedRepRedirectHref({
   toast: string;
 }) {
   const candidateIds = [nextRecordId, previousRecordId].filter(Boolean);
-  if (!candidateIds.length) return prospectingListHref(toast, queueContext);
 
   const supabase = await createClient();
   const today = formatCentralDateInput(new Date());
   const todayStart = parseCentralDateInput(today) ?? new Date();
-  const selectColumns = queueContext.listId ? 'id,prospecting_list_leads!inner(list_id)' : 'id';
-  let query = supabase
-    .from('prospecting_leads')
-    .select(selectColumns)
-    .in('id', candidateIds)
-    .eq('assigned_profile_id', current.profile.id)
-    .is('archived_at', null);
 
-  query = query.in('stage', prospectingQueueStageFilter(queueContext));
-  if (prospectingQueueRequiresFollowUp(queueContext)) query = query.not('next_follow_up_at', 'is', null).lte('next_follow_up_at', today);
-  if (prospectingQueueSkipsTouchedToday(queueContext)) query = query.or(`last_activity_at.is.null,last_activity_at.lt.${todayStart.toISOString()}`);
-  if (queueContext.priority) query = query.eq('priority', queueContext.priority);
-  if (queueContext.state === MISSING_STATE_FILTER) query = query.is('state_key', null);
-  else if (queueContext.state) query = query.eq('state_key', queueContext.state);
-  if (queueContext.listId) query = query.eq('prospecting_list_leads.list_id', queueContext.listId);
-  if (queueContext.q) {
-    const search = postgrestIlikePattern(queueContext.q);
-    query = query.or([
+  if (candidateIds.length) {
+    const selectColumns = queueContext.listId ? 'id,prospecting_list_leads!inner(list_id)' : 'id';
+    let query = supabase
+      .from('prospecting_leads')
+      .select(selectColumns)
+      .in('id', candidateIds)
+      .eq('assigned_profile_id', current.profile.id)
+      .is('archived_at', null);
+
+    query = query.in('stage', prospectingQueueStageFilter(queueContext));
+    if (prospectingQueueRequiresFollowUp(queueContext)) query = query.not('next_follow_up_at', 'is', null).lte('next_follow_up_at', today);
+    if (prospectingQueueExcludesFollowUpDue(queueContext)) query = query.or(`next_follow_up_at.is.null,next_follow_up_at.gt.${today}`);
+    if (prospectingQueueSkipsTouchedToday(queueContext)) query = query.or(`last_activity_at.is.null,last_activity_at.lt.${todayStart.toISOString()}`);
+    if (queueContext.priority) query = query.eq('priority', queueContext.priority);
+    if (queueContext.state === MISSING_STATE_FILTER) query = query.is('state_key', null);
+    else if (queueContext.state) query = query.eq('state_key', queueContext.state);
+    if (queueContext.listId) query = query.eq('prospecting_list_leads.list_id', queueContext.listId);
+    if (queueContext.q) {
+      const search = postgrestIlikePattern(queueContext.q);
+      query = query.or([
+        `company_name.ilike.${search}`,
+        `phone.ilike.${search}`,
+        `company_email.ilike.${search}`,
+        `city.ilike.${search}`,
+        `state.ilike.${search}`,
+        `last_result.ilike.${search}`,
+      ].join(','));
+    }
+
+    const { data } = await query;
+    const validIds = new Set(((data ?? []) as unknown as Array<{ id: string | null }>).map((row) => row.id).filter(Boolean));
+    const destinationId = candidateIds.find((id) => validIds.has(id));
+    if (destinationId) return leadHref(destinationId, toast, queueContext);
+  }
+
+  if (!queueContext.state) return prospectingListHref(toast, queueContext);
+
+  const fallbackQueueContext = prospectingQueueWithoutStateFilter(queueContext);
+  const fallbackSelectColumns = fallbackQueueContext.listId ? 'id,prospecting_list_leads!inner(list_id)' : 'id';
+  let fallbackQuery = supabase
+    .from('prospecting_leads')
+    .select(fallbackSelectColumns)
+    .eq('assigned_profile_id', current.profile.id)
+    .is('archived_at', null)
+    .limit(1);
+
+  fallbackQuery = fallbackQuery.in('stage', prospectingQueueStageFilter(fallbackQueueContext));
+  if (prospectingQueueRequiresFollowUp(fallbackQueueContext)) fallbackQuery = fallbackQuery.not('next_follow_up_at', 'is', null).lte('next_follow_up_at', today);
+  if (prospectingQueueExcludesFollowUpDue(fallbackQueueContext)) fallbackQuery = fallbackQuery.or(`next_follow_up_at.is.null,next_follow_up_at.gt.${today}`);
+  if (prospectingQueueSkipsTouchedToday(fallbackQueueContext)) fallbackQuery = fallbackQuery.or(`last_activity_at.is.null,last_activity_at.lt.${todayStart.toISOString()}`);
+  if (fallbackQueueContext.priority) fallbackQuery = fallbackQuery.eq('priority', fallbackQueueContext.priority);
+  if (fallbackQueueContext.listId) fallbackQuery = fallbackQuery.eq('prospecting_list_leads.list_id', fallbackQueueContext.listId);
+  if (fallbackQueueContext.q) {
+    const search = postgrestIlikePattern(fallbackQueueContext.q);
+    fallbackQuery = fallbackQuery.or([
       `company_name.ilike.${search}`,
       `phone.ilike.${search}`,
       `company_email.ilike.${search}`,
@@ -282,11 +320,15 @@ async function shuckedRepRedirectHref({
       `last_result.ilike.${search}`,
     ].join(','));
   }
+  for (const order of prospectingQueueOrderFields(fallbackQueueContext)) {
+    fallbackQuery = fallbackQuery.order(order.column, { ascending: order.ascending });
+  }
 
-  const { data } = await query;
-  const validIds = new Set(((data ?? []) as unknown as Array<{ id: string | null }>).map((row) => row.id).filter(Boolean));
-  const destinationId = candidateIds.find((id) => validIds.has(id));
-  return destinationId ? leadHref(destinationId, toast, queueContext) : prospectingListHref(toast, queueContext);
+  const { data: fallbackData } = await fallbackQuery;
+  const fallbackDestinationId = ((fallbackData ?? []) as unknown as Array<{ id: string | null }>)[0]?.id;
+  return fallbackDestinationId
+    ? leadHref(fallbackDestinationId, toast, fallbackQueueContext)
+    : prospectingListHref(toast, fallbackQueueContext);
 }
 
 async function saveRecordData(formData: FormData) {

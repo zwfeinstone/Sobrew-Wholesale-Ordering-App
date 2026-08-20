@@ -6,6 +6,7 @@ import { Analytics } from '@vercel/analytics/next';
 import { SpeedInsights } from '@vercel/speed-insights/next';
 import { ButtonPressLock } from '@/components/button-press-lock';
 import { NumberInputScrollGuard } from '@/components/number-input-scroll-guard';
+import { SaveScrollRestoration } from '@/components/save-scroll-restoration';
 
 const manrope = Manrope({
   subsets: ['latin'],
@@ -78,6 +79,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
       <body>
         <ButtonPressLock />
         <NumberInputScrollGuard />
+        <SaveScrollRestoration />
         {children}
         <Analytics />
         <SpeedInsights />

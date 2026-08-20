@@ -11,6 +11,7 @@ import {
   prospectingQueueRequiresFollowUp,
   prospectingQueueSkipsTouchedToday,
   prospectingQueueStageFilter,
+  prospectingQueueWithoutStateFilter,
   parseCsv,
   prospectingContactPayloadsFromCsv,
   resolveActivityNextFollowUp,
@@ -107,6 +108,24 @@ describe('prospecting queue context', () => {
     });
   });
 
+  it('does not infer filters from editable lead fields when hidden queue fields are empty', () => {
+    const formData = new FormData();
+    formData.set('queue_tab', 'pipeline');
+    formData.set('queue_priority', '');
+    formData.set('queue_stage', '');
+    formData.set('queue_state', '');
+    formData.set('priority', 'high');
+    formData.set('stage', 'working');
+    formData.set('state', 'TX');
+
+    expect(prospectingQueueContextFromParams(formData)).toMatchObject({
+      priority: '',
+      stage: '',
+      state: '',
+      tab: 'pipeline',
+    });
+  });
+
   it('keeps hidden form fields aligned with the parsed queue context', () => {
     const context = prospectingQueueContextFromParams({
       list: LIST_ID,
@@ -130,6 +149,25 @@ describe('prospecting queue context', () => {
       { name: 'queue_list', value: LIST_ID },
       { name: 'queue_rep_id', value: REP_ID },
     ]);
+  });
+
+  it('clears the state filter and restarts pagination for exhausted state queues', () => {
+    const context = prospectingQueueContextFromParams({
+      list: LIST_ID,
+      page: '3',
+      page_size: '25',
+      priority: 'high',
+      q: 'detox',
+      rep: REP_ID,
+      state: 'TX',
+      tab: 'tasks',
+    });
+
+    expect(prospectingQueueWithoutStateFilter(context)).toEqual({
+      ...context,
+      page: 1,
+      state: '',
+    });
   });
 });
 

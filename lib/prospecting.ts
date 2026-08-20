@@ -354,6 +354,22 @@ function queueParam(source: ProspectingQueueParamSource, key: string) {
   return typeof value === 'string' ? value.trim() : '';
 }
 
+function hasQueueParam(source: ProspectingQueueParamSource, key: string) {
+  if (!source) return false;
+  if (source instanceof URLSearchParams) return source.has(key);
+  if (typeof FormData !== 'undefined' && source instanceof FormData) return source.has(key);
+  return Object.prototype.hasOwnProperty.call(source, key);
+}
+
+function queueParamWithFallback(source: ProspectingQueueParamSource, queueKey: string, ...fallbackKeys: string[]) {
+  if (hasQueueParam(source, queueKey)) return queueParam(source, queueKey);
+  for (const fallbackKey of fallbackKeys) {
+    const value = queueParam(source, fallbackKey);
+    if (value) return value;
+  }
+  return '';
+}
+
 export function normalizeProspectingTab(value: string | string[] | null | undefined): RepProspectingTab {
   const text = typeof value === 'string' ? value : '';
   return REP_PROSPECTING_TABS.some((tab) => tab.id === text) ? text as RepProspectingTab : 'list';
@@ -369,9 +385,9 @@ export function normalizeProspectingProfileId(value: string | string[] | null | 
 }
 
 export function prospectingQueueContextFromParams(source: ProspectingQueueParamSource): ProspectingQueueContext {
-  const tab = normalizeProspectingTab(queueParam(source, 'queue_tab') || queueParam(source, 'tab'));
-  const requestedPriority = queueParam(source, 'queue_priority') || queueParam(source, 'priority');
-  const requestedStage = queueParam(source, 'queue_stage') || queueParam(source, 'stage');
+  const tab = normalizeProspectingTab(queueParamWithFallback(source, 'queue_tab', 'tab'));
+  const requestedPriority = queueParamWithFallback(source, 'queue_priority', 'priority');
+  const requestedStage = queueParamWithFallback(source, 'queue_stage', 'stage');
   const priority = PROSPECTING_PRIORITIES.some((item) => item.id === requestedPriority)
     ? requestedPriority as ProspectingPriority
     : '';
@@ -380,14 +396,14 @@ export function prospectingQueueContextFromParams(source: ProspectingQueueParamS
     : '';
 
   return {
-    listId: normalizeProspectingListId(queueParam(source, 'queue_list') || queueParam(source, 'list') || queueParam(source, 'list_id')),
-    page: normalizePageNumber(queueParam(source, 'queue_page') || queueParam(source, 'page')),
-    pageSize: normalizePageSize(queueParam(source, 'queue_page_size') || queueParam(source, 'page_size')),
+    listId: normalizeProspectingListId(queueParamWithFallback(source, 'queue_list', 'list', 'list_id')),
+    page: normalizePageNumber(queueParamWithFallback(source, 'queue_page', 'page')),
+    pageSize: normalizePageSize(queueParamWithFallback(source, 'queue_page_size', 'page_size')),
     priority,
-    q: queueParam(source, 'queue_q') || queueParam(source, 'q'),
-    repId: normalizeProspectingProfileId(queueParam(source, 'queue_rep_id') || queueParam(source, 'rep')),
+    q: queueParamWithFallback(source, 'queue_q', 'q'),
+    repId: normalizeProspectingProfileId(queueParamWithFallback(source, 'queue_rep_id', 'rep')),
     stage: tab === 'pipeline' && normalizedStage && REP_PIPELINE_STAGES.includes(normalizedStage) ? normalizedStage : '',
-    state: normalizeStateFilter(queueParam(source, 'queue_state') || queueParam(source, 'state') || queueParam(source, 'state_filter')),
+    state: normalizeStateFilter(queueParamWithFallback(source, 'queue_state', 'state', 'state_filter')),
     tab,
   };
 }
@@ -440,6 +456,14 @@ export function prospectingQueueHiddenFields(context: ProspectingQueueContext) {
     { name: 'queue_list', value: context.listId },
     { name: 'queue_rep_id', value: context.repId },
   ];
+}
+
+export function prospectingQueueWithoutStateFilter(context: ProspectingQueueContext): ProspectingQueueContext {
+  return {
+    ...context,
+    page: 1,
+    state: '',
+  };
 }
 
 export function prospectingQueueStageFilter(context: ProspectingQueueContext): ProspectingStage[] {
