@@ -2,17 +2,19 @@
 
 import { useEffect } from 'react';
 import {
+  SAVE_SCROLL_MAX_AGE_MS,
   SAVE_SCROLL_STORAGE_KEY,
   clampScrollPosition,
   createSaveScrollSnapshot,
   getScrollRestoreDecision,
   isValidSaveScrollSnapshot,
-  sameSaveScrollSnapshot,
+  shouldClearPendingSaveScrollSnapshot,
   shouldStoreFormScroll,
   type SaveScrollSnapshot,
 } from '@/lib/save-scroll-restoration';
 
 const RESTORE_SETTLE_DELAY_MS = 300;
+const PENDING_SUBMIT_CLEANUP_DELAY_MS = SAVE_SCROLL_MAX_AGE_MS + 250;
 
 function readSavedScrollSnapshot() {
   try {
@@ -55,6 +57,7 @@ function scrollBounds() {
 export function SaveScrollRestoration() {
   useEffect(() => {
     let frame: number | null = null;
+    let pendingSubmitCleanupTimer: number | null = null;
     let settleTimer: number | null = null;
 
     const restoreSavedScroll = () => {
@@ -97,13 +100,23 @@ export function SaveScrollRestoration() {
       }
 
       const snapshot = createSaveScrollSnapshot(window.location.pathname, window.scrollX, window.scrollY, Date.now());
+      const submittedHref = window.location.href;
       writeSavedScrollSnapshot(snapshot);
 
-      window.setTimeout(() => {
-        if (!event.defaultPrevented) return;
+      if (pendingSubmitCleanupTimer !== null) window.clearTimeout(pendingSubmitCleanupTimer);
+      pendingSubmitCleanupTimer = window.setTimeout(() => {
         const latestSnapshot = readSavedScrollSnapshot();
-        if (sameSaveScrollSnapshot(latestSnapshot, snapshot)) clearSavedScrollSnapshot();
-      }, 0);
+        if (shouldClearPendingSaveScrollSnapshot({
+          currentHref: window.location.href,
+          latestSnapshot,
+          now: Date.now(),
+          submittedHref,
+          submittedSnapshot: snapshot,
+        })) {
+          clearSavedScrollSnapshot();
+        }
+        pendingSubmitCleanupTimer = null;
+      }, PENDING_SUBMIT_CLEANUP_DELAY_MS);
     };
 
     const originalPushState = window.history.pushState;
@@ -133,6 +146,7 @@ export function SaveScrollRestoration() {
       window.history.pushState = originalPushState;
       window.history.replaceState = originalReplaceState;
       if (frame !== null) window.cancelAnimationFrame(frame);
+      if (pendingSubmitCleanupTimer !== null) window.clearTimeout(pendingSubmitCleanupTimer);
       if (settleTimer !== null) window.clearTimeout(settleTimer);
     };
   }, []);

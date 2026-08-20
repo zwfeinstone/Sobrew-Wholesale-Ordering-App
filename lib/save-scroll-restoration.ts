@@ -59,6 +59,28 @@ export function sameSaveScrollSnapshot(left: SaveScrollSnapshot | null, right: S
   );
 }
 
+export function shouldClearPendingSaveScrollSnapshot({
+  currentHref,
+  latestSnapshot,
+  now,
+  submittedHref,
+  submittedSnapshot,
+  maxAgeMs = SAVE_SCROLL_MAX_AGE_MS,
+}: {
+  currentHref: string;
+  latestSnapshot: SaveScrollSnapshot | null;
+  now: number;
+  submittedHref: string;
+  submittedSnapshot: SaveScrollSnapshot;
+  maxAgeMs?: number;
+}) {
+  return (
+    sameSaveScrollSnapshot(latestSnapshot, submittedSnapshot)
+    && currentHref === submittedHref
+    && now - submittedSnapshot.createdAt >= maxAgeMs
+  );
+}
+
 export function shouldStoreFormScroll({
   actionAttribute,
   currentHref,

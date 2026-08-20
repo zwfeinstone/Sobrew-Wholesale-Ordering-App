@@ -4,6 +4,7 @@ import {
   clampScrollPosition,
   createSaveScrollSnapshot,
   getScrollRestoreDecision,
+  shouldClearPendingSaveScrollSnapshot,
   shouldStoreFormScroll,
 } from '@/lib/save-scroll-restoration';
 
@@ -93,5 +94,44 @@ describe('save scroll restoration helpers', () => {
       x: 50,
       y: 1_600,
     });
+  });
+
+  it('keeps a default-prevented server-action snapshot before expiry', () => {
+    const now = 1_000_000;
+    const snapshot = createSaveScrollSnapshot(currentPathname, 0, 820, now - 500);
+
+    expect(shouldClearPendingSaveScrollSnapshot({
+      currentHref,
+      latestSnapshot: snapshot,
+      now,
+      submittedHref: currentHref,
+      submittedSnapshot: snapshot,
+    })).toBe(false);
+  });
+
+  it('clears an unresolved same-page submit snapshot after expiry', () => {
+    const now = 1_000_000;
+    const snapshot = createSaveScrollSnapshot(currentPathname, 0, 820, now - SAVE_SCROLL_MAX_AGE_MS);
+
+    expect(shouldClearPendingSaveScrollSnapshot({
+      currentHref,
+      latestSnapshot: snapshot,
+      now,
+      submittedHref: currentHref,
+      submittedSnapshot: snapshot,
+    })).toBe(true);
+  });
+
+  it('keeps pending submit cleanup from clearing after navigation', () => {
+    const now = 1_000_000;
+    const snapshot = createSaveScrollSnapshot(currentPathname, 0, 820, now - SAVE_SCROLL_MAX_AGE_MS);
+
+    expect(shouldClearPendingSaveScrollSnapshot({
+      currentHref: 'https://app.sobrew.com/admin/inventory?tab=finished_good&toast=saved',
+      latestSnapshot: snapshot,
+      now,
+      submittedHref: currentHref,
+      submittedSnapshot: snapshot,
+    })).toBe(false);
   });
 });

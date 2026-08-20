@@ -53,4 +53,45 @@ test.describe('public login', () => {
     await page.goto('/login?error=1');
     await expect(page.locator('.login-alert[role="alert"]')).toContainText("couldn't sign you in");
   });
+
+  test('preserves scroll for server-action-style same-page saves', async ({ page }) => {
+    await page.goto('/login');
+
+    await page.evaluate(() => {
+      const topSpacer = document.createElement('div');
+      topSpacer.style.height = '1800px';
+
+      const form = document.createElement('form');
+      form.id = 'scroll-smoke-form';
+
+      const button = document.createElement('button');
+      button.type = 'submit';
+      button.textContent = 'Smoke save';
+
+      const bottomSpacer = document.createElement('div');
+      bottomSpacer.style.height = '1200px';
+
+      form.addEventListener('submit', (event) => {
+        event.preventDefault();
+        window.scrollTo(0, 0);
+        window.history.pushState({}, '', '/login?scroll_smoke=1');
+      });
+
+      form.append(button);
+      document.body.append(topSpacer, form, bottomSpacer);
+    });
+
+    const button = page.locator('#scroll-smoke-form button');
+    await button.scrollIntoViewIfNeeded();
+    const before = await page.evaluate(() => window.scrollY);
+    expect(before).toBeGreaterThan(1_000);
+
+    await button.click();
+    await expect(page).toHaveURL(/\/login\?scroll_smoke=1$/);
+    await page.waitForTimeout(500);
+
+    const after = await page.evaluate(() => window.scrollY);
+    expect(after).toBeGreaterThan(1_000);
+    expect(Math.abs(after - before)).toBeLessThan(500);
+  });
 });
