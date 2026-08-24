@@ -9,6 +9,7 @@ const RESEND_FROM = 'Sobrew Wholesale <orders@orders.sobrew.com>';
 const REPLY_TO_EMAIL = 'hello@sobrew.com';
 const ADMIN_EMAIL = 'hello@sobrew.com';
 const HASKINS_EMAIL = 'haskins@sobrew.com';
+const INVOICE_PDF_AUDIT_CC = 'zach@sobrew.com';
 const PORTAL_URL = 'https://app.sobrew.com';
 const WEBSITE_URL = 'https://sobrew.com';
 const INSTAGRAM_URL = 'https://www.instagram.com/sobrew_official';
@@ -127,6 +128,29 @@ export function outgoingEmailRecipients(to: string | string[] | null | undefined
   const toRecipients = unique(splitEmailAddresses(to));
   const ccRecipients = unique(splitEmailAddresses(cc));
   return { cc: ccRecipients, to: toRecipients };
+}
+
+export function invoicePdfEmailRecipients(
+  to: string | string[] | null | undefined,
+  cc?: string | string[] | null,
+) {
+  return outgoingEmailRecipients(to, [...splitEmailAddresses(cc), INVOICE_PDF_AUDIT_CC]);
+}
+
+type ResendSendResponseLike = {
+  data?: { id?: string | null } | null;
+  error?: { message?: string | null } | null;
+};
+
+export function resendEmailAcceptanceError(response: ResendSendResponseLike, emailLabel = 'Email') {
+  if (response.error) {
+    const detail = String(response.error.message ?? '').trim();
+    return new Error(`${emailLabel} was rejected by Resend${detail ? `: ${detail}` : '.'}`);
+  }
+  if (!String(response.data?.id ?? '').trim()) {
+    return new Error(`${emailLabel} was not accepted by Resend because no email ID was returned.`);
+  }
+  return null;
 }
 
 function titleCaseWord(value: string) {
@@ -1168,7 +1192,7 @@ export async function sendInvoicePdfEmail(payload: InvoicePdfEmailPayload): Prom
     return { error, ok: false };
   }
 
-  const recipients = outgoingEmailRecipients(payload.to, payload.cc);
+  const recipients = invoicePdfEmailRecipients(payload.to, payload.cc);
   if (!recipients.to.length) {
     const error = new Error('Invoice PDF email skipped: missing recipient');
     console.error(error.message);
@@ -1210,7 +1234,12 @@ export async function sendInvoicePdfEmail(payload: InvoicePdfEmailPayload): Prom
       html,
       text,
     });
-    console.log('Invoice PDF email sent', response);
+    const acceptanceError = resendEmailAcceptanceError(response, 'Invoice PDF email');
+    if (acceptanceError) {
+      console.error('Failed to send invoice PDF email', acceptanceError);
+      return { error: acceptanceError, ok: false };
+    }
+    console.log('Invoice PDF email accepted', { id: response.data?.id });
     return { ok: true };
   } catch (error) {
     console.error('Failed to send invoice PDF email', error);

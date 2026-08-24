@@ -42,6 +42,13 @@ export const REP_PROSPECTING_TABS = [
 
 export type RepProspectingTab = (typeof REP_PROSPECTING_TABS)[number]['id'];
 
+export const REP_PROSPECTING_SORTS = [
+  { id: '', label: 'Default queue' },
+  { id: 'list', label: 'Lead list' },
+] as const;
+
+export type RepProspectingSort = (typeof REP_PROSPECTING_SORTS)[number]['id'];
+
 export type ProspectingQueueContext = {
   listId: string;
   page: number;
@@ -49,6 +56,7 @@ export type ProspectingQueueContext = {
   priority: '' | ProspectingPriority;
   q: string;
   repId: string;
+  sort: RepProspectingSort;
   stage: '' | ProspectingStage;
   state: '' | ProspectingStateFilter;
   tab: RepProspectingTab;
@@ -387,9 +395,13 @@ export function normalizeProspectingProfileId(value: string | string[] | null | 
 export function prospectingQueueContextFromParams(source: ProspectingQueueParamSource): ProspectingQueueContext {
   const tab = normalizeProspectingTab(queueParamWithFallback(source, 'queue_tab', 'tab'));
   const requestedPriority = queueParamWithFallback(source, 'queue_priority', 'priority');
+  const requestedSort = queueParamWithFallback(source, 'queue_sort', 'sort');
   const requestedStage = queueParamWithFallback(source, 'queue_stage', 'stage');
   const priority = PROSPECTING_PRIORITIES.some((item) => item.id === requestedPriority)
     ? requestedPriority as ProspectingPriority
+    : '';
+  const sort = REP_PROSPECTING_SORTS.some((item) => item.id === requestedSort)
+    ? requestedSort as RepProspectingSort
     : '';
   const normalizedStage = PROSPECTING_STAGES.some((stage) => stage.id === requestedStage)
     ? requestedStage as ProspectingStage
@@ -402,6 +414,7 @@ export function prospectingQueueContextFromParams(source: ProspectingQueueParamS
     priority,
     q: queueParamWithFallback(source, 'queue_q', 'q'),
     repId: normalizeProspectingProfileId(queueParamWithFallback(source, 'queue_rep_id', 'rep')),
+    sort,
     stage: tab === 'pipeline' && normalizedStage && REP_PIPELINE_STAGES.includes(normalizedStage) ? normalizedStage : '',
     state: normalizeStateFilter(queueParamWithFallback(source, 'queue_state', 'state', 'state_filter')),
     tab,
@@ -416,6 +429,7 @@ export function prospectingQueueQueryString(
   if (context.tab !== 'list') query.set('tab', context.tab);
   if (context.q) query.set('q', context.q);
   if (context.priority) query.set('priority', context.priority);
+  if (context.sort) query.set('sort', context.sort);
   if (context.tab === 'pipeline' && context.stage) query.set('stage', context.stage);
   if (context.state) query.set('state', context.state);
   if (context.listId) query.set('list', context.listId);
@@ -449,6 +463,7 @@ export function prospectingQueueHiddenFields(context: ProspectingQueueContext) {
     { name: 'queue_tab', value: context.tab },
     { name: 'queue_q', value: context.q },
     { name: 'queue_priority', value: context.priority },
+    { name: 'queue_sort', value: context.sort },
     { name: 'queue_stage', value: context.stage },
     { name: 'queue_state', value: context.state },
     { name: 'queue_page', value: String(context.page) },

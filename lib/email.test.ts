@@ -7,7 +7,9 @@ import {
   buildPaymentReceiptEmailContent,
   buildShippedEmailContent,
   buildShippedEmailText,
+  invoicePdfEmailRecipients,
   outgoingEmailRecipients,
+  resendEmailAcceptanceError,
 } from '@/lib/email';
 
 function expectApprovedTextSocialFooter(html: string, text: string) {
@@ -195,6 +197,43 @@ describe('outgoingEmailRecipients', () => {
       to: ['orders@example.com', 'billing@example.com'],
       cc: ['updates@example.com'],
     });
+  });
+});
+
+describe('invoicePdfEmailRecipients', () => {
+  it('always adds Zach as a deduped CC recipient', () => {
+    expect(invoicePdfEmailRecipients(
+      'billing@example.com',
+      ['ops@example.com', 'ZACH@SOBREW.COM'],
+    )).toEqual({
+      to: ['billing@example.com'],
+      cc: ['ops@example.com', 'ZACH@SOBREW.COM'],
+    });
+  });
+
+  it('does not CC Zach when Zach is already the primary recipient', () => {
+    expect(invoicePdfEmailRecipients('zach@sobrew.com')).toEqual({
+      to: ['zach@sobrew.com'],
+      cc: [],
+    });
+  });
+});
+
+describe('resendEmailAcceptanceError', () => {
+  it('surfaces API errors returned without an exception', () => {
+    expect(resendEmailAcceptanceError({
+      data: null,
+      error: { message: 'Recipient is suppressed' },
+    }, 'Invoice PDF email')?.message).toBe(
+      'Invoice PDF email was rejected by Resend: Recipient is suppressed',
+    );
+  });
+
+  it('requires a Resend email ID before reporting success', () => {
+    expect(resendEmailAcceptanceError({ data: {}, error: null }, 'Invoice PDF email')?.message).toBe(
+      'Invoice PDF email was not accepted by Resend because no email ID was returned.',
+    );
+    expect(resendEmailAcceptanceError({ data: { id: 'email-123' }, error: null })).toBeNull();
   });
 });
 
