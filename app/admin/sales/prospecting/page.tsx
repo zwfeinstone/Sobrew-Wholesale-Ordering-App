@@ -10,7 +10,6 @@ import {
   PROSPECTING_PRIORITIES,
   REP_PIPELINE_STAGES,
   REP_PROSPECTING_TABS,
-  REP_PROSPECTING_SORTS,
   MISSING_STATE_FILTER,
   US_STATE_OPTIONS,
   chunkArray,
@@ -74,8 +73,12 @@ type ListLeadSummaryRow = {
   prospecting_lists?: { name: string | null } | { name: string | null }[] | null;
 };
 
+type ListRow = {
+  id: string;
+  name: string | null;
+};
+
 const DAY_IN_MS = 24 * 60 * 60 * 1000;
-const LIST_SORT_LIMIT = 5000;
 
 function dateInputFromUtcDate(date: Date) {
   const year = date.getUTCFullYear();
@@ -151,34 +154,6 @@ function relatedOne<T>(value: T | T[] | null | undefined): T | null {
 
 function listLabels(labels: string[] | undefined) {
   return labels?.length ? labels.join(', ') : 'No list';
-}
-
-function listSortKey(labels: string[] | undefined) {
-  return labels?.[0]?.toLowerCase() || '~';
-}
-
-function compareTextValues(a: string | null | undefined, b: string | null | undefined, ascending = true) {
-  const left = String(a ?? '').trim();
-  const right = String(b ?? '').trim();
-  if (!left && !right) return 0;
-  if (!left) return 1;
-  if (!right) return -1;
-  const comparison = left.localeCompare(right, undefined, { numeric: true, sensitivity: 'base' });
-  return ascending ? comparison : -comparison;
-}
-
-function compareLeadsByQueueOrder(a: LeadRow, b: LeadRow, queueContext: ProspectingQueueContext) {
-  for (const order of prospectingQueueOrderFields(queueContext)) {
-    const column = order.column as keyof LeadRow;
-    const comparison = compareTextValues(a[column] as string | null | undefined, b[column] as string | null | undefined, order.ascending);
-    if (comparison) return comparison;
-  }
-  return 0;
-}
-
-function compareLeadsByList(a: LeadRow, b: LeadRow, listsByLead: Map<string, string[]>, queueContext: ProspectingQueueContext) {
-  const listComparison = compareTextValues(listSortKey(listsByLead.get(a.id)), listSortKey(listsByLead.get(b.id)));
-  return listComparison || compareLeadsByQueueOrder(a, b, queueContext);
 }
 
 async function loadListLabelsByLead(supabase: Awaited<ReturnType<typeof createClient>>, leadIds: string[]) {
@@ -338,7 +313,14 @@ export default async function ProspectingPage({ searchParams }: { searchParams?:
   const current = await requireAdminSectionView('prospecting');
   const supabase = await createClient();
   const parsedQueueContext = prospectingQueueContextFromParams(searchParams);
-  const queueContext = { ...parsedQueueContext, repId: current.profile.id };
+  const { data: listsData, error: listsError } = await supabase
+    .from('prospecting_lists')
+    .select('id,name')
+    .order('name', { ascending: true });
+  const listRows = (listsData ?? []) as ListRow[];
+  const requestedListIsKnown = !parsedQueueContext.listId || listsError || listRows.some((list) => list.id === parsedQueueContext.listId);
+  const selectedListId = requestedListIsKnown ? parsedQueueContext.listId : '';
+  const queueContext = { ...parsedQueueContext, listId: selectedListId, repId: current.profile.id };
   const q = queueContext.q;
   const tab = queueContext.tab;
   const page = queueContext.page;
@@ -347,8 +329,6 @@ export default async function ProspectingPage({ searchParams }: { searchParams?:
   const selectedPriority = queueContext.priority;
   const selectedStage = queueContext.stage;
   const selectedStateKey = queueContext.state;
-  const selectedListId = queueContext.listId;
-  const selectedSort = queueContext.sort;
   const toast = typeof searchParams?.toast === 'string' ? searchParams.toast : '';
   const now = new Date();
   const today = formatCentralDateInput(now);
@@ -373,20 +353,10 @@ export default async function ProspectingPage({ searchParams }: { searchParams?:
     leadsQuery = leadsQuery.order(order.column, { ascending: order.ascending });
   }
 
-  if (selectedSort === 'list') {
-    const { data: allLeadsData, error, count } = await leadsQuery.limit(LIST_SORT_LIMIT);
-    const allLeads = (allLeadsData ?? []) as unknown as LeadRow[];
-    listsByLead = await loadListLabelsByLead(supabase, allLeads.map((lead) => lead.id));
-    allLeads.sort((a, b) => compareLeadsByList(a, b, listsByLead, queueContext));
-    leads = allLeads.slice(from, to + 1);
-    totalLeads = count ?? allLeads.length;
-    leadsError = error;
-  } else {
-    const { data: leadsData, error, count } = await leadsQuery.range(from, to);
-    leads = (leadsData ?? []) as unknown as LeadRow[];
-    totalLeads = count ?? leads.length;
-    leadsError = error;
-  }
+  const { data: leadsData, error, count } = await leadsQuery.range(from, to);
+  leads = (leadsData ?? []) as unknown as LeadRow[];
+  totalLeads = count ?? leads.length;
+  leadsError = error;
 
   const [
     { count: assignedCount },
@@ -431,9 +401,7 @@ export default async function ProspectingPage({ searchParams }: { searchParams?:
   const displayStart = totalLeads ? from + 1 : 0;
   const displayEnd = Math.min(to + 1, totalLeads);
   const leadIds = leads.map((lead) => lead.id);
-  if (selectedSort !== 'list') {
-    listsByLead = await loadListLabelsByLead(supabase, leadIds);
-  }
+  listsByLead = await loadListLabelsByLead(supabase, leadIds);
   const { data: contactsData } = leadIds.length
     ? await supabase.from('prospecting_contacts').select('lead_id,full_name,email,phone').in('lead_id', leadIds)
     : { data: [] };
@@ -530,10 +498,9 @@ export default async function ProspectingPage({ searchParams }: { searchParams?:
           ))}
         </nav>
 
-        <form className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_12rem_12rem_14rem_9rem_auto] xl:items-end">
+        <form className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_12rem_16rem_14rem_9rem_auto] xl:items-end">
           <input type="hidden" name="tab" value={tab} />
           {selectedStage ? <input type="hidden" name="stage" value={selectedStage} /> : null}
-          {selectedListId ? <input type="hidden" name="list" value={selectedListId} /> : null}
           <label className="text-sm font-semibold text-slate-700">
             Search my leads
             <input className="input mt-2" name="q" defaultValue={q} placeholder="Company, phone, city, result" />
@@ -546,9 +513,10 @@ export default async function ProspectingPage({ searchParams }: { searchParams?:
             </select>
           </label>
           <label className="text-sm font-semibold text-slate-700">
-            Sort
-            <select className="input mt-2" name="sort" defaultValue={selectedSort}>
-              {REP_PROSPECTING_SORTS.map((sort) => <option key={sort.id || 'default'} value={sort.id}>{sort.label}</option>)}
+            Lead list
+            <select className="input mt-2" name="list" defaultValue={selectedListId}>
+              <option value="">All lists</option>
+              {listRows.map((list) => <option key={list.id} value={list.id}>{list.name || 'Untitled list'}</option>)}
             </select>
           </label>
           <label className="text-sm font-semibold text-slate-700">
@@ -567,10 +535,10 @@ export default async function ProspectingPage({ searchParams }: { searchParams?:
           </label>
           <div className="flex gap-2">
             <button className="btn-primary w-full md:w-auto" type="submit">Filter</button>
-            {q || selectedPriority || selectedSort || selectedStage || selectedStateKey || selectedListId ? (
+            {q || selectedPriority || selectedStage || selectedStateKey || selectedListId ? (
               <Link
                 className="btn-secondary inline-flex"
-                href={prospectingPath({ ...queueContext, listId: '', priority: '', q: '', sort: '', stage: '', state: '' }, { includePageSize: true, page: 1 })}
+                href={prospectingPath({ ...queueContext, listId: '', priority: '', q: '', stage: '', state: '' }, { includePageSize: true, page: 1 })}
               >
                 Clear
               </Link>

@@ -42,7 +42,6 @@ describe('prospecting queue context', () => {
       priority: 'high',
       q: 'detox center',
       repId: REP_ID,
-      sort: '',
       stage: 'follow_up',
       state: 'TX',
       tab: 'pipeline',
@@ -60,13 +59,12 @@ describe('prospecting queue context', () => {
       priority: 'high',
       q: 'Chicago',
       rep: REP_ID,
-      sort: 'list',
       state: 'missing',
       tab: 'tasks',
     });
 
     expect(prospectingLeadPath('lead-123', context, { includePageSize: true })).toBe(
-      `/admin/sales/prospecting/lead-123?tab=tasks&q=Chicago&priority=high&sort=list&state=missing&list=${LIST_ID}&rep=${REP_ID}&page_size=25&page=4`,
+      `/admin/sales/prospecting/lead-123?tab=tasks&q=Chicago&priority=high&state=missing&list=${LIST_ID}&rep=${REP_ID}&page_size=25&page=4`,
     );
   });
 
@@ -86,7 +84,6 @@ describe('prospecting queue context', () => {
       pageSize: 50,
       priority: '',
       repId: '',
-      sort: '',
       stage: '',
       state: '',
       tab: 'tasks',
@@ -145,7 +142,6 @@ describe('prospecting queue context', () => {
       { name: 'queue_tab', value: 'list' },
       { name: 'queue_q', value: 'Austin' },
       { name: 'queue_priority', value: 'low' },
-      { name: 'queue_sort', value: '' },
       { name: 'queue_stage', value: '' },
       { name: 'queue_state', value: 'TX' },
       { name: 'queue_page', value: '2' },
