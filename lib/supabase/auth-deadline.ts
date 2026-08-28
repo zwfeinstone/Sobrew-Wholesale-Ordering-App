@@ -66,7 +66,7 @@ export class AuthDeadlineExceededError extends Error {
  * abortable fetch alone cannot guarantee that middleware returns before Vercel's
  * invocation limit.
  */
-export function createAuthDeadline(timeoutMs: number) {
+export function createAuthDeadline(timeoutMs: number, baseFetch: typeof fetch = globalThis.fetch) {
   const controller = new AbortController();
   const composedSignalCleanups = new Set<() => void>();
   let phase: AuthNetworkPhase = 'local';
@@ -90,7 +90,7 @@ export function createAuthDeadline(timeoutMs: number) {
     const composed = composeAbortSignals([controller.signal, requestSignal, init?.signal]);
     composedSignalCleanups.add(composed.cleanup);
 
-    const response = await globalThis.fetch(input, { ...init, signal: composed.signal });
+    const response = await baseFetch(input, { ...init, signal: composed.signal });
     if (!isTransientHttpStatus(response.status)) return response;
 
     // auth-js clears sessions for some non-standard gateway errors (for example

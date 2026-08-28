@@ -7,6 +7,8 @@ import {
   createAuthDeadline,
   type AuthNetworkPhase,
 } from './lib/supabase/auth-deadline';
+import { resilientSupabaseFetch } from './lib/supabase/resilient-jwks-fetch';
+import { getVerifiedClaims } from './lib/supabase/verified-claims';
 
 type CookieToSet = { name: string; value: string; options: CookieOptions };
 type AuthErrorLike = {
@@ -169,7 +171,7 @@ function logAuthUnavailable({
 export async function middleware(request: NextRequest) {
   const startedAt = performance.now();
   let response = NextResponse.next({ request: { headers: request.headers } });
-  const authDeadline = createAuthDeadline(AUTH_VERIFICATION_TIMEOUT_MS);
+  const authDeadline = createAuthDeadline(AUTH_VERIFICATION_TIMEOUT_MS, resilientSupabaseFetch);
 
   const redirectWithRefreshedCookies = (url: URL) => {
     const redirectResponse = NextResponse.redirect(url);
@@ -207,7 +209,9 @@ export async function middleware(request: NextRequest) {
       }
     );
 
-    const { data: claimsData, error: claimsError } = await authDeadline.run(supabase.auth.getClaims());
+    const { data: claimsData, error: claimsError } = await authDeadline.run(
+      getVerifiedClaims(supabase.auth, process.env.NEXT_PUBLIC_SUPABASE_URL!)
+    );
     const userId = typeof claimsData?.claims.sub === 'string' ? claimsData.claims.sub : null;
 
     const isProtected = request.nextUrl.pathname.startsWith('/portal') || request.nextUrl.pathname.startsWith('/admin');

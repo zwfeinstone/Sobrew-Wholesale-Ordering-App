@@ -4,6 +4,8 @@ import { logAuthProfileIssue } from '@/lib/auth-diagnostics';
 import { scheduleUserLastSeen } from '@/lib/last-seen';
 import { elapsedMilliseconds, logServerTiming, serverTimingHeader } from '@/lib/server-performance';
 import { createRouteClient } from '@/lib/supabase/route';
+import { getVerifiedClaims } from '@/lib/supabase/verified-claims';
+import { env } from '@/lib/env';
 import { submitPortalOrderWithContext } from '../submit-order';
 
 export async function POST(request: NextRequest) {
@@ -24,7 +26,7 @@ export async function POST(request: NextRequest) {
     return redirectResponse;
   };
 
-  const { data: claimsData, error: claimsError } = await supabase.auth.getClaims();
+  const { data: claimsData, error: claimsError } = await getVerifiedClaims(supabase.auth, env.supabaseUrl);
   if (claimsError) {
     logAuthProfileIssue('Checkout submit auth claims verification failed', claimsError);
   }

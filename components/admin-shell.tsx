@@ -79,6 +79,7 @@ export function AdminShell({
                     className={`sidebar-link ${child ? 'md:ml-3 md:min-h-[2.5rem] md:text-sm' : ''}`}
                     exact={exact}
                     href={href}
+                    prefetch={false}
                   >
                     <span>{name}</span>
                     {sectionKey === orderBadgeSection && newOrders > 0 ? <span className="rounded-full bg-rose-400 px-2.5 py-1 text-xs font-semibold text-white">{newOrders}</span> : null}

@@ -1,0 +1,19 @@
+{
+  "projectOrigin": "https://ovrzooxvvernqqcotpkv.supabase.co",
+  "capturedAt": "2026-08-28T22:11:00.000Z",
+  "jwks": {
+    "keys": [
+      {
+        "alg": "ES256",
+        "crv": "P-256",
+        "ext": true,
+        "key_ops": ["verify"],
+        "kid": "986f1d9f-8641-4e2d-9542-806f2869a648",
+        "kty": "EC",
+        "use": "sig",
+        "x": "xAkGF9jvdxGGJ6Uah_F7HN8xGslyskvjWtn_lvkmq5o",
+        "y": "8kWUZ9HwJHdyeiJsBoDmtvbikADpPXuQ2x7drZzHXnE"
+      }
+    ]
+  }
+}

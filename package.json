@@ -18,6 +18,8 @@
     "test:watch": "vitest",
     "test:e2e": "playwright test",
     "check": "npm run typecheck && npm run lint && npm run test",
+    "auth:jwks:check": "node scripts/sync-supabase-jwks.mjs",
+    "auth:jwks:update": "node scripts/sync-supabase-jwks.mjs --write",
     "backfill:cogs": "node scripts/backfill-historical-cogs.mjs",
     "cron:recurring": "node scripts/run-recurring-cron.mjs",
     "repair:shipped-short-inventory": "node scripts/repair-shipped-short-inventory.mjs"

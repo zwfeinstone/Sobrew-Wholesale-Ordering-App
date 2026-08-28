@@ -54,6 +54,8 @@ npm run test:e2e
 
 The Playwright suite always checks the public login at 320, 390, 768, and 1440 pixels. Authenticated role and center-isolation scenarios run when the documented `E2E_*` credentials are supplied.
 
+Protected sessions are verified locally with a bundled copy of Supabase's public signing keys, so normal admin and portal requests do not depend on JWKS network availability. Run `npm run auth:jwks:check` as a regular drift check and before any signing-key rotation. Follow [AUTH_SIGNING_KEYS.md](./AUTH_SIGNING_KEYS.md) for the zero-downtime update and emergency-revocation procedure.
+
 ## Deployment performance
 - Vercel functions are configured for `pdx1` in `vercel.json` to align with the Oregon Supabase region.
 - Vercel Speed Insights and privacy-safe server timings cover authenticated context, checkout, reports, and recurring cron work.

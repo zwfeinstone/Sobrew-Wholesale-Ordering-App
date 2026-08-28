@@ -10,6 +10,8 @@ import { logAuthProfileIssue } from '@/lib/auth-diagnostics';
 import { scheduleUserLastSeen } from '@/lib/last-seen';
 import { logServerTiming } from '@/lib/server-performance';
 import { createClient } from '@/lib/supabase/server';
+import { getVerifiedClaims } from '@/lib/supabase/verified-claims';
+import { env } from '@/lib/env';
 
 export type RequestContextUser = {
   email: string | null;
@@ -89,7 +91,7 @@ async function loadAdminCenterScope({
 export const getRequestContext = cache(async (): Promise<RequestContext> => {
   const requestContextStartedAt = performance.now();
   const supabase = await createClient();
-  const { data: claimsData, error: claimsError } = await supabase.auth.getClaims();
+  const { data: claimsData, error: claimsError } = await getVerifiedClaims(supabase.auth, env.supabaseUrl);
   if (claimsError) {
     logAuthProfileIssue('Protected route auth claims verification failed', claimsError);
   }

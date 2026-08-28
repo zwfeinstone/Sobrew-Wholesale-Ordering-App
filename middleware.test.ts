@@ -32,6 +32,17 @@ vi.mock('@supabase/ssr', () => ({
 }));
 
 import { AUTH_VERIFICATION_TIMEOUT_MS, middleware } from './middleware';
+import {
+  SUPABASE_AUTH_JWKS,
+  SUPABASE_AUTH_JWKS_PROJECT_ORIGIN,
+} from './lib/supabase/verified-claims';
+
+const VERIFIED_CLAIMS = {
+  aud: 'authenticated',
+  iss: `${SUPABASE_AUTH_JWKS_PROJECT_ORIGIN}/auth/v1`,
+  role: 'authenticated',
+  sub: 'user-123',
+};
 
 function protectedRequest(path = '/portal/orders?status=open', headers: Record<string, string> = {}) {
   return new NextRequest(`https://app.sobrew.com${path}`, {
@@ -55,6 +66,8 @@ function setRotatedCookie() {
 
 describe('protected-route middleware', () => {
   beforeEach(() => {
+    vi.stubEnv('NEXT_PUBLIC_SUPABASE_URL', SUPABASE_AUTH_JWKS_PROJECT_ORIGIN);
+    vi.stubEnv('NEXT_PUBLIC_SUPABASE_ANON_KEY', 'test-anon-key');
     ssrMocks.getClaims.mockReset();
     ssrMocks.createServerClient.mockReset();
     ssrMocks.options = undefined;
@@ -67,13 +80,14 @@ describe('protected-route middleware', () => {
 
   afterEach(() => {
     vi.useRealTimers();
+    vi.unstubAllEnvs();
     vi.restoreAllMocks();
   });
 
   it('continues an authenticated request and sends rotated cookies without caching', async () => {
     ssrMocks.getClaims.mockImplementation(async () => {
       setRotatedCookie();
-      return { data: { claims: { sub: 'user-123' } }, error: null };
+      return { data: { claims: VERIFIED_CLAIMS }, error: null };
     });
 
     const response = await middleware(protectedRequest());
@@ -81,6 +95,7 @@ describe('protected-route middleware', () => {
     expect(response.status).toBe(200);
     expect(response.headers.get('x-middleware-next')).toBe('1');
     expect(response.headers.get('cache-control')).toContain('no-store');
+    expect(ssrMocks.getClaims).toHaveBeenCalledWith(undefined, { jwks: SUPABASE_AUTH_JWKS });
     expect(ssrMocks.options?.global?.fetch).toBeTypeOf('function');
     expect(response.cookies.get('sb-project-auth-token')).toMatchObject({
       httpOnly: true,

@@ -9,6 +9,7 @@ type ActiveNavLinkProps = {
   className?: string;
   exact?: boolean;
   href: string;
+  prefetch?: boolean;
 };
 
 function isActivePath(pathname: string, href: string, exact: boolean) {
@@ -16,7 +17,7 @@ function isActivePath(pathname: string, href: string, exact: boolean) {
   return pathname === href || pathname.startsWith(`${href}/`);
 }
 
-export function ActiveNavLink({ children, className = '', exact = false, href }: ActiveNavLinkProps) {
+export function ActiveNavLink({ children, className = '', exact = false, href, prefetch }: ActiveNavLinkProps) {
   const pathname = usePathname();
   const active = isActivePath(pathname, href, exact);
 
@@ -25,6 +26,7 @@ export function ActiveNavLink({ children, className = '', exact = false, href }:
       aria-current={active ? 'page' : undefined}
       className={`${className} ${active ? 'is-active' : ''}`.trim()}
       href={href}
+      prefetch={prefetch}
     >
       {children}
     </Link>
