@@ -3,7 +3,7 @@ import { redirect } from 'next/navigation';
 import type { ReactNode } from 'react';
 import PendingSubmitButton from '@/components/pending-submit-button';
 import StatusToast from '@/components/status-toast';
-import { requireAdminSectionView } from '@/lib/admin-permissions';
+import { adminCanEdit, requireAdminSectionView } from '@/lib/admin-permissions';
 import { requireAdminWriteAccess } from '@/lib/admin-write-access';
 import {
   INVENTORY_ADJUSTMENT_TYPES,
@@ -168,7 +168,7 @@ function parsePositiveNumber(value: FormDataEntryValue | null, fallback = 0) {
 
 async function adjustFinishedGoods(formData: FormData) {
   'use server';
-  await requireAdminWriteAccess(inventoryHref('admin_write_denied', 'finished_good'));
+  await requireAdminWriteAccess(inventoryHref('admin_write_denied', 'finished_good'), 'inventory');
 
   const supabase = await createClient();
   const productId = String(formData.get('product_id') ?? '').trim();
@@ -315,7 +315,7 @@ async function adjustFinishedGoods(formData: FormData) {
 
 async function adjustMaterialSupply(formData: FormData) {
   'use server';
-  await requireAdminWriteAccess(inventoryHref('admin_write_denied', 'material_supply'));
+  await requireAdminWriteAccess(inventoryHref('admin_write_denied', 'material_supply'), 'inventory');
 
   const supabase = await createClient();
   const itemId = String(formData.get('inventory_item_id') ?? '').trim();
@@ -489,7 +489,7 @@ export default async function InventoryPage({
   searchParams?: Record<string, string | string[] | undefined>;
 }) {
   const current = await requireAdminSectionView('inventory');
-  const canAdjustInventory = current.isSuperadmin;
+  const canAdjustInventory = adminCanEdit(current.access, 'inventory');
   const requestedTab = typeof searchParams?.tab === 'string' ? searchParams.tab : '';
   const requestedCategory = typeof searchParams?.category === 'string' ? searchParams.category : '';
   const activeCategory = normalizeInventoryCategory(searchParams?.category);
@@ -697,7 +697,7 @@ export default async function InventoryPage({
       {toast === 'finished_adjustment_error' ? <StatusToast message="Unable to adjust finished goods inventory." tone="error" /> : null}
       {toast === 'material_adjustment_saved' ? <StatusToast message="Material or supply inventory adjustment saved." tone="success" /> : null}
       {toast === 'material_adjustment_error' ? <StatusToast message="Unable to adjust material or supply inventory." tone="error" /> : null}
-      {toast === 'admin_write_denied' ? <StatusToast message="Only superadmins can adjust inventory." tone="error" /> : null}
+      {toast === 'admin_write_denied' ? <StatusToast message="You do not have permission to adjust inventory." tone="error" /> : null}
 
       <section className="panel">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
