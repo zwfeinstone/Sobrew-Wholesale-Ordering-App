@@ -1,6 +1,16 @@
 import 'server-only';
 
 import { env } from '@/lib/env';
+import {
+  performQuickBooksRequest,
+  QuickBooksRequestTimeoutError,
+  QUICKBOOKS_BINARY_TIMEOUT_MS,
+  QUICKBOOKS_PAYMENTS_READ_TIMEOUT_MS,
+  QUICKBOOKS_PAYMENTS_WRITE_TIMEOUT_MS,
+  QUICKBOOKS_READ_TIMEOUT_MS,
+  QUICKBOOKS_TOKEN_TIMEOUT_MS,
+  QUICKBOOKS_WRITE_TIMEOUT_MS,
+} from '@/lib/quickbooks-request';
 import { getSupabaseAdmin } from '@/lib/supabase/admin';
 
 const QUICKBOOKS_CONNECTION_ID = 'default';
@@ -16,6 +26,7 @@ const QUICKBOOKS_DEFAULT_SHIP_VIA = 'UPS';
 const QUICKBOOKS_DEFAULT_TRACKING_NOTE = 'See shipped order email';
 const QUICKBOOKS_INVOICE_CREATE_MAX_ATTEMPTS = 5;
 const QUICKBOOKS_SAVED_PAYMENT_LOOKUP_BATCH_SIZE = 4;
+const QUICKBOOKS_CUSTOMER_LIST_BUDGET_MS = 25_000;
 
 type QuickBooksEnvironment = 'production' | 'sandbox';
 type CustomerTaxStatus = 'unknown' | 'for_profit' | 'tax_exempt';
@@ -740,6 +751,30 @@ async function parseJsonResponse(response: Response) {
   }
 }
 
+function quickBooksRequestMethod(init: RequestInit) {
+  return cleanText(init.method || 'GET').toUpperCase();
+}
+
+function quickBooksRequestOperation(path: string) {
+  const pathname = path.split('?')[0].toLowerCase();
+  if (pathname === '/query') return 'accounting_query';
+  if (pathname.includes('/companyinfo/')) return 'company_info';
+  if (pathname.includes('/invoice/') && pathname.endsWith('/pdf')) return 'invoice_pdf';
+  if (pathname.includes('/invoice/') && pathname.endsWith('/send')) return 'invoice_send';
+  if (pathname === '/invoice') return 'invoice_create';
+  if (pathname.includes('/invoice/')) return 'invoice_update';
+  if (pathname === '/payment') return 'payment_record';
+  if (pathname.includes('/customer/')) return 'customer';
+  if (pathname.includes('/item/')) return 'item';
+  return pathname.split('/').filter(Boolean)[0] || 'accounting_request';
+}
+
+function quickBooksHttpFallback(response: Response, fallback: string) {
+  if (response.status === 429) return 'QuickBooks is temporarily limiting requests (HTTP 429). Try again in a moment.';
+  if (response.status >= 500) return `QuickBooks is temporarily unavailable (HTTP ${response.status}). Try again in a moment.`;
+  return `${fallback} (HTTP ${response.status}).`;
+}
+
 function quickBooksErrorMessage(payload: any, fallback: string, intuitTid?: string | null) {
   const faultError = payload?.Fault?.Error?.[0];
   const faultMessage = cleanText(faultError?.Message);
@@ -770,18 +805,30 @@ export function quickBooksDuplicateDocNumberError(
 
 async function tokenRequest(body: URLSearchParams) {
   const config = requireOAuthConfig();
-  const response = await fetch(QUICKBOOKS_TOKEN_ENDPOINT, {
-    body,
-    headers: {
-      Accept: 'application/json',
-      Authorization: `Basic ${basicAuth(config.clientId, config.clientSecret)}`,
-      'Content-Type': 'application/x-www-form-urlencoded',
-    },
+  const { body: payload, response } = await performQuickBooksRequest({
     method: 'POST',
+    operation: 'oauth_token',
+    service: 'oauth',
+    timeoutMs: QUICKBOOKS_TOKEN_TIMEOUT_MS,
+  }, async (signal) => {
+    const response = await fetch(QUICKBOOKS_TOKEN_ENDPOINT, {
+      body,
+      headers: {
+        Accept: 'application/json',
+        Authorization: `Basic ${basicAuth(config.clientId, config.clientSecret)}`,
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      method: 'POST',
+      signal,
+    });
+    return { body: await parseJsonResponse(response), response };
   });
-  const payload = await parseJsonResponse(response);
   if (!response.ok) {
-    throw new Error(quickBooksErrorMessage(payload, 'QuickBooks authorization failed.', response.headers.get('intuit_tid')));
+    throw new Error(quickBooksErrorMessage(
+      payload,
+      quickBooksHttpFallback(response, 'QuickBooks authorization failed'),
+      response.headers.get('intuit_tid')
+    ));
   }
   return payload as QuickBooksTokenResponse;
 }
@@ -848,7 +895,7 @@ async function refreshConnection(connection: QuickBooksConnection) {
     refresh_token: connection.refresh_token,
   }));
   const supabase = getSupabaseAdmin();
-  const { error } = await supabase
+  const { data, error } = await supabase
     .from('quickbooks_connections')
     .update({
       access_token: token.access_token,
@@ -858,42 +905,100 @@ async function refreshConnection(connection: QuickBooksConnection) {
       scope: cleanText(token.scope) || connection.scope || QUICKBOOKS_OAUTH_SCOPE,
       updated_at: new Date().toISOString(),
     })
-    .eq('id', QUICKBOOKS_CONNECTION_ID);
+    .eq('id', QUICKBOOKS_CONNECTION_ID)
+    .eq('refresh_token', connection.refresh_token)
+    .select('realm_id,environment,access_token,refresh_token,access_token_expires_at,scope')
+    .maybeSingle();
   if (error) throw new Error(`Unable to refresh QuickBooks connection: ${error.message}`);
-  return {
-    ...connection,
-    access_token: token.access_token,
-    access_token_expires_at: tokenExpiry(token.expires_in),
-    refresh_token: token.refresh_token,
-    scope: cleanText(token.scope) || connection.scope || QUICKBOOKS_OAUTH_SCOPE,
-  };
+  if (data) return data as QuickBooksConnection;
+
+  // A different server instance won the refresh-token rotation. Never
+  // overwrite its newer token; reuse the saved connection instead.
+  const latestConnection = await getStoredConnection();
+  if (
+    latestConnection
+    && latestConnection.refresh_token !== connection.refresh_token
+    && connectionAccessTokenIsFresh(latestConnection)
+  ) {
+    return latestConnection;
+  }
+  throw new Error('QuickBooks connection changed while refreshing. Try again in a moment.');
+}
+
+let quickBooksRefreshInFlight: Promise<QuickBooksConnection> | null = null;
+
+function connectionAccessTokenIsFresh(connection: QuickBooksConnection) {
+  const expiresAt = new Date(connection.access_token_expires_at).getTime();
+  return Number.isFinite(expiresAt) && expiresAt > Date.now() + 2 * 60 * 1000;
 }
 
 async function getAuthorizedConnection() {
   requireOAuthConfig();
   const connection = await getStoredConnection();
   if (!connection) throw new QuickBooksConfigurationError('QuickBooks is not connected.');
-  const expiresAt = new Date(connection.access_token_expires_at).getTime();
-  if (Number.isFinite(expiresAt) && expiresAt > Date.now() + 2 * 60 * 1000) return connection;
-  return refreshConnection(connection);
+  if (connectionAccessTokenIsFresh(connection)) return connection;
+
+  if (!quickBooksRefreshInFlight) {
+    const refresh = refreshConnection(connection);
+    quickBooksRefreshInFlight = refresh;
+    void refresh.finally(() => {
+      if (quickBooksRefreshInFlight === refresh) quickBooksRefreshInFlight = null;
+    }).catch(() => undefined);
+  }
+
+  try {
+    return await quickBooksRefreshInFlight;
+  } catch (error) {
+    // Another server invocation may have rotated and saved the refresh token
+    // while this one was refreshing. Prefer that newer valid connection over
+    // surfacing a false reconnect error.
+    const latestConnection = await getStoredConnection().catch(() => null);
+    if (
+      latestConnection
+      && latestConnection.access_token !== connection.access_token
+      && connectionAccessTokenIsFresh(latestConnection)
+    ) {
+      return latestConnection;
+    }
+    throw error;
+  }
 }
 
-async function quickBooksRequest(connection: QuickBooksConnection, path: string, init: RequestInit = {}) {
+async function quickBooksRequest(
+  connection: QuickBooksConnection,
+  path: string,
+  init: RequestInit = {},
+  requestOptions: { operation?: string; timeoutMs?: number } = {}
+) {
   const environment = connection.environment === 'production' ? 'production' : 'sandbox';
   const separator = path.includes('?') ? '&' : '?';
   const url = `${quickBooksApiBaseUrl(environment)}/v3/company/${encodeURIComponent(connection.realm_id)}${path}${separator}minorversion=${encodeURIComponent(env.quickBooksMinorVersion)}`;
-  const response = await fetch(url, {
-    ...init,
-    headers: {
-      Accept: 'application/json',
-      Authorization: `Bearer ${connection.access_token}`,
-      ...(init.body ? { 'Content-Type': 'application/json' } : {}),
-      ...init.headers,
-    },
+  const method = quickBooksRequestMethod(init);
+  const { body: payload, response } = await performQuickBooksRequest({
+    method,
+    operation: requestOptions.operation ?? quickBooksRequestOperation(path),
+    service: 'accounting',
+    signal: init.signal,
+    timeoutMs: requestOptions.timeoutMs ?? (method === 'GET' ? QUICKBOOKS_READ_TIMEOUT_MS : QUICKBOOKS_WRITE_TIMEOUT_MS),
+  }, async (signal) => {
+    const response = await fetch(url, {
+      ...init,
+      headers: {
+        Accept: 'application/json',
+        Authorization: `Bearer ${connection.access_token}`,
+        ...(init.body ? { 'Content-Type': 'application/json' } : {}),
+        ...init.headers,
+      },
+      signal,
+    });
+    return { body: await parseJsonResponse(response), response };
   });
-  const payload = await parseJsonResponse(response);
   if (!response.ok) {
-    throw new Error(quickBooksErrorMessage(payload, 'QuickBooks request failed.', response.headers.get('intuit_tid')));
+    throw new Error(quickBooksErrorMessage(
+      payload,
+      quickBooksHttpFallback(response, 'QuickBooks request failed'),
+      response.headers.get('intuit_tid')
+    ));
   }
   return payload;
 }
@@ -902,36 +1007,67 @@ async function quickBooksBinaryRequest(connection: QuickBooksConnection, path: s
   const environment = connection.environment === 'production' ? 'production' : 'sandbox';
   const separator = path.includes('?') ? '&' : '?';
   const url = `${quickBooksApiBaseUrl(environment)}/v3/company/${encodeURIComponent(connection.realm_id)}${path}${separator}minorversion=${encodeURIComponent(env.quickBooksMinorVersion)}`;
-  const response = await fetch(url, {
-    ...init,
-    headers: {
-      Accept: 'application/pdf',
-      Authorization: `Bearer ${connection.access_token}`,
-      ...init.headers,
-    },
+  const method = quickBooksRequestMethod(init);
+  const { body, response } = await performQuickBooksRequest<Buffer | unknown>({
+    method,
+    operation: quickBooksRequestOperation(path),
+    service: 'accounting',
+    signal: init.signal,
+    timeoutMs: QUICKBOOKS_BINARY_TIMEOUT_MS,
+  }, async (signal) => {
+    const response = await fetch(url, {
+      ...init,
+      headers: {
+        Accept: 'application/pdf',
+        Authorization: `Bearer ${connection.access_token}`,
+        ...init.headers,
+      },
+      signal,
+    });
+    const body = response.ok
+      ? Buffer.from(await response.arrayBuffer())
+      : await parseJsonResponse(response);
+    return { body, response };
   });
   if (!response.ok) {
-    const payload = await parseJsonResponse(response);
-    throw new Error(quickBooksErrorMessage(payload, 'QuickBooks request failed.', response.headers.get('intuit_tid')));
+    throw new Error(quickBooksErrorMessage(
+      body,
+      quickBooksHttpFallback(response, 'QuickBooks request failed'),
+      response.headers.get('intuit_tid')
+    ));
   }
-  return Buffer.from(await response.arrayBuffer());
+  return body as Buffer;
 }
 
 async function quickBooksPaymentsRequest(connection: QuickBooksConnection, path: string, init: RequestInit = {}) {
   const environment = connection.environment === 'production' ? 'production' : 'sandbox';
   const url = `${quickBooksPaymentsApiBaseUrl(environment)}${path}`;
-  const response = await fetch(url, {
-    ...init,
-    headers: {
-      Accept: 'application/json',
-      Authorization: `Bearer ${connection.access_token}`,
-      ...(init.body ? { 'Content-Type': 'application/json' } : {}),
-      ...init.headers,
-    },
+  const method = quickBooksRequestMethod(init);
+  const { body: payload, response } = await performQuickBooksRequest({
+    method,
+    operation: quickBooksRequestOperation(path),
+    service: 'payments',
+    signal: init.signal,
+    timeoutMs: method === 'GET' ? QUICKBOOKS_PAYMENTS_READ_TIMEOUT_MS : QUICKBOOKS_PAYMENTS_WRITE_TIMEOUT_MS,
+  }, async (signal) => {
+    const response = await fetch(url, {
+      ...init,
+      headers: {
+        Accept: 'application/json',
+        Authorization: `Bearer ${connection.access_token}`,
+        ...(init.body ? { 'Content-Type': 'application/json' } : {}),
+        ...init.headers,
+      },
+      signal,
+    });
+    return { body: await parseJsonResponse(response), response };
   });
-  const payload = await parseJsonResponse(response);
   if (!response.ok) {
-    throw new Error(quickBooksErrorMessage(payload, 'QuickBooks Payments request failed.', response.headers.get('intuit_tid')));
+    throw new Error(quickBooksErrorMessage(
+      payload,
+      quickBooksHttpFallback(response, 'QuickBooks Payments request failed'),
+      response.headers.get('intuit_tid')
+    ));
   }
   return payload;
 }
@@ -939,18 +1075,32 @@ async function quickBooksPaymentsRequest(connection: QuickBooksConnection, path:
 async function quickBooksPaymentsCustomerRequest(connection: QuickBooksConnection, path: string, init: RequestInit = {}) {
   const environment = connection.environment === 'production' ? 'production' : 'sandbox';
   const url = `${quickBooksPaymentsCustomerApiBaseUrl(environment)}${path}`;
-  const response = await fetch(url, {
-    ...init,
-    headers: {
-      Accept: 'application/json',
-      Authorization: `Bearer ${connection.access_token}`,
-      ...(init.body ? { 'Content-Type': 'application/json' } : {}),
-      ...init.headers,
-    },
+  const method = quickBooksRequestMethod(init);
+  const { body: payload, response } = await performQuickBooksRequest({
+    method,
+    operation: quickBooksRequestOperation(path),
+    service: 'payments_customer',
+    signal: init.signal,
+    timeoutMs: method === 'GET' ? QUICKBOOKS_PAYMENTS_READ_TIMEOUT_MS : QUICKBOOKS_PAYMENTS_WRITE_TIMEOUT_MS,
+  }, async (signal) => {
+    const response = await fetch(url, {
+      ...init,
+      headers: {
+        Accept: 'application/json',
+        Authorization: `Bearer ${connection.access_token}`,
+        ...(init.body ? { 'Content-Type': 'application/json' } : {}),
+        ...init.headers,
+      },
+      signal,
+    });
+    return { body: await parseJsonResponse(response), response };
   });
-  const payload = await parseJsonResponse(response);
   if (!response.ok) {
-    throw new Error(quickBooksErrorMessage(payload, 'QuickBooks Payments customer request failed.', response.headers.get('intuit_tid')));
+    throw new Error(quickBooksErrorMessage(
+      payload,
+      quickBooksHttpFallback(response, 'QuickBooks Payments customer request failed'),
+      response.headers.get('intuit_tid')
+    ));
   }
   return payload;
 }
@@ -959,8 +1109,12 @@ function escapeQueryString(value: string) {
   return value.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
 }
 
-async function quickBooksQuery(connection: QuickBooksConnection, query: string) {
-  return quickBooksRequest(connection, `/query?query=${encodeURIComponent(query)}`);
+async function quickBooksQuery(
+  connection: QuickBooksConnection,
+  query: string,
+  requestOptions: { operation?: string; timeoutMs?: number } = {}
+) {
+  return quickBooksRequest(connection, `/query?query=${encodeURIComponent(query)}`, {}, requestOptions);
 }
 
 async function readQuickBooksCustomer(connection: QuickBooksConnection, customerId: string) {
@@ -1150,6 +1304,19 @@ function quickBooksInvoiceMentionsOrder(invoice: any, orderId: string) {
     customerMemo,
     ...lineDescriptions,
   ].map(cleanText).some((value) => value.includes(orderText));
+}
+
+export function findQuickBooksInvoiceMatchByDocNumber(
+  invoices: any[],
+  docNumber: string,
+  orderId: string
+) {
+  const expectedDocNumber = cleanText(docNumber);
+  if (!expectedDocNumber) return null;
+  return invoices.find((invoice) => (
+    cleanText(invoice?.DocNumber) === expectedDocNumber
+    && quickBooksInvoiceMentionsOrder(invoice, orderId)
+  )) ?? null;
 }
 
 function quickBooksInvoiceCreatedAt(invoice: any) {
@@ -1998,6 +2165,23 @@ async function tryEnsureQuickBooksInvoiceDocNumber(
   }
 }
 
+async function findQuickBooksInvoiceForOrderByDocNumber(
+  connection: QuickBooksConnection,
+  docNumber: string,
+  orderId: string
+): Promise<QuickBooksInvoiceRecord | null> {
+  const result = await quickBooksQuery(
+    connection,
+    `SELECT * FROM Invoice WHERE DocNumber = '${escapeQueryString(docNumber)}' MAXRESULTS 10`,
+    { operation: 'invoice_create_reconcile' }
+  );
+  return findQuickBooksInvoiceMatchByDocNumber(
+    quickBooksQueryInvoices(result),
+    docNumber,
+    orderId
+  ) as QuickBooksInvoiceRecord | null;
+}
+
 async function assignQuickBooksInvoiceDocNumber(orderId: string) {
   const supabase = getSupabaseAdmin();
   const { data, error } = await supabase.rpc('assign_quickbooks_invoice_doc_number', { order_id: orderId });
@@ -2244,6 +2428,17 @@ export async function createQuickBooksInvoiceForOrder(
       break;
     } catch (error) {
       const duplicateDocNumber = quickBooksDuplicateDocNumberError(error, portalDocNumber);
+      if (error instanceof QuickBooksRequestTimeoutError || duplicateDocNumber) {
+        const existingInvoice = await findQuickBooksInvoiceForOrderByDocNumber(
+          connection,
+          portalDocNumber,
+          orderId
+        ).catch(() => null);
+        if (existingInvoice?.Id) {
+          invoice = existingInvoice;
+          break;
+        }
+      }
       if (!duplicateDocNumber || attempt >= QUICKBOOKS_INVOICE_CREATE_MAX_ATTEMPTS) throw error;
       portalDocNumber = await reassignQuickBooksInvoiceDocNumber(orderId, duplicateDocNumber.docNumber);
     }
@@ -2525,16 +2720,39 @@ export async function getQuickBooksInvoiceReceivables(invoiceIds: string[]): Pro
 
 export async function getQuickBooksActiveCustomers(limit = 1000): Promise<QuickBooksCustomersResult> {
   try {
+    const startedAt = Date.now();
     const connection = await getAuthorizedConnection();
     const customers: QuickBooksCustomerRecord[] = [];
     let startPosition = 1;
 
     while (customers.length < limit) {
+      const remainingBudgetMs = QUICKBOOKS_CUSTOMER_LIST_BUDGET_MS - (Date.now() - startedAt);
+      if (remainingBudgetMs <= 0) {
+        return {
+          customers,
+          error: `QuickBooks customer list timed out after ${Math.ceil(QUICKBOOKS_CUSTOMER_LIST_BUDGET_MS / 1000)} seconds. Try again in a moment.`,
+          truncated: true,
+        };
+      }
+
       const pageSize = Math.min(100, limit - customers.length);
-      const result = await quickBooksQuery(
-        connection,
-        `SELECT * FROM Customer WHERE Active = true STARTPOSITION ${startPosition} MAXRESULTS ${pageSize}`
-      );
+      let result;
+      try {
+        result = await quickBooksQuery(
+          connection,
+          `SELECT * FROM Customer WHERE Active = true STARTPOSITION ${startPosition} MAXRESULTS ${pageSize}`,
+          {
+            operation: 'customer_list',
+            timeoutMs: Math.max(1, Math.min(QUICKBOOKS_READ_TIMEOUT_MS, remainingBudgetMs)),
+          }
+        );
+      } catch (error) {
+        return {
+          customers,
+          error: error instanceof Error ? error.message : 'Unable to pull QuickBooks customers.',
+          truncated: true,
+        };
+      }
       const pageCustomers = quickBooksQueryCustomers(result)
         .map(normalizeQuickBooksCustomer)
         .filter((customer): customer is QuickBooksCustomerRecord => Boolean(customer));

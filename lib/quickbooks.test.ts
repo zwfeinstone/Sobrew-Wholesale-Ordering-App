@@ -7,6 +7,7 @@ import {
   buildQuickBooksInvoicePayload,
   buildQuickBooksInvoicePaymentPayload,
   buildQuickBooksSavedPaymentChargePayload,
+  findQuickBooksInvoiceMatchByDocNumber,
   findQuickBooksPaidInvoiceMatchForOrder,
   normalizeCustomerMatchText,
   normalizeQuickBooksInvoiceReceivable,
@@ -32,6 +33,30 @@ describe('quickbooks duplicate invoice numbers', () => {
     const error = new Error('Duplicate Document Number Error: DocNumber=SO-1278 is assigned to TxnType=Invoice with TxnId=1185');
 
     expect(quickBooksDuplicateDocNumberError(error, 'SO-1279')).toBeNull();
+  });
+
+  it('reconciles a previously-created invoice for the same portal order', () => {
+    const matchingInvoice = {
+      DocNumber: 'SO-1279',
+      Id: 'invoice-42',
+      PrivateNote: 'Sobrew order order-123\nCreated from wholesale portal',
+    };
+    const unrelatedInvoice = {
+      DocNumber: 'SO-1279',
+      Id: 'invoice-41',
+      PrivateNote: 'Created manually',
+    };
+
+    expect(findQuickBooksInvoiceMatchByDocNumber(
+      [unrelatedInvoice, matchingInvoice],
+      'SO-1279',
+      'order-123'
+    )).toBe(matchingInvoice);
+    expect(findQuickBooksInvoiceMatchByDocNumber(
+      [unrelatedInvoice],
+      'SO-1279',
+      'order-123'
+    )).toBeNull();
   });
 });
 

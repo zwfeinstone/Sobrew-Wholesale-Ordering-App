@@ -1,5 +1,7 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
+import InvoicingRefreshButton from '@/components/invoicing-refresh-button';
+import InvoicingViewTabs from '@/components/invoicing-view-tabs';
 import PendingSubmitButton from '@/components/pending-submit-button';
 import { QuickBooksProductResetForm } from '@/components/quickbooks-product-reset-form';
 import StatusToast from '@/components/status-toast';
@@ -17,7 +19,6 @@ import {
   getQuickBooksActiveItems,
   getQuickBooksCompanyInfo,
   getQuickBooksConnectionStatus,
-  getQuickBooksCustomerSummary,
   getQuickBooksInvoiceReceivables,
   getQuickBooksInvoicePdf,
   getQuickBooksProductSummary,
@@ -1086,12 +1087,11 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
   const selectedToast = toastMessage(toast);
   const startIso = quickBooksInvoicingStartIso();
   const supabase = await createClient();
-  const [quickBooksStatus, quickBooksCompanyInfo, quickBooksProductSummary, quickBooksItemsResult, quickBooksCustomerSummary, quickBooksCustomersResult, salesTaxSettings, ordersResult, sentInvoicesResult, receivableOrdersResult, productsResult, centersResult, resetStatusResult] = await Promise.all([
+  const [quickBooksStatus, quickBooksCompanyInfo, quickBooksProductSummary, quickBooksItemsResult, quickBooksCustomersResult, salesTaxSettings, ordersResult, sentInvoicesResult, receivableOrdersResult, productsResult, centersResult, resetStatusResult] = await Promise.all([
     getQuickBooksConnectionStatus(),
     activeView === 'accounts-receivable' || activeView === 'sent' || activeView === 'products' || activeView === 'customers' ? getQuickBooksCompanyInfo() : Promise.resolve({ companyName: null, email: null, error: null, legalName: null, realmId: null }),
     activeView === 'products' ? getQuickBooksProductSummary() : Promise.resolve({ activeItemCount: null, error: null }),
     activeView === 'products' ? getQuickBooksActiveItems() : Promise.resolve({ error: null, items: [], truncated: false }),
-    activeView === 'customers' ? getQuickBooksCustomerSummary() : Promise.resolve({ activeCustomerCount: null, error: null }),
     activeView === 'customers' ? getQuickBooksActiveCustomers() : Promise.resolve({ customers: [], error: null, truncated: false }),
     getQuickBooksSalesTaxSettings(),
     supabase
@@ -1173,6 +1173,21 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
   const centers = (centersResult.data ?? []) as CustomerSyncRow[];
   const quickBooksItems = quickBooksItemsResult.items;
   const quickBooksCustomers = quickBooksCustomersResult.customers;
+  const quickBooksCustomerCountLabel = quickBooksCustomersResult.error
+    ? '—'
+    : quickBooksCustomersResult.truncated
+      ? `${quickBooksCustomers.length}+`
+      : quickBooksCustomers.length;
+  const centersLoadError = activeView === 'customers' && centersResult.error
+    ? centersResult.error.message
+    : null;
+  if (centersLoadError) {
+    console.error(JSON.stringify({
+      level: 'error',
+      message: 'invoicing_customer_centers_query_failed',
+      error: centersLoadError,
+    }));
+  }
   const resetStatus = resetStatusResult.data as QuickBooksResetStatusRow | null;
   const quickBooksPaymentsAuthorized = hasQuickBooksPaymentsScope(quickBooksStatus.grantedScopes);
   const paidInvoiceReconciliation = activeView === 'queue' && quickBooksStatus.connected
@@ -1223,7 +1238,7 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
           <p className="mt-2 max-w-2xl text-sm text-slate-500">Shipped orders from {QUICKBOOKS_INVOICING_START_LABEL} forward appear here until QuickBooks has an invoice.</p>
         </div>
         <div className="flex flex-col gap-2 sm:flex-row">
-          <Link className="btn-secondary text-center" href="/admin/orders">Orders</Link>
+          <Link className="btn-secondary text-center" href="/admin/orders" prefetch={false}>Orders</Link>
           {quickBooksStatus.connected ? (
             <form action={disconnectQuickBooks} className="contents">
               <input type="hidden" name="view" value={activeView} />
@@ -1287,17 +1302,13 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
         </div>
       ) : null}
 
-      <nav className="grid gap-2 sm:grid-cols-2 lg:grid-cols-6" aria-label="Invoicing views">
-        {INVOICING_VIEWS.map((view) => (
-          <Link
-            key={view.id}
-            className={`rounded-lg border px-3 py-2 text-center text-sm font-semibold ${activeView === view.id ? 'border-teal-200 bg-teal-50 text-teal-900' : 'border-slate-200 bg-white/70 text-slate-700'}`}
-            href={invoicingViewHref(view.id)}
-          >
-            {view.label}
-          </Link>
-        ))}
-      </nav>
+      <InvoicingViewTabs
+        activeView={activeView}
+        views={INVOICING_VIEWS.map((view) => ({
+          ...view,
+          href: invoicingViewHref(view.id),
+        }))}
+      />
 
       {activeView === 'accounts-receivable' ? (
         <div className="space-y-6">
@@ -1373,7 +1384,7 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
                 <h2 className="text-xl font-semibold tracking-tight text-slate-950">Accounts receivable</h2>
                 <p className="mt-1 text-sm text-slate-500">Live QuickBooks balances for invoices created from Sobrew orders.</p>
               </div>
-              <Link className="btn-secondary text-center" href="/admin/invoicing?view=accounts-receivable">Refresh balances</Link>
+              <Link className="btn-secondary text-center" href="/admin/invoicing?view=accounts-receivable" prefetch={false}>Refresh balances</Link>
             </div>
 
             {quickBooksStatus.connected ? (
@@ -1425,7 +1436,7 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
                             </td>
                             <td className="w-44 px-3 py-3">
                               <div className="flex w-full flex-col gap-2 sm:items-end">
-                                <Link className="btn-secondary w-full whitespace-nowrap text-center text-xs" href={`/admin/orders/${row.order.id}`}>Order</Link>
+                                <Link className="btn-secondary w-full whitespace-nowrap text-center text-xs" href={`/admin/orders/${row.order.id}`} prefetch={false}>Order</Link>
                                 {row.order.quickbooks_invoice_url ? (
                                   <a className="btn-secondary w-full whitespace-nowrap text-center text-xs" href={row.order.quickbooks_invoice_url} target="_blank" rel="noreferrer">QuickBooks</a>
                                 ) : null}
@@ -1510,7 +1521,7 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
                       <td className="px-3 py-3 text-slate-600">{(order.order_items ?? []).length}</td>
                       <td className="w-44 px-3 py-3">
                         <div className="flex w-full flex-col gap-2 sm:items-end">
-                          <Link className="btn-secondary w-full whitespace-nowrap text-center text-xs" href={`/admin/orders/${order.id}`}>Order</Link>
+                          <Link className="btn-secondary w-full whitespace-nowrap text-center text-xs" href={`/admin/orders/${order.id}`} prefetch={false}>Order</Link>
                           {order.quickbooks_invoice_url ? (
                             <a className="btn-secondary w-full whitespace-nowrap text-center text-xs" href={order.quickbooks_invoice_url} target="_blank" rel="noreferrer">QuickBooks</a>
                           ) : null}
@@ -1610,8 +1621,8 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
             </div>
             <div className="stat-card">
               <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">QuickBooks customers</p>
-              <p className="mt-2 text-3xl font-semibold text-slate-950">{quickBooksCustomerSummary.activeCustomerCount === null ? '—' : quickBooksCustomerSummary.activeCustomerCount}</p>
-              <p className="mt-1 text-sm text-slate-500">{quickBooksStatus.connected ? quickBooksCustomerSummary.error ? 'Unavailable' : 'Active in QuickBooks' : 'Not connected'}</p>
+              <p className="mt-2 text-3xl font-semibold text-slate-950">{quickBooksCustomerCountLabel}</p>
+              <p className="mt-1 text-sm text-slate-500">{quickBooksStatus.connected ? quickBooksCustomersResult.error ? 'Unavailable' : 'Active in QuickBooks' : 'Not connected'}</p>
             </div>
           </div>
 
@@ -1620,19 +1631,20 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
               {errorDetail}
             </div>
           ) : null}
-          {quickBooksCustomerSummary.error && quickBooksStatus.connected ? (
-            <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-900">
-              {quickBooksCustomerSummary.error}
+          {centersLoadError ? (
+            <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-medium text-rose-900">
+              Unable to load portal centers: {centersLoadError}
             </div>
           ) : null}
           {quickBooksCustomersResult.error && quickBooksStatus.connected ? (
-            <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-900">
-              {quickBooksCustomersResult.error}
+            <div className="flex flex-col gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-900 sm:flex-row sm:items-center sm:justify-between">
+              <span>{quickBooksCustomersResult.error}</span>
+              <InvoicingRefreshButton label="Try QuickBooks again" pendingLabel="Trying QuickBooks..." />
             </div>
           ) : null}
-          {quickBooksCustomersResult.truncated ? (
+          {quickBooksCustomersResult.truncated && quickBooksCustomers.length ? (
             <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-900">
-              Showing the first {quickBooksCustomers.length} active QuickBooks customers. Use search later if the customer is beyond this pull.
+              Showing the first {quickBooksCustomers.length} active QuickBooks customers. Refresh to try loading the rest.
             </div>
           ) : null}
           {quickBooksStatus.connected ? (
@@ -1653,7 +1665,7 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
                 <h2 className="text-xl font-semibold tracking-tight text-slate-950">Customer mapping</h2>
                 <p className="mt-1 text-sm text-slate-500">Portal center names stay the same. QuickBooks enriches legal name, billing email, and billing address once a match is approved.</p>
               </div>
-              <Link className="btn-secondary text-center" href="/admin/invoicing?view=customers">Refresh customers</Link>
+              <InvoicingRefreshButton label="Refresh customers" />
             </div>
 
             {quickBooksStatus.connected ? (
@@ -1897,7 +1909,7 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
                 <h2 className="text-xl font-semibold tracking-tight text-slate-950">Product sync</h2>
                 <p className="mt-1 text-sm text-slate-500">This reset archives active QuickBooks products and creates new QuickBooks items from active portal products.</p>
               </div>
-              <Link className="btn-secondary text-center" href="/admin/invoicing?view=products">Refresh preview</Link>
+              <Link className="btn-secondary text-center" href="/admin/invoicing?view=products" prefetch={false}>Refresh preview</Link>
             </div>
 
             <QuickBooksProductResetForm
@@ -2140,9 +2152,9 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
               ) : null}
 
               <div className="flex flex-col gap-3 sm:flex-row sm:justify-end">
-                <Link className="btn-secondary text-center" href={`/admin/orders/${order.id}`}>Open order</Link>
-                {missingCustomerMapping ? <Link className="btn-secondary text-center" href="/admin/invoicing?view=customers">Map customer</Link> : null}
-                {missingMappedProducts.length ? <Link className="btn-secondary text-center" href="/admin/invoicing?view=products">Map products</Link> : null}
+                <Link className="btn-secondary text-center" href={`/admin/orders/${order.id}`} prefetch={false}>Open order</Link>
+                {missingCustomerMapping ? <Link className="btn-secondary text-center" href="/admin/invoicing?view=customers" prefetch={false}>Map customer</Link> : null}
+                {missingMappedProducts.length ? <Link className="btn-secondary text-center" href="/admin/invoicing?view=products" prefetch={false}>Map products</Link> : null}
                 <form action={chargeSavedPaymentForOrder}>
                   <input type="hidden" name="order_id" value={order.id} />
                   <PendingSubmitButton
