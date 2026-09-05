@@ -71,6 +71,11 @@ function itemDisplayName(item: InventoryItemRow | undefined | null) {
   return item.sku ? `${item.name} (${item.sku})` : item.name;
 }
 
+function isBoxSku(value: string | null | undefined) {
+  const sku = String(value ?? '').toUpperCase();
+  return sku.startsWith('BOX-') || sku.startsWith('MAT-BOX-');
+}
+
 function parsePositiveNumber(value: FormDataEntryValue | null, fallback = 0) {
   const parsed = Number.parseFloat(String(value ?? ''));
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
@@ -279,7 +284,7 @@ export default async function ProductPage({
     const valueCents = itemLots.reduce((sum: number, lot: any) => sum + normalizeInventoryNumber(lot.quantity_remaining) * normalizeInventoryNumber(lot.unit_cost_cents), 0);
     lotSummaryByItem.set(item.id, { remaining, avgCostCents: remaining > 0 ? valueCents / remaining : 0 });
   }
-  const boxQty = recipeComponents.filter((component) => component.component_role === 'box' || relatedOne(component.inventory_items)?.sku?.startsWith('BOX-')).reduce((sum, component) => sum + normalizeInventoryNumber(component.quantity), 0);
+  const boxQty = recipeComponents.filter((component) => component.component_role === 'box' || isBoxSku(relatedOne(component.inventory_items)?.sku)).reduce((sum, component) => sum + normalizeInventoryNumber(component.quantity), 0);
   const fixedCostForRecipeOutput = fixedRecipeCostCents({
     boxQty,
     shippingLabelQty: recipe?.shipping_label_qty,

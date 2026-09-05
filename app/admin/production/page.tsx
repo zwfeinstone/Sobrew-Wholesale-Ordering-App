@@ -146,9 +146,14 @@ function productionStatusClass(status: string | null | undefined) {
   return 'bg-emerald-50 text-emerald-700 ring-emerald-100';
 }
 
+function isBoxSku(value: string | null | undefined) {
+  const sku = String(value ?? '').toUpperCase();
+  return sku.startsWith('BOX-') || sku.startsWith('MAT-BOX-');
+}
+
 function isBoxComponent(component: RecipeComponentRow) {
   const item = relatedOne(component.inventory_items);
-  return component.component_role === 'box' || Boolean(item?.sku?.startsWith('BOX-'));
+  return component.component_role === 'box' || isBoxSku(item?.sku);
 }
 
 async function recordProductionRun(formData: FormData) {

@@ -123,9 +123,14 @@ function relatedOne<T>(value: T | T[] | null | undefined): T | null {
   return value ?? null;
 }
 
+function isBoxSku(value: string | null | undefined) {
+  const sku = String(value ?? '').toUpperCase();
+  return sku.startsWith('BOX-') || sku.startsWith('MAT-BOX-');
+}
+
 function isBoxComponent(component: RecipeComponentRow) {
   const item = relatedOne(component.inventory_items);
-  return component.component_role === 'box' || Boolean(item?.sku?.startsWith('BOX-'));
+  return component.component_role === 'box' || isBoxSku(item?.sku);
 }
 
 function activeProductionQuantity(run: ProductionRunRow) {

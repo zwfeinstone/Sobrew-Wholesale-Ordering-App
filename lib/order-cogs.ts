@@ -203,7 +203,8 @@ function unitBreakdownFromProductionRun(run: ProductionRunRow | undefined | null
 
 function isBoxComponent(component: RecipeComponentRow) {
   const item = relatedOne(component.inventory_items);
-  return component.component_role === 'box' || Boolean(item?.sku?.startsWith('BOX-'));
+  const sku = String(item?.sku ?? '').toUpperCase();
+  return component.component_role === 'box' || sku.startsWith('BOX-') || sku.startsWith('MAT-BOX-');
 }
 
 function skuSegment(value: string | null | undefined) {

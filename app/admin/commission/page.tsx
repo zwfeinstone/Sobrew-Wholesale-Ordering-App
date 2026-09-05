@@ -31,6 +31,11 @@ type CenterRow = {
   name: string | null;
 };
 
+type CommissionSettingRow = {
+  is_sales_rep: boolean | null;
+  profile_id: string;
+};
+
 type PayoutRow = {
   commission_cents: number | string | null;
   commission_month: string;
@@ -169,7 +174,7 @@ export default async function CommissionPage({
   const previousMonth = addCommissionMonths(commissionMonth, -1);
   const priorYearMonth = addCommissionMonths(commissionMonth, -12);
 
-  const [{ data: admins }, { data: assignmentRows }] = await Promise.all([
+  const [{ data: admins }, { data: assignmentRows }, { data: commissionSettings }] = await Promise.all([
     supabaseAdmin
       .from('profiles')
       .select('id,email,full_name,is_active')
@@ -178,11 +183,19 @@ export default async function CommissionPage({
     supabaseAdmin
       .from('center_sales_assignments')
       .select('sales_profile_id'),
+    supabaseAdmin
+      .from('admin_commission_settings')
+      .select('profile_id,is_sales_rep')
+      .eq('is_sales_rep', true),
   ]);
 
   const adminRows = ((admins ?? []) as AdminRow[]).sort((a, b) => profileLabel(a).localeCompare(profileLabel(b)));
   const assignedSalesIds = new Set((assignmentRows ?? []).map((row: any) => row.sales_profile_id).filter(Boolean));
-  const selectableAdmins = adminRows.filter((admin) => assignedSalesIds.has(admin.id) || admin.id === current.profile.id);
+  const salesRepIds = new Set(((commissionSettings ?? []) as CommissionSettingRow[]).map((row) => row.profile_id).filter(Boolean));
+  const selectableAdmins = adminRows.filter((admin) => (
+    admin.id === current.profile.id
+    || (admin.is_active !== false && (salesRepIds.has(admin.id) || assignedSalesIds.has(admin.id)))
+  ));
   const requestedProfileId = typeof searchParams?.sales_profile_id === 'string' ? searchParams.sales_profile_id : '';
   const selectedProfileId = canViewAll
     ? selectableAdmins.some((admin) => admin.id === requestedProfileId)

@@ -39,6 +39,11 @@ function productBoxLabel(item: { name: string | null; sku: string | null }) {
   return item.sku ? `${item.name || 'Box'} (${item.sku})` : item.name || 'Box';
 }
 
+function isBoxSku(value: string | null | undefined) {
+  const sku = String(value ?? '').toUpperCase();
+  return sku.startsWith('BOX-') || sku.startsWith('MAT-BOX-');
+}
+
 function fulfillmentLabel(value: unknown) {
   return value === 'local_delivery' ? 'Local delivery' : 'Carrier shipping';
 }
@@ -146,7 +151,7 @@ async function shipOrder(formData: FormData) {
       .select('id')
       .eq('item_type', 'material_supply')
       .eq('active', true)
-      .or('sku.ilike.BOX-%,name.ilike.%box%');
+      .or('sku.ilike.BOX-%,sku.ilike.MAT-BOX-%,name.ilike.%box%');
 
     if (boxItemsError) redirect(`/admin/orders/${id}?toast=ship_error`);
     const validBoxItemIds = new Set((boxItems ?? []).map((item: any) => String(item.id)));
@@ -357,7 +362,7 @@ export default async function AdminOrderDetail({
   ] = await Promise.all([
     supabase.from('order_items').select('id,qty,product_id,product_name_snapshot,shipping_boxes_used,cogs_product_cents,cogs_shipping_cents,cogs_processing_fee_cents,cogs_donation_cents,cogs_total_cents,cogs_source,cogs_estimated,cogs_snapshot_at,products(name,shipping_box_count_required)').eq('order_id', order.id),
     supabase.from('order_item_shipping_boxes').select('order_item_id,inventory_item_id,quantity,total_cost_cents,cogs_estimated,inventory_items(name,sku)').eq('order_id', order.id),
-    supabase.from('inventory_items').select('id,name,sku').eq('item_type', 'material_supply').eq('active', true).or('sku.ilike.BOX-%,name.ilike.%box%').order('name', { ascending: true }),
+    supabase.from('inventory_items').select('id,name,sku').eq('item_type', 'material_supply').eq('active', true).or('sku.ilike.BOX-%,sku.ilike.MAT-BOX-%,name.ilike.%box%').order('name', { ascending: true }),
   ]);
   const items = itemsResult.data ?? [];
   const shippingBoxUsages = shippingBoxUsagesResult.error ? [] : (shippingBoxUsagesResult.data ?? []);
@@ -392,7 +397,7 @@ export default async function AdminOrderDetail({
     ((nonRequiredBoxRecipes ?? []) as any[])
       .filter((recipe) => (recipe.product_recipe_components ?? []).some((component: any) => {
         const componentItem = relatedOne(component.inventory_items);
-        return component.component_role === 'box' || Boolean(componentItem?.sku?.startsWith('BOX-'));
+        return component.component_role === 'box' || isBoxSku(componentItem?.sku);
       }))
       .map((recipe) => String(recipe.product_id))
   );

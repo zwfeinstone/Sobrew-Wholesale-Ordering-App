@@ -397,7 +397,7 @@ export function recipeUnitCostEstimateCents(recipe: SalesPriceGuideRecipeRow | n
     }
   }, 0);
   const boxQty = components
-    .filter((component) => component.component_role === 'box' || Boolean(relatedOne(component.inventory_items)?.sku?.startsWith('BOX-')))
+    .filter(isBoxComponent)
     .reduce((sum, component) => sum + normalizeInventoryNumber(component.quantity), 0);
   const fixedCost = fixedRecipeCostCents({
     boxQty,
