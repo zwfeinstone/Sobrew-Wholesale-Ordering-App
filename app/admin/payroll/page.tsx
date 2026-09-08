@@ -36,7 +36,6 @@ import {
   salaryPayFrequencyLabel,
   wageCentsForMinutes,
   workTypeLabel,
-  type CompensationType,
   type LaborWorkType,
   type SalaryLaborWorkType,
   type SalaryPayFrequency,
@@ -2076,11 +2075,12 @@ function PayrollDayTable({ rows }: { rows: PayrollDayRow[] }) {
   );
 }
 
-export default async function PayrollPage({
-  searchParams,
-}: {
-  searchParams?: Record<string, string | string[] | undefined>;
-}) {
+export default async function PayrollPage(
+  props: {
+    searchParams?: Promise<Record<string, string | string[] | undefined>>;
+  }
+) {
+  const searchParams = await props.searchParams;
   const current = await requireAdminSectionView('payroll');
   const canEditPayroll = adminCanEdit(current.access, 'payroll');
   const activeTab = activeTabParam(searchParams?.tab);

@@ -4,11 +4,12 @@ import { cartStorageKeyForUser } from '@/lib/cart';
 import { getCenterCartProducts } from '@/lib/center-cart-products';
 import { createClient } from '@/lib/supabase/server';
 
-export default async function CheckoutPage({
-  searchParams,
-}: {
-  searchParams?: Record<string, string | string[] | undefined>;
-}) {
+export default async function CheckoutPage(
+  props: {
+    searchParams?: Promise<Record<string, string | string[] | undefined>>;
+  }
+) {
+  const searchParams = await props.searchParams;
   const { user, profile } = await requireUser();
   const supabase = await createClient();
   const cartStorageKey = cartStorageKeyForUser(user.id);

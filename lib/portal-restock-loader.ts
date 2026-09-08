@@ -26,13 +26,13 @@ function isMissingPortalCatalog(error: { code?: string; message?: string } | nul
 async function loadLegacyCatalog(supabase: SupabaseClient, centerId: string): Promise<PortalProductRow[]> {
   const [assignmentsResult, pricesResult] = await Promise.all([
     supabase.from('user_products').select('product_id').eq('center_id', centerId),
-    supabase.from('user_product_prices').select('product_id,price_cents').eq('center_id', centerId),
+    supabase.from('user_product_prices').select('product_id,price_cents,allow_zero_price').eq('center_id', centerId),
   ]);
   throwForQueryError('legacy catalog assignments', assignmentsResult.error);
   throwForQueryError('legacy catalog prices', pricesResult.error);
 
   const priceByProductId = new Map(
-    (pricesResult.data ?? []).map((price) => [price.product_id as string, Number(price.price_cents)])
+    (pricesResult.data ?? []).filter(price => price.price_cents > 0 || price.price_cents === 0 && price.allow_zero_price).map((price) => [price.product_id as string, Number(price.price_cents)])
   );
   const productIds = [...new Set(
     (assignmentsResult.data ?? [])

@@ -393,11 +393,12 @@ function StatTile({ label, value, detail }: { detail: string; label: string; val
   );
 }
 
-export default async function SalesAdminPage({
-  searchParams,
-}: {
-  searchParams?: Record<string, string | string[] | undefined>;
-}) {
+export default async function SalesAdminPage(
+  props: {
+    searchParams?: Promise<Record<string, string | string[] | undefined>>;
+  }
+) {
+  const searchParams = await props.searchParams;
   const current = await requireAdminSectionView('sales_admin');
   if (!current.isOwner) redirect('/admin/access-denied?section=sales_admin');
   const commissionMonth = normalizeCommissionMonth(searchParams?.month);

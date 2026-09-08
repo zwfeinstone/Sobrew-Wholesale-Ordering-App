@@ -438,11 +438,12 @@ function BudgetingNav({
   );
 }
 
-export default async function BudgetingPage({
-  searchParams,
-}: {
-  searchParams?: SearchParams;
-}) {
+export default async function BudgetingPage(
+  props: {
+    searchParams?: Promise<SearchParams>;
+  }
+) {
+  const searchParams = await props.searchParams;
   await requireAdminSectionView('accounting');
   const supabase = await createClient();
   const activeBudgetTab = budgetTabParam(searchParams?.budget_tab);

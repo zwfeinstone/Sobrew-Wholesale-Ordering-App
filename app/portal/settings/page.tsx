@@ -27,11 +27,12 @@ async function updatePassword(formData: FormData) {
   redirect('/portal/settings?success=password_updated');
 }
 
-export default async function PortalSettingsPage({
-  searchParams,
-}: {
-  searchParams?: { success?: string; error?: string };
-}) {
+export default async function PortalSettingsPage(
+  props: {
+    searchParams?: Promise<{ success?: string; error?: string }>;
+  }
+) {
+  const searchParams = await props.searchParams;
   const { profile } = await requireUser();
 
   return (

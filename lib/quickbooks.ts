@@ -1,6 +1,7 @@
 import 'server-only';
 
 import { env } from '@/lib/env';
+import { mapWithConcurrency } from '@/lib/async-work';
 import {
   performQuickBooksRequest,
   QuickBooksRequestTimeoutError,
@@ -226,11 +227,6 @@ export type QuickBooksCatalogItemsResult = {
   error: string | null;
   items: QuickBooksCatalogItem[];
   truncated: boolean;
-};
-
-export type QuickBooksCustomerSummary = {
-  activeCustomerCount: number | null;
-  error: string | null;
 };
 
 export type QuickBooksCustomerAddress = {
@@ -583,32 +579,25 @@ export async function getQuickBooksSavedPaymentMethodLookups(
     }));
   }
 
-  const lookups: QuickBooksSavedPaymentMethodLookup[] = [];
-  for (let index = 0; index < uniqueCustomerIds.length; index += QUICKBOOKS_SAVED_PAYMENT_LOOKUP_BATCH_SIZE) {
-    const batch = uniqueCustomerIds.slice(index, index + QUICKBOOKS_SAVED_PAYMENT_LOOKUP_BATCH_SIZE);
-    const batchLookups = await Promise.all(batch.map(async (customerId): Promise<QuickBooksSavedPaymentMethodLookup> => {
-      try {
-        const result = await getQuickBooksSavedPaymentMethodsForCustomer(connection, customerId);
-        const method = result.methods[0] ?? null;
-        return {
-          customerId,
-          error: method || !result.errors.length ? null : result.errors.join(' '),
-          method,
-          methodCount: result.methods.length,
-        };
-      } catch (error) {
-        return {
-          customerId,
-          error: errorMessageForSavedPaymentLookup(error),
-          method: null,
-          methodCount: 0,
-        };
-      }
-    }));
-    lookups.push(...batchLookups);
-  }
-
-  return lookups;
+  return mapWithConcurrency(uniqueCustomerIds, QUICKBOOKS_SAVED_PAYMENT_LOOKUP_BATCH_SIZE, async (customerId): Promise<QuickBooksSavedPaymentMethodLookup> => {
+    try {
+      const result = await getQuickBooksSavedPaymentMethodsForCustomer(connection, customerId);
+      const method = result.methods[0] ?? null;
+      return {
+        customerId,
+        error: method || !result.errors.length ? null : result.errors.join(' '),
+        method,
+        methodCount: result.methods.length,
+      };
+    } catch (error) {
+      return {
+        customerId,
+        error: errorMessageForSavedPaymentLookup(error),
+        method: null,
+        methodCount: 0,
+      };
+    }
+  });
 }
 
 async function cacheQuickBooksSavedPaymentMethodForOrder(
@@ -968,18 +957,24 @@ async function quickBooksRequest(
   connection: QuickBooksConnection,
   path: string,
   init: RequestInit = {},
-  requestOptions: { operation?: string; timeoutMs?: number } = {}
+  requestOptions: { operation?: string; timeoutMs?: number; service?: 'accounting' | 'payments' | 'payments_customer' } = {}
 ) {
   const environment = connection.environment === 'production' ? 'production' : 'sandbox';
+  const service = requestOptions.service ?? 'accounting';
   const separator = path.includes('?') ? '&' : '?';
-  const url = `${quickBooksApiBaseUrl(environment)}/v3/company/${encodeURIComponent(connection.realm_id)}${path}${separator}minorversion=${encodeURIComponent(env.quickBooksMinorVersion)}`;
+  const url = service === 'accounting'
+    ? `${quickBooksApiBaseUrl(environment)}/v3/company/${encodeURIComponent(connection.realm_id)}${path}${separator}minorversion=${encodeURIComponent(env.quickBooksMinorVersion)}`
+    : `${service === 'payments' ? quickBooksPaymentsApiBaseUrl(environment) : quickBooksPaymentsCustomerApiBaseUrl(environment)}${path}`;
   const method = quickBooksRequestMethod(init);
+  const timeoutMs = service === 'accounting'
+    ? method === 'GET' ? QUICKBOOKS_READ_TIMEOUT_MS : QUICKBOOKS_WRITE_TIMEOUT_MS
+    : method === 'GET' ? QUICKBOOKS_PAYMENTS_READ_TIMEOUT_MS : QUICKBOOKS_PAYMENTS_WRITE_TIMEOUT_MS;
   const { body: payload, response } = await performQuickBooksRequest({
     method,
     operation: requestOptions.operation ?? quickBooksRequestOperation(path),
-    service: 'accounting',
+    service,
     signal: init.signal,
-    timeoutMs: requestOptions.timeoutMs ?? (method === 'GET' ? QUICKBOOKS_READ_TIMEOUT_MS : QUICKBOOKS_WRITE_TIMEOUT_MS),
+    timeoutMs: requestOptions.timeoutMs ?? timeoutMs,
   }, async (signal) => {
     const response = await fetch(url, {
       ...init,
@@ -994,9 +989,12 @@ async function quickBooksRequest(
     return { body: await parseJsonResponse(response), response };
   });
   if (!response.ok) {
+    const fallback = service === 'accounting'
+      ? 'QuickBooks request failed'
+      : service === 'payments' ? 'QuickBooks Payments request failed' : 'QuickBooks Payments customer request failed';
     throw new Error(quickBooksErrorMessage(
       payload,
-      quickBooksHttpFallback(response, 'QuickBooks request failed'),
+      quickBooksHttpFallback(response, fallback),
       response.headers.get('intuit_tid')
     ));
   }
@@ -1040,69 +1038,11 @@ async function quickBooksBinaryRequest(connection: QuickBooksConnection, path: s
 }
 
 async function quickBooksPaymentsRequest(connection: QuickBooksConnection, path: string, init: RequestInit = {}) {
-  const environment = connection.environment === 'production' ? 'production' : 'sandbox';
-  const url = `${quickBooksPaymentsApiBaseUrl(environment)}${path}`;
-  const method = quickBooksRequestMethod(init);
-  const { body: payload, response } = await performQuickBooksRequest({
-    method,
-    operation: quickBooksRequestOperation(path),
-    service: 'payments',
-    signal: init.signal,
-    timeoutMs: method === 'GET' ? QUICKBOOKS_PAYMENTS_READ_TIMEOUT_MS : QUICKBOOKS_PAYMENTS_WRITE_TIMEOUT_MS,
-  }, async (signal) => {
-    const response = await fetch(url, {
-      ...init,
-      headers: {
-        Accept: 'application/json',
-        Authorization: `Bearer ${connection.access_token}`,
-        ...(init.body ? { 'Content-Type': 'application/json' } : {}),
-        ...init.headers,
-      },
-      signal,
-    });
-    return { body: await parseJsonResponse(response), response };
-  });
-  if (!response.ok) {
-    throw new Error(quickBooksErrorMessage(
-      payload,
-      quickBooksHttpFallback(response, 'QuickBooks Payments request failed'),
-      response.headers.get('intuit_tid')
-    ));
-  }
-  return payload;
+  return quickBooksRequest(connection, path, init, { service: 'payments' });
 }
 
 async function quickBooksPaymentsCustomerRequest(connection: QuickBooksConnection, path: string, init: RequestInit = {}) {
-  const environment = connection.environment === 'production' ? 'production' : 'sandbox';
-  const url = `${quickBooksPaymentsCustomerApiBaseUrl(environment)}${path}`;
-  const method = quickBooksRequestMethod(init);
-  const { body: payload, response } = await performQuickBooksRequest({
-    method,
-    operation: quickBooksRequestOperation(path),
-    service: 'payments_customer',
-    signal: init.signal,
-    timeoutMs: method === 'GET' ? QUICKBOOKS_PAYMENTS_READ_TIMEOUT_MS : QUICKBOOKS_PAYMENTS_WRITE_TIMEOUT_MS,
-  }, async (signal) => {
-    const response = await fetch(url, {
-      ...init,
-      headers: {
-        Accept: 'application/json',
-        Authorization: `Bearer ${connection.access_token}`,
-        ...(init.body ? { 'Content-Type': 'application/json' } : {}),
-        ...init.headers,
-      },
-      signal,
-    });
-    return { body: await parseJsonResponse(response), response };
-  });
-  if (!response.ok) {
-    throw new Error(quickBooksErrorMessage(
-      payload,
-      quickBooksHttpFallback(response, 'QuickBooks Payments customer request failed'),
-      response.headers.get('intuit_tid')
-    ));
-  }
-  return payload;
+  return quickBooksRequest(connection, path, init, { service: 'payments_customer' });
 }
 
 function escapeQueryString(value: string) {
@@ -1383,11 +1323,16 @@ async function readQuickBooksInvoicesForOrderReconciliation(
   const dateWindow = quickBooksDateWindowForOrder(order);
   if (!customerId || !dateWindow) return [];
 
-  const result = await quickBooksQuery(
-    connection,
-    `SELECT * FROM Invoice WHERE CustomerRef = '${escapeQueryString(customerId)}' AND TxnDate >= '${dateWindow.start}' AND TxnDate <= '${dateWindow.end}' MAXRESULTS 100`
-  );
-  return quickBooksQueryInvoices(result);
+  const invoices: any[] = [];
+  for (let startPosition = 1; ; startPosition += 100) {
+    const result = await quickBooksQuery(
+      connection,
+      `SELECT * FROM Invoice WHERE CustomerRef = '${escapeQueryString(customerId)}' AND TxnDate >= '${dateWindow.start}' AND TxnDate <= '${dateWindow.end}' STARTPOSITION ${startPosition} MAXRESULTS 100`
+    );
+    const page = quickBooksQueryInvoices(result);
+    invoices.push(...page);
+    if (page.length < 100) return invoices;
+  }
 }
 
 export async function reconcileQuickBooksPaidInvoicesForOrders(
@@ -1406,9 +1351,27 @@ export async function reconcileQuickBooksPaidInvoicesForOrders(
     const connection = await getAuthorizedConnection();
     const environment = connection.environment === 'production' ? 'production' : 'sandbox';
     const supabase = getSupabaseAdmin();
-
+    const groups = new Map<string, QuickBooksPaidInvoiceReconciliationOrder[]>();
     for (const order of candidates) {
-      const invoices = await readQuickBooksInvoicesForOrderReconciliation(connection, order);
+      const window = quickBooksDateWindowForOrder(order);
+      if (!window) continue;
+      const key = JSON.stringify([cleanText(relatedOne(order.centers)?.quickbooks_customer_id), window.start, window.end]);
+      const group = groups.get(key) ?? [];
+      group.push(order);
+      groups.set(key, group);
+    }
+    // Identical customer/date searches share one result only within this run.
+    // Keep database writes sequential and preserve each order's matching window.
+    const reads = await mapWithConcurrency([...groups.values()], 4, async (group) => {
+      try {
+        return { group, invoices: await readQuickBooksInvoicesForOrderReconciliation(connection, group[0]), error: null };
+      } catch (error) {
+        return { group, invoices: [], error: error instanceof Error ? error.message : 'Unable to read QuickBooks invoices.' };
+      }
+    });
+    const invoicesByOrder = new Map(reads.flatMap((read) => read.group.map((order) => [order.id, read.invoices] as const)));
+    for (const order of candidates) {
+      const invoices = invoicesByOrder.get(order.id) ?? [];
       const match = findQuickBooksPaidInvoiceMatchForOrder(order, invoices);
       if (!match) continue;
 
@@ -1435,7 +1398,8 @@ export async function reconcileQuickBooksPaidInvoicesForOrders(
       if (data) reconciled.push({ ...match, orderId: order.id });
     }
 
-    return { error: null, reconciled };
+    const readErrors = [...new Set(reads.flatMap((read) => read.error ? [read.error] : []))];
+    return { error: readErrors.length ? readErrors.join(' ') : null, reconciled };
   } catch (error) {
     return {
       error: error instanceof Error ? error.message : 'Unable to reconcile paid QuickBooks invoices.',
@@ -1869,32 +1833,6 @@ function addressForOrder(order: QuickBooksInvoiceOrder) {
     Line2: cleanText(order.shipping_address2) || undefined,
     PostalCode: postalCode || undefined,
   };
-}
-
-async function findOrCreateCustomer(connection: QuickBooksConnection, order: QuickBooksInvoiceOrder): Promise<QuickBooksRef> {
-  const displayName = customerNameForOrder(order);
-  const query = `SELECT * FROM Customer WHERE DisplayName = '${escapeQueryString(displayName)}'`;
-  const existing = await quickBooksQuery(connection, query);
-  const customer = existing?.QueryResponse?.Customer?.[0];
-  if (customer?.Id) return { name: customer.DisplayName ?? displayName, value: String(customer.Id) };
-
-  const profile = relatedOne(order.profiles);
-  const email = cleanText(profile?.email);
-  const address = addressForOrder(order);
-  const payload = {
-    BillAddr: address,
-    CompanyName: displayName,
-    DisplayName: displayName,
-    PrimaryEmailAddr: email ? { Address: email } : undefined,
-    ShipAddr: address,
-  };
-  const created = await quickBooksRequest(connection, '/customer', {
-    body: JSON.stringify(payload),
-    method: 'POST',
-  });
-  const createdCustomer = created?.Customer;
-  if (!createdCustomer?.Id) throw new Error('QuickBooks did not return a customer ID.');
-  return { name: createdCustomer.DisplayName ?? displayName, value: String(createdCustomer.Id) };
 }
 
 function centerUpdateFromQuickBooksCustomer(customer: QuickBooksCustomerRecord) {
@@ -2660,23 +2598,6 @@ export async function getQuickBooksProductSummary(): Promise<QuickBooksProductSu
     return {
       activeItemCount: null,
       error: error instanceof Error ? error.message : 'Unable to read QuickBooks products.',
-    };
-  }
-}
-
-export async function getQuickBooksCustomerSummary(): Promise<QuickBooksCustomerSummary> {
-  try {
-    const connection = await getAuthorizedConnection();
-    const result = await quickBooksQuery(connection, 'SELECT COUNT(*) FROM Customer WHERE Active = true');
-    const totalCount = Number(result?.QueryResponse?.totalCount ?? result?.QueryResponse?.TotalCount);
-    return {
-      activeCustomerCount: Number.isFinite(totalCount) ? totalCount : null,
-      error: null,
-    };
-  } catch (error) {
-    return {
-      activeCustomerCount: null,
-      error: error instanceof Error ? error.message : 'Unable to read QuickBooks customers.',
     };
   }
 }

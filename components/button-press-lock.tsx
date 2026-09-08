@@ -25,6 +25,8 @@ function normalizedText(value: string | null | undefined) {
 }
 
 function elementPositionKey(element: HTMLElement) {
+  if (element.id) return `id:${element.id}`;
+
   const rect = element.getBoundingClientRect();
   return [
     Math.round((rect.left + window.scrollX) / 8),

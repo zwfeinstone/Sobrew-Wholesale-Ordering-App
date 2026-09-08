@@ -192,8 +192,8 @@ function formatDateInputLabel(value: string) {
 }
 
 function nextActionForStatus(status: string | null | undefined) {
-  if (status === 'New') return { label: 'Start processing', href: '/admin/orders?status=New', tone: 'Needs review' };
-  if (status === 'Processing') return { label: 'Ship order', href: '/admin/orders?status=Processing', tone: 'In progress' };
+  if (status === 'New') return { label: 'Review order', href: '/admin/orders?status=New', tone: 'Needs review' };
+  if (status === 'Processing') return { label: 'Review order', href: '/admin/orders?status=Processing', tone: 'In progress' };
   if (status === 'Shipped') return { label: 'View order', href: '/admin/orders?status=Shipped', tone: 'Completed' };
   return { label: 'Open order', href: '/admin/orders', tone: 'Needs review' };
 }
@@ -308,11 +308,12 @@ function StatCard({
   );
 }
 
-export default async function AdminDashboard({
-  searchParams,
-}: {
-  searchParams?: Record<string, string | string[] | undefined>;
-}) {
+export default async function AdminDashboard(
+  props: {
+    searchParams?: Promise<Record<string, string | string[] | undefined>>;
+  }
+) {
+  const searchParams = await props.searchParams;
   const currentAccess = await requireAdminSectionView('dashboard');
   const supabase = await createClient();
   const centerScope = await getAssignedCenterIdsForAdmin({ current: currentAccess, supabase });

@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { waitUntil } from '@vercel/functions';
-import { sendOrderEmails } from '@/lib/email';
+import { loadAdminOrderCcByCenter, sendOrderEmails, type SendEmailResult } from '@/lib/email';
+import { mapWithConcurrency } from '@/lib/async-work';
 import { env } from '@/lib/env';
 import { elapsedMilliseconds, logServerTiming, serverTimingHeader } from '@/lib/server-performance';
 import { supabaseAdmin } from '@/lib/supabase/admin';
@@ -188,16 +189,19 @@ async function runRecurringOrders(req: Request) {
       .filter((centerId): centerId is string => Boolean(centerId))
   )];
 
-  const { data: centerProfiles, error: centerProfilesError } = dueCenterIds.length
-    ? await supabaseAdmin
-      .from('profiles')
-      .select('center_id,email')
-      .in('center_id', dueCenterIds)
-      .eq('is_admin', false)
-      .eq('is_active', true)
-      .order('created_at', { ascending: true })
-      .limit(1000)
-    : { data: [] as Array<{ center_id: string | null; email: string | null }>, error: null };
+  const [{ data: centerProfiles, error: centerProfilesError }, adminCcByCenter] = await Promise.all([
+    dueCenterIds.length
+      ? supabaseAdmin
+        .from('profiles')
+        .select('center_id,email')
+        .in('center_id', dueCenterIds)
+        .eq('is_admin', false)
+        .eq('is_active', true)
+        .order('created_at', { ascending: true })
+        .limit(1000)
+      : { data: [] as Array<{ center_id: string | null; email: string | null }>, error: null },
+    loadAdminOrderCcByCenter(dueCenterIds),
+  ]);
 
   if (centerProfilesError) {
     console.error('[recurring-orders-cron] center login email batch query failed', centerProfilesError);
@@ -211,7 +215,7 @@ async function runRecurringOrders(req: Request) {
     centerEmailsByCenterId.set(profile.center_id, emails);
   }
 
-  const emailTasks: Array<() => Promise<void>> = [];
+  const emailTasks: Array<() => Promise<SendEmailResult>> = [];
 
   for (const recurringOrder of dueRecurringOrders) {
     const scheduledFor = recurringOrder.next_run_at;
@@ -261,7 +265,10 @@ async function runRecurringOrders(req: Request) {
       ? centerEmailsByCenterId.get(recurringOrder.center_id) ?? []
       : [];
 
+    const { data: generatedNotes } = await supabaseAdmin.from('orders').select('notes').eq('id',generation.order_id).single();
     emailTasks.push(() => sendOrderEmails({
+      notes: generatedNotes?.notes,
+      adminCc: adminCcByCenter.get(recurringOrder.center_id ?? '') ?? [],
       centerId: recurringOrder.center_id,
       customerEmail: centerEmails.length ? centerEmails : recurringProfile?.email ?? '',
       customerName: recurringCenter?.name ?? recurringProfile?.full_name ?? recurringProfile?.email ?? '',
@@ -288,10 +295,16 @@ async function runRecurringOrders(req: Request) {
   }
 
   if (emailTasks.length) {
-    const backgroundEmails = Promise.allSettled(emailTasks.map((task) => task())).then((results) => {
-      const rejected = results.filter((result) => result.status === 'rejected');
-      if (rejected.length) {
-        console.error('[recurring-orders-cron] background email tasks rejected', { count: rejected.length });
+    const backgroundEmails = mapWithConcurrency(emailTasks, 4, async (task) => {
+      try {
+        return await task();
+      } catch (error) {
+        return { ok: false, error } as const;
+      }
+    }).then((results) => {
+      const failed = results.filter((result) => !result.ok);
+      if (failed.length) {
+        console.error('[recurring-orders-cron] background email deliveries failed', { count: failed.length });
       }
     });
     waitUntil(backgroundEmails);

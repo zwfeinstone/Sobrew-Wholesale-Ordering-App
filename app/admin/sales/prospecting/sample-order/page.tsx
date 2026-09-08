@@ -214,11 +214,12 @@ async function submitSampleOrder(formData: FormData) {
   redirect(`/admin/orders/${result.orderId}?toast=sample_order_created`);
 }
 
-export default async function ProspectingSampleOrderPage({
-  searchParams,
-}: {
-  searchParams?: SearchParams;
-}) {
+export default async function ProspectingSampleOrderPage(
+  props: {
+    searchParams?: Promise<SearchParams>;
+  }
+) {
+  const searchParams = await props.searchParams;
   const current = await requireAdminSectionView('prospecting');
   const canEdit = current.isOwner || adminCanEdit(current.access, 'prospecting');
   const supabase = await createClient();

@@ -9,11 +9,12 @@ type CenterOption = {
   is_active: boolean;
 };
 
-export default async function AdminOrderFormPage({
-  searchParams
-}: {
-  searchParams: Record<string, string | string[] | undefined>;
-}) {
+export default async function AdminOrderFormPage(
+  props: {
+    searchParams: Promise<Record<string, string | string[] | undefined>>;
+  }
+) {
+  const searchParams = await props.searchParams;
   await requireAdminSectionView('order_form');
   const supabase = await createClient();
   const centerId = typeof searchParams.center === 'string' ? searchParams.center : '';

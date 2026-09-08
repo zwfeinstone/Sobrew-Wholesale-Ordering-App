@@ -116,11 +116,12 @@ async function createAdminAccount(formData: FormData) {
   redirect(`/admin/users/${adminId}?success=admin_created`);
 }
 
-export default async function NewAdminPage({
-  searchParams,
-}: {
-  searchParams?: Record<string, string | string[] | undefined>;
-}) {
+export default async function NewAdminPage(
+  props: {
+    searchParams?: Promise<Record<string, string | string[] | undefined>>;
+  }
+) {
+  const searchParams = await props.searchParams;
   await requireManageAdmins('/admin/admins?error=admin_permission_denied');
   const error = typeof searchParams?.error === 'string' ? searchParams.error : '';
   const initialAccess = legacyReadOnlyAccessMap();

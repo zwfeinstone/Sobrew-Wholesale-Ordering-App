@@ -22,4 +22,11 @@ describe('admin query limits', () => {
     expect(queryReachedAdminRowLimit(Array.from({ length: 999 }))).toBe(false);
     expect(queryReachedAdminRowLimit(Array.from({ length: 1000 }))).toBe(true);
   });
+
+  it('makes every detail accessible and clamps invalid or out-of-range pages', () => {
+    const rows = Array.from({ length: 205 }, (_, index) => index);
+    expect([1, 2, 3].flatMap((page) => limitReportDetailRows(rows, page))).toEqual(rows);
+    expect(limitReportDetailRows(rows, 100)).toEqual(rows.slice(200));
+    expect(limitReportDetailRows(rows, Number.NaN)).toEqual(rows.slice(0, 100));
+  });
 });

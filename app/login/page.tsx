@@ -1,6 +1,9 @@
 import { LoginView } from './login-view';
 
-export default function LoginPage({ searchParams }: { searchParams: Record<string, string | string[] | undefined> }) {
+export default async function LoginPage(
+  props: { searchParams: Promise<Record<string, string | string[] | undefined>> }
+) {
+  const searchParams = await props.searchParams;
   const loginError = typeof searchParams.error === 'string' ? searchParams.error : '';
   const credentialsError = loginError === '1';
   const profileError = loginError === 'profile';

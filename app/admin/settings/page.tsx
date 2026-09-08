@@ -1,3 +1,4 @@
+import type { TablesUpdate } from '@/lib/supabase/database.types';
 import { redirect } from 'next/navigation';
 import PendingSubmitButton from '@/components/pending-submit-button';
 import { requireAdminSectionView } from '@/lib/admin-permissions';
@@ -52,7 +53,7 @@ async function saveSettings(formData: FormData) {
     hero_image_url = supabaseAdmin.storage.from('branding').getPublicUrl(path).data.publicUrl;
   }
 
-  const payload: Record<string, unknown> = {
+  const payload: TablesUpdate<'app_settings'> = {
     brand_name: String(formData.get('brand_name') ?? ''),
     accent_color: String(formData.get('accent_color') ?? '#7c3aed'),
     ...(logo_url ? { logo_url } : {}),
@@ -88,15 +89,16 @@ async function updatePassword(formData: FormData) {
   redirect('/admin/settings?password_success=password_updated');
 }
 
-export default async function SettingsPage({
-  searchParams,
-}: {
-  searchParams?: {
-    error?: string;
-    password_error?: string;
-    password_success?: string;
-  };
-}) {
+export default async function SettingsPage(
+  props: {
+    searchParams?: Promise<{
+      error?: string;
+      password_error?: string;
+      password_success?: string;
+    }>;
+  }
+) {
+  const searchParams = await props.searchParams;
   const current = await requireAdminSectionView('settings');
   const supabase = await createClient();
   const { data: settings } = await supabase.from('app_settings').select('*').single();

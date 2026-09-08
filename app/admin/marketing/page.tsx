@@ -219,11 +219,12 @@ function RecapFields({ recap }: { recap?: MarketingRecap | null }) {
   );
 }
 
-export default async function MarketingPage({
-  searchParams,
-}: {
-  searchParams?: { toast?: string };
-}) {
+export default async function MarketingPage(
+  props: {
+    searchParams?: Promise<{ toast?: string }>;
+  }
+) {
+  const searchParams = await props.searchParams;
   const current = await requireAdminSectionView('marketing');
   const canEdit = adminCanEdit(current.access, 'marketing');
   const toast = typeof searchParams?.toast === 'string' ? searchParams.toast : '';

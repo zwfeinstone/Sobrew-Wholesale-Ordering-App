@@ -227,7 +227,8 @@ function RecurringOrderCard({
   );
 }
 
-export default async function AdminRecurringOrdersPage({ searchParams }: { searchParams: SearchParams }) {
+export default async function AdminRecurringOrdersPage(props: { searchParams: Promise<SearchParams> }) {
+  const searchParams = await props.searchParams;
   await requireAdminSectionView('recurring_orders');
   const supabase = await createClient();
   const activeView = adminRecurringView(searchParams.view);

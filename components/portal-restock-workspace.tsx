@@ -2,7 +2,7 @@
 
 import Image from 'next/image';
 import Link from 'next/link';
-import { useDeferredValue, useEffect, useMemo, useState } from 'react';
+import { memo, useDeferredValue, useEffect, useMemo, useState } from 'react';
 import {
   CartCatalogSync,
   CatalogQuantityControl,
@@ -44,6 +44,7 @@ export type PortalRecurringSummary = {
 };
 
 type PortalRestockWorkspaceProps = {
+  isAdmin?: boolean;
   cartStorageKey: string;
   centerName: string;
   products: PortalRestockProduct[];
@@ -62,10 +63,9 @@ function greetingForHour(hour: number) {
 
 function productMatchesSearch(product: PortalRestockProduct, query: string) {
   if (!query) return true;
-  const normalizedQuery = query.toLocaleLowerCase();
   return [product.name, product.description, productCategoryLabel(product.category)]
     .filter((value): value is string => Boolean(value))
-    .some((value) => value.toLocaleLowerCase().includes(normalizedQuery));
+    .some((value) => value.toLocaleLowerCase().includes(query));
 }
 
 function categoryOptions(products: PortalRestockProduct[]) {
@@ -79,7 +79,86 @@ function categoryOptions(products: PortalRestockProduct[]) {
   return options;
 }
 
+const RestockProductRow = memo(function RestockProductRow({ product, storageKey }: {
+  product: PortalRestockProduct;
+  storageKey: string;
+}) {
+  return (
+    <article className="restock-product-row">
+      <div className="restock-product-image">
+        <Image
+          src={product.image_url || DEFAULT_PRODUCT_IMAGE_SRC}
+          alt=""
+          width={80}
+          height={80}
+          sizes="80px"
+          className="h-full w-full object-contain"
+        />
+      </div>
+      <div className="restock-product-copy">
+        <h3>{product.name}</h3>
+        <p>{product.description || productCategoryLabel(product.category)}</p>
+      </div>
+      <p className="restock-product-price">${(product.price_cents / 100).toFixed(2)}</p>
+      <CatalogQuantityControl compact product={product} storageKey={storageKey} />
+    </article>
+  );
+});
+
+function RestockOrderSidebar({ storageKey }: { storageKey: string }) {
+  const { itemCount, items, subtotalCents } = useCart(storageKey);
+
+  return (
+    <aside className="restock-order-sidebar" aria-labelledby="restock-order-heading">
+      <div className="restock-order-sidebar-card">
+        <p className="restock-order-kicker">Your order</p>
+        <h2 id="restock-order-heading" className="sr-only">Current order</h2>
+        {!items.length ? (
+          <div className="restock-order-empty">
+            <p>Your order is ready when you are.</p>
+            <span>Add products to see them here.</span>
+          </div>
+        ) : (
+          <div className="restock-order-items">
+            {items.map((item) => (
+              <div key={item.product_id} className="restock-order-item">
+                <span>{item.name}</span>
+                <strong>{item.qty}</strong>
+              </div>
+            ))}
+          </div>
+        )}
+        <div className="restock-order-total" aria-live="polite">
+          <span>{itemCount} item{itemCount === 1 ? '' : 's'}</span>
+          <strong>${(subtotalCents / 100).toFixed(2)}</strong>
+        </div>
+        {itemCount ? (
+          <Link className="btn-primary restock-review-button" href="/portal/cart">Review order</Link>
+        ) : (
+          <button className="btn-primary restock-review-button" type="button" disabled>Review order</button>
+        )}
+      </div>
+    </aside>
+  );
+}
+
+function RestockMobileReview({ storageKey }: { storageKey: string }) {
+  const { itemCount, subtotalCents } = useCart(storageKey);
+  if (!itemCount) return null;
+
+  return (
+    <div className="restock-mobile-review" aria-live="polite">
+      <div>
+        <strong>{itemCount} item{itemCount === 1 ? '' : 's'}</strong>
+        <span>${(subtotalCents / 100).toFixed(2)}</span>
+      </div>
+      <Link className="btn-primary" href="/portal/cart">Review order</Link>
+    </div>
+  );
+}
+
 export function PortalRestockWorkspace({
+  isAdmin = false,
   cartStorageKey,
   centerName,
   products,
@@ -89,23 +168,26 @@ export function PortalRestockWorkspace({
   const [greeting, setGreeting] = useState('Welcome back');
   const [query, setQuery] = useState('');
   const [category, setCategory] = useState<ProductCategoryGroup | 'all'>('all');
-  const deferredQuery = useDeferredValue(query.trim());
-  const { itemCount, items, subtotalCents } = useCart(cartStorageKey);
+  const deferredQuery = useDeferredValue(query.trim().toLocaleLowerCase());
 
   useEffect(() => {
     setGreeting(greetingForHour(new Date().getHours()));
   }, []);
 
   const availableCategories = useMemo(() => categoryOptions(products), [products]);
+  const sortedProducts = useMemo(
+    () => [...products].sort((left, right) => {
+      const categoryRank = productCategorySortRank(left.category) - productCategorySortRank(right.category);
+      return categoryRank || productNameCollator.compare(left.name, right.name);
+    }),
+    [products]
+  );
   const filteredProducts = useMemo(
-    () => products
-      .filter((product) => productMatchesSearch(product, deferredQuery))
-      .filter((product) => category === 'all' || productCategoryGroupKey(product.category) === category)
-      .sort((left, right) => {
-        const categoryRank = productCategorySortRank(left.category) - productCategorySortRank(right.category);
-        return categoryRank || productNameCollator.compare(left.name, right.name);
-      }),
-    [category, deferredQuery, products]
+    () => sortedProducts.filter((product) => (
+      (category === 'all' || productCategoryGroupKey(product.category) === category)
+      && productMatchesSearch(product, deferredQuery)
+    )),
+    [category, deferredQuery, sortedProducts]
   );
 
   const groupedProducts = useMemo(() => {
@@ -240,9 +322,10 @@ export function PortalRestockWorkspace({
           </p>
           {!filteredProducts.length ? (
             <div className="empty-state">
-              <p className="text-lg font-semibold text-slate-950">No products match those filters.</p>
-              <p className="mt-2 text-sm text-slate-500">Try a different search or browse all product types.</p>
-              <button
+              <p className="text-lg font-semibold text-slate-950">{products.length ? 'No products match those filters.' : 'No orderable products assigned yet.'}</p>
+              <p className="mt-2 text-sm text-slate-500">{products.length ? 'Try a different search or browse all product types.' : isAdmin ? 'This admin account has no customer catalog assigned.' : 'Your customer catalog needs product assignments and approved prices. Contact your Sobrew representative.'}</p>
+              {!products.length && isAdmin ? <Link className="btn-secondary mt-4" href="/admin">Back to admin</Link> : null}
+              {products.length ? <button
                 className="btn-secondary mt-4"
                 type="button"
                 onClick={() => {
@@ -251,7 +334,7 @@ export function PortalRestockWorkspace({
                 }}
               >
                 Reset filters
-              </button>
+              </button> : null}
             </div>
           ) : null}
           {groupedProducts.map(([groupCategory, groupProducts]) => (
@@ -262,75 +345,17 @@ export function PortalRestockWorkspace({
               </div>
               <div className="restock-product-list">
                 {groupProducts.map((product) => (
-                  <article key={product.product_id} className="restock-product-row">
-                    <div className="restock-product-image">
-                      <Image
-                        src={product.image_url || DEFAULT_PRODUCT_IMAGE_SRC}
-                        alt=""
-                        width={80}
-                        height={80}
-                        sizes="80px"
-                        className="h-full w-full object-contain"
-                      />
-                    </div>
-                    <div className="restock-product-copy">
-                      <h3>{product.name}</h3>
-                      <p>{product.description || productCategoryLabel(product.category)}</p>
-                    </div>
-                    <p className="restock-product-price">${(product.price_cents / 100).toFixed(2)}</p>
-                    <CatalogQuantityControl
-                      compact
-                      product={{ product_id: product.product_id, name: product.name, price_cents: product.price_cents }}
-                      storageKey={cartStorageKey}
-                    />
-                  </article>
+                  <RestockProductRow key={product.product_id} product={product} storageKey={cartStorageKey} />
                 ))}
               </div>
             </section>
           ))}
         </div>
 
-        <aside className="restock-order-sidebar" aria-labelledby="restock-order-heading">
-          <div className="restock-order-sidebar-card">
-            <p className="restock-order-kicker">Your order</p>
-            <h2 id="restock-order-heading" className="sr-only">Current order</h2>
-            {!items.length ? (
-              <div className="restock-order-empty">
-                <p>Your order is ready when you are.</p>
-                <span>Add products to see them here.</span>
-              </div>
-            ) : (
-              <div className="restock-order-items">
-                {items.map((item) => (
-                  <div key={item.product_id} className="restock-order-item">
-                    <span>{item.name}</span>
-                    <strong>{item.qty}</strong>
-                  </div>
-                ))}
-              </div>
-            )}
-            <div className="restock-order-total" aria-live="polite">
-              <span>{itemCount} item{itemCount === 1 ? '' : 's'}</span>
-              <strong>${(subtotalCents / 100).toFixed(2)}</strong>
-            </div>
-            {itemCount ? (
-              <Link className="btn-primary restock-review-button" href="/portal/cart">Review order</Link>
-            ) : (
-              <button className="btn-primary restock-review-button" type="button" disabled>Review order</button>
-            )}
-          </div>
-        </aside>
+        <RestockOrderSidebar storageKey={cartStorageKey} />
       </div>
 
-      {itemCount ? (
-        <div className="restock-mobile-review" aria-live="polite">
-          <div>
-            <strong>{itemCount} item{itemCount === 1 ? '' : 's'}</strong>
-            <span>${(subtotalCents / 100).toFixed(2)}</span>
-          </div>
-          <Link className="btn-primary" href="/portal/cart">Review order</Link>
-        </div>
-      ) : null}
+      <RestockMobileReview storageKey={cartStorageKey} />
     </div>
   );
 }

@@ -684,12 +684,18 @@ function buildProductSalesRows({
 
   const productById = new Map(products.map((product) => [product.id, product]));
   const rangeLines = lines.filter((line) => line.createdAt >= rangeStart && line.createdAt < rangeEndExclusive && lineMatchesScope(line, scope));
+  const rangeLinesByProductId = new Map<string | null, NormalizedLine[]>();
+  for (const line of rangeLines) {
+    const productLines = rangeLinesByProductId.get(line.productId) ?? [];
+    productLines.push(line);
+    rangeLinesByProductId.set(line.productId, productLines);
+  }
   const totalRevenue = rangeLines.reduce((sum, line) => sum + line.revenueCents, 0);
   const previousMonthStart = addMonths(monthStart, -1);
 
   return [...productIds].map((productId) => {
     const productScope = { ...scope, productId };
-    const currentLines = rangeLines.filter((line) => line.productId === productId);
+    const currentLines = rangeLinesByProductId.get(productId) ?? [];
     const currentMetric = metricForPeriod({
       end: addMonths(monthStart, 1),
       firstOrderDateByCenterId,
@@ -803,12 +809,24 @@ function buildCustomerSalesRows({
 }) {
   const centerById = new Map(centers.map((center) => [center.id, center]));
   const centerIds = new Set<string>();
+  const ordersByCenterId = new Map<string | null, NormalizedOrder[]>();
+  const linesByCenterId = new Map<string | null, NormalizedLine[]>();
   for (const center of centers) {
     if (center.is_active !== false) centerIds.add(center.id);
   }
   for (const order of orders) {
     if (order.centerId) centerIds.add(order.centerId);
+    const centerOrders = ordersByCenterId.get(order.centerId) ?? [];
+    centerOrders.push(order);
+    ordersByCenterId.set(order.centerId, centerOrders);
   }
+  for (const line of lines) {
+    const centerLines = linesByCenterId.get(line.centerId) ?? [];
+    centerLines.push(line);
+    linesByCenterId.set(line.centerId, centerLines);
+  }
+  const lifetimeStart = new Date(2000, 0, 1);
+  const lifetimeEnd = addMonths(startOfMonth(now), 1200);
   if (scope.centerId) {
     for (const centerId of [...centerIds]) {
       if (centerId !== scope.centerId) centerIds.delete(centerId);
@@ -817,7 +835,9 @@ function buildCustomerSalesRows({
 
   return [...centerIds].map((centerId) => {
     const centerScope = { ...scope, centerId };
-    const centerOrders = orders.filter((order) => order.centerId === centerId);
+    const centerOrders = ordersByCenterId.get(centerId) ?? [];
+    const metricOrders = centerId ? centerOrders : orders;
+    const metricLines = centerId ? linesByCenterId.get(centerId) ?? [] : lines;
     const dates = sortedOrderDates(centerOrders);
     const firstOrderDate = dates[0] ?? firstOrderDateByCenterId.get(centerId) ?? null;
     const lastOrderDate = dates[dates.length - 1] ?? null;
@@ -825,26 +845,26 @@ function buildCustomerSalesRows({
     const thisMonth = metricForPeriod({
       end: monthEndExclusive,
       firstOrderDateByCenterId,
-      lines,
-      orders,
+      lines: metricLines,
+      orders: metricOrders,
       scope: centerScope,
       start: monthStart,
     });
     const lastMonth = metricForPeriod({
       end: monthStart,
       firstOrderDateByCenterId,
-      lines,
-      orders,
+      lines: metricLines,
+      orders: metricOrders,
       scope: centerScope,
       start: previousMonthStart,
     });
     const lifetime = metricForPeriod({
-      end: addMonths(startOfMonth(now), 1200),
+      end: lifetimeEnd,
       firstOrderDateByCenterId,
-      lines,
-      orders,
+      lines: metricLines,
+      orders: metricOrders,
       scope: centerScope,
-      start: new Date(2000, 0, 1),
+      start: lifetimeStart,
     });
     const previousOrderBeforeMonth = dates.filter((date) => date < monthStart).at(-1) ?? null;
 
@@ -980,6 +1000,11 @@ function buildInventoryPlanningRows({
   }
 
   const usageStart = addDays(startOfDay(now), -USAGE_LOOKBACK_DAYS);
+  const usageQtyByProductId = new Map<string | null, number>();
+  for (const line of lines) {
+    if (line.createdAt < usageStart || !lineMatchesScope(line, scope)) continue;
+    usageQtyByProductId.set(line.productId, (usageQtyByProductId.get(line.productId) ?? 0) + line.qty);
+  }
   const productIds = new Set<string>();
   for (const product of products) {
     if (product.active !== false) productIds.add(product.id);
@@ -992,8 +1017,7 @@ function buildInventoryPlanningRows({
   }
 
   return [...productIds].map((productId) => {
-    const usageLines = lines.filter((line) => line.productId === productId && line.createdAt >= usageStart && lineMatchesScope(line, scope));
-    const averageWeeklyUsageQty = usageLines.reduce((sum, line) => sum + line.qty, 0) / (USAGE_LOOKBACK_DAYS / 7);
+    const averageWeeklyUsageQty = (usageQtyByProductId.get(productId) ?? 0) / (USAGE_LOOKBACK_DAYS / 7);
     const forecastRow = forecastByProductId.get(productId);
     const forecastedMonthlyDemandQty = forecastRow?.forecastQty ?? averageWeeklyUsageQty * 4.345;
     const item = finishedItemByProductId.get(productId);

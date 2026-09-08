@@ -1,3 +1,4 @@
+import type { Database } from '@/lib/supabase/schema';
 import {
   convertInventoryQuantity,
   fixedRecipeCostBreakdownCents,
@@ -13,7 +14,10 @@ import {
 
 type SupabaseLike = {
   from: (table: string) => any;
-  rpc: (fn: string, args: Record<string, unknown>) => any;
+  rpc: (
+    name: 'record_inventory_production_run',
+    args: Database['public']['Functions']['record_inventory_production_run']['Args'],
+  ) => PromiseLike<{ error: { message: string } | null }>;
 };
 
 type ProductionRunError =

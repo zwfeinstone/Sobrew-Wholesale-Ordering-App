@@ -1,3 +1,8 @@
+import Link from 'next/link';
+import CenterCatalogEditor from '@/components/center-catalog-editor';
+import CustomerWorkspaceTabs from '@/components/customer-workspace-tabs';
+import { parseCenterCatalog } from '@/lib/customer-pricing';
+import { orderActivityLabel } from '@/lib/order-workflow';
 import { notFound, redirect } from 'next/navigation';
 import { AdminPermissionEditor } from '@/components/admin-permission-editor';
 import PendingSubmitButton from '@/components/pending-submit-button';
@@ -8,10 +13,10 @@ import { loadSavedAdminPermissions, parseAdminPermissionsForm, saveAdminPermissi
 import { requireAdminSectionView, requireManageAdmins } from '@/lib/admin-permissions';
 import { requireAdminWriteAccess } from '@/lib/admin-write-access';
 import { sendCustomerWelcomeEmail } from '@/lib/email';
-import { productCategoryGroupKey, productCategoryLabel, productCategorySortRank, type ProductCategoryGroup } from '@/lib/product-categories';
+import { productCategoryLabel } from '@/lib/product-categories';
 import { createClient } from '@/lib/supabase/server';
 import { supabaseAdmin } from '@/lib/supabase/admin';
-import { formatAppDateTime, toCents } from '@/lib/utils';
+import { formatAppDateTime, usd } from '@/lib/utils';
 
 type CenterProductRow = {
   id: string;
@@ -31,7 +36,6 @@ type CenterLocationRow = {
   is_active: boolean | null;
 };
 
-const productNameCollator = new Intl.Collator('en-US', { numeric: true, sensitivity: 'base' });
 
 function isNextRedirectError(error: unknown) {
   return Boolean(
@@ -58,31 +62,13 @@ function locationAddressLine(location: CenterLocationRow) {
     .join(', ');
 }
 
-function groupProductsByCategory(products: CenterProductRow[]) {
-  const sortedProducts = [...products].sort((a, b) => {
-    const categoryComparison = productCategorySortRank(a.category) - productCategorySortRank(b.category);
-    if (categoryComparison !== 0) return categoryComparison;
-    return productNameCollator.compare(productDisplayName(a), productDisplayName(b));
-  });
-
-  const groups: Array<{ category: ProductCategoryGroup; products: CenterProductRow[] }> = [];
-  for (const product of sortedProducts) {
-    const category = productCategoryGroupKey(product.category);
-    const currentGroup = groups[groups.length - 1];
-    if (currentGroup?.category === category) {
-      currentGroup.products.push(product);
-    } else {
-      groups.push({ category, products: [product] });
-    }
-  }
-  return groups;
-}
 
 function adminUserDeniedHref(id: string) {
   return id ? `/admin/users/${id}?error=admin_write_denied` : '/admin/users';
 }
 
 function adminActionErrorMessage(error: string) {
+  if (error === 'pricing_invalid') return 'Pricing was not saved. Every selected product needs a valid price, or explicit complimentary approval for $0.';
   if (error === 'admin_write_denied') return 'You do not have edit access to this section.';
   if (error === 'admin_permission_denied') return 'Only superadmins can manage admin accounts and permissions.';
   if (error === 'admin_save_failed') return 'The admin account could not be saved.';
@@ -95,39 +81,21 @@ function customerTaxStatusFromForm(formData: FormData) {
   return value === 'for_profit' || value === 'tax_exempt' ? value : 'unknown';
 }
 
-async function syncCenterCatalog(centerId: string, formData: FormData) {
-  const selected = formData.getAll('product_id').map(String);
-
-  const deleteProductsResult = await supabaseAdmin.from('user_products').delete().eq('center_id', centerId);
-  if (deleteProductsResult.error) {
-    throw deleteProductsResult.error;
+async function updateCenterPricing(formData: FormData) {
+  'use server';
+  const centerId = String(formData.get('center_id') ?? '');
+  await requireAdminWriteAccess(adminUserDeniedHref(centerId), 'centers');
+  await requireCenterAccess(centerId, adminUserDeniedHref(centerId));
+  try {
+    const entries = parseCenterCatalog(formData);
+    const supabase = await createClient();
+    const result = await supabase.rpc('save_center_catalog', { p_center_id: centerId, p_entries: entries });
+    if (result.error) throw result.error;
+  } catch (error) {
+    console.error('[customer-pricing] save failed', error);
+    redirect(`/admin/users/${centerId}?tab=catalog&error=pricing_invalid`);
   }
-
-  const deletePricesResult = await supabaseAdmin.from('user_product_prices').delete().eq('center_id', centerId);
-  if (deletePricesResult.error) {
-    throw deletePricesResult.error;
-  }
-
-  if (!selected.length) {
-    return;
-  }
-
-  const insertProductsResult = await supabaseAdmin.from('user_products').insert(selected.map((product_id) => ({ center_id: centerId, product_id })));
-  if (insertProductsResult.error) {
-    throw insertProductsResult.error;
-  }
-
-  const upsertPricesResult = await supabaseAdmin.from('user_product_prices').upsert(
-    selected.map((product_id) => ({
-      center_id: centerId,
-      product_id,
-      price_cents: toCents(String(formData.get(`price_${product_id}`) ?? '0')),
-    })),
-    { onConflict: 'center_id,product_id' }
-  );
-  if (upsertPricesResult.error) {
-    throw upsertPricesResult.error;
-  }
+  redirect(`/admin/users/${centerId}?tab=catalog&success=pricing_saved`);
 }
 
 async function updateCenter(formData: FormData) {
@@ -153,12 +121,11 @@ async function updateCenter(formData: FormData) {
       throw centerUpdateResult.error;
     }
 
-    await syncCenterCatalog(centerId, formData);
-    redirect(`/admin/users/${centerId}?success=center_saved`);
+    redirect(`/admin/users/${centerId}?tab=settings&success=center_saved`);
   } catch (error) {
     if (isNextRedirectError(error)) throw error;
     console.error('[admin-centers] updateCenter failed', { centerId, error });
-    redirect(`/admin/users/${centerId}?error=center_save_failed`);
+    redirect(`/admin/users/${centerId}?tab=settings&error=center_save_failed`);
   }
 }
 
@@ -434,13 +401,14 @@ async function updateAdminAccount(formData: FormData) {
   redirect(`/admin/users/${id}?success=admin_saved`);
 }
 
-export default async function UserDetailPage({
-  params,
-  searchParams,
-}: {
-  params: { id: string };
-  searchParams?: Record<string, string | string[] | undefined>;
-}) {
+export default async function UserDetailPage(
+  props: {
+    params: Promise<{ id: string }>;
+    searchParams?: Promise<Record<string, string | string[] | undefined>>;
+  }
+) {
+  const searchParams = await props.searchParams;
+  const params = await props.params;
   const currentAccess = await requireAdminSectionView('centers');
   const supabase = await createClient();
   const success = typeof searchParams?.success === 'string' ? searchParams.success : '';
@@ -454,10 +422,10 @@ export default async function UserDetailPage({
       redirect('/admin/access-denied?section=centers');
     }
 
-    const [{ data: products }, { data: assigned }, { data: prices }, { data: members }, { data: locations }] = await Promise.all([
+    const catalogResults = await Promise.all([
       supabase.from('products').select('id,name,category').eq('active', true).order('name', { ascending: true }),
       supabase.from('user_products').select('product_id').eq('center_id', center.id),
-      supabase.from('user_product_prices').select('product_id,price_cents').eq('center_id', center.id),
+      supabase.from('user_product_prices').select('product_id,price_cents,allow_zero_price').eq('center_id', center.id),
       supabase
         .from('profiles')
         .select('id,email,full_name,is_active,created_at')
@@ -472,13 +440,19 @@ export default async function UserDetailPage({
         .order('name', { ascending: true }),
     ]);
 
+    if (catalogResults.some(result => result.error)) throw new Error('Customer workspace could not be loaded. No changes were made.');
+    const [{ data: products }, { data: assigned }, { data: prices }, { data: members }, { data: locations }] = catalogResults;
     const assignedSet = new Set((assigned ?? []).map((row) => row.product_id));
     const priceMap = new Map((prices ?? []).map((row) => [row.product_id, row.price_cents]));
-    const groupedProducts = groupProductsByCategory((products ?? []) as CenterProductRow[]);
+    const complimentarySet = new Set((prices ?? []).filter(row => row.allow_zero_price).map(row => row.product_id));
     const centerLocations = (locations ?? []) as CenterLocationRow[];
 
-    return (
-      <div className="space-y-6">
+    const [ordersResult, activityResult] = currentAccess.access.orders.canView ? await Promise.all([
+      supabase.from('orders').select('id,created_at,status,subtotal_cents,notes').eq('center_id', center.id).order('created_at', { ascending: false }).limit(100),
+      supabase.from('order_activity').select('*').eq('center_id', center.id).order('created_at', { ascending: false }).limit(50),
+    ]) : [{ data: [], error: null }, { data: [], error: null }];
+    const initialTab = typeof searchParams?.tab === 'string' ? searchParams.tab : /location/.test(success + error) ? 'locations' : /login/.test(success + error) ? 'people' : 'catalog';
+    return <div className="space-y-5">
         {success === 'center_created' ? <div className="card text-sm text-green-700">Center created and first login added.</div> : null}
         {success === 'center_saved' ? <div className="card text-sm text-green-700">Center settings saved.</div> : null}
         {success === 'login_added' ? <div className="card text-sm text-green-700">Login added to center.</div> : null}
@@ -490,13 +464,12 @@ export default async function UserDetailPage({
         {warning === 'welcome_email_failed' ? <div className="card text-sm text-amber-700">The login was created, but the welcome email could not be sent. Send the login details manually.</div> : null}
         {error ? <div className="card text-sm text-red-700">{adminActionErrorMessage(error)}</div> : null}
 
-        <section className="panel">
-          <span className="eyebrow">Center Admin</span>
-          <h1 className="page-title mt-4 break-words">{center.name}</h1>
-          <p className="page-subtitle mt-3">Manage shared pricing, add or remove center logins, and keep center history intact even when staff changes.</p>
-        </section>
 
-        <form action={updateCenter} className="space-y-6">
+      {success === 'pricing_saved' ? <p className="workspace-notice" role="status">Catalog pricing saved.</p> : null}
+      <header className="workspace-heading"><div><Link className="text-sm text-slate-500" href="/admin/users">Customers</Link><h1 className="page-title mt-2">{center.name}</h1><p className="mt-2 text-sm text-slate-500">{members?.length ?? 0} people · {centerLocations.length} locations</p></div><span className="workspace-badge">{center.is_active ? 'Active' : 'Inactive'}</span></header>
+      <CustomerWorkspaceTabs key={center.id} initialTab={initialTab} panels={{
+        catalog: <CenterCatalogEditor key={center.id} centerId={center.id} action={updateCenterPricing} products={(products ?? []).map(product => ({ id: product.id, name: productDisplayName(product), category: productCategoryLabel(product.category), assigned: assignedSet.has(product.id), price: priceMap.get(product.id) ?? null, complimentary: complimentarySet.has(product.id) }))} />,
+        settings: <>        <form action={updateCenter} className="space-y-6">
           <input type="hidden" name="center_id" value={center.id} />
           <section className="card space-y-4">
             <div className="grid gap-4 md:grid-cols-2">
@@ -524,34 +497,14 @@ export default async function UserDetailPage({
               </label>
               <label className="space-y-2 text-sm font-medium text-slate-700">
                 Tax note
-                <input className="input" name="customer_tax_note" defaultValue={center.customer_tax_note ?? ''} placeholder="Exemption certificate, resale note, or review detail" />
+                <input className="input" name="customer_tax_note" defaultValue={center.customer_tax_note ?? ''} aria-label="Exemption certificate, resale note, or review detail" placeholder="Exemption certificate, resale note, or review detail" />
               </label>
             </div>
           </section>
 
-          <section className="card space-y-4">
-            <h2 className="text-xl font-semibold text-slate-950">Shared product visibility + pricing</h2>
-            {!groupedProducts.length ? <div className="rounded-2xl border border-slate-200 bg-white/60 p-4 text-sm text-slate-600">No active products found.</div> : null}
-            {groupedProducts.map((group) => (
-              <div key={group.category} className="space-y-3">
-                <h3 className="border-b border-slate-200 pb-2 text-sm font-semibold uppercase tracking-[0.18em] text-slate-500">{productCategoryLabel(group.category)}</h3>
-                {group.products.map((product) => (
-                  <div key={product.id} className="grid gap-3 rounded-2xl border border-slate-200 bg-white/60 p-4 md:grid-cols-2">
-                    <label className="flex items-center gap-3 font-medium text-slate-900">
-                      <input type="checkbox" name="product_id" value={product.id} defaultChecked={assignedSet.has(product.id)} />
-                      {productDisplayName(product)}
-                    </label>
-                    <input className="input" name={`price_${product.id}`} type="number" step="0.01" min="0" defaultValue={((priceMap.get(product.id) ?? 0) / 100).toFixed(2)} />
-                  </div>
-                ))}
-              </div>
-            ))}
-          </section>
-
-          <PendingSubmitButton className="btn-primary w-full sm:w-auto" label="Save Center" pendingLabel="Saving..." />
-        </form>
-
-        <section className="card space-y-5">
+          <PendingSubmitButton className="btn-primary" label="Save customer" pendingLabel="Saving..." />
+        </form></>,
+        locations: <>        <section className="card space-y-5">
           <div>
             <h2 className="text-xl font-semibold text-slate-950">Delivery locations</h2>
             <p className="mt-1 text-sm text-slate-500">Add each delivery address this center can choose during checkout.</p>
@@ -559,13 +512,13 @@ export default async function UserDetailPage({
 
           <form action={addCenterLocation} className="grid gap-3 lg:grid-cols-2">
             <input type="hidden" name="center_id" value={center.id} />
-            <input className="input" name="location_name" required placeholder="Location name" />
-            <input className="input" name="address1" required placeholder="Address line 1" />
-            <input className="input" name="address2" placeholder="Address line 2" />
-            <input className="input" name="city" required placeholder="City" />
-            <input className="input" name="state" required placeholder="State" />
-            <input className="input" name="zip" required placeholder="ZIP" />
-            <textarea className="input min-h-24 lg:col-span-2" name="location_notes" placeholder="Location notes" />
+            <input className="input" name="location_name" required aria-label="Location name" placeholder="Location name" />
+            <input className="input" name="address1" required aria-label="Address line 1" placeholder="Address line 1" />
+            <input className="input" name="address2" aria-label="Address line 2" placeholder="Address line 2" />
+            <input className="input" name="city" required aria-label="City" placeholder="City" />
+            <input className="input" name="state" required aria-label="State" placeholder="State" />
+            <input className="input" name="zip" required aria-label="ZIP" placeholder="ZIP" />
+            <textarea className="input min-h-24 lg:col-span-2" name="location_notes" aria-label="Location notes" placeholder="Location notes" />
             <label className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-white/60 px-4 py-3 text-sm font-medium text-slate-700">
               <input type="checkbox" name="is_active" defaultChecked />
               Active location
@@ -589,13 +542,13 @@ export default async function UserDetailPage({
                 <form action={updateCenterLocation} className="grid gap-3 lg:grid-cols-2">
                   <input type="hidden" name="center_id" value={center.id} />
                   <input type="hidden" name="location_id" value={location.id} />
-                  <input className="input" name="location_name" required defaultValue={location.name ?? ''} placeholder="Location name" />
-                  <input className="input" name="address1" required defaultValue={location.address1 ?? ''} placeholder="Address line 1" />
-                  <input className="input" name="address2" defaultValue={location.address2 ?? ''} placeholder="Address line 2" />
-                  <input className="input" name="city" required defaultValue={location.city ?? ''} placeholder="City" />
-                  <input className="input" name="state" required defaultValue={location.state ?? ''} placeholder="State" />
-                  <input className="input" name="zip" required defaultValue={location.zip ?? ''} placeholder="ZIP" />
-                  <textarea className="input min-h-24 lg:col-span-2" name="location_notes" defaultValue={location.notes ?? ''} placeholder="Location notes" />
+                  <input className="input" name="location_name" required defaultValue={location.name ?? ''} aria-label="Location name" placeholder="Location name" />
+                  <input className="input" name="address1" required defaultValue={location.address1 ?? ''} aria-label="Address line 1" placeholder="Address line 1" />
+                  <input className="input" name="address2" defaultValue={location.address2 ?? ''} aria-label="Address line 2" placeholder="Address line 2" />
+                  <input className="input" name="city" required defaultValue={location.city ?? ''} aria-label="City" placeholder="City" />
+                  <input className="input" name="state" required defaultValue={location.state ?? ''} aria-label="State" placeholder="State" />
+                  <input className="input" name="zip" required defaultValue={location.zip ?? ''} aria-label="ZIP" placeholder="ZIP" />
+                  <textarea className="input min-h-24 lg:col-span-2" name="location_notes" defaultValue={location.notes ?? ''} aria-label="Location notes" placeholder="Location notes" />
                   <label className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-white/60 px-4 py-3 text-sm font-medium text-slate-700">
                     <input type="checkbox" name="is_active" defaultChecked={location.is_active !== false} />
                   Active location
@@ -614,16 +567,17 @@ export default async function UserDetailPage({
           </div>
         </section>
 
-        <section className="card space-y-4">
+</>,
+        people: <>        <section className="card space-y-4">
           <div>
             <h2 className="text-xl font-semibold text-slate-950">Add login</h2>
             <p className="mt-1 text-sm text-slate-500">Create another login for this center. Every login will share the same catalog, order history, and recurring orders.</p>
           </div>
           <form action={addCenterLogin} className="grid gap-3 md:grid-cols-4">
             <input type="hidden" name="center_id" value={center.id} />
-            <input className="input" name="full_name" placeholder="Login name" />
-            <input className="input" name="email" type="email" required placeholder="Email address" />
-            <input className="input" name="password" type="password" minLength={8} required placeholder="Temporary password" autoComplete="new-password" />
+            <input className="input" name="full_name" aria-label="Login name" placeholder="Login name" />
+            <input className="input" name="email" type="email" required aria-label="Email address" placeholder="Email address" />
+            <input className="input" name="password" type="password" minLength={8} required aria-label="Temporary password" placeholder="Temporary password" autoComplete="new-password" />
             <PendingSubmitButton className="btn-primary w-full md:w-auto" label="Add Login" pendingLabel="Adding..." />
           </form>
         </section>
@@ -643,8 +597,8 @@ export default async function UserDetailPage({
               <form action={updateCenterLogin} className="grid gap-3 md:grid-cols-[1.2fr_1fr_auto_auto] md:items-center">
                 <input type="hidden" name="center_id" value={center.id} />
                 <input type="hidden" name="member_id" value={member.id} />
-                <input className="input" name="full_name" defaultValue={member.full_name ?? ''} placeholder="Login name" />
-                <input className="input" name="password" type="password" minLength={8} placeholder="Leave blank to keep password" autoComplete="new-password" />
+                <input className="input" name="full_name" defaultValue={member.full_name ?? ''} aria-label="Login name" placeholder="Login name" />
+                <input className="input" name="password" type="password" minLength={8} aria-label="Leave blank to keep password" placeholder="Leave blank to keep password" autoComplete="new-password" />
                 <label className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-white/60 px-4 py-3 text-sm font-medium text-slate-700">
                   <input type="checkbox" name="is_active" defaultChecked={member.is_active} />
                   Active
@@ -659,8 +613,11 @@ export default async function UserDetailPage({
             </div>
           ))}
         </section>
-      </div>
-    );
+</>,
+        orders: <section><h2 className="text-lg font-semibold mb-4">Recent orders</h2>{!currentAccess.access.orders.canView ? <p className="workspace-notice">Order access is required to view this history.</p> : ordersResult.error ? <p role="alert">Orders could not be loaded.</p> : !ordersResult.data?.length ? <p className="workspace-empty">No orders yet</p> : ordersResult.data.map(order => <Link key={order.id} href={`/admin/orders/${order.id}`} className="customer-order-row"><span><strong>{order.id.slice(0,8)}</strong><small className="block">{formatAppDateTime(order.created_at)}</small>{order.notes ? <span className="text-amber-800">Delivery notes</span> : null}</span><span>{order.status}</span><strong>{usd(order.subtotal_cents)}</strong></Link>)}</section>,
+        activity: <section><h2 className="text-lg font-semibold mb-4">Order activity</h2>{activityResult.error ? <p role="alert">Activity could not be loaded.</p> : !activityResult.data?.length ? <p className="workspace-empty">{currentAccess.access.orders.canView ? 'No recorded order activity yet' : 'Order access is required to view activity'}</p> : activityResult.data.map(event => <Link key={event.id} href={`/admin/orders/${event.order_id}`} className="order-activity-row"><strong>{orderActivityLabel(event.action)}</strong><span>{event.actor_name || 'System'} · {formatAppDateTime(event.created_at)}</span></Link>)}</section>,
+      }} />
+    </div>;
   }
 
   await requireManageAdmins('/admin/access-denied?section=manage_admins');
@@ -706,10 +663,10 @@ export default async function UserDetailPage({
         </label>
         <div className="space-y-2">
           <label className="text-sm font-medium text-slate-700">Set new password</label>
-          <input className="input" name="password" type="password" minLength={8} placeholder="Leave blank to keep current password" autoComplete="new-password" />
+          <input className="input" name="password" type="password" minLength={8} aria-label="Leave blank to keep current password" placeholder="Leave blank to keep current password" autoComplete="new-password" />
         </div>
         <label className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-white/60 px-4 py-3 text-sm font-medium text-slate-700">
-          <input type="checkbox" name="is_active" defaultChecked={adminUser.is_active} disabled={isPrimaryOwnerAdmin} />
+          <input type="checkbox" name="is_active" defaultChecked={adminUser.is_active === true} disabled={isPrimaryOwnerAdmin} />
           Active (uncheck to deactivate)
         </label>
       </section>

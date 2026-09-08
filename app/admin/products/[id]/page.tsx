@@ -235,13 +235,14 @@ async function saveRecipe(formData: FormData) {
   redirect(`/admin/products/${productId}?toast=recipe_saved`);
 }
 
-export default async function ProductPage({
-  params,
-  searchParams,
-}: {
-  params: { id: string };
-  searchParams?: Record<string, string | string[] | undefined>;
-}) {
+export default async function ProductPage(
+  props: {
+    params: Promise<{ id: string }>;
+    searchParams?: Promise<Record<string, string | string[] | undefined>>;
+  }
+) {
+  const searchParams = await props.searchParams;
+  const params = await props.params;
   await requireAdminSectionView('products');
   const supabase = await createClient();
   const { data: product } = await supabase.from('products').select('*').eq('id', params.id).single();
@@ -332,7 +333,7 @@ export default async function ProductPage({
           ))}
         </select>
         <textarea className="input min-h-28" name="description" defaultValue={product.description ?? ''} />
-        <label className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-white/60 px-4 py-3 text-sm font-medium text-slate-700"><input type="checkbox" name="active" defaultChecked={product.active} /> Active</label>
+        <label className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-white/60 px-4 py-3 text-sm font-medium text-slate-700"><input type="checkbox" name="active" defaultChecked={product.active === true} /> Active</label>
         <label className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-white/60 px-4 py-3 text-sm font-medium text-slate-700"><input type="checkbox" name="shipping_box_count_required" defaultChecked={Boolean(product.shipping_box_count_required)} /> Box count required at shipping</label>
         <label className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-white/60 px-4 py-3 text-sm font-medium text-slate-700"><input type="checkbox" name="receivable_finished_good" defaultChecked={Boolean(product.receivable_finished_good)} /> Can be received as purchased finished good</label>
         <label className="space-y-2 text-sm font-medium text-slate-700">

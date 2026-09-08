@@ -1,6 +1,6 @@
 import { cache } from 'react';
 import { redirect } from 'next/navigation';
-import { requireAdmin } from '@/lib/auth';
+import { requireAdmin, type RequestContextProfile, type RequestContextUser } from '@/lib/auth';
 import { createClient } from '@/lib/supabase/server';
 import {
   ADMIN_PERMISSION_KEYS,
@@ -33,8 +33,8 @@ export type CurrentAdminAccess = {
   firstAllowedHref: string;
   isOwner: boolean;
   isSuperadmin: boolean;
-  profile: any;
-  user: any;
+  profile: RequestContextProfile;
+  user: RequestContextUser;
 };
 
 function mapFromRows(rows: Array<{ can_edit: boolean | null; can_view: boolean | null; section_key: string }> | null | undefined) {

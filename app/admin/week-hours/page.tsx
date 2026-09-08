@@ -141,7 +141,8 @@ function SpiffTable({ spiffs }: { spiffs: WeeklySalesSpiff[] }) {
   );
 }
 
-export default async function WeekHoursPage({ searchParams }: { searchParams?: SearchParams }) {
+export default async function WeekHoursPage(props: { searchParams?: Promise<SearchParams> }) {
+  const searchParams = await props.searchParams;
   const current = await requireAdminSectionView('week_hours');
   const now = new Date();
   const todayInput = formatCentralDateInput(now);

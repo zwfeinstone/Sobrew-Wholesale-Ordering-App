@@ -17,11 +17,12 @@ function buildPageHref(page: number, sort: string, nameFilter: string) {
   return `/admin/archived-orders?${params.toString()}`;
 }
 
-export default async function ArchivedOrdersPage({
-  searchParams,
-}: {
-  searchParams?: Record<string, string | string[] | undefined>;
-}) {
+export default async function ArchivedOrdersPage(
+  props: {
+    searchParams?: Promise<Record<string, string | string[] | undefined>>;
+  }
+) {
+  const searchParams = await props.searchParams;
   await requireAdminSectionView('archived_orders');
   const supabase = await createClient();
   const sort = typeof searchParams?.sort === 'string' ? searchParams.sort : 'archived_desc';

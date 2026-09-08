@@ -1,11 +1,19 @@
 # dependencies
 /node_modules
+/.pnpm-store
 
 # next build output
 /.next
 /out
 /test-results
 /playwright-report
+/.playwright-cli
+*.tsbuildinfo
+
+# Local business artifacts and generated previews (keep outside application source)
+/output
+/outputs
+/tmp
 
 # production
 /build
@@ -19,7 +27,5 @@
 .env
 .env.*.local
 
-# lockfiles (optional but recommended to commit normally — remove if you want lockfile tracked)
-# package-lock.json
 .vercel
 .env*

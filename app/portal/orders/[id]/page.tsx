@@ -2,6 +2,7 @@ import { notFound } from 'next/navigation';
 import { ClearCart, ReorderButton } from '@/components/cart-client';
 import { OrderStatusBadge, OrderStatusTimeline } from '@/components/order-status';
 import StatusToast from '@/components/status-toast';
+import { OrderNotes } from '@/components/order-notes';
 import { requireUser } from '@/lib/auth';
 import { cartStorageKeyForUser } from '@/lib/cart';
 import { createClient } from '@/lib/supabase/server';
@@ -11,13 +12,14 @@ function formatOrderTimestamp(value: string | null) {
   return formatAppDateTime(value);
 }
 
-export default async function OrderDetail({
-  params,
-  searchParams,
-}: {
-  params: { id: string };
-  searchParams?: Record<string, string | string[] | undefined>;
-}) {
+export default async function OrderDetail(
+  props: {
+    params: Promise<{ id: string }>;
+    searchParams?: Promise<Record<string, string | string[] | undefined>>;
+  }
+) {
+  const searchParams = await props.searchParams;
+  const params = await props.params;
   const { user, profile } = await requireUser();
   const supabase = await createClient();
   const centerId = profile?.center_id ?? user.id;
@@ -72,6 +74,7 @@ export default async function OrderDetail({
           <OrderStatusTimeline status={order.status} />
         </div>
       </section>
+      <OrderNotes notes={order.notes} />
       <div className="card space-y-3">
         {!items?.length ? <p className="text-sm text-slate-500">No line items are attached to this order.</p> : null}
         {items?.map((i: any) => (
@@ -90,7 +93,6 @@ export default async function OrderDetail({
           items={reorderItems}
           storageKey={cartStorageKey}
           label="Reorder & review"
-          toastMessage="Order added to cart."
           className="btn-primary inline-flex w-full sm:w-auto"
         />
       </div>

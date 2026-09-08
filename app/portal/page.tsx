@@ -14,6 +14,7 @@ export default async function PortalPage() {
 
   return (
     <PortalRestockWorkspace
+      isAdmin={Boolean(profile.is_admin)}
       cartStorageKey={cartStorageKey}
       centerName={centerName}
       products={products}

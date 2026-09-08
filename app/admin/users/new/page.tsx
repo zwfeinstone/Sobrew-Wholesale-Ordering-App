@@ -2,11 +2,12 @@ import { UserWizard } from '@/components/user-wizard';
 import { requireAdminSectionView } from '@/lib/admin-permissions';
 import { createClient } from '@/lib/supabase/server';
 
-export default async function NewUserWizardPage({
-  searchParams,
-}: {
-  searchParams?: Record<string, string | string[] | undefined>;
-}) {
+export default async function NewUserWizardPage(
+  props: {
+    searchParams?: Promise<Record<string, string | string[] | undefined>>;
+  }
+) {
+  const searchParams = await props.searchParams;
   await requireAdminSectionView('centers');
   const supabase = await createClient();
   const { data: products } = await supabase.from('products').select('id,name,category').eq('active', true).order('name', { ascending: true });

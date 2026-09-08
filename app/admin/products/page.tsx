@@ -18,7 +18,7 @@ import {
   isProductCategory,
   productCategoryGroupKey,
   productCategoryLabel,
-  productCategorySortRank,
+  groupProductsByCategory,
   type ProductCategoryGroup
 } from '@/lib/product-categories';
 import { createClient } from '@/lib/supabase/server';
@@ -42,7 +42,6 @@ type RecipeLaborRow = {
   labor_rate_cents: number | string | null;
 };
 
-const productNameCollator = new Intl.Collator('en-US', { numeric: true, sensitivity: 'base' });
 
 function normalizeCategoryFilter(value: string | string[] | undefined): ProductCategoryGroup | 'all' {
   if (value === UNCATEGORIZED_PRODUCT_CATEGORY) return UNCATEGORIZED_PRODUCT_CATEGORY;
@@ -65,27 +64,7 @@ function productMatchesCategory(product: ProductRow, categoryFilter: ProductCate
   return categoryFilter === 'all' || productCategoryGroupKey(product.category) === categoryFilter;
 }
 
-function sortProducts(products: ProductRow[]) {
-  return [...products].sort((a, b) => {
-    const categoryComparison = productCategorySortRank(a.category) - productCategorySortRank(b.category);
-    if (categoryComparison !== 0) return categoryComparison;
-    return productNameCollator.compare(productDisplayName(a), productDisplayName(b));
-  });
-}
 
-function groupProductsByCategory(products: ProductRow[]) {
-  const groups: Array<{ category: ProductCategoryGroup; products: ProductRow[] }> = [];
-  for (const product of sortProducts(products)) {
-    const category = productCategoryGroupKey(product.category);
-    const currentGroup = groups[groups.length - 1];
-    if (currentGroup?.category === category) {
-      currentGroup.products.push(product);
-    } else {
-      groups.push({ category, products: [product] });
-    }
-  }
-  return groups;
-}
 
 function buildProductsHref(category: ProductCategoryGroup | 'all', search: string) {
   const params = new URLSearchParams();
@@ -245,11 +224,12 @@ async function syncNewQuickBooksProducts(formData: FormData) {
   redirect(productsToastHref(returnTo, toast, { count: result.createdCount, errors: result.productErrorCount }));
 }
 
-export default async function ProductsPage({
-  searchParams,
-}: {
-  searchParams?: Record<string, string | string[] | undefined>;
-}) {
+export default async function ProductsPage(
+  props: {
+    searchParams?: Promise<Record<string, string | string[] | undefined>>;
+  }
+) {
+  const searchParams = await props.searchParams;
   await requireAdminSectionView('products');
   const supabase = await createClient();
   const [{ data }, { count: recipeCount }, quickBooksStatus] = await Promise.all([

@@ -496,7 +496,8 @@ async function setRecurringStatus(formData: FormData) {
   }
 }
 
-export default async function RecurringOrdersPage({ searchParams }: { searchParams?: { success?: string; error?: string } }) {
+export default async function RecurringOrdersPage(props: { searchParams?: Promise<{ success?: string; error?: string }> }) {
+  const searchParams = await props.searchParams;
   let userId = 'unknown';
   let centerId = 'unknown';
   try {

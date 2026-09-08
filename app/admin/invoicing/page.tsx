@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import { Suspense } from 'react';
 import { redirect } from 'next/navigation';
 import InvoicingRefreshButton from '@/components/invoicing-refresh-button';
 import InvoicingViewTabs from '@/components/invoicing-view-tabs';
@@ -107,6 +108,8 @@ const US_STATE_OPTIONS = [
 ] as const;
 
 const INVOICE_ORDER_SELECT = 'id,order_kind,archived_at,created_at,shipped_at,subtotal_cents,shipping_company,shipping_name,shipping_state,invoice_status,invoice_error,invoiced_at,quickbooks_invoice_id,quickbooks_invoice_doc_number,quickbooks_invoice_url,quickbooks_invoice_email_to,quickbooks_invoice_email_sent_at,quickbooks_payment_charge_id,quickbooks_payment_error,quickbooks_payment_id,quickbooks_payment_method_label,quickbooks_payment_method_type,quickbooks_payment_status,quickbooks_receipt_email_to,quickbooks_receipt_email_sent_at,profiles(email,full_name),centers(name,customer_tax_status,quickbooks_customer_id,quickbooks_display_name,quickbooks_payment_method_brand,quickbooks_payment_method_exp_month,quickbooks_payment_method_exp_year,quickbooks_payment_method_id,quickbooks_payment_method_last4,quickbooks_payment_method_type),order_items(qty,line_total_cents,product_name_snapshot,products(name,sku,quickbooks_item_id))';
+const INVOICE_QUEUE_SUMMARY_SELECT = 'id,order_kind,invoice_status,subtotal_cents,centers(quickbooks_customer_id),order_items(line_total_cents,products(quickbooks_item_id))';
+const INVOICE_ARCHIVE_SUMMARY_SELECT = 'id,subtotal_cents';
 const CUSTOMER_SYNC_SELECT = 'id,name,is_active,created_at,quickbooks_customer_id,quickbooks_display_name,quickbooks_company_name,quickbooks_fully_qualified_name,legal_name,billing_email,billing_address1,billing_city,billing_state,billing_zip,quickbooks_sync_status,quickbooks_synced_at,quickbooks_sync_error,quickbooks_mapping_note,quickbooks_payment_method_brand,quickbooks_payment_method_exp_month,quickbooks_payment_method_exp_year,quickbooks_payment_method_id,quickbooks_payment_method_last4,quickbooks_payment_method_note,quickbooks_payment_method_type,quickbooks_payment_method_updated_at';
 
 type SearchParams = Record<string, string | string[] | undefined>;
@@ -1078,34 +1081,96 @@ async function resendPaymentReceipt(formData: FormData) {
   redirect(`/admin/invoicing?view=sent&toast=${toast}`);
 }
 
-export default async function AdminInvoicingPage({ searchParams }: { searchParams?: SearchParams }) {
+export default async function AdminInvoicingPage(props: { searchParams?: Promise<SearchParams> }) {
+  const searchParams = await props.searchParams;
   const current = await requireAdminSectionView('invoicing');
   const canInvoice = adminCanEdit(current.access, 'invoicing');
   const activeView = invoicingViewParam(searchParams?.view);
   const toast = typeof searchParams?.toast === 'string' ? searchParams.toast : '';
   const errorDetail = typeof searchParams?.error === 'string' ? searchParams.error : '';
   const selectedToast = toastMessage(toast);
+  const quickBooksStatus = await getQuickBooksConnectionStatus();
+  const quickBooksPaymentsAuthorized = hasQuickBooksPaymentsScope(quickBooksStatus.grantedScopes);
+  return (
+    <section className="space-y-6">
+      {selectedToast ? <StatusToast message={selectedToast.message} tone={selectedToast.tone} /> : null}
+
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+        <div>
+          <span className="eyebrow">Finance</span>
+          <h1 className="mt-3 text-3xl font-semibold tracking-tight text-slate-950">Invoicing</h1>
+          <p className="mt-2 max-w-2xl text-sm text-slate-500">Shipped orders from {QUICKBOOKS_INVOICING_START_LABEL} forward appear here until QuickBooks has an invoice.</p>
+        </div>
+        <div className="flex flex-col gap-2 sm:flex-row">
+          <Link className="btn-secondary text-center" href="/admin/orders" prefetch={false}>Orders</Link>
+          {quickBooksStatus.connected ? (
+            <form action={disconnectQuickBooks} className="contents">
+              <input type="hidden" name="view" value={activeView} />
+              <PendingSubmitButton className="btn-secondary text-center" label="Disconnect QuickBooks" pendingLabel="Disconnecting..." />
+            </form>
+          ) : (
+            <a className="btn-primary text-center" href="/api/admin/quickbooks/connect">Connect QuickBooks</a>
+          )}
+        </div>
+      </div>
+
+      {quickBooksStatus.missingConfig.length ? (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-900">
+          Missing {quickBooksStatus.missingConfig.join(', ')}.
+        </div>
+      ) : null}
+
+      {quickBooksStatus.connected && !quickBooksPaymentsAuthorized ? (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-900">
+          Reconnect QuickBooks to authorize Payments before charging saved cards, checking accounts, or ACH/eCheck methods.
+        </div>
+      ) : null}
+
+      <InvoicingViewTabs
+        activeView={activeView}
+        views={INVOICING_VIEWS.map((view) => ({
+          ...view,
+          href: invoicingViewHref(view.id),
+        }))}
+      />
+
+      <Suspense key={activeView} fallback={
+        <div className="card py-10 text-sm text-slate-600" role="status" aria-live="polite">
+          Loading {INVOICING_VIEWS.find((view) => view.id === activeView)?.label.toLowerCase()}...
+        </div>
+      }>
+        <InvoicingContent activeView={activeView} canInvoice={canInvoice} errorDetail={errorDetail} quickBooksStatus={quickBooksStatus} />
+      </Suspense>
+    </section>
+  );
+}
+
+async function InvoicingContent({ activeView, canInvoice, errorDetail, quickBooksStatus }: {
+  activeView: InvoicingView;
+  canInvoice: boolean;
+  errorDetail: string;
+  quickBooksStatus: Awaited<ReturnType<typeof getQuickBooksConnectionStatus>>;
+}) {
   const startIso = quickBooksInvoicingStartIso();
   const supabase = await createClient();
-  const [quickBooksStatus, quickBooksCompanyInfo, quickBooksProductSummary, quickBooksItemsResult, quickBooksCustomersResult, salesTaxSettings, ordersResult, sentInvoicesResult, receivableOrdersResult, productsResult, centersResult, resetStatusResult] = await Promise.all([
-    getQuickBooksConnectionStatus(),
+  const [quickBooksCompanyInfo, quickBooksProductSummary, quickBooksItemsResult, quickBooksCustomersResult, salesTaxSettings, ordersResult, sentInvoicesResult, receivableOrdersResult, productsResult, centersResult, resetStatusResult] = await Promise.all([
     activeView === 'accounts-receivable' || activeView === 'sent' || activeView === 'products' || activeView === 'customers' ? getQuickBooksCompanyInfo() : Promise.resolve({ companyName: null, email: null, error: null, legalName: null, realmId: null }),
     activeView === 'products' ? getQuickBooksProductSummary() : Promise.resolve({ activeItemCount: null, error: null }),
     activeView === 'products' ? getQuickBooksActiveItems() : Promise.resolve({ error: null, items: [], truncated: false }),
     activeView === 'customers' ? getQuickBooksActiveCustomers() : Promise.resolve({ customers: [], error: null, truncated: false }),
-    getQuickBooksSalesTaxSettings(),
-    supabase
-      .from('orders')
-      .select(INVOICE_ORDER_SELECT)
+    activeView === 'queue' || activeView === 'sales-tax' ? getQuickBooksSalesTaxSettings() : Promise.resolve({ states: [] }),
+    (activeView === 'queue'
+      ? supabase.from('orders').select(INVOICE_ORDER_SELECT)
+      : supabase.from('orders').select(INVOICE_QUEUE_SUMMARY_SELECT))
       .eq('status', 'Shipped')
       .neq('order_kind', PROSPECTING_SAMPLE_ORDER_KIND)
       .in('invoice_status', ['not_invoiced', 'invoicing', 'invoice_error'])
       .gte('created_at', startIso)
       .order('shipped_at', { ascending: true, nullsFirst: false })
       .order('created_at', { ascending: true }),
-    supabase
-      .from('orders')
-      .select(INVOICE_ORDER_SELECT)
+    (activeView === 'sent'
+      ? supabase.from('orders').select(INVOICE_ORDER_SELECT)
+      : supabase.from('orders').select(INVOICE_ARCHIVE_SUMMARY_SELECT))
       .eq('invoice_status', 'invoiced')
       .order('quickbooks_invoice_email_sent_at', { ascending: false, nullsFirst: false })
       .order('invoiced_at', { ascending: false, nullsFirst: false })
@@ -1229,27 +1294,6 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
 
   return (
     <section className="space-y-6">
-      {selectedToast ? <StatusToast message={selectedToast.message} tone={selectedToast.tone} /> : null}
-
-      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-        <div>
-          <span className="eyebrow">Finance</span>
-          <h1 className="mt-3 text-3xl font-semibold tracking-tight text-slate-950">Invoicing</h1>
-          <p className="mt-2 max-w-2xl text-sm text-slate-500">Shipped orders from {QUICKBOOKS_INVOICING_START_LABEL} forward appear here until QuickBooks has an invoice.</p>
-        </div>
-        <div className="flex flex-col gap-2 sm:flex-row">
-          <Link className="btn-secondary text-center" href="/admin/orders" prefetch={false}>Orders</Link>
-          {quickBooksStatus.connected ? (
-            <form action={disconnectQuickBooks} className="contents">
-              <input type="hidden" name="view" value={activeView} />
-              <PendingSubmitButton className="btn-secondary text-center" label="Disconnect QuickBooks" pendingLabel="Disconnecting..." />
-            </form>
-          ) : (
-            <a className="btn-primary text-center" href="/api/admin/quickbooks/connect">Connect QuickBooks</a>
-          )}
-        </div>
-      </div>
-
       <div className="grid gap-4 md:grid-cols-5">
         <div className="stat-card">
           <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Ready</p>
@@ -1278,18 +1322,6 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
         </div>
       </div>
 
-      {quickBooksStatus.missingConfig.length ? (
-        <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-900">
-          Missing {quickBooksStatus.missingConfig.join(', ')}.
-        </div>
-      ) : null}
-
-      {quickBooksStatus.connected && !quickBooksPaymentsAuthorized ? (
-        <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-900">
-          Reconnect QuickBooks to authorize Payments before charging saved cards, checking accounts, or ACH/eCheck methods.
-        </div>
-      ) : null}
-
       {activeView === 'queue' && paidInvoiceReconciliation.reconciled.length ? (
         <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-medium text-emerald-900">
           Linked {paidInvoiceReconciliation.reconciled.length} existing paid QuickBooks invoice{paidInvoiceReconciliation.reconciled.length === 1 ? '' : 's'} and removed {paidInvoiceReconciliation.reconciled.length === 1 ? 'it' : 'them'} from Ready to Invoice.
@@ -1301,14 +1333,6 @@ export default async function AdminInvoicingPage({ searchParams }: { searchParam
           Unable to check QuickBooks for existing paid invoices: {paidInvoiceReconciliation.error}
         </div>
       ) : null}
-
-      <InvoicingViewTabs
-        activeView={activeView}
-        views={INVOICING_VIEWS.map((view) => ({
-          ...view,
-          href: invoicingViewHref(view.id),
-        }))}
-      />
 
       {activeView === 'accounts-receivable' ? (
         <div className="space-y-6">

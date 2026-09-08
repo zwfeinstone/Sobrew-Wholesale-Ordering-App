@@ -12,11 +12,12 @@ function formatOrderTimestamp(value: string | null) {
   return formatAppDateTime(value);
 }
 
-export default async function OrdersPage({
-  searchParams,
-}: {
-  searchParams?: Record<string, string | string[] | undefined>;
-}) {
+export default async function OrdersPage(
+  props: {
+    searchParams?: Promise<Record<string, string | string[] | undefined>>;
+  }
+) {
+  const searchParams = await props.searchParams;
   const { user, profile } = await requireUser();
   const supabase = await createClient();
   const centerId = profile?.center_id ?? user.id;

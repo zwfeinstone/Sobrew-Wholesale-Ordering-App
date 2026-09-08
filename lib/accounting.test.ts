@@ -9,7 +9,11 @@ import {
   type AccountingCategoryRow,
 } from '@/lib/accounting';
 import { createAccountingPnlPdf } from '@/lib/accounting-pnl-pdf';
-import { buildAccountingPnlStatement, type AccountingPnlTransactionRow } from '@/lib/accounting-pnl-statement';
+import {
+  buildAccountingPnlStatement,
+  fetchAccountingPnlPagedRows,
+  type AccountingPnlTransactionRow,
+} from '@/lib/accounting-pnl-statement';
 
 describe('accounting csv import', () => {
   it('parses common transaction exports', () => {
@@ -343,9 +347,10 @@ describe('detailed accounting P&L statement', () => {
     },
   ];
 
-  function buildStatement() {
+  function buildStatement(includeTransactionDetails = true) {
     return buildAccountingPnlStatement({
       categories,
+      includeTransactionDetails,
       payrollSalaryPayments: [
         {
           id: 'salary-production',
@@ -411,6 +416,63 @@ describe('detailed accounting P&L statement', () => {
     expect(content).toContain('Wholesale Sales');
     expect(content).toContain('Owner');
     expect(content).toContain('Transaction Detail');
+  });
+
+  it('keeps identical page totals and category rows without building PDF transaction details', () => {
+    const detailed = buildStatement();
+    const summary = buildStatement(false);
+    expect(summary).toEqual({ ...detailed, detailSections: [] });
+  });
+
+  it('keeps offsetting expense detail and excludes voided accounting activity in either mode', () => {
+    const expense = transactions[2];
+    const input = {
+      categories,
+      transactions: [
+        expense,
+        { ...expense, id: 'refund', amount_cents: -20000 },
+        { ...expense, id: 'excluded', amount_cents: 90000, status: 'excluded' },
+      ],
+    };
+    const detailed = buildAccountingPnlStatement(input);
+    const summary = buildAccountingPnlStatement({ ...input, includeTransactionDetails: false });
+    expect(detailed.detailSections[0].rows[0].transactions).toHaveLength(2);
+    expect(detailed.categoryBreakdown[0].rows[0]).toMatchObject({ id: 'beans', totalCents: 0, transactions: [] });
+    expect(summary).toEqual({ ...detailed, detailSections: [] });
+  });
+
+  it('retains production-run labor estimates when payroll has no production labor', () => {
+    const statement = buildAccountingPnlStatement({
+      categories,
+      transactions,
+      productionRuns: [{ actual_labor_cost_cents: 1000, quantity_produced: 10, quantity_voided: 2, status: 'partially_voided' }],
+    });
+    expect(statement.laborCogsCents).toBe(800);
+    expect(statement.laborCogsSourceLabel).toBe('Production run labor estimate');
+  });
+});
+
+describe('accounting P&L paged rows', () => {
+  it('continues fetching until the selected range is fully loaded', async () => {
+    const rows = await fetchAccountingPnlPagedRows(
+      async (from, to) => ({
+        data: Array.from({ length: Math.min(2, Math.max(0, 5 - from)) }, (_, index) => from + index).filter((value) => value <= to),
+        error: null,
+      }),
+      2,
+    );
+
+    expect(rows).toEqual({
+      data: [0, 1, 2, 3, 4],
+      error: null,
+    });
+  });
+
+  it('discards earlier rows when a later page fails', async () => {
+    const result = await fetchAccountingPnlPagedRows(async (from) => from === 0
+      ? { data: [1], error: null }
+      : { data: null, error: { message: 'Unavailable' } }, 1);
+    expect(result).toEqual({ data: [], error: { message: 'Unavailable' } });
   });
 });
 

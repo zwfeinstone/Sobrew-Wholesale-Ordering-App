@@ -228,11 +228,12 @@ async function voidProductionRun(formData: FormData) {
   redirect(productionHref({ toast: 'production_voided' }));
 }
 
-export default async function ProductionPage({
-  searchParams,
-}: {
-  searchParams?: Record<string, string | string[] | undefined>;
-}) {
+export default async function ProductionPage(
+  props: {
+    searchParams?: Promise<Record<string, string | string[] | undefined>>;
+  }
+) {
+  const searchParams = await props.searchParams;
   const current = await requireAdminSectionView('production');
   const canVoidProductionRuns = current.isOwner;
   const supabase = await createClient();

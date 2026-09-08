@@ -22,16 +22,10 @@ import {
   type AccountingCategoryRow,
   type ParsedAccountingTransaction,
 } from '@/lib/accounting';
-import {
-  ACCOUNTING_PNL_TRANSACTION_LIMIT,
-  buildAccountingPnlStatement,
-  isStandaloneAccountingFlag,
-  type AccountingPayrollAllocationRow,
-  type AccountingPayrollTimeEntryRow,
-  type AccountingPnlTransactionRow,
-  type AccountingSalaryPaymentRow,
-  type ProductionRunLaborRow,
-} from '@/lib/accounting-pnl-statement';
+import { buildAccountingPnlStatement, isStandaloneAccountingFlag } from '@/lib/accounting-pnl-statement';
+import { loadAccountingCategories, loadAccountingPnlInputs } from '@/lib/accounting-data';
+import { fetchAllPages } from '@/lib/supabase/pagination';
+import type { Database } from '@/lib/supabase/schema';
 import { createClient } from '@/lib/supabase/server';
 import { getSupabaseAdmin } from '@/lib/supabase/admin';
 import { usd } from '@/lib/utils';
@@ -39,7 +33,6 @@ import { usd } from '@/lib/utils';
 const REVIEW_PAGE_SIZE = 12;
 const AI_REVIEW_LIMIT = 50;
 const BULK_REVIEW_BATCH_SIZE = 500;
-const REVIEW_SELECT_ALL_FETCH_SIZE = 1000;
 const BULK_ACCOUNTING_REVIEW_FORM_ID = 'bulk-accounting-review-form';
 const ACCOUNTING_VIEWS = [
   { id: 'overview', label: 'Overview' },
@@ -275,40 +268,26 @@ async function fetchReviewTransactionIds(
     uncategorizedCategoryId: string | null;
   },
 ) {
-  const transactionIds: string[] = [];
+  const result = await fetchAllPages(async (from, to) => applyReviewTransactionFilters(
+    supabase
+      .from('accounting_transactions')
+      .select('id')
+      .gte('transaction_date', start)
+      .lt('transaction_date', endExclusive),
+    { category, search, uncategorizedCategoryId },
+  )
+    .order('transaction_date', { ascending: false })
+    .order('id', { ascending: false })
+    .range(from, to));
 
-  for (let from = 0; ; from += REVIEW_SELECT_ALL_FETCH_SIZE) {
-    const to = from + REVIEW_SELECT_ALL_FETCH_SIZE - 1;
-    const query = applyReviewTransactionFilters(
-      supabase
-        .from('accounting_transactions')
-        .select('id')
-        .gte('transaction_date', start)
-        .lt('transaction_date', endExclusive),
-      { category, search, uncategorizedCategoryId },
-    );
-    const { data, error } = await query
-      .order('transaction_date', { ascending: false })
-      .range(from, to);
+  return { error: result.error, transactionIds: result.data.map((transaction) => transaction.id) };
 
-    if (error) return { error, transactionIds: [] };
-
-    const pageIds = (data ?? [])
-      .map((transaction) => transaction.id)
-      .filter((id): id is string => Boolean(id));
-
-    transactionIds.push(...pageIds);
-
-    if (pageIds.length < REVIEW_SELECT_ALL_FETCH_SIZE) break;
-  }
-
-  return { error: null, transactionIds };
 }
 
 async function updateReviewTransactions(
   supabase: SupabaseAccountingClient,
   transactionIds: string[],
-  update: Record<string, unknown>,
+  update: Database['public']['Tables']['accounting_transactions']['Update'],
 ) {
   for (let index = 0; index < transactionIds.length; index += BULK_REVIEW_BATCH_SIZE) {
     const batchIds = transactionIds.slice(index, index + BULK_REVIEW_BATCH_SIZE);
@@ -853,11 +832,12 @@ async function runAiAccountingReview(formData: FormData) {
   redirect(`/admin/accounting?start=${start}&end=${end}&toast=ai_review_saved`);
 }
 
-export default async function AccountingPage({
-  searchParams,
-}: {
-  searchParams?: SearchParams;
-}) {
+export default async function AccountingPage(
+  props: {
+    searchParams?: Promise<SearchParams>;
+  }
+) {
+  const searchParams = await props.searchParams;
   await requireAdminSectionView('accounting');
   if (searchParams?.view === 'budgeting' || searchParams?.view === 'simulator') {
     redirect(legacyBudgetingHref(searchParams));
@@ -872,13 +852,13 @@ export default async function AccountingPage({
   const reviewFrom = (reviewPage - 1) * REVIEW_PAGE_SIZE;
   const reviewTo = reviewFrom + REVIEW_PAGE_SIZE - 1;
   const { end, endExclusive, start } = normalizeDateRange(searchParams);
-  const payrollRangeStart = `${start}T00:00:00.000Z`;
-  const payrollRangeEndExclusive = `${endExclusive}T00:00:00.000Z`;
   const reviewCategoryFilter = reviewCategoryParam(searchParams?.category);
   const reviewSearch = searchParam(searchParams?.q);
   const reviewSearchFilter = supabaseIlikeValue(reviewSearch);
-  const payrollSupabase = getSupabaseAdmin();
-  const uncategorizedCategoryResult = reviewCategoryFilter === '__uncategorized__'
+  const needsStatement = ['overview', 'pnl', 'categories'].includes(activeView);
+  const needsPayroll = activeView === 'overview' || activeView === 'pnl';
+  const needsCategories = activeView === 'review' || activeView === 'ai_reviews';
+  const uncategorizedCategoryResult = activeView === 'review' && reviewCategoryFilter === '__uncategorized__'
     ? await supabase
       .from('accounting_categories')
       .select('id,name')
@@ -899,75 +879,83 @@ export default async function AccountingPage({
     uncategorizedCategoryId,
   });
 
+  const skippedQuery = { data: [], error: null, count: null };
   const [
     categoriesResult,
     transactionsResult,
     flaggedTransactionsResult,
-    pnlTransactionsResult,
+    pnlInputsResult,
     batchesResult,
     latestBankTransactionResult,
     latestCreditCardTransactionResult,
-    productionRunLaborResult,
-    payrollTimeEntriesResult,
-    payrollSalaryPaymentsResult,
   ] = await Promise.all([
-    supabase.from('accounting_categories').select('id,name,category_type,pnl_section,active').eq('active', true).order('display_order', { ascending: true }).order('name', { ascending: true }),
-    transactionsQuery
-      .order('transaction_date', { ascending: false })
-      .range(reviewFrom, reviewTo),
-    supabase
-      .from('accounting_transactions')
-      .select('id,transaction_date,account_name,account_type,merchant_name,original_description,amount_cents,status,ai_review_status,ai_review_summary,ai_review_flags,ai_review_model,ai_reviewed_at,review_notes,category_id,accounting_categories(id,name,category_type,pnl_section)', { count: 'exact' })
-      .gte('transaction_date', start)
-      .lt('transaction_date', endExclusive)
-      .eq('ai_review_status', 'flagged')
-      .order('transaction_date', { ascending: false })
-      .limit(AI_REVIEW_LIMIT),
-    supabase
-      .from('accounting_transactions')
-      .select('id,transaction_date,account_name,account_type,merchant_name,original_description,amount_cents,status,ai_review_status,ai_review_flags,category_id,accounting_categories(id,name,category_type,pnl_section)')
-      .gte('transaction_date', start)
-      .lt('transaction_date', endExclusive)
-      .order('transaction_date', { ascending: false })
-      .limit(ACCOUNTING_PNL_TRANSACTION_LIMIT),
-    supabase.from('accounting_upload_batches').select('id,source_type,account_name,account_type,file_name,transaction_count,total_outflow_cents,total_inflow_cents,created_at').order('created_at', { ascending: false }).limit(6),
-    supabase
-      .from('accounting_transactions')
-      .select('account_name,account_type,transaction_date,merchant_name,original_description,amount_cents,created_at')
-      .in('account_type', ['bank', 'debit_card'])
-      .order('transaction_date', { ascending: false })
-      .order('created_at', { ascending: false })
-      .limit(1)
-      .maybeSingle(),
-    supabase
-      .from('accounting_transactions')
-      .select('account_name,account_type,transaction_date,merchant_name,original_description,amount_cents,created_at')
-      .eq('account_type', 'credit_card')
-      .order('transaction_date', { ascending: false })
-      .order('created_at', { ascending: false })
-      .limit(1)
-      .maybeSingle(),
-    supabase
-      .from('production_runs')
-      .select('actual_labor_cost_cents,quantity_produced,quantity_voided,status')
-      .gte('produced_at', start)
-      .lt('produced_at', endExclusive),
-    payrollSupabase
-      .from('admin_time_entries')
-      .select('id,profile_id,clock_in_at,clock_out_at,hourly_rate_cents_snapshot,status,work_type,admin_time_breaks(break_start_at,break_end_at,status)')
-      .gte('clock_in_at', payrollRangeStart)
-      .lt('clock_in_at', payrollRangeEndExclusive)
-      .limit(ACCOUNTING_PNL_TRANSACTION_LIMIT),
-    payrollSupabase
-      .from('admin_salary_payroll_payments')
-      .select('id,paid_at,period_start_date,period_end_date,salary_labor_work_type,salary_pay_cents')
-      .not('paid_at', 'is', null)
-      .lte('period_start_date', end)
-      .gte('period_end_date', start)
-      .limit(ACCOUNTING_PNL_TRANSACTION_LIMIT),
+    needsCategories ? loadAccountingCategories(supabase) : skippedQuery,
+    activeView === 'review'
+      ? transactionsQuery
+        .order('transaction_date', { ascending: false })
+        .order('id', { ascending: false })
+        .range(reviewFrom, reviewTo)
+      : skippedQuery,
+    activeView === 'ai_reviews' || activeView === 'overview'
+      ? supabase
+        .from('accounting_transactions')
+        .select(activeView === 'overview' ? 'id' : 'id,transaction_date,account_name,account_type,merchant_name,original_description,amount_cents,status,ai_review_status,ai_review_summary,ai_review_flags,ai_review_model,ai_reviewed_at,review_notes,category_id,accounting_categories(id,name,category_type,pnl_section)', { count: 'exact', head: activeView === 'overview' })
+        .gte('transaction_date', start)
+        .lt('transaction_date', endExclusive)
+        .eq('ai_review_status', 'flagged')
+        .order('transaction_date', { ascending: false })
+        .order('id', { ascending: false })
+        .limit(AI_REVIEW_LIMIT)
+      : skippedQuery,
+    needsStatement
+      ? loadAccountingPnlInputs({ supabase, payrollSupabase: needsPayroll ? getSupabaseAdmin() : undefined, start, end, endExclusive })
+      : { data: null, error: null },
+    activeView === 'imports'
+      ? supabase.from('accounting_upload_batches').select('id,source_type,account_name,account_type,file_name,transaction_count,total_outflow_cents,total_inflow_cents,created_at').order('created_at', { ascending: false }).order('id', { ascending: false }).limit(6)
+      : skippedQuery,
+    activeView === 'last_updates'
+      ? supabase
+        .from('accounting_transactions')
+        .select('account_name,account_type,transaction_date,merchant_name,original_description,amount_cents,created_at')
+        .in('account_type', ['bank', 'debit_card'])
+        .order('transaction_date', { ascending: false })
+        .order('created_at', { ascending: false })
+        .order('id', { ascending: false })
+        .limit(1)
+        .maybeSingle()
+      : { data: null, error: null },
+    activeView === 'last_updates'
+      ? supabase
+        .from('accounting_transactions')
+        .select('account_name,account_type,transaction_date,merchant_name,original_description,amount_cents,created_at')
+        .eq('account_type', 'credit_card')
+        .order('transaction_date', { ascending: false })
+        .order('created_at', { ascending: false })
+        .order('id', { ascending: false })
+        .limit(1)
+        .maybeSingle()
+      : { data: null, error: null },
   ]);
 
-  const categories = (categoriesResult.data ?? []) as AccountingCategoryRow[];
+  const loadError = [uncategorizedCategoryResult, categoriesResult, transactionsResult, flaggedTransactionsResult, pnlInputsResult, batchesResult, latestBankTransactionResult, latestCreditCardTransactionResult]
+    .find((result) => result?.error)?.error;
+  if (loadError) {
+    console.error('[accounting] page data failed', { error: loadError, view: activeView });
+    return (
+      <div className="space-y-6">
+        <section className="panel">
+          <span className="eyebrow">Accounting</span>
+          <h1 className="page-title mt-4">Accounting workspace</h1>
+        </section>
+        <section className="card space-y-3 text-sm text-rose-800" role="alert">
+          <p>Accounting data could not be loaded. Refresh the page to try again.</p>
+          <Link className="btn-secondary inline-flex" href={accountingViewHref({ end, start, view: activeView })}>Try again</Link>
+        </section>
+      </div>
+    );
+  }
+
+  const categories = pnlInputsResult.data?.categories ?? (categoriesResult.data ?? []) as AccountingCategoryRow[];
   const transactions = (transactionsResult.data ?? []) as any[];
   const flaggedTransactions = (flaggedTransactionsResult.data ?? []) as any[];
   const aiReviewTransactions = flaggedTransactions.filter((transaction) => (
@@ -976,29 +964,13 @@ export default async function AccountingPage({
   const flaggedAiTransactionTotal = flaggedTransactionsResult.count ?? aiReviewTransactions.length;
   const latestBankTransaction = (latestBankTransactionResult.data ?? null) as LastKnownAccountingTransaction | null;
   const latestCreditCardTransaction = (latestCreditCardTransactionResult.data ?? null) as LastKnownAccountingTransaction | null;
-  const transactionTotal = transactionsResult.count ?? transactions.length;
+  const transactionTotal = transactionsResult.count ?? pnlInputsResult.data?.transactions.length ?? transactions.length;
   const hasPreviousReviewPage = reviewPage > 1;
   const hasNextReviewPage = reviewFrom + transactions.length < transactionTotal;
-  const pnlTransactions = (pnlTransactionsResult.data ?? []) as AccountingPnlTransactionRow[];
   const batches = batchesResult.data ?? [];
-  const payrollTimeEntries = payrollTimeEntriesResult.error ? [] : (payrollTimeEntriesResult.data ?? []) as AccountingPayrollTimeEntryRow[];
-  const payrollSalaryPayments = payrollSalaryPaymentsResult.error ? [] : (payrollSalaryPaymentsResult.data ?? []) as AccountingSalaryPaymentRow[];
-  let payrollAllocations: AccountingPayrollAllocationRow[] = [];
-  if (payrollTimeEntries.length) {
-    const payrollAllocationResult = await payrollSupabase
-      .from('admin_time_entry_allocations')
-      .select('time_entry_id,work_type,minutes,wage_cents')
-      .in('time_entry_id', payrollTimeEntries.map((entry) => entry.id))
-      .limit(ACCOUNTING_PNL_TRANSACTION_LIMIT);
-    payrollAllocations = payrollAllocationResult.error ? [] : (payrollAllocationResult.data ?? []) as AccountingPayrollAllocationRow[];
-  }
   const pnlStatement = buildAccountingPnlStatement({
-    categories,
-    payrollAllocations,
-    payrollSalaryPayments,
-    payrollTimeEntries,
-    productionRuns: (productionRunLaborResult.data ?? []) as ProductionRunLaborRow[],
-    transactions: pnlTransactions,
+    ...(pnlInputsResult.data ?? { categories: [], transactions: [] }),
+    includeTransactionDetails: false,
   });
   const {
     adjustedPnl,

@@ -22,11 +22,12 @@ async function createProduct(formData: FormData) {
   redirect('/admin/products');
 }
 
-export default async function NewProductPage({
-  searchParams,
-}: {
-  searchParams?: Record<string, string | string[] | undefined>;
-}) {
+export default async function NewProductPage(
+  props: {
+    searchParams?: Promise<Record<string, string | string[] | undefined>>;
+  }
+) {
+  const searchParams = await props.searchParams;
   await requireAdminSectionView('products');
   const error = typeof searchParams?.error === 'string' ? searchParams.error : '';
 

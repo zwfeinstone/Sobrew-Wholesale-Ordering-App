@@ -33,3 +33,21 @@ export function productCategorySortRank(category: string | null | undefined) {
   if (groupKey === UNCATEGORIZED_PRODUCT_CATEGORY) return -1;
   return PRODUCT_CATEGORY_OPTIONS.findIndex((option) => option.value === groupKey);
 }
+
+const productNameCollator = new Intl.Collator('en-US', { numeric: true, sensitivity: 'base' });
+type CategorizedProduct = { name?: string | null; category?: string | null };
+
+export function groupProductsByCategory<T extends CategorizedProduct>(products: readonly T[]) {
+  const sorted = [...products].sort((a, b) =>
+    productCategorySortRank(a.category) - productCategorySortRank(b.category)
+    || productNameCollator.compare(a.name?.trim() || 'Unnamed product', b.name?.trim() || 'Unnamed product')
+  );
+  const groups: Array<{ category: ProductCategoryGroup; products: T[] }> = [];
+  for (const product of sorted) {
+    const category = productCategoryGroupKey(product.category);
+    const previous = groups[groups.length - 1];
+    if (previous?.category === category) previous.products.push(product);
+    else groups.push({ category, products: [product] });
+  }
+  return groups;
+}

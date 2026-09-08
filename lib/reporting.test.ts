@@ -2,6 +2,55 @@ import { describe, expect, it } from 'vitest';
 import { buildReportingDashboard } from '@/lib/reporting';
 
 describe('report math', () => {
+  it('keeps customer and inventory results identical when a large mixed history is scoped to one center', () => {
+    const centers = Array.from({ length: 20 }, (_, index) => ({
+      id: `center-${index}`, name: `Center ${index}`, is_active: index % 4 !== 0, created_at: '2020-01-01T12:00:00Z',
+    }));
+    const products = [
+      { id: 'coffee', name: 'Coffee', sku: 'COF', active: true },
+      { id: 'tea', name: 'Tea', sku: 'TEA', active: false },
+    ];
+    const dates = ['1999-12-31T12:00:00Z', '2026-04-12T12:00:00Z', '2026-06-15T12:00:00Z', '2026-07-01T05:00:00Z', '2026-07-12T12:00:00Z', '2026-08-01T05:00:00Z'];
+    const orders = Array.from({ length: 1200 }, (_, index) => ({
+      id: `order-${index}`, center_id: centers[index % centers.length].id,
+      status: index % 2 ? 'Shipped' : 'New', subtotal_cents: 1234 + index,
+      shipping_cost_cents: index % 7 * 10, created_at: dates[Math.floor(index / centers.length) % dates.length],
+    }));
+    const orderItems = orders.flatMap((order, index) => products.map((product, itemIndex) => ({
+      order_id: order.id, product_id: product.id, product_name_snapshot: product.name,
+      qty: 1 + (index + itemIndex) % 5, unit_price_cents: 100 + index, line_total_cents: 200 + index,
+    })));
+    const input = {
+      centers, products, orders, orderItems,
+      now: new Date('2026-07-18T18:00:00Z'),
+      filters: {
+        selectedMonth: new Date('2026-07-01T12:00:00Z'),
+        rangeStart: new Date('2026-07-01T05:00:00Z'),
+        rangeEndExclusive: new Date('2026-08-01T05:00:00Z'),
+      },
+    };
+    const unchangedInput = structuredClone(input);
+    const combined = buildReportingDashboard(input);
+    expect(combined.customerSalesRows).toHaveLength(20);
+
+    for (const centerId of ['center-0', 'center-7', 'center-19']) {
+      const filters = { ...input.filters, centerId, productId: 'tea' };
+      const scoped = buildReportingDashboard({ ...input, filters });
+      const centerOrders = orders.filter((order) => order.center_id === centerId);
+      const centerOrderIds = new Set(centerOrders.map((order) => order.id));
+      const isolated = buildReportingDashboard({
+        ...input, filters,
+        centers: centers.filter((center) => center.id === centerId),
+        orders: centerOrders,
+        orderItems: orderItems.filter((item) => centerOrderIds.has(item.order_id)),
+      });
+      expect(scoped).toEqual(isolated);
+      const customer = buildReportingDashboard({ ...input, filters: { ...input.filters, centerId } });
+      expect(customer.customerSalesRows[0]).toEqual(combined.customerSalesRows.find((row) => row.centerId === centerId));
+    }
+    expect(input).toEqual(unchangedInput);
+  });
+
   it('uses line-item revenue, quantity, and shipping totals for the selected period', () => {
     const dashboard = buildReportingDashboard({
       centers: [{ id: 'center-1', name: 'Recovery Center', is_active: true, created_at: '2026-05-01T12:00:00.000Z' }],

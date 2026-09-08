@@ -25,7 +25,6 @@ function disableSubmitControls(form: HTMLFormElement, message: string) {
     form.querySelectorAll<HTMLButtonElement | HTMLInputElement>('button[type="submit"], button:not([type]), input[type="submit"]'),
   );
   if (!controls.length) return false;
-  if (form.dataset.adminReadonly === 'true') return true;
 
   form.dataset.adminReadonly = 'true';
   controls.forEach((control) => {
@@ -53,6 +52,12 @@ function disableCreateLinks(message: string) {
 function preventReadOnlyNavigation(event: MouseEvent) {
   event.preventDefault();
   event.stopPropagation();
+}
+
+function changesFormControls(node: Node) {
+  if (!(node instanceof Element)) return false;
+  const selector = 'form, input, button, a';
+  return node.matches(selector) || Boolean(node.querySelector(selector));
 }
 
 export function AdminReadOnlyGuard({
@@ -87,7 +92,12 @@ export function AdminReadOnlyGuard({
 
     applyReadOnlyState();
     const main = document.querySelector('main');
-    const observer = new MutationObserver(applyReadOnlyState);
+    const observer = new MutationObserver((records) => {
+      // Text updates, toast messages, and other display changes do not affect permissions.
+      if (records.some((record) => (
+        [...record.addedNodes, ...record.removedNodes].some(changesFormControls)
+      ))) applyReadOnlyState();
+    });
     if (main) {
       observer.observe(main, { childList: true, subtree: true });
     }

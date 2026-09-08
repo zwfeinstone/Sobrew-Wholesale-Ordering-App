@@ -1,3 +1,4 @@
+import type { TablesUpdate } from '@/lib/supabase/database.types';
 import { NextResponse } from 'next/server';
 import { requireAdminWriteAccess } from '@/lib/admin-write-access';
 import {
@@ -180,7 +181,7 @@ export async function POST(request: Request) {
         ? error.message
         : 'Unable to create and download that QuickBooks invoice.';
     console.error('[invoicing] invoice PDF download failed', { error, orderId });
-    const failureUpdate: Record<string, unknown> = {
+    const failureUpdate: TablesUpdate<'orders'> = {
       invoice_error: message,
       invoice_status: 'invoice_error',
       quickbooks_invoice_email_sent_at: null,

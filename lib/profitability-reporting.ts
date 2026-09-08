@@ -628,7 +628,9 @@ function buildCenterRows(lines: NormalizedLine[], centers: CenterRow[]) {
   const grouped = new Map<string, NormalizedLine[]>();
   for (const line of lines) {
     const key = line.centerId ?? 'unknown';
-    grouped.set(key, [...(grouped.get(key) ?? []), line]);
+    const group = grouped.get(key) ?? [];
+    group.push(line);
+    grouped.set(key, group);
   }
 
   return [...grouped.entries()].map(([centerId, centerLines]) => {
@@ -663,7 +665,9 @@ function buildItemRows(lines: NormalizedLine[], recipes: RecipeRow[]) {
 
   for (const line of lines) {
     const key = line.productId ?? line.productName;
-    grouped.set(key, [...(grouped.get(key) ?? []), line]);
+    const group = grouped.get(key) ?? [];
+    group.push(line);
+    grouped.set(key, group);
   }
 
   return [...grouped.entries()].map(([productId, productLines]) => {
@@ -725,7 +729,9 @@ export function buildRecentOrderGpmRows({
   for (const line of normalizeLines({ orderItems, orders, products, productionRuns })) {
     if (centerId && line.centerId !== centerId) continue;
     if (productId && line.productId !== productId) continue;
-    grouped.set(line.orderId, [...(grouped.get(line.orderId) ?? []), line]);
+    const group = grouped.get(line.orderId) ?? [];
+    group.push(line);
+    grouped.set(line.orderId, group);
   }
 
   return [...grouped.entries()]
@@ -1044,7 +1050,9 @@ function buildProductionRows({
 }) {
   const inputsByRunId = new Map<string, ProductionRunInputRow[]>();
   for (const input of inputs) {
-    inputsByRunId.set(input.production_run_id, [...(inputsByRunId.get(input.production_run_id) ?? []), input]);
+    const runInputs = inputsByRunId.get(input.production_run_id) ?? [];
+    runInputs.push(input);
+    inputsByRunId.set(input.production_run_id, runInputs);
   }
 
   return productionRuns

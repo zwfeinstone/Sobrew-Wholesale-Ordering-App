@@ -1,6 +1,6 @@
 import 'server-only';
 
-import { Resend } from 'resend';
+import { Resend, type Attachment } from 'resend';
 import { normalizeShipmentTrackingLines, type ShipmentTrackingLine } from '@/lib/shipment-tracking';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { usd } from '@/lib/utils';
@@ -44,9 +44,11 @@ export function getResend() {
 type Line = { name: string; qty: number; price: number; line: number };
 type ShippedLine = { name: string; qty: number };
 type TrackingLine = ShipmentTrackingLine;
-type SendEmailResult = { ok: true } | { error: unknown; ok: false };
+export type SendEmailResult = { ok: true } | { error: unknown; ok: false };
 
 type OrderEmailPayload = {
+  notes?: string | null;
+  adminCc?: string[];
   centerId?: string | null;
   customerEmail: string | string[];
   customerName: string;
@@ -65,6 +67,7 @@ type WelcomeEmailPayload = {
 };
 
 type ShippedEmailContext = {
+  notes?: string | null;
   customerName?: string | null;
   orderId?: string | null;
   shippedAt?: Date | string | null;
@@ -153,6 +156,45 @@ export function resendEmailAcceptanceError(response: ResendSendResponseLike, ema
   return null;
 }
 
+async function deliverEmail(label: string, payload: {
+  attachments?: Attachment[];
+  cc?: string | string[] | null;
+  html: string;
+  subject: string;
+  text?: string;
+  to: string | string[] | null | undefined;
+}): Promise<SendEmailResult> {
+  try {
+    const resend = getResend();
+    if (!resend) throw new Error('Resend disabled: missing RESEND_API_KEY');
+    const recipients = outgoingEmailRecipients(payload.to, payload.cc);
+    if (!recipients.to.length) throw new Error(`${label} skipped: missing recipient`);
+    const response = await resend.emails.send({
+      ...payload,
+      from: RESEND_FROM,
+      replyTo: REPLY_TO_EMAIL,
+      to: recipients.to,
+      cc: recipients.cc.length ? recipients.cc : undefined,
+    });
+    const error = resendEmailAcceptanceError(response, label);
+    if (error) throw error;
+    console.log(`${label} accepted`, { id: response.data?.id });
+    return { ok: true };
+  } catch (error) {
+    console.error(`Failed to send ${label}`, error);
+    return { error, ok: false };
+  }
+}
+
+function invoiceAttachments(pdf: Buffer, invoiceNumber: string, orderId: string, kind: 'Invoice' | 'Receipt'): Attachment[] {
+  const safeNumber = invoiceNumber.replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '');
+  return [
+    { content: pdf, contentType: 'application/pdf', filename: `Sobrew-${kind}-${safeNumber || orderId.slice(0, 8)}.pdf` },
+    { content: Buffer.from(INSTAGRAM_ICON_BASE64, 'base64'), contentType: 'image/png', filename: 'sobrew-instagram.png', inlineContentId: INSTAGRAM_ICON_CID },
+    { content: Buffer.from(LINKEDIN_ICON_BASE64, 'base64'), contentType: 'image/png', filename: 'sobrew-linkedin.png', inlineContentId: LINKEDIN_ICON_CID },
+  ];
+}
+
 function titleCaseWord(value: string) {
   if (!value) return value;
   return `${value.charAt(0).toUpperCase()}${value.slice(1).toLowerCase()}`;
@@ -184,35 +226,25 @@ export function adminOrderCcForAssignedSalesEmail(email: string | null | undefin
   return String(email ?? '').trim().toLowerCase() === HASKINS_EMAIL ? [HASKINS_EMAIL] : [];
 }
 
-async function adminOrderCcForCenter(centerId: string | null | undefined) {
-  if (!centerId) return [];
-
-  const { data: assignment, error: assignmentError } = await supabaseAdmin
-    .from('center_sales_assignments')
-    .select('sales_profile_id')
-    .eq('center_id', centerId)
-    .maybeSingle();
-
-  if (assignmentError) {
-    console.error('Failed to load sales assignment for order email CC', assignmentError);
-    return [];
+export async function loadAdminOrderCcByCenter(centerIds: string[], supabase = supabaseAdmin) {
+  const ids = [...new Set(centerIds.filter(Boolean))];
+  const ccByCenter = new Map<string, string[]>(ids.map((id) => [id, []]));
+  // Keep each URL and result set bounded even for a full recurring-order run.
+  for (let start = 0; start < ids.length; start += 200) {
+    const { data, error } = await supabase
+      .from('center_sales_assignments')
+      .select('center_id,sales_profile:profiles!center_sales_assignments_sales_profile_id_fkey(email)')
+      .in('center_id', ids.slice(start, start + 200));
+    if (error) {
+      console.error('Failed to load sales assignments for order email CC', error);
+      continue;
+    }
+    for (const assignment of data ?? []) {
+      const profile = Array.isArray(assignment.sales_profile) ? assignment.sales_profile[0] : assignment.sales_profile;
+      ccByCenter.set(assignment.center_id, adminOrderCcForAssignedSalesEmail(profile?.email));
+    }
   }
-
-  const salesProfileId = assignment?.sales_profile_id;
-  if (!salesProfileId) return [];
-
-  const { data: profile, error: profileError } = await supabaseAdmin
-    .from('profiles')
-    .select('email')
-    .eq('id', salesProfileId)
-    .maybeSingle();
-
-  if (profileError) {
-    console.error('Failed to load assigned sales profile for order email CC', profileError);
-    return [];
-  }
-
-  return adminOrderCcForAssignedSalesEmail(profile?.email);
+  return ccByCenter;
 }
 
 export function buildCustomerWelcomeEmailContent(payload: WelcomeEmailPayload) {
@@ -318,12 +350,16 @@ export function buildCustomerWelcomeEmailContent(payload: WelcomeEmailPayload) {
   return { html, text };
 }
 
+function orderNotesHtml(notes: string | null | undefined) {
+  return notes?.trim() ? `<h3>Delivery instructions</h3><p style="white-space:pre-wrap;overflow-wrap:anywhere">${escapeHtml(notes.trim())}</p>` : '';
+}
+
 function buildOrderHtml(payload: OrderEmailPayload) {
   const rows = payload.items
-    .map((i) => `<tr><td>${i.name}</td><td>${i.qty}</td><td>${usd(i.price)}</td><td>${usd(i.line)}</td></tr>`)
+    .map((i) => `<tr><td>${escapeHtml(i.name)}</td><td>${i.qty}</td><td>${usd(i.price)}</td><td>${usd(i.line)}</td></tr>`)
     .join('');
 
-  return `<h2>Order ${payload.orderId}</h2><p>${payload.customerName} (${payload.customerEmail})</p><table><tr><th>Item</th><th>Qty</th><th>Unit</th><th>Total</th></tr>${rows}</table><p>Subtotal: ${usd(payload.subtotalCents)}</p>`;
+  return `<h2>Order ${payload.orderId}</h2><p>${payload.customerName} (${payload.customerEmail})</p><table><tr><th>Item</th><th>Qty</th><th>Unit</th><th>Total</th></tr>${rows}</table><p>Subtotal: ${usd(payload.subtotalCents)}</p>${orderNotesHtml(payload.notes)}`;
 }
 
 function trackingUrlForLine(tracking: TrackingLine) {
@@ -514,6 +550,7 @@ export function buildCustomerOrderEmailContent(payload: OrderEmailPayload) {
     title: 'We have your Sobrew order.',
     variant: 'order',
     body: `
+      ${payload.notes?.trim() ? `<tr><td style="padding:20px 28px;background:#fff9e8">${orderNotesHtml(payload.notes)}</td></tr>` : ''}
       <tr>
         <td style="padding:30px 28px 10px 28px;">
           <p style="margin:0 0 14px 0; font-size:17px; line-height:1.55; color:#291f18;">Hi ${safeCustomerName},</p>
@@ -663,6 +700,7 @@ export function buildCustomerOrderEmailContent(payload: OrderEmailPayload) {
     '',
     `Order ${payload.orderId}`,
     `Ordered: ${orderedDate}`,
+    ...(payload.notes?.trim() ? ['Delivery instructions:', payload.notes.trim(), ''] : []),
     `Items: ${productLabel}`,
     '',
     ...payload.items.map((item) => `- ${item.name} | Qty ${item.qty} | ${usd(item.line)}`),
@@ -680,99 +718,44 @@ export function buildCustomerOrderEmailContent(payload: OrderEmailPayload) {
 }
 
 export async function sendCustomerWelcomeEmail(payload: WelcomeEmailPayload): Promise<SendEmailResult> {
-  const resend = getResend();
-  if (!resend) {
-    const error = new Error('Resend disabled: missing RESEND_API_KEY');
-    console.error(error.message);
-    return { error, ok: false };
-  }
-
-  if (!payload.email) {
-    const error = new Error('Welcome email skipped: missing recipient');
-    console.error(error.message);
-    return { error, ok: false };
-  }
-
-  const { html, text } = buildCustomerWelcomeEmailContent(payload);
-
-  try {
-    const response = await resend.emails.send({
-      from: RESEND_FROM,
-      replyTo: REPLY_TO_EMAIL,
-      to: payload.email,
-      cc: WELCOME_EMAIL_CC,
-      subject: 'Welcome to Sobrew Wholesale Ordering',
-      html,
-      text,
-    });
-    console.log('Customer welcome email sent', response);
-    return { ok: true };
-  } catch (error) {
-    console.error('Failed to send customer welcome email', error);
-    return { error, ok: false };
-  }
+  return deliverEmail('Customer welcome email', {
+    ...buildCustomerWelcomeEmailContent(payload),
+    to: payload.email,
+    cc: WELCOME_EMAIL_CC,
+    subject: 'Welcome to Sobrew Wholesale Ordering',
+  });
 }
 
 export async function sendAdminNotificationEmail(payload: OrderEmailPayload) {
-  const resend = getResend();
-  if (!resend) {
-    console.error('Resend disabled: missing RESEND_API_KEY');
-    return;
-  }
-
-  const html = buildOrderHtml(payload);
-  const cc = await adminOrderCcForCenter(payload.centerId);
-
-  try {
-    const response = await resend.emails.send({
-      from: RESEND_FROM,
-      replyTo: REPLY_TO_EMAIL,
-      to: ADMIN_EMAIL,
-      ...(cc.length ? { cc } : {}),
-      subject: `New Order ${payload.orderId}`,
-      html,
-    });
-    console.log('Admin notification email sent', response);
-  } catch (error) {
-    console.error('Failed to send admin notification email', error);
-  }
+  const cc = payload.adminCc ?? (payload.centerId
+    ? (await loadAdminOrderCcByCenter([payload.centerId])).get(payload.centerId) ?? []
+    : []);
+  return deliverEmail('Admin notification email', {
+    html: buildOrderHtml(payload),
+    text: buildCustomerOrderEmailContent(payload).text,
+    to: ADMIN_EMAIL,
+    cc,
+    subject: `New Order ${payload.orderId}`,
+  });
 }
 
 export async function sendOrderEmail(payload: OrderEmailPayload) {
-  const resend = getResend();
-  if (!resend) {
-    console.error('Resend disabled: missing RESEND_API_KEY');
-    return;
-  }
-
-  const recipients = Array.isArray(payload.customerEmail) ? payload.customerEmail.filter(Boolean) : [payload.customerEmail].filter(Boolean);
-  if (!recipients.length) {
-    console.error('Customer confirmation email skipped: missing recipient');
-    return;
-  }
-
-  const { html, text } = buildCustomerOrderEmailContent(payload);
-
-  try {
-    const response = await resend.emails.send({
-      from: RESEND_FROM,
-      replyTo: REPLY_TO_EMAIL,
-      to: recipients,
-      subject: 'Thank You For Your Order!',
-      html,
-      text,
-    });
-    console.log('Customer confirmation email sent', response);
-  } catch (error) {
-    console.error('Failed to send customer confirmation email', error);
-  }
+  return deliverEmail('Customer confirmation email', {
+    ...buildCustomerOrderEmailContent(payload),
+    to: payload.customerEmail,
+    subject: 'Thank You For Your Order!',
+  });
 }
 
-export async function sendOrderEmails(payload: OrderEmailPayload) {
-  await Promise.all([
+export async function sendOrderEmails(payload: OrderEmailPayload): Promise<SendEmailResult> {
+  const results = await Promise.all([
     sendAdminNotificationEmail(payload),
     sendOrderEmail(payload),
   ]);
+  const failed = results.filter((result) => !result.ok);
+  return failed.length
+    ? { ok: false, error: new AggregateError(failed.map((result) => result.error), 'Order email delivery failed') }
+    : { ok: true };
 }
 
 export function buildShippedEmailContent(
@@ -837,6 +820,7 @@ export function buildShippedEmailContent(
     title: 'Your Sobrew order shipped.',
     variant: 'shipped',
     body: `
+      ${context.notes?.trim() ? `<tr><td style="padding:20px 28px;background:#fff9e8">${orderNotesHtml(context.notes)}</td></tr>` : ''}
       <tr>
         <td style="padding:30px 28px 10px 28px;">
           <p style="margin:0 0 14px 0; color:#291f18; font-size:17px; line-height:1.55;">Hi ${escapeHtml(customerName)},</p>
@@ -982,6 +966,7 @@ export function buildShippedEmailText(
     'Items in this shipment:',
     ...(items.length ? items.map((item) => `- ${item.name} | Qty ${item.qty}`) : ['- Unavailable']),
     '',
+    ...(context.notes?.trim() ? ['Delivery instructions:', context.notes.trim(), ''] : []),
     `Shipped: ${formatEmailDate(context.shippedAt)}`,
     `Order: ${orderId}`,
     '',
@@ -1154,157 +1139,30 @@ export async function sendShippedEmail(
   trackingLines: TrackingLine[] = [],
   context: ShippedEmailContext = {},
 ) {
-  const resend = getResend();
-  if (!resend) {
-    console.error('Resend disabled: missing RESEND_API_KEY');
-    return;
-  }
-
-  const recipients = outgoingEmailRecipients(to);
-  if (!recipients.to.length) {
-    console.error('Shipped email skipped: missing recipient');
-    return;
-  }
-
-  const html = buildShippedEmailContent(items, trackingLines, context);
-  const text = buildShippedEmailText(items, trackingLines, context);
-
-  try {
-    const response = await resend.emails.send({
-      from: RESEND_FROM,
-      replyTo: REPLY_TO_EMAIL,
-      to: recipients.to,
-      subject: 'Your Order Has Been Shipped!',
-      html,
-      text,
-    });
-    console.log('Shipped email sent', response);
-  } catch (error) {
-    console.error('Failed to send shipped email', error);
-  }
+  return deliverEmail('Shipped email', {
+    html: buildShippedEmailContent(items, trackingLines, context),
+    text: buildShippedEmailText(items, trackingLines, context),
+    to,
+    subject: 'Your Order Has Been Shipped!',
+  });
 }
 
 export async function sendInvoicePdfEmail(payload: InvoicePdfEmailPayload): Promise<SendEmailResult> {
-  const resend = getResend();
-  if (!resend) {
-    const error = new Error('Resend disabled: missing RESEND_API_KEY');
-    console.error(error.message);
-    return { error, ok: false };
-  }
-
   const recipients = invoicePdfEmailRecipients(payload.to, payload.cc);
-  if (!recipients.to.length) {
-    const error = new Error('Invoice PDF email skipped: missing recipient');
-    console.error(error.message);
-    return { error, ok: false };
-  }
-
-  const attachmentInvoiceNumber = payload.invoiceNumber.replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '');
-  const { html, text } = buildInvoicePdfEmailContent({
-    customerName: payload.customerName,
-    invoiceNumber: payload.invoiceNumber,
+  return deliverEmail('Invoice PDF email', {
+    ...buildInvoicePdfEmailContent(payload),
+    attachments: invoiceAttachments(payload.pdf, payload.invoiceNumber, payload.orderId, 'Invoice'),
+    ...recipients,
+    subject: `Sobrew Invoice ${payload.invoiceNumber}`,
   });
-
-  try {
-    const response = await resend.emails.send({
-      attachments: [
-        {
-          content: payload.pdf,
-          contentType: 'application/pdf',
-          filename: `Sobrew-Invoice-${attachmentInvoiceNumber || payload.orderId.slice(0, 8)}.pdf`,
-        },
-        {
-          content: Buffer.from(INSTAGRAM_ICON_BASE64, 'base64'),
-          contentType: 'image/png',
-          filename: 'sobrew-instagram.png',
-          inlineContentId: INSTAGRAM_ICON_CID,
-        },
-        {
-          content: Buffer.from(LINKEDIN_ICON_BASE64, 'base64'),
-          contentType: 'image/png',
-          filename: 'sobrew-linkedin.png',
-          inlineContentId: LINKEDIN_ICON_CID,
-        },
-      ],
-      from: RESEND_FROM,
-      replyTo: REPLY_TO_EMAIL,
-      ...(recipients.cc.length ? { cc: recipients.cc } : {}),
-      to: recipients.to,
-      subject: `Sobrew Invoice ${payload.invoiceNumber}`,
-      html,
-      text,
-    });
-    const acceptanceError = resendEmailAcceptanceError(response, 'Invoice PDF email');
-    if (acceptanceError) {
-      console.error('Failed to send invoice PDF email', acceptanceError);
-      return { error: acceptanceError, ok: false };
-    }
-    console.log('Invoice PDF email accepted', { id: response.data?.id });
-    return { ok: true };
-  } catch (error) {
-    console.error('Failed to send invoice PDF email', error);
-    return { error, ok: false };
-  }
 }
 
 export async function sendPaymentReceiptEmail(payload: PaymentReceiptEmailPayload): Promise<SendEmailResult> {
-  const resend = getResend();
-  if (!resend) {
-    const error = new Error('Resend disabled: missing RESEND_API_KEY');
-    console.error(error.message);
-    return { error, ok: false };
-  }
-
-  const recipients = outgoingEmailRecipients(payload.to, payload.cc);
-  if (!recipients.to.length) {
-    const error = new Error('Payment receipt email skipped: missing recipient');
-    console.error(error.message);
-    return { error, ok: false };
-  }
-
-  const attachmentInvoiceNumber = payload.invoiceNumber.replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '');
-  const { html, text } = buildPaymentReceiptEmailContent({
-    amountCents: payload.amountCents,
-    customerName: payload.customerName,
-    invoiceNumber: payload.invoiceNumber,
-    paymentMethodLabel: payload.paymentMethodLabel,
-    paymentMethodType: payload.paymentMethodType,
-    paymentStatus: payload.paymentStatus,
+  return deliverEmail('Payment receipt email', {
+    ...buildPaymentReceiptEmailContent(payload),
+    attachments: invoiceAttachments(payload.pdf, payload.invoiceNumber, payload.orderId, 'Receipt'),
+    to: payload.to,
+    cc: payload.cc,
+    subject: `Sobrew Receipt ${payload.invoiceNumber}`,
   });
-
-  try {
-    const response = await resend.emails.send({
-      attachments: [
-        {
-          content: payload.pdf,
-          contentType: 'application/pdf',
-          filename: `Sobrew-Receipt-${attachmentInvoiceNumber || payload.orderId.slice(0, 8)}.pdf`,
-        },
-        {
-          content: Buffer.from(INSTAGRAM_ICON_BASE64, 'base64'),
-          contentType: 'image/png',
-          filename: 'sobrew-instagram.png',
-          inlineContentId: INSTAGRAM_ICON_CID,
-        },
-        {
-          content: Buffer.from(LINKEDIN_ICON_BASE64, 'base64'),
-          contentType: 'image/png',
-          filename: 'sobrew-linkedin.png',
-          inlineContentId: LINKEDIN_ICON_CID,
-        },
-      ],
-      from: RESEND_FROM,
-      replyTo: REPLY_TO_EMAIL,
-      ...(recipients.cc.length ? { cc: recipients.cc } : {}),
-      to: recipients.to,
-      subject: `Sobrew Receipt ${payload.invoiceNumber}`,
-      html,
-      text,
-    });
-    console.log('Payment receipt email sent', response);
-    return { ok: true };
-  } catch (error) {
-    console.error('Failed to send payment receipt email', error);
-    return { error, ok: false };
-  }
 }

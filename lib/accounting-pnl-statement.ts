@@ -20,8 +20,27 @@ import {
   type TimeClockEntryRow,
   type TimeEntryWorkType,
 } from '@/lib/time-clock';
+import { fetchAllPages } from '@/lib/supabase/pagination';
 
-export const ACCOUNTING_PNL_TRANSACTION_LIMIT = 5000;
+export const ACCOUNTING_PNL_PAGE_SIZE = 1000;
+
+type AccountingPnlPagedResult<T> = {
+  data: T[] | null;
+  error: { message?: string } | null;
+};
+
+export async function fetchAccountingPnlPagedRows<T>(
+  fetchPage: (from: number, to: number) => Promise<AccountingPnlPagedResult<T>>,
+  pageSize = ACCOUNTING_PNL_PAGE_SIZE,
+) {
+  return fetchAllPages(async (from, to) => {
+    const result = await fetchPage(from, to);
+    return {
+      data: result.data,
+      error: result.error ? { message: result.error.message ?? 'Unable to load P&L data.' } : null,
+    };
+  }, { pageSize });
+}
 
 export const ACCOUNTING_PNL_DETAIL_SECTIONS = [
   { id: 'revenue', label: 'Revenue' },
@@ -129,11 +148,6 @@ export type AccountingPnlStatement = {
   salesAdminOtherLaborCents: number;
   wholesaleSalesCents: number;
 };
-
-function relatedOne<T>(value: T | T[] | null | undefined): T | null {
-  if (Array.isArray(value)) return value[0] ?? null;
-  return value ?? null;
-}
 
 export function relatedAccountingCategory(transaction: AccountingTransactionRow) {
   return categoryForTransaction(transaction);
@@ -331,74 +345,71 @@ function sortStatementTransactions(rows: AccountingPnlStatementTransaction[]) {
   ));
 }
 
-function revenueDetailRows(transactions: AccountingPnlTransactionRow[]) {
-  const retailTransactions: AccountingPnlStatementTransaction[] = [];
-  const wholesaleTransactions: AccountingPnlStatementTransaction[] = [];
-
-  for (const transaction of transactions) {
-    const category = relatedAccountingCategory(transaction);
-    if (!category || category.pnl_section !== 'revenue' || transaction.status === 'excluded') continue;
-    const amountCents = -normalizeAccountingNumber(transaction.amount_cents);
-    if (!amountCents) continue;
-    if (isShopifyDepositTransaction(transaction)) {
-      retailTransactions.push(statementTransaction(transaction, amountCents));
-    } else {
-      wholesaleTransactions.push(statementTransaction(transaction, amountCents));
-    }
-  }
-
-  const wholesaleTotal = wholesaleTransactions.reduce((sum, row) => sum + row.amountCents, 0);
-  const retailTotal = retailTransactions.reduce((sum, row) => sum + row.amountCents, 0);
-
-  return [
-    {
-      id: 'wholesale_sales',
-      label: 'Wholesale Sales',
-      totalCents: wholesaleTotal,
-      transactions: sortStatementTransactions(wholesaleTransactions),
-    },
-    {
-      id: 'retail_sales',
-      label: 'Retail Sales',
-      totalCents: retailTotal,
-      transactions: sortStatementTransactions(retailTransactions),
-    },
-  ].filter((row) => row.totalCents !== 0 || row.transactions.length > 0);
-}
-
-function categoryDetailRows({
+function groupedStatementSections({
   categories,
-  section,
+  includeTransactionDetails,
   transactions,
 }: {
   categories: AccountingCategoryRow[];
-  section: AccountingPnlSection;
+  includeTransactionDetails: boolean;
   transactions: AccountingPnlTransactionRow[];
 }) {
-  return categories
-    .filter((category) => category.pnl_section === section)
-    .map((category) => {
-      const detailTransactions = transactions
-        .filter((transaction) => transaction.category_id === category.id && transaction.status !== 'excluded')
-        .map((transaction) => statementTransaction(
-          transaction,
-          accountingCategoryAmountForPnlSection(transaction, category),
-        ))
-        .filter((transaction) => transaction.amountCents !== 0);
+  type Group = AccountingPnlStatementDetailRow & { transactionCount: number };
+  const group = (id: string, label: string): Group => ({ id, label, totalCents: 0, transactions: [], transactionCount: 0 });
+  const categoryById = new Map(categories.map((category) => [category.id, category]));
+  const byCategory = new Map<string, Group>();
+  const wholesale = group('wholesale_sales', 'Wholesale Sales');
+  const retail = group('retail_sales', 'Retail Sales');
 
-      return {
-        id: category.id,
-        label: category.name,
-        totalCents: detailTransactions.reduce((sum, transaction) => sum + transaction.amountCents, 0),
-        transactions: sortStatementTransactions(detailTransactions),
-      };
-    })
-    .filter((row) => row.totalCents !== 0 || row.transactions.length > 0)
-    .sort((left, right) => Math.abs(right.totalCents) - Math.abs(left.totalCents) || left.label.localeCompare(right.label));
+  const addTransaction = (row: Group, transaction: AccountingPnlTransactionRow, amountCents: number) => {
+    row.totalCents += Math.round(amountCents);
+    row.transactionCount += 1;
+    if (includeTransactionDetails) row.transactions.push(statementTransaction(transaction, amountCents));
+  };
+
+  for (const transaction of transactions) {
+    if (transaction.status === 'excluded') continue;
+    const relatedCategory = relatedAccountingCategory(transaction);
+    if (relatedCategory?.pnl_section === 'revenue') {
+      const amountCents = -normalizeAccountingNumber(transaction.amount_cents);
+      if (amountCents) addTransaction(isShopifyDepositTransaction(transaction) ? retail : wholesale, transaction, amountCents);
+    }
+
+    const category = transaction.category_id ? categoryById.get(transaction.category_id) : undefined;
+    if (!category || category.pnl_section === 'revenue' || category.pnl_section === 'none') continue;
+    const amountCents = Math.round(accountingCategoryAmountForPnlSection(transaction, category));
+    if (!amountCents) continue;
+    let row = byCategory.get(category.id);
+    if (!row) {
+      row = group(category.id, category.name);
+      byCategory.set(category.id, row);
+    }
+    addTransaction(row, transaction, amountCents);
+  }
+
+  const detailSections = ACCOUNTING_PNL_DETAIL_SECTIONS.map((section) => {
+    const groups = section.id === 'revenue'
+      ? [wholesale, retail].filter((row) => row.transactionCount > 0)
+      : categories
+        .filter((category) => category.pnl_section === section.id)
+        .map((category) => byCategory.get(category.id))
+        .filter((row): row is Group => Boolean(row))
+        .sort((left, right) => Math.abs(right.totalCents) - Math.abs(left.totalCents) || left.label.localeCompare(right.label));
+    return {
+      ...section,
+      rows: groups.map(({ transactionCount: _transactionCount, ...row }) => ({
+        ...row,
+        transactions: includeTransactionDetails ? sortStatementTransactions(row.transactions) : [],
+      })),
+    };
+  }).filter((section) => section.rows.length > 0);
+
+  return detailSections;
 }
 
 export function buildAccountingPnlStatement({
   categories,
+  includeTransactionDetails = true,
   payrollAllocations = [],
   payrollSalaryPayments = [],
   payrollTimeEntries = [],
@@ -406,6 +417,7 @@ export function buildAccountingPnlStatement({
   transactions,
 }: {
   categories: AccountingCategoryRow[];
+  includeTransactionDetails?: boolean;
   payrollAllocations?: AccountingPayrollAllocationRow[];
   payrollSalaryPayments?: AccountingSalaryPaymentRow[];
   payrollTimeEntries?: AccountingPayrollTimeEntryRow[];
@@ -449,24 +461,16 @@ export function buildAccountingPnlStatement({
     .reduce((sum, transaction) => sum + -normalizeAccountingNumber(transaction.amount_cents), 0);
   const wholesaleSalesCents = basePnl.revenueCents - retailSalesCents;
 
-  const detailSections = ACCOUNTING_PNL_DETAIL_SECTIONS.map((section) => ({
-    ...section,
-    rows: section.id === 'revenue'
-      ? revenueDetailRows(transactions)
-      : categoryDetailRows({ categories, section: section.id, transactions }),
-  })).filter((section) => section.rows.length > 0);
-
-  const categoryBreakdown = ACCOUNTING_PNL_DETAIL_SECTIONS.map((section) => ({
+  const groupedSections = groupedStatementSections({ categories, includeTransactionDetails, transactions });
+  const detailSections = includeTransactionDetails ? groupedSections : [];
+  const categoryBreakdown = groupedSections.map((section) => ({
     ...section,
     rows: section.id === 'revenue'
       ? [
         { id: 'wholesale_sales', label: 'Wholesale Sales', totalCents: wholesaleSalesCents, transactions: [] },
         { id: 'retail_sales', label: 'Retail Sales', totalCents: retailSalesCents, transactions: [] },
       ].filter((row) => row.totalCents !== 0)
-      : categoryDetailRows({ categories, section: section.id, transactions }).map((row) => ({
-        ...row,
-        transactions: [],
-      })),
+      : section.rows.map((row) => ({ ...row, transactions: [] })),
   })).filter((section) => section.rows.length > 0);
 
   const needsReviewCount = transactions.filter((transaction) => transaction.status === 'needs_review').length;

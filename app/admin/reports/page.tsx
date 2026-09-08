@@ -1,3 +1,6 @@
+import DetailRowLimitNotice from '@/components/report-detail-pagination';
+import { fetchAllPages, fetchAllByIds } from '@/lib/supabase/pagination';
+import { loadReportCommerce } from '@/lib/admin-report-commerce';
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import type { ReactNode } from 'react';
@@ -9,7 +12,6 @@ import { dataNeedsForReport, type AdminReportId } from '@/lib/admin-report-data-
 import {
   ADMIN_QUERY_ROW_LIMIT,
   limitReportDetailRows,
-  queryReachedAdminRowLimit,
   REPORT_DETAIL_ROW_LIMIT,
 } from '@/lib/admin-query-limits';
 import {
@@ -36,6 +38,7 @@ import {
   type LaborPaidGpmTimeEntryRow,
 } from '@/lib/labor-paid-gpm-reporting';
 import {
+  buildBaselineRanges,
   buildProfitabilityDashboard,
   buildRecentOrderGpmRows,
   type ProfitabilityOrderItemRow,
@@ -469,22 +472,21 @@ async function loadAiBusinessSnapshotForReports({
   const monthStart = startOfMonth(asOfDate);
   const orderHistoryStart = addDays(monthStart, -120);
 
-  const scopedOrdersQuery = scopeCenterRelatedQueryForAdmin(
+  const scopedOrdersQuery = fetchAllPages((from, to) => scopeCenterRelatedQueryForAdmin(
     supabase
       .from('orders')
       .select('id,center_id,status,subtotal_cents,shipping_cost_cents,processing_fee_cents,donation_cogs_cents,created_at,shipped_at')
       .neq('order_kind', 'prospecting_sample')
       .or(`created_at.gte.${orderHistoryStart.toISOString()},shipped_at.gte.${orderHistoryStart.toISOString()}`)
       .lt('created_at', asOfEndExclusive.toISOString())
-      .order('created_at', { ascending: false })
-      .limit(ADMIN_QUERY_ROW_LIMIT),
+      .order('created_at', { ascending: false }).order('id').range(from, to),
     'center_id',
     centerScope
-  );
-  const scopedCentersQuery = scopeCentersForAdmin(
-    supabase.from('centers').select('id,name,is_active,created_at').order('name', { ascending: true }).limit(ADMIN_QUERY_ROW_LIMIT),
+  ));
+  const scopedCentersQuery = fetchAllPages((from, to) => scopeCentersForAdmin(
+    supabase.from('centers').select('id,name,is_active,created_at').order('name', { ascending: true }).order('id').range(from, to),
     centerScope
-  );
+  ));
 
   const ordersResult = await scopedOrdersQuery;
   if (ordersResult.error) throw new Error('snapshot_orders_failed');
@@ -492,11 +494,10 @@ async function loadAiBusinessSnapshotForReports({
   const orders = (ordersResult.data ?? []) as Array<ReportingOrderRow & ProfitabilityOrderRow>;
   const orderIds = orders.map((order) => order.id).filter(Boolean);
   const orderItemsQuery = orderIds.length
-    ? supabase
+    ? fetchAllByIds(orderIds, (ids, from, to) => supabase
       .from('order_items')
       .select('id,order_id,product_id,product_name_snapshot,qty,unit_price_cents,line_total_cents,shipping_boxes_used,cogs_material_cents,cogs_labor_cents,cogs_fixed_cents,cogs_tape_cents,cogs_shipping_label_cents,cogs_branding_label_cents,cogs_fixed_other_cents,cogs_product_cents,cogs_shipping_cents,cogs_processing_fee_cents,cogs_donation_cents,cogs_total_cents,cogs_unit_cents,cogs_source,cogs_estimated,cogs_snapshot_at')
-      .in('order_id', orderIds)
-      .limit(ADMIN_QUERY_ROW_LIMIT)
+      .in('order_id', ids).order('id').range(from, to))
     : skippedReportQuery();
 
   const [
@@ -514,35 +515,31 @@ async function loadAiBusinessSnapshotForReports({
   ] = await Promise.all([
     orderItemsQuery,
     scopedCentersQuery,
-    supabase.from('products').select('id,name,sku,category,active').order('name', { ascending: true }).limit(ADMIN_QUERY_ROW_LIMIT),
-    supabase.from('inventory_items').select('id,name,sku,item_type,base_unit,product_id,active').order('name', { ascending: true }).limit(ADMIN_QUERY_ROW_LIMIT),
-    supabase
+    fetchAllPages((from, to) => supabase.from('products').select('id,name,sku,category,active').order('name', { ascending: true }).order('id').range(from, to)),
+    fetchAllPages((from, to) => supabase.from('inventory_items').select('id,name,sku,item_type,base_unit,product_id,active').order('name', { ascending: true }).order('id').range(from, to)),
+    fetchAllPages((from, to) => supabase
       .from('inventory_lots')
       .select('inventory_item_id,production_run_id,quantity_remaining,unit_cost_cents,received_at,created_at')
       .or('quantity_remaining.neq.0,unit_cost_cents.gt.0')
-      .order('created_at', { ascending: false })
-      .limit(ADMIN_QUERY_ROW_LIMIT),
-    supabase.from('inventory_reorder_settings').select('inventory_item_id,reorder_point,target_stock,lead_time_days').limit(ADMIN_QUERY_ROW_LIMIT),
-    supabase
+      .order('created_at', { ascending: false }).order('id').range(from, to)),
+    fetchAllPages((from, to) => supabase.from('inventory_reorder_settings').select('inventory_item_id,reorder_point,target_stock,lead_time_days').order('inventory_item_id').range(from, to)),
+    fetchAllPages((from, to) => supabase
       .from('production_runs')
       .select('id,product_id,quantity_produced,quantity_voided,status,estimated_unit_cost_cents,actual_unit_cost_cents,actual_labor_cost_cents,fixed_cost_cents,fixed_tape_cost_cents,fixed_shipping_label_cost_cents,fixed_branding_label_cost_cents,fixed_other_cost_cents,produced_at')
       .lt('produced_at', asOfEndExclusive.toISOString())
-      .order('produced_at', { ascending: false })
-      .limit(ADMIN_QUERY_ROW_LIMIT),
-    supabase.from('production_run_inputs').select('production_run_id,quantity_expected,quantity_used,cost_cents').limit(ADMIN_QUERY_ROW_LIMIT),
-    supabase
+      .order('produced_at', { ascending: false }).order('id').range(from, to)),
+    fetchAllPages((from, to) => supabase.from('production_run_inputs').select('production_run_id,quantity_expected,quantity_used,cost_cents').order('id').range(from, to)),
+    fetchAllPages((from, to) => supabase
       .from('inventory_movements')
       .select('inventory_item_id,quantity_change,unit_cost_cents,created_at')
       .in('movement_type', ['shipment_consume', 'sample_box_consume'])
       .is('lot_id', null)
-      .lt('created_at', asOfEndExclusive.toISOString())
-      .limit(ADMIN_QUERY_ROW_LIMIT),
-    supabase
+      .lt('created_at', asOfEndExclusive.toISOString()).order('id').range(from, to)),
+    fetchAllPages((from, to) => supabase
       .from('non_inventory_expenses')
       .select('expense_type,amount_cents,spent_at')
       .gte('spent_at', monthStart.toISOString())
-      .lt('spent_at', asOfEndExclusive.toISOString())
-      .limit(ADMIN_QUERY_ROW_LIMIT),
+      .lt('spent_at', asOfEndExclusive.toISOString()).order('id').range(from, to)),
     getSupabaseAdmin().rpc('admin_prospecting_report_v1', {
       p_as_of_date: asOfDateInput,
       p_center_ids: centerScope,
@@ -558,6 +555,12 @@ async function loadAiBusinessSnapshotForReports({
     || productsResult.error
     || inventoryItemsResult.error
     || inventoryLotsResult.error
+    || productionRunsResult.error
+    || productionRunInputsResult.error
+    || nonInventoryExpensesResult.error
+    || shortageMovementsResult.error
+    || reorderSettingsResult.error
+    || prospectingReportResult.error
   ) {
     throw new Error('snapshot_sources_failed');
   }
@@ -579,26 +582,7 @@ async function loadAiBusinessSnapshotForReports({
     shortageMovements: shortageMovementsResult.error ? [] : (shortageMovementsResult.data ?? []) as ReportingInventoryMovementRow[],
   });
 
-  const limitedSources = [
-    ['orders', ordersResult.data],
-    ['order items', orderItemsResult.data],
-    ['customers', centersResult.data],
-    ['products', productsResult.data],
-    ['inventory items', inventoryItemsResult.data],
-    ['inventory lots', inventoryLotsResult.data],
-    ['production runs', productionRunsResult.data],
-    ['production inputs', productionRunInputsResult.data],
-    ['inventory adjustments', shortageMovementsResult.data],
-    ['expenses', nonInventoryExpensesResult.data],
-  ]
-    .filter((entry): entry is [string, unknown[]] => Array.isArray(entry[1]) && queryReachedAdminRowLimit(entry[1]))
-    .map(([label]) => label);
-
-  if (limitedSources.length) {
-    snapshot.data_coverage_notes.push(`Loaded row limit reached for: ${limitedSources.join(', ')}. The answer should treat those areas as partial.`);
-  }
-
-  return { limitedSources, snapshot };
+  return { snapshot };
 }
 
 async function archiveOldAiBusinessQaRows(supabase: Awaited<ReturnType<typeof createClient>>) {
@@ -720,143 +704,11 @@ async function generateAiOverviewReport(formData: FormData) {
   }
 
   const supabase = await createClient();
-  const centerScope = await getSalesScopedCenterIdsForAdmin({
-    current: currentAccess,
-    selectedSalesProfileId: '',
-    supabase,
-  });
-  const asOfEndExclusive = addDays(asOfDate, 1);
-  const monthStart = startOfMonth(asOfDate);
-  const orderHistoryStart = addDays(monthStart, -120);
-
-  const scopedOrdersQuery = scopeCenterRelatedQueryForAdmin(
-    supabase
-      .from('orders')
-      .select('id,center_id,status,subtotal_cents,shipping_cost_cents,processing_fee_cents,donation_cogs_cents,created_at,shipped_at')
-      .neq('order_kind', 'prospecting_sample')
-      .or(`created_at.gte.${orderHistoryStart.toISOString()},shipped_at.gte.${orderHistoryStart.toISOString()}`)
-      .lt('created_at', asOfEndExclusive.toISOString())
-      .order('created_at', { ascending: false })
-      .limit(ADMIN_QUERY_ROW_LIMIT),
-    'center_id',
-    centerScope
-  );
-  const scopedCentersQuery = scopeCentersForAdmin(
-    supabase.from('centers').select('id,name,is_active,created_at').order('name', { ascending: true }).limit(ADMIN_QUERY_ROW_LIMIT),
-    centerScope
-  );
-
-  const ordersResult = await scopedOrdersQuery;
-  if (ordersResult.error) {
+  let snapshot: BusinessHealthSnapshot;
+  try {
+    ({ snapshot } = await loadAiBusinessSnapshotForReports({ asOfDate, currentAccess, supabase, today }));
+  } catch {
     redirect(`/admin/reports?report=ai_overview&asOf=${asOfDateInput}&ai_error=generation_failed`);
-  }
-
-  const orders = (ordersResult.data ?? []) as Array<ReportingOrderRow & ProfitabilityOrderRow>;
-  const orderIds = orders.map((order) => order.id).filter(Boolean);
-  const orderItemsQuery = orderIds.length
-    ? supabase
-      .from('order_items')
-      .select('id,order_id,product_id,product_name_snapshot,qty,unit_price_cents,line_total_cents,shipping_boxes_used,cogs_material_cents,cogs_labor_cents,cogs_fixed_cents,cogs_tape_cents,cogs_shipping_label_cents,cogs_branding_label_cents,cogs_fixed_other_cents,cogs_product_cents,cogs_shipping_cents,cogs_processing_fee_cents,cogs_donation_cents,cogs_total_cents,cogs_unit_cents,cogs_source,cogs_estimated,cogs_snapshot_at')
-      .in('order_id', orderIds)
-      .limit(ADMIN_QUERY_ROW_LIMIT)
-    : skippedReportQuery();
-
-  const [
-    orderItemsResult,
-    centersResult,
-    productsResult,
-    inventoryItemsResult,
-    inventoryLotsResult,
-    reorderSettingsResult,
-    productionRunsResult,
-    productionRunInputsResult,
-    shortageMovementsResult,
-    nonInventoryExpensesResult,
-    prospectingReportResult,
-  ] = await Promise.all([
-    orderItemsQuery,
-    scopedCentersQuery,
-    supabase.from('products').select('id,name,sku,category,active').order('name', { ascending: true }).limit(ADMIN_QUERY_ROW_LIMIT),
-    supabase.from('inventory_items').select('id,name,sku,item_type,base_unit,product_id,active').order('name', { ascending: true }).limit(ADMIN_QUERY_ROW_LIMIT),
-    supabase
-      .from('inventory_lots')
-      .select('inventory_item_id,production_run_id,quantity_remaining,unit_cost_cents,received_at,created_at')
-      .or('quantity_remaining.neq.0,unit_cost_cents.gt.0')
-      .order('created_at', { ascending: false })
-      .limit(ADMIN_QUERY_ROW_LIMIT),
-    supabase.from('inventory_reorder_settings').select('inventory_item_id,reorder_point,target_stock,lead_time_days').limit(ADMIN_QUERY_ROW_LIMIT),
-    supabase
-      .from('production_runs')
-      .select('id,product_id,quantity_produced,quantity_voided,status,estimated_unit_cost_cents,actual_unit_cost_cents,actual_labor_cost_cents,fixed_cost_cents,fixed_tape_cost_cents,fixed_shipping_label_cost_cents,fixed_branding_label_cost_cents,fixed_other_cost_cents,produced_at')
-      .lt('produced_at', asOfEndExclusive.toISOString())
-      .order('produced_at', { ascending: false })
-      .limit(ADMIN_QUERY_ROW_LIMIT),
-    supabase.from('production_run_inputs').select('production_run_id,quantity_expected,quantity_used,cost_cents').limit(ADMIN_QUERY_ROW_LIMIT),
-    supabase
-      .from('inventory_movements')
-      .select('inventory_item_id,quantity_change,unit_cost_cents,created_at')
-      .in('movement_type', ['shipment_consume', 'sample_box_consume'])
-      .is('lot_id', null)
-      .lt('created_at', asOfEndExclusive.toISOString())
-      .limit(ADMIN_QUERY_ROW_LIMIT),
-    supabase
-      .from('non_inventory_expenses')
-      .select('expense_type,amount_cents,spent_at')
-      .gte('spent_at', monthStart.toISOString())
-      .lt('spent_at', asOfEndExclusive.toISOString())
-      .limit(ADMIN_QUERY_ROW_LIMIT),
-    getSupabaseAdmin().rpc('admin_prospecting_report_v1', {
-      p_as_of_date: asOfDateInput,
-      p_center_ids: centerScope,
-      p_range_end_exclusive: formatDateInput(asOfEndExclusive),
-      p_range_start: formatDateInput(monthStart),
-      p_sales_profile_id: currentAccess.isOwner ? null : currentAccess.profile.id,
-    }),
-  ]);
-
-  if (
-    orderItemsResult.error
-    || centersResult.error
-    || productsResult.error
-    || inventoryItemsResult.error
-    || inventoryLotsResult.error
-  ) {
-    redirect(`/admin/reports?report=ai_overview&asOf=${asOfDateInput}&ai_error=generation_failed`);
-  }
-
-  const snapshot = buildBusinessHealthSnapshot({
-    asOfDate,
-    centers: (centersResult.data ?? []) as ReportingCenterRow[],
-    currentDate: today,
-    inventoryItems: (inventoryItemsResult.data ?? []) as ReportingInventoryItemRow[],
-    inventoryLots: (inventoryLotsResult.data ?? []) as ReportingInventoryLotRow[],
-    nonInventoryExpenses: nonInventoryExpensesResult.error ? [] : (nonInventoryExpensesResult.data ?? []),
-    orderItems: (orderItemsResult.data ?? []) as Array<ReportingOrderItemRow & ProfitabilityOrderItemRow>,
-    orders,
-    products: (productsResult.data ?? []) as ReportingProductRow[],
-    productionRunInputs: productionRunInputsResult.error ? [] : (productionRunInputsResult.data ?? []),
-    productionRuns: productionRunsResult.error ? [] : (productionRunsResult.data ?? []),
-    prospectingAggregate: prospectingReportResult.error ? null : normalizeProspectingReportAggregate(prospectingReportResult.data),
-    reorderSettings: reorderSettingsResult.error ? [] : (reorderSettingsResult.data ?? []) as ReportingReorderSettingRow[],
-    shortageMovements: shortageMovementsResult.error ? [] : (shortageMovementsResult.data ?? []) as ReportingInventoryMovementRow[],
-  });
-
-  const limitedSources = [
-    ['orders', ordersResult.data],
-    ['order items', orderItemsResult.data],
-    ['customers', centersResult.data],
-    ['products', productsResult.data],
-    ['inventory items', inventoryItemsResult.data],
-    ['inventory lots', inventoryLotsResult.data],
-    ['production runs', productionRunsResult.data],
-    ['production inputs', productionRunInputsResult.data],
-    ['inventory adjustments', shortageMovementsResult.data],
-    ['expenses', nonInventoryExpensesResult.data],
-  ]
-    .filter((entry): entry is [string, unknown[]] => Array.isArray(entry[1]) && queryReachedAdminRowLimit(entry[1]))
-    .map(([label]) => label);
-  if (limitedSources.length) {
-    snapshot.data_coverage_notes.push(`Loaded row limit reached for: ${limitedSources.join(', ')}. The report should treat those areas as partial.`);
   }
 
   let markdown = '';
@@ -1408,25 +1260,6 @@ function EmptyState({ message }: { message: string }) {
   );
 }
 
-function DetailRowLimitNotice({ total }: { total: number }) {
-  if (total <= REPORT_DETAIL_ROW_LIMIT) return null;
-
-  return (
-    <p className="text-sm text-slate-500">
-      Showing the first {REPORT_DETAIL_ROW_LIMIT.toLocaleString()} of {total.toLocaleString()} rows. Narrow the filters to inspect a smaller result set.
-    </p>
-  );
-}
-
-function SourceRowLimitNotice({ sources }: { sources: string[] }) {
-  if (!sources.length) return null;
-
-  return (
-    <section className="rounded-xl border border-amber-200 bg-amber-50/80 px-4 py-3 text-sm leading-6 text-amber-900" role="status">
-      This report reached the 1,000-row safety limit for {sources.join(', ')}. Totals from those sources may be incomplete until database aggregate loaders are enabled.
-    </section>
-  );
-}
 
 function MetricComparisonTable({ rows }: { rows: MetricComparisonRow[] }) {
   return (
@@ -1996,21 +1829,6 @@ function ItemProfitabilityTable({
   );
 }
 
-function MarginBridgeTable({ rows }: { rows: ReturnType<typeof buildProfitabilityDashboard>['marginBridgeRows'] }) {
-  return (
-    <div className="space-y-3">
-      {rows.map((row) => (
-        <div key={row.label} className="grid gap-3 rounded-xl border border-slate-200/70 bg-white/65 px-4 py-3 text-sm sm:grid-cols-[minmax(0,1fr)_10rem] sm:items-center">
-          <div>
-            <p className="font-semibold text-slate-950">{row.label}</p>
-            <p className="mt-1 text-slate-500">{row.detail}</p>
-          </div>
-          <p className={`text-right text-lg font-semibold ${row.effectCents >= 0 ? 'text-teal-800' : 'text-rose-700'}`}>{signedMoney(row.effectCents)}</p>
-        </div>
-      ))}
-    </div>
-  );
-}
 
 function metricValue(row: ReturnType<typeof buildProfitabilityDashboard>['marginHealth']['salesMetrics'][number], value: number) {
   if (row.format === 'currency') return money(value);
@@ -2941,6 +2759,7 @@ function SimulatorProductTable({ rows }: { rows: GrossProfitSimulatorProductRow[
 }
 
 function GrossProfitSimulatorReport({
+  detailPage,
   activeTab,
   centerId,
   dashboard,
@@ -2958,6 +2777,7 @@ function GrossProfitSimulatorReport({
   salesRepId,
   scenarioPricePerPoundCents,
 }: {
+  detailPage: number;
   activeTab: SimulatorTab;
   centerId?: string;
   dashboard: GrossProfitSimulatorDashboard;
@@ -3002,6 +2822,7 @@ function GrossProfitSimulatorReport({
         />
         <form>
           <input type="hidden" name="report" value="simulator" />
+          <input type="hidden" name="detail_page" value={detailPage} />
           <input type="hidden" name="month" value={monthValue} />
           <input type="hidden" name="rangeStart" value={rangeStartInput} />
           <input type="hidden" name="rangeEnd" value={rangeEndInput} />
@@ -3066,8 +2887,7 @@ function GrossProfitSimulatorReport({
                 <StatTile label="Scenario Labor COGS" value={money(dashboard.simulatedLaborCents)} detail={`${signedMoney(dashboard.simulatedLaborCents - dashboard.actualLaborCents)} versus actual labor COGS.`} />
                 <StatTile label="Labor Products" value={number(dashboard.laborRows.length)} detail="Products with shipped lines in this simulator scope." />
               </div>
-              <SimulatorLaborTable rows={limitReportDetailRows(dashboard.laborRows)} laborMinutesOverrides={laborMinutesOverrides} laborRateOverrides={laborRateOverrides} />
-              <DetailRowLimitNotice total={dashboard.laborRows.length} />
+              <SimulatorLaborTable rows={dashboard.laborRows} laborMinutesOverrides={laborMinutesOverrides} laborRateOverrides={laborRateOverrides} />
             </div>
 
             <div className="hidden space-y-5 peer-checked/raw:block">
@@ -3116,7 +2936,7 @@ function GrossProfitSimulatorReport({
           title="Which products move gross profit"
           subtitle="Product rows apply price-per-pound revenue, recipe-minute labor, material, and shipping-box supply scenarios while non-simulated COGS stay actual."
         />
-        <SimulatorProductTable rows={limitReportDetailRows(dashboard.productRows)} />
+        <SimulatorProductTable rows={limitReportDetailRows(dashboard.productRows, detailPage)} />
         <DetailRowLimitNotice total={dashboard.productRows.length} />
       </section>
     </>
@@ -3515,11 +3335,12 @@ function CriticalReportError({ message }: { message: string }) {
   );
 }
 
-export default async function AdminReportsPage({
-  searchParams,
-}: {
-  searchParams?: Record<string, string | string[] | undefined>;
-}) {
+export default async function AdminReportsPage(
+  props: {
+    searchParams?: Promise<Record<string, string | string[] | undefined>>;
+  }
+) {
+  const searchParams = await props.searchParams;
   const reportStartedAt = performance.now();
   const currentAccess = await requireAdminSectionView('reports');
   const supabase = await createClient();
@@ -3543,20 +3364,26 @@ export default async function AdminReportsPage({
     redirect(`/admin/reports?${redirectParams.toString()}`);
   }
   const dataNeeds = dataNeedsForReport(activeReport);
+  const detailPage = Number(stringParam(searchParams?.detail_page) || 1);
 
   const salesRepSettingsResult = currentAccess.isOwner
-    ? await supabase.from('admin_commission_settings').select('profile_id').eq('is_sales_rep', true).limit(ADMIN_QUERY_ROW_LIMIT)
+    ? await fetchAllPages((from, to) => supabase.from('admin_commission_settings').select('profile_id').eq('is_sales_rep', true).order('profile_id').range(from, to))
     : { data: [], error: null };
+  if (salesRepSettingsResult.error) {
+    return <CriticalReportError message={salesRepSettingsResult.error.message} />;
+  }
   const salesRepProfileIds = [...new Set((salesRepSettingsResult.data ?? []).map((row: { profile_id: string | null }) => row.profile_id).filter(Boolean))] as string[];
   const salesRepsResult = currentAccess.isOwner && salesRepProfileIds.length
-    ? await supabase
+    ? await fetchAllByIds(salesRepProfileIds, (profileIds, from, to) => supabase
       .from('profiles')
       .select('id,email,full_name,is_active')
-      .in('id', salesRepProfileIds)
+      .in('id', profileIds)
       .eq('is_admin', true)
-      .order('full_name', { ascending: true })
-      .limit(ADMIN_QUERY_ROW_LIMIT)
+      .order('full_name', { ascending: true }).order('id').range(from, to))
     : { data: [], error: null };
+  if (salesRepsResult.error) {
+    return <CriticalReportError message={salesRepsResult.error.message} />;
+  }
   const salesRepRows = (salesRepsResult.data ?? []) as AdminRow[];
   const salesReps = (activeReport === 'prospecting' ? filterProspectingSalesRepProfiles(salesRepRows) : salesRepRows)
     .sort((a, b) => adminLabel(a).localeCompare(adminLabel(b)));
@@ -3586,15 +3413,19 @@ export default async function AdminReportsPage({
     centerIds: centerScope,
   };
 
-  const ordersQuery = scopeCenterRelatedQueryForAdmin(
-    supabase.from('orders').select('id,center_id,status,subtotal_cents,shipping_cost_cents,processing_fee_cents,donation_cogs_cents,created_at,shipped_at').neq('order_kind', 'prospecting_sample').order('created_at', { ascending: false }).limit(ADMIN_QUERY_ROW_LIMIT),
-    'center_id',
+  const baseline = buildBaselineRanges(rangeStart, rangeEndExclusive);
+  const comparisonStart = new Date(Math.min(baseline.previousStart.getTime(), baseline.trailingStart.getTime()));
+  const commerceQuery = dataNeeds.coreCommerce
+    ? loadReportCommerce(supabase, {
+      centerScope,
+      shippedRange: dataNeeds.salesDashboard || activeReport === 'recent_order_gpm'
+        ? undefined : { start: comparisonStart, endExclusive: rangeEndExclusive },
+    })
+    : Promise.resolve({ orders: { data: [], error: null }, orderItems: { data: [], error: null } });
+  const centersQuery = dataNeeds.coreCommerce ? fetchAllPages((from, to) => scopeCentersForAdmin(
+    supabase.from('centers').select('id,name,is_active,created_at').order('name', { ascending: true }).order('id').range(from, to),
     centerScope
-  );
-  const centersQuery = scopeCentersForAdmin(
-    supabase.from('centers').select('id,name,is_active,created_at').order('name', { ascending: true }).limit(ADMIN_QUERY_ROW_LIMIT),
-    centerScope
-  );
+  )) : skippedReportQuery();
   const prospectingReportStartedAt = performance.now();
   const prospectingReportQuery = dataNeeds.prospecting
     ? getSupabaseAdmin().rpc('admin_prospecting_report_v1', {
@@ -3607,8 +3438,7 @@ export default async function AdminReportsPage({
     : skippedReportQuery();
 
   const [
-    ordersResult,
-    orderItemsResult,
+    commerceResult,
     centersResult,
     productsResult,
     inventoryItemsResult,
@@ -3624,80 +3454,72 @@ export default async function AdminReportsPage({
     shippingBoxUsagesResult,
     prospectingReportResult,
   ] = await Promise.all([
-    dataNeeds.coreCommerce ? ordersQuery : skippedReportQuery(),
-    dataNeeds.coreCommerce
-      ? supabase.from('order_items').select('id,order_id,product_id,product_name_snapshot,qty,unit_price_cents,line_total_cents,shipping_boxes_used,cogs_material_cents,cogs_labor_cents,cogs_fixed_cents,cogs_tape_cents,cogs_shipping_label_cents,cogs_branding_label_cents,cogs_fixed_other_cents,cogs_product_cents,cogs_shipping_cents,cogs_processing_fee_cents,cogs_donation_cents,cogs_total_cents,cogs_unit_cents,cogs_source,cogs_estimated,cogs_snapshot_at').limit(ADMIN_QUERY_ROW_LIMIT)
-      : skippedReportQuery(),
+    commerceQuery,
     dataNeeds.coreCommerce ? centersQuery : skippedReportQuery(),
     dataNeeds.coreCommerce
-      ? supabase.from('products').select('id,name,sku,category,active').order('name', { ascending: true }).limit(ADMIN_QUERY_ROW_LIMIT)
+      ? fetchAllPages((from, to) => supabase.from('products').select('id,name,sku,category,active').order('name', { ascending: true }).order('id').range(from, to))
       : skippedReportQuery(),
     dataNeeds.inventoryValuation
-      ? supabase.from('inventory_items').select('id,name,sku,item_type,base_unit,product_id,active').order('name', { ascending: true }).limit(ADMIN_QUERY_ROW_LIMIT)
+      ? fetchAllPages((from, to) => supabase.from('inventory_items').select('id,name,sku,item_type,base_unit,product_id,active').order('name', { ascending: true }).order('id').range(from, to))
       : skippedReportQuery(),
     dataNeeds.inventoryValuation
-      ? supabase
+      ? fetchAllPages((from, to) => supabase
         .from('inventory_lots')
         .select('inventory_item_id,production_run_id,quantity_remaining,unit_cost_cents,received_at,created_at')
         .or('quantity_remaining.neq.0,unit_cost_cents.gt.0')
-        .order('created_at', { ascending: false })
-        .limit(ADMIN_QUERY_ROW_LIMIT)
+        .order('created_at', { ascending: false }).order('id').range(from, to))
       : skippedReportQuery(),
     dataNeeds.reorderSettings
-      ? supabase.from('inventory_reorder_settings').select('inventory_item_id,reorder_point,target_stock,lead_time_days').limit(ADMIN_QUERY_ROW_LIMIT)
+      ? fetchAllPages((from, to) => supabase.from('inventory_reorder_settings').select('inventory_item_id,reorder_point,target_stock,lead_time_days').order('inventory_item_id').range(from, to))
       : skippedReportQuery(),
     dataNeeds.productionRuns
-      ? supabase.from('production_runs').select('id,product_id,quantity_produced,quantity_voided,status,estimated_unit_cost_cents,actual_unit_cost_cents,actual_labor_cost_cents,fixed_cost_cents,fixed_tape_cost_cents,fixed_shipping_label_cost_cents,fixed_branding_label_cost_cents,fixed_other_cost_cents,produced_at').order('produced_at', { ascending: false }).limit(ADMIN_QUERY_ROW_LIMIT)
+      ? fetchAllPages((from, to) => supabase.from('production_runs').select('id,product_id,quantity_produced,quantity_voided,status,estimated_unit_cost_cents,actual_unit_cost_cents,actual_labor_cost_cents,fixed_cost_cents,fixed_tape_cost_cents,fixed_shipping_label_cost_cents,fixed_branding_label_cost_cents,fixed_other_cost_cents,produced_at').order('produced_at', { ascending: false }).order('id').range(from, to))
       : skippedReportQuery(),
     dataNeeds.productionInputs
-      ? supabase.from('production_run_inputs').select('production_run_id,quantity_expected,quantity_used,cost_cents').limit(ADMIN_QUERY_ROW_LIMIT)
+      ? fetchAllPages((from, to) => supabase.from('production_run_inputs').select('production_run_id,quantity_expected,quantity_used,cost_cents').order('id').range(from, to))
       : skippedReportQuery(),
     dataNeeds.shortageMovements
-      ? supabase.from('inventory_movements').select('inventory_item_id,quantity_change,unit_cost_cents').in('movement_type', ['shipment_consume', 'sample_box_consume']).is('lot_id', null).limit(ADMIN_QUERY_ROW_LIMIT)
+      ? fetchAllPages((from, to) => supabase.from('inventory_movements').select('inventory_item_id,quantity_change,unit_cost_cents').in('movement_type', ['shipment_consume', 'sample_box_consume']).is('lot_id', null).order('id').range(from, to))
       : skippedReportQuery(),
     dataNeeds.inventoryAdjustments
-      ? supabase
+      ? fetchAllPages((from, to) => supabase
         .from('inventory_adjustments')
         .select('id,inventory_item_id,adjustment_type,quantity_change,unit,unit_cost_cents,notes,adjusted_at,created_at,inventory_items(id,name,sku,item_type,base_unit)')
         .gte('adjusted_at', rangeStart.toISOString())
         .lt('adjusted_at', rangeEndExclusive.toISOString())
         .order('adjusted_at', { ascending: false })
-        .order('created_at', { ascending: false })
-        .limit(ADMIN_QUERY_ROW_LIMIT)
+        .order('created_at', { ascending: false }).order('id').range(from, to))
       : skippedReportQuery(),
     dataNeeds.nonInventoryExpenses
-      ? supabase
+      ? fetchAllPages((from, to) => supabase
         .from('non_inventory_expenses')
         .select('expense_type,amount_cents,spent_at')
         .gte('spent_at', rangeStart.toISOString())
-        .lt('spent_at', rangeEndExclusive.toISOString())
-        .limit(ADMIN_QUERY_ROW_LIMIT)
+        .lt('spent_at', rangeEndExclusive.toISOString()).order('id').range(from, to))
       : skippedReportQuery(),
     dataNeeds.sampleBoxes
-      ? supabase
+      ? fetchAllPages((from, to) => supabase
         .from('sample_box_runs')
         .select('id,center_id,sales_profile_id,quantity_boxes,inventory_cogs_cents,product_cogs_cents,fixed_shipping_cents,fixed_misc_cents,total_cogs_cents,cogs_estimated,sent_at')
         .gte('sent_at', rangeStart.toISOString())
-        .lt('sent_at', rangeEndExclusive.toISOString())
-        .limit(ADMIN_QUERY_ROW_LIMIT)
+        .lt('sent_at', rangeEndExclusive.toISOString()).order('id').range(from, to))
       : skippedReportQuery(),
     dataNeeds.productRecipes
-      ? supabase
+      ? fetchAllPages((from, to) => supabase
         .from('product_recipes')
-        .select('product_id,output_qty,waste_percent,labor_minutes,labor_rate_cents,product_recipe_components(inventory_item_id,quantity,unit,component_role,inventory_items(id,name,sku,item_type,base_unit))')
-        .limit(ADMIN_QUERY_ROW_LIMIT)
+        .select('product_id,output_qty,waste_percent,labor_minutes,labor_rate_cents,product_recipe_components(inventory_item_id,quantity,unit,component_role,inventory_items(id,name,sku,item_type,base_unit))').order('id').range(from, to))
       : skippedReportQuery(),
     activeReport === 'simulator'
-      ? supabase
+      ? fetchAllPages((from, to) => supabase
         .from('order_item_shipping_boxes')
         .select('order_item_id,inventory_item_id,quantity,unit_cost_cents,total_cost_cents,inventory_items(id,name,sku,item_type,base_unit,active)')
         .gte('consumed_at', rangeStart.toISOString())
-        .lt('consumed_at', rangeEndExclusive.toISOString())
-        .limit(ADMIN_QUERY_ROW_LIMIT)
+        .lt('consumed_at', rangeEndExclusive.toISOString()).order('id').range(from, to))
       : skippedReportQuery(),
     prospectingReportQuery,
   ]);
 
+  const { orders: ordersResult, orderItems: orderItemsResult } = commerceResult;
   let sampleOrders: SampleOrderReportRow[] = [];
   let sampleOrderItems: SampleOrderItemReportRow[] = [];
   let sampleProducts: SampleProductReportRow[] = [];
@@ -3706,21 +3528,19 @@ export default async function AdminReportsPage({
 
   if (dataNeeds.sampleOrders) {
     const [sampleProductsResult, sampleOrdersResult] = await Promise.all([
-      supabase
+      fetchAllPages((from, to) => supabase
         .from('products')
         .select('id,name,sku')
         .eq('category', 'sample_boxes')
-        .order('name', { ascending: true })
-        .limit(ADMIN_QUERY_ROW_LIMIT),
-      supabase
+        .order('name', { ascending: true }).order('id').range(from, to)),
+      fetchAllPages((from, to) => supabase
         .from('orders')
         .select('id,status,shipping_cost_cents,shipped_at')
         .eq('order_kind', 'prospecting_sample')
         .eq('status', 'Shipped')
         .gte('shipped_at', rangeStart.toISOString())
         .lt('shipped_at', rangeEndExclusive.toISOString())
-        .order('shipped_at', { ascending: false })
-        .limit(ADMIN_QUERY_ROW_LIMIT),
+        .order('shipped_at', { ascending: false }).order('id').range(from, to)),
     ]);
 
     if (sampleProductsResult.error || sampleOrdersResult.error) {
@@ -3732,21 +3552,19 @@ export default async function AdminReportsPage({
       const sampleOrderIds = sampleOrders.map((order) => order.id);
       const [sampleOrderItemsResult, sampleProductionRunsResult] = await Promise.all([
         sampleOrderIds.length
-          ? supabase
+          ? fetchAllByIds(sampleOrderIds, (ids, from, to) => supabase
             .from('order_items')
             .select('order_id,product_id,qty,cogs_product_cents,cogs_shipping_cents,cogs_total_cents,cogs_snapshot_at,cogs_estimated')
-            .in('order_id', sampleOrderIds)
-            .limit(ADMIN_QUERY_ROW_LIMIT)
+            .in('order_id', ids).order('id').range(from, to))
           : skippedReportQuery(),
         sampleProductIds.length
-          ? supabase
+          ? fetchAllPages((from, to) => supabase
             .from('production_runs')
             .select('product_id,quantity_produced,quantity_voided,status,actual_unit_cost_cents,actual_labor_cost_cents,fixed_cost_cents,fixed_shipping_label_cost_cents,produced_at')
             .in('product_id', sampleProductIds)
             .gte('produced_at', rangeStart.toISOString())
             .lt('produced_at', rangeEndExclusive.toISOString())
-            .order('produced_at', { ascending: false })
-            .limit(ADMIN_QUERY_ROW_LIMIT)
+            .order('produced_at', { ascending: false }).order('id').range(from, to))
           : skippedReportQuery(),
       ]);
 
@@ -3768,19 +3586,17 @@ export default async function AdminReportsPage({
     const payrollSupabase = getSupabaseAdmin();
     const rangeEndInput = formatDateInput(addDays(rangeEndExclusive, -1));
     const [timeEntriesResult, salaryPaymentsResult] = await Promise.all([
-      payrollSupabase
+      fetchAllPages((from, to) => payrollSupabase
         .from('admin_time_entries')
         .select('id,profile_id,clock_in_at,clock_out_at,hourly_rate_cents_snapshot,status,locked_at,work_type,admin_time_breaks(break_start_at,break_end_at,status)')
         .gte('clock_in_at', rangeStart.toISOString())
-        .lt('clock_in_at', rangeEndExclusive.toISOString())
-        .limit(ADMIN_QUERY_ROW_LIMIT),
-      payrollSupabase
+        .lt('clock_in_at', rangeEndExclusive.toISOString()).order('id').range(from, to)),
+      fetchAllPages((from, to) => payrollSupabase
         .from('admin_salary_payroll_payments')
         .select('id,paid_at,period_start_date,period_end_date,salary_labor_work_type,salary_pay_cents')
         .not('paid_at', 'is', null)
         .lte('period_start_date', rangeEndInput)
-        .gte('period_end_date', formatDateInput(rangeStart))
-        .limit(ADMIN_QUERY_ROW_LIMIT),
+        .gte('period_end_date', formatDateInput(rangeStart)).order('id').range(from, to)),
     ]);
 
     if (timeEntriesResult.error || salaryPaymentsResult.error) {
@@ -3790,11 +3606,10 @@ export default async function AdminReportsPage({
       laborPaidSalaryPayments = (salaryPaymentsResult.data ?? []) as LaborPaidGpmSalaryPaymentRow[];
       const entryIds = laborPaidTimeEntries.map((entry) => entry.id);
       if (entryIds.length) {
-        const allocationsResult = await payrollSupabase
+        const allocationsResult = await fetchAllByIds(entryIds, (ids, from, to) => payrollSupabase
           .from('admin_time_entry_allocations')
           .select('time_entry_id,work_type,minutes,wage_cents')
-          .in('time_entry_id', entryIds)
-          .limit(ADMIN_QUERY_ROW_LIMIT);
+          .in('time_entry_id', ids).order('id').range(from, to));
         if (allocationsResult.error) {
           laborPaidLoadError = 'The Labor Paid GPM report could not load payroll allocations.';
         } else {
@@ -3826,6 +3641,20 @@ export default async function AdminReportsPage({
   }
   if (dataNeeds.inventoryAdjustments && inventoryAdjustmentsResult.error) {
     return <CriticalReportError message={inventoryAdjustmentsResult.error.message || 'The inventory adjustment report could not be loaded.'} />;
+  }
+
+  const supportingInputError = [
+    dataNeeds.productionRuns && productionRunsResult.error,
+    dataNeeds.productionInputs && productionRunInputsResult.error,
+    dataNeeds.inventoryValuation && (inventoryItemsResult.error || inventoryLotsResult.error),
+    dataNeeds.productRecipes && recipeResult.error,
+    dataNeeds.nonInventoryExpenses && nonInventoryExpensesResult.error,
+    dataNeeds.shortageMovements && shortageMovementsResult.error,
+    dataNeeds.reorderSettings && reorderSettingsResult.error,
+    dataNeeds.sampleBoxes && sampleBoxRunsResult.error,
+  ].find((error) => error);
+  if (supportingInputError) {
+    return <CriticalReportError message={supportingInputError.message || 'Required reporting data could not be loaded.'} />;
   }
 
   const centers = (centersResult.data ?? []) as ReportingCenterRow[];
@@ -4063,25 +3892,6 @@ export default async function AdminReportsPage({
   const aiQaTotal = aiQaResult.count ?? 0;
   const aiQaHasPrevious = aiQaPage > 1;
   const aiQaHasNext = aiQaFrom + aiQaRows.length < aiQaTotal;
-  const limitedSourceLabels = [
-    ['orders', ordersResult.data],
-    ['order items', orderItemsResult.data],
-    ['customers', centersResult.data],
-    ['products', productsResult.data],
-    ['inventory items', inventoryItemsResult.data],
-    ['inventory lots', inventoryLotsResult.data],
-    ['reorder settings', reorderSettingsResult.data],
-    ['production runs', productionRunsResult.data],
-    ['production inputs', productionRunInputsResult.data],
-    ['inventory shortages', shortageMovementsResult.data],
-    ['inventory adjustments', inventoryAdjustmentsResult.data],
-    ['expenses', nonInventoryExpensesResult.data],
-    ['sample boxes', sampleBoxRunsResult.data],
-    ['recipes', recipeResult.data],
-    ['shipping box usages', shippingBoxUsagesResult.data],
-  ]
-    .filter((entry): entry is [string, unknown[]] => Array.isArray(entry[1]) && queryReachedAdminRowLimit(entry[1]))
-    .map(([label]) => label);
   const hasCommerceOrders = (ordersResult.data?.length ?? 0) > 0;
   const rangeEndInput = formatDateInput(addDays(rangeEndExclusive, -1));
   const activeFilterCount = activeReport === 'prospecting'
@@ -4191,11 +4001,10 @@ export default async function AdminReportsPage({
 
       <ReportNav activeReport={activeReport} reports={allowedReports} searchParams={navParams} />
 
-      <SourceRowLimitNotice sources={limitedSourceLabels} />
 
-      {activeReport !== 'prospecting' && activeReport !== 'sample_spend' && activeReport !== 'ai_overview' && activeReport !== 'ai_qa' && activeReport !== 'inventory_adjustments' && !hasCommerceOrders ? (
+      {dataNeeds.coreCommerce && !hasCommerceOrders ? (
         <section className="card">
-          <EmptyState message="No orders found yet. Reports will populate as wholesale orders are placed." />
+          <EmptyState message="No orders were found for this report." />
         </section>
       ) : null}
 
@@ -4422,7 +4231,7 @@ export default async function AdminReportsPage({
             title="Profit by customer or center"
             subtitle="Revenue, COGS split, shipping COGS, gross profit, margin, order count, and estimated line visibility."
           />
-          <CenterProfitabilityTable rows={limitReportDetailRows(profitabilityDashboard.centerRows)} />
+          <CenterProfitabilityTable rows={limitReportDetailRows(profitabilityDashboard.centerRows, detailPage)} />
           <DetailRowLimitNotice total={profitabilityDashboard.centerRows.length} />
         </section>
       ) : null}
@@ -4499,6 +4308,7 @@ export default async function AdminReportsPage({
 
       {activeReport === 'simulator' ? (
         <GrossProfitSimulatorReport
+          detailPage={detailPage}
           activeTab={simulatorTab}
           centerId={centerId}
           dashboard={simulatorDashboard}
@@ -4542,7 +4352,7 @@ export default async function AdminReportsPage({
               title="Expected versus actual run cost"
               subtitle="Shows actual production cost, estimated recipe cost, labor, fixed packaging, and material usage variance."
             />
-            <ProductionCogsTable rows={limitReportDetailRows(profitabilityDashboard.productionRows)} />
+            <ProductionCogsTable rows={limitReportDetailRows(profitabilityDashboard.productionRows, detailPage)} />
             <DetailRowLimitNotice total={profitabilityDashboard.productionRows.length} />
           </section>
         </>
@@ -4564,7 +4374,7 @@ export default async function AdminReportsPage({
                 title="Stock value by item"
                 subtitle="Raw coffee, materials, and sellable inventory stay separated; sellable items can show negative when shipped short."
               />
-              <InventoryValueTable rows={limitReportDetailRows(profitabilityDashboard.inventoryRows)} />
+              <InventoryValueTable rows={limitReportDetailRows(profitabilityDashboard.inventoryRows, detailPage)} />
               <DetailRowLimitNotice total={profitabilityDashboard.inventoryRows.length} />
             </div>
             <div className="card space-y-5">
@@ -4642,7 +4452,7 @@ export default async function AdminReportsPage({
               title="Adjustment totals by item"
               subtitle="Shows quantity changes and dollar impact per item, with additions and removals kept separate before netting."
             />
-            <InventoryAdjustmentItemTable rows={limitReportDetailRows(inventoryAdjustmentReport.itemRows)} />
+            <InventoryAdjustmentItemTable rows={limitReportDetailRows(inventoryAdjustmentReport.itemRows, detailPage)} />
             <DetailRowLimitNotice total={inventoryAdjustmentReport.itemRows.length} />
           </section>
 
@@ -4652,7 +4462,7 @@ export default async function AdminReportsPage({
               title="Individual inventory adjustment entries"
               subtitle="Every loaded adjustment in the selected range with reason, notes, quantity, unit cost, and signed dollar impact."
             />
-            <InventoryAdjustmentDetailTable rows={limitReportDetailRows(inventoryAdjustmentReport.detailRows)} />
+            <InventoryAdjustmentDetailTable rows={limitReportDetailRows(inventoryAdjustmentReport.detailRows, detailPage)} />
             <DetailRowLimitNotice total={inventoryAdjustmentReport.detailRows.length} />
           </section>
         </>
@@ -4744,7 +4554,7 @@ export default async function AdminReportsPage({
             title="Product-level revenue and demand"
             subtitle="Range-based product sales with month-over-month product growth and decline."
           />
-          <ProductTable rows={limitReportDetailRows(dashboard.productSalesRows)} />
+          <ProductTable rows={limitReportDetailRows(dashboard.productSalesRows, detailPage)} />
           <DetailRowLimitNotice total={dashboard.productSalesRows.length} />
         </div>
         <div className="grid gap-5">
@@ -4765,7 +4575,7 @@ export default async function AdminReportsPage({
           title="Customer revenue and status"
           subtitle="Customer-level revenue, order count, lifetime revenue, first and last order dates, and automatically calculated status."
         />
-        <CustomerTable rows={limitReportDetailRows(dashboard.customerSalesRows)} />
+        <CustomerTable rows={limitReportDetailRows(dashboard.customerSalesRows, detailPage)} />
         <DetailRowLimitNotice total={dashboard.customerSalesRows.length} />
       </section>
 
@@ -4775,7 +4585,7 @@ export default async function AdminReportsPage({
           title="Customers due or overdue for another order"
           subtitle="Order history estimates each customer's normal cadence and highlights accounts past their reorder window."
         />
-        <ReorderTable rows={limitReportDetailRows(dashboard.reorderRiskRows)} />
+        <ReorderTable rows={limitReportDetailRows(dashboard.reorderRiskRows, detailPage)} />
         <DetailRowLimitNotice total={dashboard.reorderRiskRows.length} />
       </section>
 
@@ -4785,7 +4595,7 @@ export default async function AdminReportsPage({
           title="Product demand and stock coverage"
           subtitle="Forecasted product demand, current available finished goods when tracked, runout timing, and rounded whole-unit recommendations."
         />
-        <InventoryTable rows={limitReportDetailRows(dashboard.inventoryPlanningRows)} unavailable={inventoryUnavailable} />
+        <InventoryTable rows={limitReportDetailRows(dashboard.inventoryPlanningRows, detailPage)} unavailable={inventoryUnavailable} />
         <DetailRowLimitNotice total={dashboard.inventoryPlanningRows.length} />
       </section>
         </>

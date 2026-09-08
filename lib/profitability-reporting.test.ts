@@ -86,6 +86,45 @@ function shippedLine({
   };
 }
 
+describe('large profitability groups', () => {
+  it('keeps complete center, product, order, and production-input totals without mutating inputs', () => {
+    const centers = [{ id: 'center-0', name: 'Center 0' }, { id: 'center-1', name: 'Center 1' }];
+    const products = Array.from({ length: 3 }, (_, index) => ({ id: `product-${index}`, name: `Product ${index}`, sku: `SKU${index}` }));
+    const orders = Array.from({ length: 6 }, (_, index) => ({
+      ...shippedOrder(`order-${index}`, '2026-07-02T12:00:00Z'), center_id: `center-${index % 2}`,
+    }));
+    const orderItems = Array.from({ length: 1200 }, (_, index) => shippedLine({
+      grossProfitCents: 60, id: `line-${index}`, orderId: `order-${index % 6}`,
+      productId: `product-${index % 3}`, productName: `Product ${index % 3}`, revenueCents: 100,
+    }));
+    const productionRuns = Array.from({ length: 2 }, (_, index) => ({
+      id: `run-${index}`, product_id: `product-${index}`, produced_at: '2026-07-02T12:00:00Z',
+      quantity_produced: 10, quantity_voided: 0, status: 'completed', actual_unit_cost_cents: 20,
+      estimated_unit_cost_cents: 20, actual_labor_cost_cents: 10, fixed_cost_cents: 10,
+    }));
+    const input = {
+      centers, products, orders, orderItems, productionRuns,
+      productionRunInputs: Array.from({ length: 1200 }, (_, index) => ({
+        production_run_id: `run-${index % 2}`, quantity_expected: 1, quantity_used: 2, cost_cents: 10,
+      })),
+      inventoryItems: [], inventoryLots: [], nonInventoryExpenses: [], shortageMovements: [],
+      rangeStart: new Date('2026-07-01T00:00:00Z'), rangeEndExclusive: new Date('2026-08-01T00:00:00Z'),
+    };
+    const unchangedInput = structuredClone(input);
+    const dashboard = buildProfitabilityDashboard(input);
+    expect(dashboard.centerRows.map((row) => [row.revenueCents, row.totalCogsCents, row.orderCount])).toEqual([
+      [60000, 24000, 3], [60000, 24000, 3],
+    ]);
+    expect(dashboard.itemRows.map((row) => [row.revenueCents, row.productCogsCents, row.orderCount])).toEqual([
+      [40000, 16000, 2], [40000, 16000, 2], [40000, 16000, 2],
+    ]);
+    expect(dashboard.productionRows.map((row) => [row.materialCostCents, row.materialUsageVarianceQty])).toEqual([[6000, 600], [6000, 600]]);
+    expect(buildRecentOrderGpmRows({ ...input, limit: 10 }).map((row) => [row.lineCount, row.revenueCents, row.totalCogsCents]))
+      .toEqual(Array.from({ length: 6 }, () => [200, 20000, 8000]));
+    expect(input).toEqual(unchangedInput);
+  });
+});
+
 describe('normalized margin health bridge', () => {
   it('does not show COGS-rate impact when revenue doubles but rates stay the same', () => {
     const current = totals({

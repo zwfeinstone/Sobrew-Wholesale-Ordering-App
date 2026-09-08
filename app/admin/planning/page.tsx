@@ -296,11 +296,12 @@ async function updateCenterParLevel(formData: FormData) {
   redirect(planningHref({ toast: error ? 'par_error' : 'par_saved' }));
 }
 
-export default async function PlanningPage({
-  searchParams,
-}: {
-  searchParams?: Record<string, string | string[] | undefined>;
-}) {
+export default async function PlanningPage(
+  props: {
+    searchParams?: Promise<Record<string, string | string[] | undefined>>;
+  }
+) {
+  const searchParams = await props.searchParams;
   await requireAdminSectionView('planning');
   const supabase = await createClient();
   const toast = typeof searchParams?.toast === 'string' ? searchParams.toast : '';

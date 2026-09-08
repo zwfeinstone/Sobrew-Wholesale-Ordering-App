@@ -1,104 +1,76 @@
 import Image from 'next/image';
 import Link from 'next/link';
 import { ReactNode } from 'react';
+import { ArrowUpRight, Archive, Boxes, Building2, CalendarClock, ChartColumn, ClipboardList, Clock, Factory, FileText, Inbox, Landmark, LayoutDashboard, Megaphone, Package, PackagePlus, Repeat2, Settings2, Shield, Target, Trash2, Users, Wallet } from 'lucide-react';
 import { ActiveNavLink } from '@/components/active-nav-link';
-import { AdminMobileSectionSelect } from '@/components/admin-mobile-section-select';
+import { AdminNavigationDrawer, AdminNavGroup } from '@/components/admin-navigation-drawer';
 import { AdminReadOnlyGuard } from '@/components/admin-read-only-guard';
 import { AdminRealtimeSync } from '@/components/admin-realtime-sync';
 import { LogoutButton } from '@/components/logout-button';
 import { ADMIN_NAV_LINKS, canViewAdminSection, type AdminAccessMap, type AdminPermissionKey } from '@/lib/admin-permission-definitions';
 
-const ADMIN_NAV_GROUPS: Array<{ label: string; sections: AdminPermissionKey[] }> = [
-  { label: 'Overview', sections: ['dashboard'] },
-  { label: 'Commerce', sections: ['orders', 'recurring_orders', 'canceled_recurring_orders', 'archived_orders', 'order_form', 'centers', 'products'] },
-  { label: 'Operations', sections: ['inventory', 'receiving', 'planning', 'production'] },
+const ADMIN_NAV_GROUPS: Array<{ label: string; sections: AdminPermissionKey[]; initialOpen?: boolean }> = [
+  { label: 'Commerce', sections: ['orders', 'recurring_orders', 'centers', 'products'], initialOpen: true },
+  { label: 'Operations', sections: ['inventory', 'receiving', 'planning', 'production'], initialOpen: true },
   { label: 'Growth', sections: ['sales', 'sales_admin', 'prospecting', 'marketing', 'commission'] },
-  { label: 'Finance & team', sections: ['accounting', 'invoicing', 'reports', 'payroll', 'time_clock', 'week_hours', 'settings'] },
-  { label: 'Admin', sections: ['manage_admins'] },
+  { label: 'Finance', sections: ['accounting', 'invoicing', 'reports'] },
+  { label: 'Team', sections: ['payroll', 'time_clock', 'week_hours'] },
+  { label: 'Administration', sections: ['settings', 'manage_admins'] },
 ];
+const icons: Partial<Record<AdminPermissionKey, typeof Inbox>> = {
+  dashboard: LayoutDashboard, orders: Inbox, archived_orders: Archive, recurring_orders: Repeat2, canceled_recurring_orders: CalendarClock,
+  order_form: ClipboardList, centers: Building2, products: Package, inventory: Boxes, receiving: PackagePlus, planning: ClipboardList,
+  production: Factory, sales: ChartColumn, sales_admin: Users, prospecting: Target, marketing: Megaphone, commission: Wallet,
+  accounting: Landmark, invoicing: FileText, reports: ChartColumn, payroll: Wallet, time_clock: Clock, week_hours: CalendarClock,
+  settings: Settings2, manage_admins: Shield,
+};
 
-export function AdminShell({
-  access,
-  children,
-  isOwner,
-  newOrders,
-  payrollBadgeCount = 0,
-}: {
-  access: AdminAccessMap;
-  children: ReactNode;
-  isOwner: boolean;
-  newOrders: number;
-  payrollBadgeCount?: number;
+export function AdminShell({ access, children, isOwner, newOrders, payrollBadgeCount = 0 }: {
+  access: AdminAccessMap; children: ReactNode; isOwner: boolean; newOrders: number; payrollBadgeCount?: number;
 }) {
   const links = ADMIN_NAV_LINKS.filter((link) => canViewAdminSection(access, link.sectionKey));
   const editableSections = Object.fromEntries(Object.entries(access).map(([key, state]) => [key, state.canEdit])) as Record<string, boolean>;
-  const orderBadgeSection = links.some((link) => link.sectionKey === 'orders')
-    ? 'orders'
-    : links.some((link) => link.sectionKey === 'production')
-      ? 'production'
-      : links.some((link) => link.sectionKey === 'planning')
-        ? 'planning'
-        : '';
-  const orderAlertsEnabled = Boolean(orderBadgeSection);
-
+  const orderBadgeSection = ['orders', 'production', 'planning'].find((section) => links.some((link) => link.sectionKey === section));
+  const renderLink = ({ name, href, exact, sectionKey }: (typeof links)[number], child = false) => {
+    const Icon = icons[sectionKey] ?? FileText;
+    return <ActiveNavLink key={href} className={`sidebar-link${child ? ' sidebar-child' : ''}`} exact={exact} href={href} prefetch={false}>
+      <Icon aria-hidden="true" /><span>{name === 'Centers' ? 'Customers' : name}</span>
+      {sectionKey === orderBadgeSection && newOrders > 0 ? <span className="admin-nav-count">{newOrders}</span> : null}
+      {sectionKey === 'payroll' && payrollBadgeCount > 0 ? <span className="admin-nav-count">{payrollBadgeCount}</span> : null}
+    </ActiveNavLink>;
+  };
+  const orderChildren = links.filter((link) => ['archived_orders', 'order_form'].includes(link.sectionKey));
+  const recurringChildren = links.filter((link) => link.sectionKey === 'canceled_recurring_orders');
   return (
-    <div className="admin-shell min-h-screen md:flex" data-admin-can-write={isOwner ? 'true' : 'false'}>
-      <AdminRealtimeSync enabled={orderAlertsEnabled} />
+    <div className="admin-shell" data-admin-can-write={isOwner ? 'true' : 'false'}>
+      <AdminRealtimeSync enabled={Boolean(orderBadgeSection)} />
       <AdminReadOnlyGuard editableSections={editableSections} isOwner={isOwner} />
-      <aside className="admin-sidebar border-b border-white/40 bg-white/70 p-3 backdrop-blur-xl sm:p-4 md:min-h-screen md:w-72 md:border-b-0 md:border-r md:px-5 md:py-6">
-        <div className="admin-summary-card card space-y-6 p-4 sm:p-5">
-          <div className="admin-brand flex items-start gap-3">
-            <div className="admin-brand-mark brand-mark h-14 w-14">
-              <Image src="/sobrew-logo.png" alt="Sobrew logo" fill sizes="(max-width: 767px) 44px, 56px" className="object-contain" />
-            </div>
-            <div className="admin-brand-copy min-w-0">
-              <span className="eyebrow">Admin Console</span>
-              <h2 className="admin-title mt-3 text-xl font-semibold tracking-tight text-slate-950">Sobrew Admin</h2>
-              <p className="admin-description mt-1 text-sm text-slate-500">Manage orders, customers, products, and recurring schedules in one place.</p>
-            </div>
-          </div>
-          <div className="admin-attention stat-card">
-            <p className="admin-attention-label text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Needs Attention</p>
-            <p className="admin-attention-value mt-2 text-3xl font-semibold text-slate-950">{newOrders}</p>
-            <p className="admin-attention-copy mt-1 text-sm text-slate-500">New orders awaiting review.</p>
-          </div>
-          <LogoutButton className="admin-logout btn-secondary w-full" />
-        </div>
-        <AdminMobileSectionSelect links={links} />
-        <nav className="admin-nav mt-5" aria-label="Admin navigation">
+      <AdminNavigationDrawer>
+        <Link href={links[0]?.href ?? '/admin/access-denied'} prefetch={false} className="admin-brand"><Image src="/sobrew-logo.png" alt="Sobrew logo" width={40} height={40} /><div><strong>Sobrew</strong><small>Wholesale operations</small></div></Link>
+        <nav className="admin-nav" aria-label="Admin navigation">
+          {links.filter((link) => link.sectionKey === 'dashboard').map((link) => renderLink(link))}
           {ADMIN_NAV_GROUPS.map((group) => {
             const groupLinks = links.filter((link) => group.sections.includes(link.sectionKey));
-            if (!groupLinks.length) return null;
-
-            return (
-              <section key={group.label} className="admin-nav-group">
-                <p className="admin-nav-group-label">{group.label}</p>
-                {groupLinks.map(({ name, href, exact, child, sectionKey }) => (
-                  <ActiveNavLink
-                    key={href}
-                    className={`sidebar-link ${child ? 'md:ml-3 md:min-h-[2.5rem] md:text-sm' : ''}`}
-                    exact={exact}
-                    href={href}
-                    prefetch={false}
-                  >
-                    <span>{name}</span>
-                    {sectionKey === orderBadgeSection && newOrders > 0 ? <span className="rounded-full bg-rose-400 px-2.5 py-1 text-xs font-semibold text-white">{newOrders}</span> : null}
-                    {name === 'Payroll' && payrollBadgeCount > 0 ? <span className="rounded-full bg-rose-400 px-2.5 py-1 text-xs font-semibold text-white">{payrollBadgeCount}</span> : null}
-                  </ActiveNavLink>
-                ))}
-              </section>
-            );
+            if (!groupLinks.length && !(group.label === 'Commerce' && (orderChildren.length || recurringChildren.length))) return null;
+            return <AdminNavGroup key={group.label} label={group.label} paths={groupLinks.map((link) => link.href)} initialOpen={group.initialOpen}>
+              {groupLinks.map((link) => <div key={link.href}>
+                {renderLink(link)}
+                {link.sectionKey === 'orders' ? <AdminNavGroup label="Order history & tools" paths={[...orderChildren.map((child) => child.href), '/admin/orders/trash']}>
+                  {orderChildren.map((child) => renderLink(child, true))}
+                  {access.orders.canEdit ? <ActiveNavLink href="/admin/orders/trash" className="sidebar-link sidebar-child" prefetch={false}><Trash2 aria-hidden="true" /><span>Recently deleted</span></ActiveNavLink> : null}
+                </AdminNavGroup> : null}
+                {link.sectionKey === 'recurring_orders' && recurringChildren.length ? <AdminNavGroup label="Recurring history" paths={recurringChildren.map((child) => child.href)}>{recurringChildren.map((child) => renderLink(child, true))}</AdminNavGroup> : null}
+              </div>)}
+              {group.label === 'Commerce' && !links.some((link) => link.sectionKey === 'orders') ? orderChildren.map((link) => renderLink(link)) : null}
+              {group.label === 'Commerce' && !links.some((link) => link.sectionKey === 'recurring_orders') ? recurringChildren.map((link) => renderLink(link)) : null}
+            </AdminNavGroup>;
           })}
         </nav>
-      </aside>
-      <main className="admin-main min-w-0 flex-1 px-3 py-5 sm:px-4 md:px-8 md:py-8">
-        <div className="mx-auto max-w-6xl">
-          <div className="admin-topbar">
-            <p>Live operations workspace</p>
-            <Link href="/portal">Open customer portal</Link>
-          </div>
-          {children}
-        </div>
+        <div className="admin-sidebar-footer"><span>{isOwner ? 'Owner workspace' : 'Team workspace'}</span><LogoutButton className="admin-logout" /></div>
+      </AdminNavigationDrawer>
+      <main className="admin-main" id="main-content">
+        <div className="admin-topbar"><span>Workspace</span><Link href="/portal" prefetch={false}>Customer portal <ArrowUpRight aria-hidden="true" /></Link></div>
+        <div className="admin-page-content">{children}</div>
       </main>
     </div>
   );

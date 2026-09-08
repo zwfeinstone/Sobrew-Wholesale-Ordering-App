@@ -1,3 +1,4 @@
+import type { Json } from '@/lib/supabase/database.types';
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import ConfirmSubmitButton from '@/components/confirm-submit-button';
@@ -43,8 +44,8 @@ import {
   stageLabel,
   type ProspectingActivityType,
   type ProspectingQueueContext,
-  type ProspectingStage,
 } from '@/lib/prospecting';
+import { loadProspectingQueueNeighbors } from '@/lib/prospecting-queue-neighbors';
 import {
   isEligibleProspectingSalesRep,
   loadProspectingSalesReps,
@@ -396,7 +397,7 @@ async function saveRecordData(formData: FormData) {
   ].some(Boolean);
   const notesChanged = textChanged(before.notes, notes);
 
-  const activityRows: Array<Record<string, unknown>> = [];
+  const activityRows: Array<Record<string, Json | undefined>> = [];
   if (leadDetailsChanged) {
     activityRows.push({
       activity_type: stageChanged ? 'stage_change' : 'enrichment',
@@ -433,7 +434,7 @@ async function saveRecordData(formData: FormData) {
     });
   }
 
-  const contactUpdates: Array<Record<string, unknown>> = [];
+  const contactUpdates: Array<Record<string, Json | undefined>> = [];
   const contactIds = cleanRecordIds(formData, 'record_contact_id');
   if (contactIds.length) {
     const { data: existingContactsData, error: contactLoadError } = await supabase
@@ -506,7 +507,7 @@ async function saveRecordData(formData: FormData) {
   const activityNextFollowUp = safeDateInput(formData.get('activity_next_follow_up_at'));
   const activityBlockedByDoNotContact = Boolean(before.do_not_contact) && doNotContact;
   const shouldLogActivity = Boolean(activityResult || activityBody || activityContactId || activityExplicitStage || activityNextFollowUp);
-  let activityPayload: Record<string, unknown> | null = null;
+  let activityPayload: Record<string, Json | undefined> | null = null;
   let finalAssignedProfileId = assignedProfileId;
   let finalDoNotContact = doNotContact;
   let finalNextFollowUp = nextFollowUp;
@@ -746,13 +747,14 @@ function ActivityTimeline({ activities }: { activities: ActivityRow[] }) {
   );
 }
 
-export default async function LeadDetailPage({
-  params,
-  searchParams,
-}: {
-  params: { id: string };
-  searchParams?: Record<string, string | string[] | undefined>;
-}) {
+export default async function LeadDetailPage(
+  props: {
+    params: Promise<{ id: string }>;
+    searchParams?: Promise<Record<string, string | string[] | undefined>>;
+  }
+) {
+  const searchParams = await props.searchParams;
+  const params = await props.params;
   const current = await requireAdminSectionView('prospecting');
   const supabase = await createClient();
   const toast = typeof searchParams?.toast === 'string' ? searchParams.toast : '';
@@ -777,61 +779,29 @@ export default async function LeadDetailPage({
   const activities = (activitiesData ?? []) as ActivityRow[];
   const listLinks = (listLinksData ?? []) as ListLeadRow[];
   const missing = missingLeadFields(lead, contacts);
-  const [salesRepsData, assignedProfileResult] = await Promise.all([
+  const today = formatCentralDateInput(new Date());
+  const todayStart = parseCentralDateInput(today) ?? new Date();
+  const queueProfileId = isOwner
+    ? queueContext.repId || lead.assigned_profile_id || null
+    : current.profile.id;
+  const [salesRepsData, assignedProfileResult, { previousLeadId, nextLeadId }] = await Promise.all([
     isOwner ? loadProspectingSalesReps(supabase) : Promise.resolve([]),
     lead.assigned_profile_id
       ? supabase.from('profiles').select('id,email,full_name,is_active').eq('id', lead.assigned_profile_id).maybeSingle()
       : Promise.resolve({ data: null }),
+    loadProspectingQueueNeighbors(supabase, {
+      context: queueContext,
+      currentLeadId: lead.id,
+      profileId: queueProfileId,
+      today,
+      todayStartIso: todayStart.toISOString(),
+    }),
   ]);
   const salesReps = (salesRepsData as ProfileRow[]).sort((a, b) => profileLabel(a).localeCompare(profileLabel(b)));
   const assignedProfile = assignedProfileResult.data as ProfileRow | null;
   const assignedProfileOption = assignedProfile && lead.assigned_profile_id && !salesReps.some((rep) => rep.id === lead.assigned_profile_id)
     ? assignedProfile
     : null;
-  const today = formatCentralDateInput(new Date());
-  const todayStart = parseCentralDateInput(today) ?? new Date();
-  const queueProfileId = isOwner
-    ? queueContext.repId || lead.assigned_profile_id || null
-    : current.profile.id;
-  const nextQueueSelect = queueContext.listId ? 'id,prospecting_list_leads!inner(list_id)' : 'id';
-  let nextQueueQuery = supabase
-    .from('prospecting_leads')
-    .select(nextQueueSelect)
-    .is('archived_at', null)
-    .limit(5000);
-  nextQueueQuery = queueProfileId
-    ? nextQueueQuery.eq('assigned_profile_id', queueProfileId)
-    : nextQueueQuery.is('assigned_profile_id', null);
-  if (!isOwner) nextQueueQuery = nextQueueQuery.eq('assigned_profile_id', current.profile.id);
-  nextQueueQuery = nextQueueQuery.in('stage', prospectingQueueStageFilter(queueContext));
-  if (prospectingQueueRequiresFollowUp(queueContext)) nextQueueQuery = nextQueueQuery.not('next_follow_up_at', 'is', null).lte('next_follow_up_at', today);
-  if (prospectingQueueExcludesFollowUpDue(queueContext)) nextQueueQuery = nextQueueQuery.or(`next_follow_up_at.is.null,next_follow_up_at.gt.${today}`);
-  if (prospectingQueueSkipsTouchedToday(queueContext)) nextQueueQuery = nextQueueQuery.or(`last_activity_at.is.null,last_activity_at.lt.${todayStart.toISOString()}`);
-  if (queueContext.priority) nextQueueQuery = nextQueueQuery.eq('priority', queueContext.priority);
-  if (queueContext.state === MISSING_STATE_FILTER) nextQueueQuery = nextQueueQuery.is('state_key', null);
-  else if (queueContext.state) nextQueueQuery = nextQueueQuery.eq('state_key', queueContext.state);
-  if (queueContext.listId) nextQueueQuery = nextQueueQuery.eq('prospecting_list_leads.list_id', queueContext.listId);
-  if (queueContext.q) {
-    const search = postgrestIlikePattern(queueContext.q);
-    nextQueueQuery = nextQueueQuery.or([
-      `company_name.ilike.${search}`,
-      `phone.ilike.${search}`,
-      `company_email.ilike.${search}`,
-      `city.ilike.${search}`,
-      `state.ilike.${search}`,
-      `last_result.ilike.${search}`,
-    ].join(','));
-  }
-  for (const order of prospectingQueueOrderFields(queueContext)) {
-    nextQueueQuery = nextQueueQuery.order(order.column, { ascending: order.ascending });
-  }
-  const { data: nextQueueData } = await nextQueueQuery;
-  const queueIds = ((nextQueueData ?? []) as unknown as Array<{ id: string | null }>).map((row) => row.id).filter(Boolean) as string[];
-  const currentQueueIndex = queueIds.indexOf(lead.id);
-  const previousLeadId = currentQueueIndex > 0 ? queueIds[currentQueueIndex - 1] : null;
-  const nextLeadId = currentQueueIndex >= 0
-    ? queueIds[currentQueueIndex + 1] ?? null
-    : queueIds.find((id) => id !== lead.id) ?? null;
   const leadNoteBlocks = noteBlocks(lead.notes);
   const recordFormId = 'prospecting-record-data-form';
 

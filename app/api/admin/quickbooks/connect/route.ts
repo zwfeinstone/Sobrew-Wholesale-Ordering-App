@@ -11,7 +11,7 @@ export async function GET(request: NextRequest) {
 
   try {
     const state = randomBytes(24).toString('hex');
-    cookies().set('quickbooks_oauth_state', state, {
+    (await cookies()).set('quickbooks_oauth_state', state, {
       httpOnly: true,
       maxAge: 10 * 60,
       path: '/',

@@ -1,0 +1,10 @@
+output/
+outputs/
+tmp/
+.playwright-cli/
+.pnpm-store/
+*.tsbuildinfo
+.env*
+*.log
+test-results/
+playwright-report/

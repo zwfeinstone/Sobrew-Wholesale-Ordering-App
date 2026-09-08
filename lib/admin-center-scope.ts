@@ -37,12 +37,14 @@ export async function getAssignedCenterIdsForAdmin({
   return [...new Set((data ?? []).map((row: { center_id: string | null }) => row.center_id).filter(Boolean))] as string[];
 }
 
-export function scopeCenterRelatedQueryForAdmin(query: any, column: string, centerIds: AdminCenterScope) {
+type ScopedQuery = { in(column: string, values: readonly string[]): unknown };
+
+export function scopeCenterRelatedQueryForAdmin<T extends ScopedQuery>(query: T, column: string, centerIds: AdminCenterScope): T {
   if (centerIds === null) return query;
-  return query.in(column, centerIds.length ? centerIds : [NO_CENTER_ACCESS_UUID]);
+  return query.in(column, centerIds.length ? centerIds : [NO_CENTER_ACCESS_UUID]) as T;
 }
 
-export function scopeCentersForAdmin(query: any, centerIds: AdminCenterScope) {
+export function scopeCentersForAdmin<T extends ScopedQuery>(query: T, centerIds: AdminCenterScope): T {
   return scopeCenterRelatedQueryForAdmin(query, 'id', centerIds);
 }
 

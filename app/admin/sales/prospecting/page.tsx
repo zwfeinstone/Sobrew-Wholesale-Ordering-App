@@ -309,7 +309,8 @@ function assignedLeadQuery(
   return query;
 }
 
-export default async function ProspectingPage({ searchParams }: { searchParams?: SearchParams }) {
+export default async function ProspectingPage(props: { searchParams?: Promise<SearchParams> }) {
+  const searchParams = await props.searchParams;
   const current = await requireAdminSectionView('prospecting');
   const supabase = await createClient();
   const parsedQueueContext = prospectingQueueContextFromParams(searchParams);

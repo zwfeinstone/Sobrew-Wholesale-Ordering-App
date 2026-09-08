@@ -21,7 +21,8 @@ function protectedRetryPath(value: string | undefined) {
   return isPortalPath || isAdminPath ? value : '/login';
 }
 
-export default function AuthUnavailablePage({ searchParams }: { searchParams: SearchParams }) {
+export default async function AuthUnavailablePage(props: { searchParams: Promise<SearchParams> }) {
+  const searchParams = await props.searchParams;
   const retryPath = protectedRetryPath(firstValue(searchParams.next));
   const proposedReference = firstValue(searchParams.ref) ?? '';
   const reference = /^[A-F0-9]{12}$/.test(proposedReference) ? proposedReference : null;

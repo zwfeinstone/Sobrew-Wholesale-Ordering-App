@@ -10,11 +10,11 @@ import {
   applyReorderItems,
   normalizeCartItems,
   setCartItemQuantity,
-  summarizeCart,
   type CartItem,
   type CartProductSnapshot,
   type ReorderMode,
 } from '@/lib/cart';
+import { createCartStore, EMPTY_CART_SNAPSHOT } from '@/lib/cart-store';
 
 export type Item = CartItem;
 export type { CartProductSnapshot, ReorderMode } from '@/lib/cart';
@@ -25,15 +25,8 @@ type CartUpdateDetail = {
   storageKey: string;
 };
 
-type CartExternalStore = {
-  hydrated: boolean;
-  items: Item[];
-  listeners: Set<() => void>;
-  disconnect: (() => void) | null;
-};
-
-const EMPTY_CART_ITEMS: Item[] = [];
-const cartStores = new Map<string, CartExternalStore>();
+const cartStores = new Map<string, ReturnType<typeof createCartStore>>();
+const serverCartStore = createCartStore({ readItems: () => [], subscribeToUpdates: () => () => undefined });
 
 function dispatchCartUpdate(storageKey: string) {
   window.dispatchEvent(new CustomEvent<CartUpdateDetail>(CART_UPDATED_EVENT, { detail: { storageKey } }));
@@ -63,33 +56,20 @@ export function clearCartItems(storageKey: string) {
   dispatchCartUpdate(storageKey);
 }
 
-export function readCartItemCount(storageKey: string) {
-  return summarizeCart(readCartItems(storageKey)).itemCount;
-}
-
 function getCartStore(storageKey: string) {
+  if (typeof window === 'undefined') return serverCartStore;
   const existing = cartStores.get(storageKey);
   if (existing) return existing;
 
-  const store: CartExternalStore = {
-    hydrated: false,
-    items: EMPTY_CART_ITEMS,
-    listeners: new Set(),
-    disconnect: null,
-  };
+  const store = createCartStore({
+    readItems: () => readCartItems(storageKey),
+    subscribeToUpdates: (refresh) => connectCartStore(storageKey, refresh),
+  });
   cartStores.set(storageKey, store);
   return store;
 }
 
-function hydrateCartStore(storageKey: string, store: CartExternalStore) {
-  if (store.hydrated || typeof window === 'undefined') return;
-  store.items = readCartItems(storageKey);
-  store.hydrated = true;
-}
-
-function connectCartStore(storageKey: string, store: CartExternalStore) {
-  if (store.disconnect || typeof window === 'undefined') return;
-
+function connectCartStore(storageKey: string, refresh: () => void) {
   const syncItems = (event: Event) => {
     if (event instanceof CustomEvent) {
       const detail = event.detail as CartUpdateDetail | undefined;
@@ -99,54 +79,38 @@ function connectCartStore(storageKey: string, store: CartExternalStore) {
       return;
     }
 
-    store.items = readCartItems(storageKey);
-    store.hydrated = true;
-    store.listeners.forEach((listener) => listener());
+    refresh();
   };
 
   window.addEventListener(CART_UPDATED_EVENT, syncItems);
   window.addEventListener('storage', syncItems);
-  store.disconnect = () => {
+  return () => {
     window.removeEventListener(CART_UPDATED_EVENT, syncItems);
     window.removeEventListener('storage', syncItems);
-    store.disconnect = null;
   };
 }
 
-function subscribeToCart(storageKey: string, listener: () => void) {
-  const store = getCartStore(storageKey);
-  hydrateCartStore(storageKey, store);
-  store.listeners.add(listener);
-  connectCartStore(storageKey, store);
-
-  return () => {
-    store.listeners.delete(listener);
-    if (!store.listeners.size) {
-      store.disconnect?.();
-      store.hydrated = false;
-    }
-  };
+function getServerCartSnapshot() {
+  return EMPTY_CART_SNAPSHOT;
 }
 
-function getCartSnapshot(storageKey: string) {
+function useCartQuantity(storageKey: string, productId: string) {
   const store = getCartStore(storageKey);
-  hydrateCartStore(storageKey, store);
-  return store.items;
+  const subscribe = useCallback((listener: () => void) => store.subscribeQuantity(productId, listener), [productId, store]);
+  const getSnapshot = useCallback(() => store.getQuantity(productId), [productId, store]);
+  return useSyncExternalStore(subscribe, getSnapshot, () => 0);
 }
 
-function useCartItems(storageKey: string) {
-  const subscribe = useCallback((listener: () => void) => subscribeToCart(storageKey, listener), [storageKey]);
-  const getSnapshot = useCallback(() => getCartSnapshot(storageKey), [storageKey]);
-  return useSyncExternalStore(subscribe, getSnapshot, () => EMPTY_CART_ITEMS);
+function useSetCartQuantity(storageKey: string) {
+  return useCallback((product: CartProductSnapshot, quantity: number) => {
+    saveCartItems(storageKey, setCartItemQuantity(readCartItems(storageKey), product, quantity));
+  }, [storageKey]);
 }
 
 export function useCart(storageKey: string) {
-  const items = useCartItems(storageKey);
-  const { itemCount, subtotalCents } = useMemo(() => summarizeCart(items), [items]);
-
-  const setQuantity = useCallback((product: CartProductSnapshot, quantity: number) => {
-    saveCartItems(storageKey, setCartItemQuantity(readCartItems(storageKey), product, quantity));
-  }, [storageKey]);
+  const store = getCartStore(storageKey);
+  const { items, itemCount, subtotalCents } = useSyncExternalStore(store.subscribe, store.getSnapshot, getServerCartSnapshot);
+  const setQuantity = useSetCartQuantity(storageKey);
 
   const addReorderItems = useCallback((incoming: Item[], mode: ReorderMode) => {
     saveCartItems(storageKey, applyReorderItems(readCartItems(storageKey), incoming, mode));
@@ -218,9 +182,9 @@ export function CatalogQuantityControl({
   product: CartProductSnapshot;
   storageKey: string;
 }) {
-  const { items, setQuantity } = useCart(storageKey);
+  const qty = useCartQuantity(storageKey, product.product_id);
+  const setQuantity = useSetCartQuantity(storageKey);
   const [announcement, setAnnouncement] = useState('');
-  const qty = items.find((item) => item.product_id === product.product_id)?.qty ?? 0;
 
   const updateQuantity = (nextQty: number) => {
     setQuantity(product, nextQty);
@@ -281,34 +245,6 @@ export function CatalogQuantityControl({
   );
 }
 
-export function AddToCartButton({ product, storageKey }: { product: CartProductSnapshot; storageKey: string }) {
-  const { items, setQuantity } = useCart(storageKey);
-  const qty = items.find((item) => item.product_id === product.product_id)?.qty ?? 0;
-  const [showToast, setShowToast] = useState(false);
-
-  return (
-    <>
-      {showToast ? <StatusToast message={`${product.name} added to your order.`} tone="success" /> : null}
-      <button
-        className="btn-primary w-full sm:w-auto"
-        type="button"
-        onClick={() => {
-          setQuantity(product, qty + 1);
-          trackProductEvent('portal_item_added', { quantity: 1, source: 'catalog' });
-          setShowToast(false);
-          window.setTimeout(() => setShowToast(true), 0);
-        }}
-      >
-        Add to order
-      </button>
-    </>
-  );
-}
-
-export function AddToCartQuantityControls({ product, storageKey }: { product: CartProductSnapshot; storageKey: string }) {
-  return <CatalogQuantityControl product={product} storageKey={storageKey} />;
-}
-
 export function ReorderButton({
   className = 'btn-secondary w-full sm:w-auto',
   items,
@@ -319,7 +255,6 @@ export function ReorderButton({
   items: Item[];
   label?: string;
   storageKey: string;
-  toastMessage?: string;
 }) {
   const router = useRouter();
   const { addReorderItems, itemCount } = useCart(storageKey);
@@ -432,35 +367,6 @@ export function ReorderButton({
         </div>
       ) : null}
     </>
-  );
-}
-
-export function CartSummaryMetric({ storageKey }: { storageKey: string }) {
-  const { itemCount, subtotalCents } = useCart(storageKey);
-
-  return (
-    <div className="stat-card">
-      <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Your order</p>
-      <p className="mt-2 text-3xl font-semibold text-slate-950">${(subtotalCents / 100).toFixed(2)}</p>
-      <p className="mt-1 text-sm text-slate-500">{itemCount} item{itemCount === 1 ? '' : 's'} ready</p>
-    </div>
-  );
-}
-
-export function CartPreviewBar({ storageKey }: { storageKey: string }) {
-  const { itemCount, subtotalCents } = useCart(storageKey);
-  if (!itemCount) return null;
-
-  return (
-    <div className="cart-preview-bar">
-      <div className="cart-preview-copy" aria-live="polite">
-        <p className="cart-preview-label text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Your order</p>
-        <p className="cart-preview-total mt-1 text-lg font-semibold text-slate-950">
-          {itemCount} item{itemCount === 1 ? '' : 's'} &middot; ${(subtotalCents / 100).toFixed(2)}
-        </p>
-      </div>
-      <Link href="/portal/cart" className="btn-primary inline-flex">Review order</Link>
-    </div>
   );
 }
 

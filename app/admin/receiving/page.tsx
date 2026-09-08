@@ -318,11 +318,12 @@ async function reverseInventoryReceipt(formData: FormData) {
   redirect(receivingHref('receipt_reversed'));
 }
 
-export default async function ReceivingPage({
-  searchParams,
-}: {
-  searchParams?: Record<string, string | string[] | undefined>;
-}) {
+export default async function ReceivingPage(
+  props: {
+    searchParams?: Promise<Record<string, string | string[] | undefined>>;
+  }
+) {
+  const searchParams = await props.searchParams;
   const current = await requireAdminSectionView('receiving');
   const canReverseReceipts = current.isOwner;
   const supabase = await createClient();

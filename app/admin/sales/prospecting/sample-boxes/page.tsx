@@ -15,6 +15,7 @@ import {
 } from '@/lib/prospecting-sales-reps';
 import { recordSampleBoxRun, type SampleBoxAddOn } from '@/lib/sample-boxes';
 import { createClient } from '@/lib/supabase/server';
+import type { Database } from '@/lib/supabase/schema';
 import { formatAppDate, toCents, usd } from '@/lib/utils';
 
 const ADD_ON_ROWS = 4;
@@ -235,8 +236,10 @@ async function addTemplateItem(formData: FormData) {
   const itemKind = String(formData.get('item_kind') ?? '') === 'product' ? 'product' : 'inventory_item';
   const quantity = parsePositiveNumber(formData.get('quantity'));
   if (quantity <= 0) redirect(sampleBoxesHref('invalid_quantity', templateId));
+  const selectedItemId = String(formData.get(itemKind === 'product' ? 'product_id' : 'inventory_item_id') ?? '').trim();
+  if (!selectedItemId) redirect(sampleBoxesHref('add_item_error', templateId));
 
-  const payload = {
+  const payload: Database['public']['Tables']['sample_box_template_items']['Insert'] = {
     item_kind: itemKind,
     label: String(formData.get('label') ?? '').trim() || null,
     quantity,
@@ -244,19 +247,15 @@ async function addTemplateItem(formData: FormData) {
     template_id: templateId,
     unit: parseUnit(formData.get('unit')),
     ...(itemKind === 'product'
-      ? { inventory_item_id: null, product_id: String(formData.get('product_id') ?? '').trim() || null }
-      : { inventory_item_id: String(formData.get('inventory_item_id') ?? '').trim() || null, product_id: null }),
+      ? { inventory_item_id: null, product_id: selectedItemId }
+      : { inventory_item_id: selectedItemId, product_id: null }),
   };
-
-  if ((itemKind === 'product' && !payload.product_id) || (itemKind === 'inventory_item' && !payload.inventory_item_id)) {
-    redirect(sampleBoxesHref('add_item_error', templateId));
-  }
 
   if (itemKind === 'product') {
     const { data: product } = await supabase
       .from('products')
       .select('id,active,category')
-      .eq('id', payload.product_id)
+      .eq('id', selectedItemId)
       .maybeSingle();
     if (!product || product.active === false || product.category !== 'sample_boxes') {
       redirect(sampleBoxesHref('add_item_error', templateId));
@@ -407,11 +406,12 @@ function DateInputValue() {
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
 }
 
-export default async function SampleBoxesPage({
-  searchParams,
-}: {
-  searchParams?: Record<string, string | string[] | undefined>;
-}) {
+export default async function SampleBoxesPage(
+  props: {
+    searchParams?: Promise<Record<string, string | string[] | undefined>>;
+  }
+) {
+  const searchParams = await props.searchParams;
   const current = await requireAdminSectionView('prospecting');
   const canEdit = current.isOwner || adminCanEdit(current.access, 'prospecting');
   const supabase = await createClient();

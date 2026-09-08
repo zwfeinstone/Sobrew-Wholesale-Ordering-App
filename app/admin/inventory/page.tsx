@@ -488,11 +488,12 @@ function StockCard({
   );
 }
 
-export default async function InventoryPage({
-  searchParams,
-}: {
-  searchParams?: Record<string, string | string[] | undefined>;
-}) {
+export default async function InventoryPage(
+  props: {
+    searchParams?: Promise<Record<string, string | string[] | undefined>>;
+  }
+) {
+  const searchParams = await props.searchParams;
   const current = await requireAdminSectionView('inventory');
   const canAdjustInventory = adminCanEdit(current.access, 'inventory');
   const requestedTab = typeof searchParams?.tab === 'string' ? searchParams.tab : '';

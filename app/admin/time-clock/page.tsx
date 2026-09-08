@@ -3,7 +3,6 @@ import PendingSubmitButton from '@/components/pending-submit-button';
 import { requireAdminSectionView } from '@/lib/admin-permissions';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import {
-  LABOR_WORK_TYPES,
   UNASSIGNED_WORK_TYPE,
   formatCentralDateTime,
   isLaborWorkType,
@@ -301,11 +300,12 @@ function SelfClockCard({
   );
 }
 
-export default async function TimeClockPage({
-  searchParams,
-}: {
-  searchParams?: Record<string, string | string[] | undefined>;
-}) {
+export default async function TimeClockPage(
+  props: {
+    searchParams?: Promise<Record<string, string | string[] | undefined>>;
+  }
+) {
+  const searchParams = await props.searchParams;
   const current = await requireAdminSectionView('time_clock');
   const success = typeof searchParams?.success === 'string' ? searchParams.success : '';
   const error = typeof searchParams?.error === 'string' ? searchParams.error : '';

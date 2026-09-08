@@ -6,10 +6,14 @@ export const toCents = (value: string) => {
   return Math.round(parsed * 100);
 };
 
-export const usd = (cents: number) =>
-  new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(cents / 100);
+const dollarFormatter = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' });
+export const usd = (cents: number) => dollarFormatter.format(cents / 100);
 
 export const APP_TIME_ZONE = 'America/Chicago';
+const dateTimeFormatter = new Intl.DateTimeFormat('en-US', {
+  dateStyle: 'medium', timeStyle: 'short', timeZone: APP_TIME_ZONE,
+});
+const dateFormatters = new Map<string, Intl.DateTimeFormat>();
 
 function parseDateOnly(value: string) {
   const match = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
@@ -29,11 +33,7 @@ function dateFromDisplayValue(value: string | Date | null | undefined) {
 export function formatAppDateTime(value: string | Date | null | undefined, fallback = 'Unknown') {
   const date = dateFromDisplayValue(value);
   if (!date) return fallback;
-  return new Intl.DateTimeFormat('en-US', {
-    dateStyle: 'medium',
-    timeStyle: 'short',
-    timeZone: APP_TIME_ZONE,
-  }).format(date);
+  return dateTimeFormatter.format(date);
 }
 
 export function formatAppDate(
@@ -43,8 +43,12 @@ export function formatAppDate(
 ) {
   const date = dateFromDisplayValue(value);
   if (!date) return fallback;
-  return new Intl.DateTimeFormat('en-US', {
-    ...options,
-    timeZone: APP_TIME_ZONE,
-  }).format(date);
+  const key = JSON.stringify(Object.entries(options).sort(([a], [b]) => a.localeCompare(b)));
+  let formatter = dateFormatters.get(key);
+  if (!formatter) {
+    formatter = new Intl.DateTimeFormat('en-US', { ...options, timeZone: APP_TIME_ZONE });
+    if (dateFormatters.size >= 32) dateFormatters.clear();
+    dateFormatters.set(key, formatter);
+  }
+  return formatter.format(date);
 }

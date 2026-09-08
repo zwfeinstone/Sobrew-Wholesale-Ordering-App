@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server';
 import { requireAdminSectionEdit } from '@/lib/admin-permissions';
 import { supabaseAdmin } from '@/lib/supabase/admin';
+import { fetchAllPages } from '@/lib/supabase/pagination';
 import {
   completedBreakMinutes,
   formatCentralDateTime,
@@ -111,13 +112,16 @@ export async function GET(request: NextRequest) {
   if (!from || !to || to < from) {
     return new Response('Invalid date range', { status: 400 });
   }
+  // parseCentralDateInput(..., true) ends at 23:59:59; include its fractional second.
+  const endExclusive = new Date(to.getTime() + 1000);
 
   let query = supabaseAdmin
     .from('admin_time_entries')
     .select('id,profile_id,clock_in_at,clock_out_at,hourly_rate_cents_snapshot,status,notes,correction_request_note,manual_reason,approved_at,locked_at,voided_at,void_reason,work_type,admin_profile:profiles!admin_time_entries_profile_id_fkey(email,full_name),admin_time_breaks(break_start_at,break_end_at,status)')
     .gte('clock_in_at', from.toISOString())
-    .lte('clock_in_at', to.toISOString())
-    .order('clock_in_at', { ascending: true });
+    .lt('clock_in_at', endExclusive.toISOString())
+    .order('clock_in_at', { ascending: true })
+    .order('id', { ascending: true });
 
   if (adminId) query = query.eq('profile_id', adminId);
   if (hasWorkTypeFilter) query = query.eq('work_type', workType);
@@ -126,7 +130,8 @@ export async function GET(request: NextRequest) {
     .select('profile_id,payroll_month,period_start_date,period_end_date,salary_amount_cents,salary_frequency,salary_labor_work_type,salary_pay_cents,approved_at,paid_at,notes')
     .gte('payroll_month', fromInput ?? '')
     .lte('payroll_month', toInput ?? '')
-    .order('payroll_month', { ascending: true });
+    .order('payroll_month', { ascending: true })
+    .order('id', { ascending: true });
 
   if (adminId) salaryPaymentsQuery = salaryPaymentsQuery.eq('profile_id', adminId);
   let weeklySalesSpiffsQuery = supabaseAdmin
@@ -135,31 +140,34 @@ export async function GET(request: NextRequest) {
     .lte('week_start_date', toInput ?? '')
     .gte('week_end_date', fromInput ?? '')
     .not('paid_at', 'is', null)
-    .order('week_start_date', { ascending: true });
+    .order('week_start_date', { ascending: true })
+    .order('id', { ascending: true });
 
   if (adminId) weeklySalesSpiffsQuery = weeklySalesSpiffsQuery.eq('profile_id', adminId);
 
-  const [{ data, error }, settingsResult, adminsResult, salaryPaymentsResult, weeklySalesSpiffsResult] = await Promise.all([
-    query,
-    supabaseAdmin
+  const [entriesResult, settingsResult, adminsResult, salaryPaymentsResult, weeklySalesSpiffsResult] = await Promise.all([
+    fetchAllPages<ExportEntry>(async (from, to) => query.range(from, to)),
+    fetchAllPages<ExportTimeSetting>(async (from, to) => supabaseAdmin
       .from('admin_time_settings')
-      .select('profile_id,active,compensation_type,salary_amount_cents,salary_frequency,salary_labor_work_type'),
-    supabaseAdmin
+      .select('profile_id,active,compensation_type,salary_amount_cents,salary_frequency,salary_labor_work_type')
+      .order('profile_id', { ascending: true })
+      .range(from, to)),
+    fetchAllPages<ExportAdminProfile>(async (from, to) => supabaseAdmin
       .from('profiles')
       .select('id,email,full_name')
-      .eq('is_admin', true),
-    salaryPaymentsQuery,
-    weeklySalesSpiffsQuery,
+      .eq('is_admin', true)
+      .order('id', { ascending: true })
+      .range(from, to)),
+    fetchAllPages<ExportSalaryPayment>(async (from, to) => salaryPaymentsQuery.range(from, to)),
+    fetchAllPages<ExportWeeklySalesSpiff>(async (from, to) => weeklySalesSpiffsQuery.range(from, to)),
   ]);
-  if (error) return new Response(error.message, { status: 500 });
-  if (settingsResult.error) return new Response(settingsResult.error.message, { status: 500 });
-  if (adminsResult.error) return new Response(adminsResult.error.message, { status: 500 });
-  if (salaryPaymentsResult.error) {
-    console.error('[export-time-entries] salary payment records failed', salaryPaymentsResult.error);
+  const error = [entriesResult, settingsResult, adminsResult, salaryPaymentsResult, weeklySalesSpiffsResult]
+    .find((result) => result.error)?.error;
+  if (error) {
+    console.error('[export-time-entries] payroll records failed', error);
+    return new Response('Unable to load all payroll records. Please try again.', { status: 500 });
   }
-  if (weeklySalesSpiffsResult.error) {
-    console.error('[export-time-entries] weekly sales spiff records failed', weeklySalesSpiffsResult.error);
-  }
+  const data = entriesResult.data ?? [];
 
   const adminById = new Map(((adminsResult.data ?? []) as ExportAdminProfile[]).map((admin) => [admin.id, admin]));
   const salaryRows = ((settingsResult.data ?? []) as ExportTimeSetting[])
@@ -178,13 +186,13 @@ export async function GET(request: NextRequest) {
     }))
     .filter((setting) => setting.salaryCents > 0)
     .filter((setting) => !hasWorkTypeFilter || setting.workType === workType);
-  const paidSalaryRows = ((salaryPaymentsResult.error ? [] : salaryPaymentsResult.data ?? []) as ExportSalaryPayment[])
+  const paidSalaryRows = ((salaryPaymentsResult.data ?? []) as ExportSalaryPayment[])
     .map((payment) => ({
       ...payment,
       workType: normalizeSalaryLaborWorkType(payment.salary_labor_work_type),
     }))
     .filter((payment) => !hasWorkTypeFilter || payment.workType === workType);
-  const paidWeeklySalesSpiffs = ((weeklySalesSpiffsResult.error ? [] : weeklySalesSpiffsResult.data ?? []) as ExportWeeklySalesSpiff[])
+  const paidWeeklySalesSpiffs = ((weeklySalesSpiffsResult.data ?? []) as ExportWeeklySalesSpiff[])
     .filter((spiff) => spiff.paid_at)
     .filter(() => !hasWorkTypeFilter || workType === 'sales');
 
@@ -315,6 +323,7 @@ export async function GET(request: NextRequest) {
   const csv = rows.map((row) => row.map(csvCell).join(',')).join('\n');
   return new Response(csv, {
     headers: {
+      'cache-control': 'no-store',
       'content-disposition': `attachment; filename="time-entries-${fromInput}-to-${toInput}.csv"`,
       'content-type': 'text/csv',
     },

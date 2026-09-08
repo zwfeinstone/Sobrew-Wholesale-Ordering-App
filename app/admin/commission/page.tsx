@@ -161,11 +161,12 @@ function StatTile({ label, value, detail }: { detail: string; label: string; val
   );
 }
 
-export default async function CommissionPage({
-  searchParams,
-}: {
-  searchParams?: Record<string, string | string[] | undefined>;
-}) {
+export default async function CommissionPage(
+  props: {
+    searchParams?: Promise<Record<string, string | string[] | undefined>>;
+  }
+) {
+  const searchParams = await props.searchParams;
   const current = await requireAdminSectionView('commission');
   const canViewAll = current.isOwner || adminCanEdit(current.access, 'commission');
   const commissionMonth = normalizeCommissionMonth(searchParams?.month);

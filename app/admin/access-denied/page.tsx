@@ -9,11 +9,12 @@ function sectionLabel(value: string | string[] | undefined) {
     : 'this admin section';
 }
 
-export default async function AdminAccessDeniedPage({
-  searchParams,
-}: {
-  searchParams?: Record<string, string | string[] | undefined>;
-}) {
+export default async function AdminAccessDeniedPage(
+  props: {
+    searchParams?: Promise<Record<string, string | string[] | undefined>>;
+  }
+) {
+  const searchParams = await props.searchParams;
   const current = await getCurrentAdminAccess();
   const label = sectionLabel(searchParams?.section);
 

@@ -40,11 +40,12 @@ function AdminAccountLink({ admin }: { admin: AdminUserRow }) {
   );
 }
 
-export default async function AdminAccountsPage({
-  searchParams,
-}: {
-  searchParams?: Record<string, string | string[] | undefined>;
-}) {
+export default async function AdminAccountsPage(
+  props: {
+    searchParams?: Promise<Record<string, string | string[] | undefined>>;
+  }
+) {
+  const searchParams = await props.searchParams;
   await requireManageAdmins('/admin/access-denied?section=manage_admins');
   const supabase = await createClient();
   const error = typeof searchParams?.error === 'string' ? searchParams.error : '';

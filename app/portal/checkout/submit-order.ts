@@ -210,6 +210,7 @@ export async function submitPortalOrderWithContext({
   }
 
   waitUntil(sendOrderEmails({
+    notes: String(formData.get('notes') ?? '').trim().slice(0, 5000),
     centerId: profile?.center_id,
     customerEmail: profile?.email ?? user.email ?? '',
     customerName: profile?.center?.name ?? profile?.full_name ?? profile?.email ?? user.email ?? '',

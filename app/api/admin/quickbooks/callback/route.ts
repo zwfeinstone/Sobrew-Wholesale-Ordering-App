@@ -15,8 +15,8 @@ export async function GET(request: NextRequest) {
   const code = params.get('code') ?? '';
   const realmId = params.get('realmId') ?? '';
   const state = params.get('state') ?? '';
-  const expectedState = cookies().get('quickbooks_oauth_state')?.value ?? '';
-  cookies().delete('quickbooks_oauth_state');
+  const expectedState = (await cookies()).get('quickbooks_oauth_state')?.value ?? '';
+  (await cookies()).delete('quickbooks_oauth_state');
 
   if (!code || !realmId || !state || state !== expectedState) {
     return NextResponse.redirect(adminInvoicingUrl(request, 'quickbooks_connect_error'));

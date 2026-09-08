@@ -1,3 +1,5 @@
+import { mergeMissingFields } from '@/lib/prospecting-lead-merge';
+import type { TablesInsert } from '@/lib/supabase/database.types';
 import { NextResponse, type NextRequest } from 'next/server';
 import { requireAdminSectionEdit } from '@/lib/admin-permissions';
 import { createClient } from '@/lib/supabase/server';
@@ -85,34 +87,6 @@ function leadPayloadFromCsv(row: Record<string, string>, createdBy: string, sale
   };
 }
 
-function mergeMissingFields(existing: LeadRow, incoming: ReturnType<typeof leadPayloadFromCsv>, actorId: string) {
-  if (!incoming) return {};
-  const next: Record<string, string | null> = {};
-  const fields = [
-    'address_line_1',
-    'address_line_2',
-    'assigned_profile_id',
-    'city',
-    'company_email',
-    'company_website',
-    'country',
-    'notes',
-    'phone',
-    'postal_code',
-  ] as const;
-
-  for (const field of fields) {
-    const current = existing[field];
-    const incomingValue = incoming[field];
-    if (!current && incomingValue) next[field] = incomingValue;
-  }
-
-  if (!existing.state && incoming.state) next.state = incoming.state;
-  if (!existing.state_key && incoming.state_key) next.state_key = incoming.state_key;
-  if (!existing.phone_key && incoming.phone_key) next.phone_key = incoming.phone_key;
-  if (Object.keys(next).length) next.updated_by = actorId;
-  return next;
-}
 
 export async function POST(request: NextRequest) {
   const current = await requireAdminSectionEdit('prospecting', `${PROSPECTING_ADMIN_PATH}?tab=add&toast=admin_write_denied`);
@@ -190,8 +164,8 @@ export async function POST(request: NextRequest) {
   let skippedCount = 0;
   let reviewCount = 0;
   const errors: string[] = [];
-  const activityRows: Array<Record<string, unknown>> = [];
-  const duplicateReviewRows: Array<Record<string, unknown>> = [];
+  const activityRows: TablesInsert<'prospecting_activities'>[] = [];
+  const duplicateReviewRows: TablesInsert<'prospecting_duplicate_reviews'>[] = [];
   const insertItems: Array<typeof prepared[number]> = [];
   const successfulItems: Array<{ exact: boolean; item: typeof prepared[number]; leadId: string }> = [];
   const queuedNewKeys = new Set<string>();

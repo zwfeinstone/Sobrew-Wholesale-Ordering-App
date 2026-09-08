@@ -273,11 +273,12 @@ function ReportStat({
   );
 }
 
-export default async function AdminSalesPage({
-  searchParams,
-}: {
-  searchParams?: Record<string, string | string[] | undefined>;
-}) {
+export default async function AdminSalesPage(
+  props: {
+    searchParams?: Promise<Record<string, string | string[] | undefined>>;
+  }
+) {
+  const searchParams = await props.searchParams;
   const currentAccess = await requireAdminSectionView('sales');
   const supabase = await createClient();
   const salesRepSettingsResult = currentAccess.isOwner

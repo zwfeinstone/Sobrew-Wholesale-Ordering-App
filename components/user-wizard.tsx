@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from 'react';
 import PendingSubmitButton from '@/components/pending-submit-button';
-import { productCategoryGroupKey, productCategoryLabel, productCategorySortRank, type ProductCategoryGroup } from '@/lib/product-categories';
+import { productCategoryLabel, groupProductsByCategory } from '@/lib/product-categories';
 
 type Product = { id: string; name: string | null; category?: string | null };
 
@@ -14,31 +14,11 @@ type WizardState = {
   password: string;
 };
 
-const productNameCollator = new Intl.Collator('en-US', { numeric: true, sensitivity: 'base' });
 
 function productDisplayName(product: Product) {
   return product.name?.trim() || 'Unnamed product';
 }
 
-function groupProductsByCategory(products: Product[]) {
-  const sortedProducts = [...products].sort((a, b) => {
-    const categoryComparison = productCategorySortRank(a.category) - productCategorySortRank(b.category);
-    if (categoryComparison !== 0) return categoryComparison;
-    return productNameCollator.compare(productDisplayName(a), productDisplayName(b));
-  });
-
-  const groups: Array<{ category: ProductCategoryGroup; products: Product[] }> = [];
-  for (const product of sortedProducts) {
-    const category = productCategoryGroupKey(product.category);
-    const currentGroup = groups[groups.length - 1];
-    if (currentGroup?.category === category) {
-      currentGroup.products.push(product);
-    } else {
-      groups.push({ category, products: [product] });
-    }
-  }
-  return groups;
-}
 
 export function UserWizard({ products }: { products: Product[] }) {
   const [step, setStep] = useState(1);

@@ -9,6 +9,7 @@ type ShipOrderSubmitButtonProps = {
   hasRequiredBoxLines: boolean;
   label?: string;
   pendingLabel?: string;
+  disabled?: boolean;
 };
 
 function setZeroBoxesConfirmed(form: HTMLFormElement, confirmed: boolean) {
@@ -41,6 +42,7 @@ export default function ShipOrderSubmitButton({
   hasRequiredBoxLines,
   label = 'Mark shipped',
   pendingLabel = 'Shipping...',
+  disabled = false,
 }: ShipOrderSubmitButtonProps) {
   const { pending } = useFormStatus();
 
@@ -79,7 +81,7 @@ export default function ShipOrderSubmitButton({
   return (
     <button
       className={className}
-      disabled={pending}
+      disabled={pending || disabled}
       type="submit"
       onClick={handleClick}
       aria-busy={pending}
