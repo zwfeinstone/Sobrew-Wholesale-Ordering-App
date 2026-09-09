@@ -504,7 +504,7 @@ export default async function AdminDashboard(
       </section>
 
       {operationsLinks.length ? (
-        <section className="grid gap-3 md:grid-cols-3">
+        <section className="grid gap-3 lg:grid-cols-3">
           {operationsLinks.map((item) => (
             <TrackedLink
               key={item.href}

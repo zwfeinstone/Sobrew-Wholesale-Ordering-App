@@ -63,7 +63,15 @@ describe('implemented workspace rendering', () => {
       const content = await render();
       const body = renderToStaticMarkup(name === 'portal' ? content : createElement(AdminShell,{access:ownerAccessMap(),isOwner:true,newOrders:1,children:content}));
       expect(body).toContain('Lakeview Recovery');
-      if (name === 'fulfillment') { expect(body.indexOf('Deliver to the receiving entrance')).toBeLessThan(body.indexOf('Mark shipped')); expect(body).toContain('disabled=""'); }
+      if (name === 'fulfillment') {
+        expect(body.indexOf('Deliver to the receiving entrance')).toBeLessThan(body.indexOf('Mark shipped'));
+        expect(body).toContain('Delivery address (optional)');
+        expect(body).toContain('No delivery address on this order');
+        const shipButton = body.match(/<button\b[^>]*>Mark shipped<\/button>/)?.[0];
+        expect(shipButton).toBeDefined();
+        expect(shipButton).not.toContain('disabled');
+        expect(body).not.toContain('Missing delivery details:');
+      }
       if (name === 'customer') { expect(body).toContain('Catalog &amp; pricing'); expect(body).toContain('role="tabpanel"'); }
       if (process.env.GENERATE_UI_PREVIEWS === '1') {
         const output = 'output/ui-review-2026-09-08/implemented'; mkdirSync(output,{recursive:true});

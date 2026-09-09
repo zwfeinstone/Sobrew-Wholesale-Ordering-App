@@ -9,11 +9,12 @@ import {
 
 function baseInput(overrides: Partial<BuildBusinessHealthSnapshotInput> = {}): BuildBusinessHealthSnapshotInput {
   return {
-    asOfDate: new Date(2026, 6, 10),
+    // The report uses Central calendar dates, independent of the runner's timezone.
+    asOfDate: new Date('2026-07-10T00:00:00-05:00'),
     centers: [
       { created_at: '2026-01-01T00:00:00.000Z', id: 'center-1', is_active: true, name: 'Downtown Cafe' },
     ],
-    currentDate: new Date(2026, 6, 11),
+    currentDate: new Date('2026-07-11T00:00:00-05:00'),
     inventoryItems: [],
     inventoryLots: [],
     nonInventoryExpenses: [],
@@ -82,6 +83,24 @@ describe('buildBusinessHealthSnapshot', () => {
       end_exclusive: '2026-07-01',
       start: '2026-06-21',
     });
+    expect(snapshot.sales.today.order_count).toBe(1);
+    expect(snapshot.sales.today.revenue.cents).toBe(10000);
+  });
+
+  it.each([
+    ['2026-03-08T00:00:00-06:00', '2026-03-08', '2026-03-09', 8],
+    ['2026-11-01T00:00:00-05:00', '2026-11-01', '2026-11-02', 1],
+    ['2026-07-11T04:59:59Z', '2026-07-10', '2026-07-11', 10],
+    ['2026-07-11T05:00:00Z', '2026-07-11', '2026-07-12', 11],
+  ])('keeps Central calendar boundaries for %s', (instant, date, nextDate, days) => {
+    const snapshot = buildBusinessHealthSnapshot(baseInput({ asOfDate: new Date(instant) }));
+
+    expect(snapshot.as_of_date).toBe(date);
+    expect(snapshot.as_of_end_exclusive).toBe(nextDate);
+    expect(snapshot.period.today).toEqual({ start: date, end_exclusive: nextDate });
+    expect(snapshot.period.month_to_date.days).toBe(days);
+    expect(snapshot.period.trailing_8_weeks.days).toBe(56);
+    expect(snapshot.period.prior_equal_range.days).toBe(days);
   });
 
   it('records missing-data notes instead of inventing unavailable metrics', () => {
@@ -97,8 +116,8 @@ describe('buildBusinessHealthSnapshot', () => {
 
   it('flags historical inventory as estimated/current-state-derived for past as-of dates', () => {
     const snapshot = buildBusinessHealthSnapshot(baseInput({
-      asOfDate: new Date(2026, 5, 30),
-      currentDate: new Date(2026, 6, 11),
+      asOfDate: new Date('2026-06-30T00:00:00-05:00'),
+      currentDate: new Date('2026-07-11T00:00:00-05:00'),
     }));
 
     expect(snapshot.missing_data).toEqual(expect.arrayContaining([

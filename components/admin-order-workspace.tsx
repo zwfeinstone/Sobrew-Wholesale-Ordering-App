@@ -1,6 +1,6 @@
 'use client';
 
-import { Archive, ArrowUpRight, Ellipsis, Search, StickyNote, X } from 'lucide-react';
+import { Archive, ArrowUpRight, ChevronDown, Ellipsis, Search, StickyNote, X } from 'lucide-react';
 import Link from 'next/link';
 import { useDeferredValue, useMemo, useState } from 'react';
 import { archiveSelectedOrders } from '@/app/admin/orders/actions';
@@ -54,7 +54,18 @@ export function AdminOrderWorkspace({ orders, counts, canArchive, canEdit, initi
       {rows.map((order) => <div key={order.id} role="row" className={`order-table-row${canArchive ? ' has-selection' : ''}${order.notes ? ' has-note' : ''}`}>
         {canArchive ? <div role="cell" className="order-checkbox"><input type="checkbox" disabled={!['Processing', 'Shipped'].includes(order.status)} checked={selected.includes(order.id)} onChange={(event) => setChecked(order.id, event.target.checked)} aria-label={`Select ${order.customerName} order ${order.id.slice(0, 8)}`} /></div> : null}
         <div role="cell" className="order-customer-column"><Link href={`/admin/orders/${order.id}`} prefetch={false} className="order-customer-name">{order.customerName}</Link><p className="order-row-meta">#{order.id.slice(0, 8)} {order.kind === 'prospecting_sample' ? <span className="workspace-badge">Sample</span> : null}</p>{order.notes ? <p className="order-row-note"><StickyNote aria-hidden="true" /><span>{order.notes}</span></p> : null}</div>
-        <div role="cell" className="order-products-column">{order.items.slice(0, 2).map((label, index) => <p key={index}>{label}</p>)}{order.items.length > 2 ? <small>+{order.items.length - 2} more</small> : null}</div>
+        <div role="cell" className="order-products-column">
+          {order.items.slice(0, 2).map((label, index) => <p key={index}>{label}</p>)}
+          {order.items.length > 2 ? <details className="order-products-disclosure">
+            <summary className="workspace-text-link order-products-toggle">
+              <span className="order-products-expand">+{order.items.length - 2} more</span>
+              <span className="order-products-collapse">Show less</span>
+              <span className="sr-only"> products for {order.customerName} order {order.id.slice(0, 8)}</span>
+              <ChevronDown aria-hidden="true" />
+            </summary>
+            <div className="order-products-remaining">{order.items.slice(2).map((label, index) => <p key={index}>{label}</p>)}</div>
+          </details> : null}
+        </div>
         <div role="cell" className="order-total">{usd(order.subtotal)}</div><div role="cell" className="order-status-cell"><OrderStatusBadge status={order.status} /></div><div role="cell" className="order-date-column">{order.placedLabel}</div>
         <div role="cell" className="order-row-actions"><Link className="btn-secondary" href={`/admin/orders/${order.id}`} prefetch={false}>{nextOrderAction(order.status)}<ArrowUpRight aria-hidden="true" /></Link>{canEdit ? <details className="workspace-menu"><summary className="icon-button" aria-label={`More actions for ${order.customerName}`} title="More actions"><Ellipsis aria-hidden="true" /></summary><div className="workspace-menu-items"><OrderTrashDialog orderId={order.id} customerName={order.customerName} hasRecurring={order.hasRecurring} className="workspace-menu-action" />{canArchive && ['Processing', 'Shipped'].includes(order.status) ? <form action={archiveSelectedOrders}><input type="hidden" name="order_id" value={order.id} /><button type="submit" className="workspace-menu-action"><Archive aria-hidden="true" />Archive</button></form> : null}</div></details> : null}</div>
       </div>)}

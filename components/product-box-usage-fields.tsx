@@ -48,7 +48,7 @@ export function ProductBoxUsageFields({
   if (!requiredLines.length) return null;
 
   return (
-    <div className="space-y-4">
+    <div className="product-box-usage space-y-4">
       <div className="rounded-2xl border border-slate-200 bg-white/70 p-4 text-sm text-slate-700">
         <p className="font-semibold text-slate-950">Applies to</p>
         <ul className="mt-2 list-disc space-y-1 pl-5">
@@ -71,10 +71,10 @@ export function ProductBoxUsageFields({
       ) : null}
 
       <div className="space-y-3 rounded-2xl border border-slate-200 bg-white/70 p-4">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <p className="font-semibold text-slate-950">Total product boxes for these bag items</p>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <p className="min-w-0 flex-[1_1_16rem] font-semibold text-slate-950">Total product boxes for these bag items</p>
           <button
-            className="btn-secondary w-full sm:w-auto"
+            className="btn-secondary shrink-0 whitespace-nowrap"
             disabled={!boxItems.length}
             onClick={addRow}
             type="button"
@@ -84,20 +84,20 @@ export function ProductBoxUsageFields({
         </div>
         <div className="space-y-3">
           {rows.map((row) => (
-            <div key={row.id} className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_9rem_auto] sm:items-end">
-              <label className="space-y-2 text-sm font-medium text-slate-700">
+            <div key={row.id} className="product-box-usage-row grid min-w-0 grid-cols-1 items-end gap-3">
+              <label className="flex min-w-0 flex-col gap-2 text-sm font-medium text-slate-700">
                 Box size
-                <select className="input" disabled={!boxItems.length} name="box_inventory_item_id">
+                <select className="input min-w-0" disabled={!boxItems.length} name="box_inventory_item_id">
                   <option value="">Select box</option>
                   {boxItems.map((item) => (
                     <option key={item.id} value={item.id}>{item.label}</option>
                   ))}
                 </select>
               </label>
-              <label className="space-y-2 text-sm font-medium text-slate-700">
+              <label className="flex min-w-0 flex-col gap-2 text-sm font-medium text-slate-700">
                 Total quantity
                 <input
-                  className="input"
+                  className="input min-w-0"
                   disabled={!boxItems.length}
                   min="0"
                   name="box_quantity"

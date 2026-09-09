@@ -18,7 +18,7 @@ import { centsFromDollars, isWholeCountQuantity, normalizeInventoryNumber, round
 import { snapshotOrderCogsForShipment } from '@/lib/order-cogs';
 import { donationCogsCentsForRevenue, processingFeeCentsForRevenue } from '@/lib/order-fees';
 import { getOrderItemSummaries } from '@/lib/order-items';
-import { missingOrderAddressFields, orderAddressLabel, orderActivityLabel } from '@/lib/order-workflow';
+import { orderAddressLabel, orderActivityLabel } from '@/lib/order-workflow';
 import { shipmentTrackingLinesFromFormData } from '@/lib/shipment-tracking';
 import { createClient } from '@/lib/supabase/server';
 import { formatAppDateTime, usd } from '@/lib/utils';
@@ -137,7 +137,6 @@ async function shipOrder(formData: FormData) {
     .single();
   if (!order || order.archived_at) redirect(`/admin/orders/${id}?toast=ship_error`);
   if (order.status === 'Shipped') redirect(`/admin/orders/${id}?toast=order_shipped`);
-  if (fulfillmentMethod === 'carrier' && missingOrderAddressFields(order).length) redirect(`/admin/orders/${id}?toast=address_required`);
   if (fulfillmentMethod === 'carrier' && !manualTrackingRows.length) {
     redirect(`/admin/orders/${id}?toast=tracking_required`);
   }
@@ -452,12 +451,10 @@ export default async function AdminOrderDetail(
     order.center_id ? supabase.from('center_locations').select('*').eq('center_id', order.center_id).eq('is_active', true).order('name') : Promise.resolve({ data: [] }),
     supabase.from('order_activity').select('*').eq('order_id', order.id).order('created_at', { ascending: false }).limit(50),
   ]);
-  const missingAddress = missingOrderAddressFields(order);
   const canEdit = current.isOwner || current.access.orders.canEdit;
   const editableDelivery = canEdit && order.status !== 'Shipped' && !order.archived_at;
   const additionalToasts: Record<string, [string, 'success' | 'error']> = {
     order_restored: ['Order restored. Linked recurring schedules remain paused.', 'success'],
-    address_required: ['Complete the delivery address before carrier shipping.', 'error'],
     delivery_updated: ['Delivery address updated.', 'success'], delivery_error: ['Delivery address was not saved. Check the location and order status.', 'error'],
     notes_updated: ['Delivery notes saved.', 'success'], notes_error: ['Delivery notes were not saved.', 'error'],
     order_shipped_email_failed: ['Order shipped, but the customer email failed. Do not ship it again; contact the customer directly.', 'error'],
@@ -502,12 +499,11 @@ export default async function AdminOrderDetail(
           </tbody><tfoot><tr><th colSpan={3}>Order subtotal</th><td>{usd(order.subtotal_cents)}</td></tr></tfoot></table></div>
         </section>
         <section id="delivery-address" className="order-detail-section">
-          <h2 className="text-lg font-semibold">Delivery address</h2>
+          <h2 className="text-lg font-semibold">Delivery address (optional)</h2>
           <p className="mt-3 font-medium">{order.shipping_company || order.shipping_name || 'Recipient missing'}</p>
           {order.shipping_company && order.shipping_name ? <p className="text-sm">{order.shipping_name}</p> : null}
           <p className="mt-1 text-sm text-slate-600">{orderAddressLabel(order) || 'No delivery address on this order'}</p>
-          {missingAddress.length ? <p className="workspace-notice warning mt-3">Missing: {missingAddress.join(', ')}</p> : null}
-          {editableDelivery ? <details className="mt-4" open={missingAddress.length > 0}><summary className="cursor-pointer text-sm font-semibold">Edit address</summary>
+          {editableDelivery ? <details className="mt-4"><summary className="cursor-pointer text-sm font-semibold">Edit address</summary>
             {locations?.length ? <form action={saveDelivery} className="flex flex-wrap items-end gap-3 mt-4"><input type="hidden" name="id" value={order.id} /><label className="workspace-field flex-1">Saved location<select className="input" name="location_id" required defaultValue=""><option value="" disabled>Select location</option>{locations.map(location => <option key={location.id} value={location.id}>{location.name} - {location.address1}</option>)}</select></label><PendingSubmitButton className="btn-secondary" label="Use location" pendingLabel="Saving..." /></form> : null}
             <form action={saveDelivery} className="delivery-grid mt-4"><input type="hidden" name="id" value={order.id} />
               {([['shipping_name','Recipient'],['shipping_company','Company'],['shipping_address1','Street address'],['shipping_address2','Apartment / suite'],['shipping_city','City'],['shipping_state','State'],['shipping_zip','ZIP']] as const).map(([field,label]) => <label key={field} className="workspace-field">{label}<input className="input" name={field} defaultValue={order[field] || ''} /></label>)}
@@ -529,7 +525,7 @@ export default async function AdminOrderDetail(
         {editableDelivery ? <>
           <form action={updateStatus} className="flex gap-2 mb-5"><input type="hidden" name="id" value={order.id} /><label className="sr-only" htmlFor="order-status">Order status</label><select id="order-status" className="input" name="status" defaultValue={order.status || 'New'}><option>New</option><option>Processing</option></select><PendingSubmitButton className="btn-secondary" label="Update" pendingLabel="Saving..." /></form>
           <div className="fulfillment-fees mb-5"><p>Processing fee <strong>{usd(processingFeePreviewCents)}</strong></p><p>Donation <strong>{usd(donationCogsPreviewCents)}</strong></p></div>
-          <OrderFulfillmentForm action={shipOrder} orderId={order.id} missingAddress={missingAddress} hasRequiredBoxLines={productBoxRequiredLines.length > 0}>
+          <OrderFulfillmentForm action={shipOrder} orderId={order.id} hasRequiredBoxLines={productBoxRequiredLines.length > 0}>
             {productBoxRequiredLines.length ? <div><h3 className="text-sm font-semibold mb-3">Product boxes</h3><ProductBoxUsageFields boxItems={productBoxOptions} recipeBoxCoveredLabels={recipeBoxCoveredLabels} requiredLines={productBoxRequiredLines} /></div> : null}
           </OrderFulfillmentForm>
         </> : <div className="space-y-3 text-sm"><p>{fulfillmentLabel(fulfillmentMethod)}</p>{order.shipped_at ? <p>Shipped {formatOrderTimestamp(order.shipped_at)}</p> : null}<p>Shipping COGS: {usd(Math.round(normalizeInventoryNumber(order.shipping_cost_cents)))}</p><p>Processing COGS: {usd(Math.round(normalizeInventoryNumber(order.processing_fee_cents)))}</p><p>Donation COGS: {usd(Math.round(normalizeInventoryNumber(order.donation_cogs_cents)))}</p>{shippingBoxSummary.map(usage => <p key={usage.label}>{usage.quantity} x {usage.label}</p>)}</div>}
