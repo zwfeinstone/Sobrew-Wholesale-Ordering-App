@@ -649,6 +649,7 @@ describe('quickbooks customer matching', () => {
     expect(payload.DisplayName).toBe('Center DBA');
     expect(payload.CompanyName).toBe('Center Legal LLC');
     expect(payload.PrimaryEmailAddr).toEqual({ Address: 'billing@center.example' });
+    expect(payload.PreferredDeliveryMethod).toBe('Email');
     expect(payload.PrimaryPhone).toEqual({ FreeFormNumber: '615-555-0101' });
     expect(payload.BillAddr).toEqual({
       City: 'Nashville',
@@ -684,5 +685,22 @@ describe('quickbooks customer matching', () => {
       Line2: undefined,
       PostalCode: '38103',
     });
+  });
+
+  it('uses normalized customer contact emails when billing email is empty', () => {
+    const payload = buildQuickBooksCustomerPayloadFromCenter({
+      id: 'center-1', is_active: true, name: 'Center', billing_email: ' ',
+    }, [' buyer@example.com ', 'ap@example.com; BUYER@example.com']);
+
+    expect(payload.PrimaryEmailAddr).toEqual({ Address: 'buyer@example.com, ap@example.com' });
+    expect(payload.PreferredDeliveryMethod).toBe('Email');
+  });
+
+  it('keeps explicit billing recipients ahead of login emails', () => {
+    const payload = buildQuickBooksCustomerPayloadFromCenter({
+      id: 'center-1', is_active: true, name: 'Center', billing_email: 'billing@example.com; ap@example.com',
+    }, ['buyer@example.com']);
+
+    expect(payload.PrimaryEmailAddr).toEqual({ Address: 'billing@example.com, ap@example.com' });
   });
 });
