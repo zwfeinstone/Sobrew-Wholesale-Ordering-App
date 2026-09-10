@@ -20,7 +20,11 @@
     },
     {
       "path": "/api/cron/prospecting-hubspot",
-      "schedule": "*/5 22,23 * * *"
+      "schedule": "0 22 * * *"
+    },
+    {
+      "path": "/api/cron/prospecting-hubspot",
+      "schedule": "0 23 * * *"
     }
   ]
 }

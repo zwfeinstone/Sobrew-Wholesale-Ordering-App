@@ -20,7 +20,7 @@ async function allRows(query: any): Promise<any[]> {
 
 export async function pushRequestedSamplesToHubSpot(supabase: any, deadline = Date.now() + 240_000) {
   const summary = { exported: 0, skipped: 0, attempted: 0, incomplete: false, errors: [] as Array<{ leadId: string; message: string }> };
-  // Continuations process the 5 p.m. queue only. Later arrivals wait until tomorrow.
+  // Even when Vercel invokes late, process the 5 p.m. queue only. Later arrivals wait until tomorrow.
   const cutoff = new Date();
   cutoff.setUTCMinutes(0, 0, 0);
   let cursor = '';

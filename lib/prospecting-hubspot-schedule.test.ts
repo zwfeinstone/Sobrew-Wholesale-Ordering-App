@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
 
 const state = vi.hoisted(() => ({
   tables: {} as Record<string, Array<Record<string, any>>>,
@@ -53,12 +54,38 @@ beforeEach(() => {
 afterEach(() => { vi.useRealTimers(); });
 
 describe('daily sample HubSpot schedule', () => {
+  const crons: Array<{ path: string; schedule: string }> = JSON.parse(
+    readFileSync(new URL('../vercel.json', import.meta.url), 'utf8'),
+  ).crons;
+
+  it('uses only once-daily schedules supported by Vercel Hobby', () => {
+    expect(crons.length).toBeLessThanOrEqual(100);
+    for (const { schedule } of crons) {
+      expect(schedule).toMatch(/^(?:[0-5]?\d) (?:[01]?\d|2[0-3]) \* \* \*$/);
+    }
+  });
+
+  it.each([
+    '2026-09-10', '2027-01-10', '2027-03-14', '2026-11-01',
+  ])('configured jobs produce one accepted run despite up to 59 minutes of delay on %s', (day) => {
+    const hubspotCrons = crons.filter(({ path }) => path === '/api/cron/prospecting-hubspot');
+    for (const delay of [0, 59]) {
+      const accepted = hubspotCrons.filter(({ schedule }) => {
+        const [minute, hour] = schedule.split(' ').map(Number);
+        const invocation = new Date(`${day}T00:00:00Z`);
+        invocation.setUTCHours(hour, minute + delay);
+        return isSampleHubSpotSyncTime(invocation);
+      });
+      expect(accepted).toHaveLength(1);
+    }
+  });
+
   it.each([
     ['2026-09-10T22:00:00Z', true], ['2026-09-10T23:00:00Z', false],
     ['2027-01-10T23:00:00Z', true], ['2027-01-10T22:00:00Z', false],
     ['2027-03-14T22:00:00Z', true], ['2026-11-01T23:00:00Z', true],
     ['2026-09-10T22:55:00Z', true],
-  ])('handles Central time and continuation runs at %s', (date, expected) => {
+  ])('handles Central time and delayed invocations at %s', (date, expected) => {
     expect(isSampleHubSpotSyncTime(new Date(date))).toBe(expected);
   });
 
