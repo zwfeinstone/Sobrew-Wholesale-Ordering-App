@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import { SAMPLE_CONTACT_REQUIRED } from '@/lib/prospecting-sample-contact';
 import { redirect } from 'next/navigation';
 import PendingSubmitButton from '@/components/pending-submit-button';
 import StatusToast from '@/components/status-toast';
@@ -176,6 +177,7 @@ function toastMessage(toast: string) {
     lead_error: { message: 'Unable to update the linked prospecting lead.', tone: 'error' },
     missing_fields: { message: 'Enter the center, attention name, and full shipping address.', tone: 'error' },
     sample_requested: { message: 'Sample request saved. Choose the sample box quantity to create the production order.', tone: 'success' },
+    sample_contact_required: { message: SAMPLE_CONTACT_REQUIRED, tone: 'error' },
     unauthorized: { message: 'That lead is not assigned to you.', tone: 'error' },
   };
   return messages[toast];

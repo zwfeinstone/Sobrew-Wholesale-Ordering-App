@@ -1,4 +1,6 @@
+import { pushProspectingHubSpotLeadWithTracking } from '@/lib/prospecting-hubspot-export';
 import { mergeMissingFields } from '@/lib/prospecting-lead-merge';
+import { hasSampleRequestContact, isSampleContactError, SAMPLE_CONTACT_REQUIRED } from '@/lib/prospecting-sample-contact';
 import type { TablesUpdate } from '@/lib/supabase/database.types';
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
@@ -11,11 +13,8 @@ import { env } from '@/lib/env';
 import {
   canPushProspectingHubSpot,
   hubSpotRecordUrl,
-  pushProspectingLeadToHubSpot,
-  syncHubSpotProspectingActivityNote,
   type HubSpotProspectingActivity,
   type HubSpotProspectingContact,
-  type HubSpotProspectingLead,
 } from '@/lib/hubspot-prospecting';
 import {
   PIPELINE_REVIEW_STAGES,
@@ -666,6 +665,13 @@ async function createSingleLead(formData: FormData) {
   const companyNameKey = normalizeTextKey(companyName);
   const phoneKey = normalizePhoneKey(phone);
   const stage = normalizeStage(String(formData.get('stage') ?? 'new'));
+  const contactFullName = cleanText(formData.get('contact_full_name'));
+  const contactTitle = cleanText(formData.get('contact_title'));
+  const contactEmail = cleanText(formData.get('contact_email'));
+  const contactPhone = cleanText(formData.get('contact_phone'));
+  if (stage === 'sample_requested' && !hasSampleRequestContact([{ full_name: contactFullName, email: contactEmail }])) {
+    redirect(prospectingHref({ tab: 'add', toast: 'sample_contact_required' }));
+  }
   const shouldParkLead = PARKED_PROSPECTING_STAGES.includes(stage);
   const payload = {
     address_line_1: cleanText(formData.get('address_line_1')),
@@ -719,7 +725,7 @@ async function createSingleLead(formData: FormData) {
   } else {
     const { data: createdLead, error } = await supabase
       .from('prospecting_leads')
-      .insert(payload)
+      .insert({ ...payload, stage: stage === 'sample_requested' ? 'new' : stage })
       .select('id')
       .single();
     if (error || !createdLead) redirect(prospectingHref({ tab: 'add', toast: 'single_error' }));
@@ -735,10 +741,6 @@ async function createSingleLead(formData: FormData) {
     if (error) redirect(prospectingHref({ tab: 'add', toast: 'single_error' }));
   }
 
-  const contactFullName = cleanText(formData.get('contact_full_name'));
-  const contactTitle = cleanText(formData.get('contact_title'));
-  const contactEmail = cleanText(formData.get('contact_email'));
-  const contactPhone = cleanText(formData.get('contact_phone'));
   if (contactFullName || contactTitle || contactEmail || contactPhone) {
     const { error } = await supabase.from('prospecting_contacts').insert({
       created_by: current.profile.id,
@@ -751,6 +753,12 @@ async function createSingleLead(formData: FormData) {
       updated_by: current.profile.id,
     });
     if (error) redirect(prospectingHref({ tab: 'add', toast: 'single_error' }));
+  }
+
+  if (!wasMerge && stage === 'sample_requested') {
+    const { error } = await supabase.from('prospecting_leads')
+      .update({ stage, hubspot_status: 'queued' }).eq('id', leadId);
+    if (error) redirect(prospectingHref({ tab: 'add', toast: isSampleContactError(error) ? 'sample_contact_required' : 'single_error' }));
   }
 
   await supabase.from('prospecting_activities').insert({
@@ -882,7 +890,7 @@ async function bulkUpdatePipelineReviewLeads(formData: FormData) {
       .is('archived_at', null)
       .in('id', batchIds)
       .select('id');
-    if (updateError) redirect(pipelineReviewRedirectFromForm(formData, 'pipeline_bulk_error'));
+    if (updateError) redirect(pipelineReviewRedirectFromForm(formData, isSampleContactError(updateError) ? 'sample_contact_required' : 'pipeline_bulk_error'));
 
     const updatedIds = new Set(((updatedData ?? []) as Array<{ id: string }>).map((lead) => lead.id));
     if (!updatedIds.size) continue;
@@ -1005,13 +1013,6 @@ function hubspotPushRedirect(toast: string) {
   return prospectingHref({ bucket: 'hubspot', tab: 'leads', toast });
 }
 
-function hubspotPushErrorMessage(error: unknown) {
-  if (error && typeof error === 'object' && 'message' in error && typeof error.message === 'string') {
-    return error.message.trim().slice(0, 500) || 'Unable to push lead to HubSpot.';
-  }
-  const message = error instanceof Error ? error.message : 'Unable to push lead to HubSpot.';
-  return message.trim().slice(0, 500) || 'Unable to push lead to HubSpot.';
-}
 
 async function markSampleOutcome(formData: FormData) {
   'use server';
@@ -1082,24 +1083,6 @@ async function markSampleOutcome(formData: FormData) {
   redirect(prospectingHref({ ...redirectBase, toast: outcome === 'converted' ? 'sample_outcome_won' : 'sample_outcome_lost' }));
 }
 
-function hubspotLeadPayload(lead: LeadRow): HubSpotProspectingLead {
-  return {
-    address_line_1: lead.address_line_1,
-    address_line_2: lead.address_line_2,
-    city: lead.city,
-    company_name: lead.company_name,
-    company_website: lead.company_website,
-    country: lead.country,
-    hubspot_deal_id: lead.hubspot_deal_id,
-    hubspot_note_id: lead.hubspot_note_id,
-    id: lead.id,
-    notes: lead.notes,
-    phone: lead.phone,
-    postal_code: lead.postal_code,
-    state: lead.state,
-  };
-}
-
 async function pushSelectedHubspotLeads(formData: FormData) {
   'use server';
 
@@ -1166,138 +1149,21 @@ async function pushSelectedHubspotLeads(formData: FormData) {
   let errorCount = 0;
 
   for (const lead of selectedLeads) {
-    const attemptAt = new Date().toISOString();
     try {
-      const ownerEmail = lead.assigned_profile_id ? assignedProfilesById.get(lead.assigned_profile_id)?.email ?? null : null;
-      const result = await pushProspectingLeadToHubSpot({
-        accessToken: env.hubspotAccessToken,
-        activities: activitiesByLead.get(lead.id) ?? [],
+      const result = await pushProspectingHubSpotLeadWithTracking({
+        supabase,
+        lead,
         contacts: contactsByLead.get(lead.id) ?? [],
-        dealPipeline: env.hubspotDealPipeline,
-        dealStage: env.hubspotSampleRequestedDealStage,
-        lead: hubspotLeadPayload(lead),
-        ownerEmail,
+        activities: activitiesByLead.get(lead.id) ?? [],
+        ownerEmail: lead.assigned_profile_id ? assignedProfilesById.get(lead.assigned_profile_id)?.email ?? null : null,
+        actorId: current.profile.id,
       });
-
-      const leadUpdate = {
-        hubspot_company_id: result.companyId,
-        hubspot_contact_id: result.contactId,
-        hubspot_deal_id: result.dealId ?? lead.hubspot_deal_id ?? null,
-        hubspot_last_push_attempt_at: attemptAt,
-        hubspot_last_push_error: result.status === 'partial' ? result.message : null,
-        hubspot_note_id: result.noteId ?? lead.hubspot_note_id ?? null,
-        updated_at: attemptAt,
-        updated_by: current.profile.id,
-      };
-      const activityNoteEntries = Object.entries(result.activityNoteIds);
-
-      if (result.status === 'exported') {
-        const { error } = await supabase.from('prospecting_leads').update(leadUpdate).eq('id', lead.id);
-        if (error) throw error;
-        for (const [activityId, hubspotNoteId] of activityNoteEntries) {
-          const { error: activityNoteError } = await supabase
-            .from('prospecting_activities')
-            .update({ hubspot_note_id: hubspotNoteId })
-            .eq('id', activityId)
-            .eq('lead_id', lead.id);
-          if (activityNoteError) throw activityNoteError;
-        }
-
-        const { data: exportActivity, error: exportActivityError } = await supabase
-          .from('prospecting_activities')
-          .insert({
-            activity_type: 'hubspot_export',
-            body: result.message,
-            created_at: attemptAt,
-            created_by: current.profile.id,
-            lead_id: lead.id,
-            result: 'Exported',
-          })
-          .select('id,lead_id,activity_type,result,body,previous_stage,next_stage,next_follow_up_at,created_at,hubspot_note_id')
-          .single();
-        if (exportActivityError) throw exportActivityError;
-        if (exportActivity && result.companyId && result.dealId && result.contactIds.length) {
-          const exportActivityNoteId = await syncHubSpotProspectingActivityNote({
-            accessToken: env.hubspotAccessToken,
-            activity: exportActivity as HubSpotProspectingActivity,
-            companyId: result.companyId,
-            contactIds: result.contactIds,
-            dealId: result.dealId,
-            ownerEmail,
-          });
-          const { error: exportActivityNoteError } = await supabase
-            .from('prospecting_activities')
-            .update({ hubspot_note_id: exportActivityNoteId })
-            .eq('id', exportActivity.id)
-            .eq('lead_id', lead.id);
-          if (exportActivityNoteError) throw exportActivityNoteError;
-        }
-
-        const { error: exportedLeadError } = await supabase
-          .from('prospecting_leads')
-          .update({
-            hubspot_exported_at: attemptAt,
-            hubspot_exported_by: current.profile.id,
-            hubspot_last_push_error: null,
-            hubspot_status: 'exported',
-            updated_at: attemptAt,
-            updated_by: current.profile.id,
-          })
-          .eq('id', lead.id);
-        if (exportedLeadError) throw exportedLeadError;
-
-        await supabase
-          .from('prospecting_hubspot_queue')
-          .update({
-            exported_at: attemptAt,
-            exported_by: current.profile.id,
-            notes: result.message,
-            status: 'exported',
-          })
-          .eq('lead_id', lead.id);
-        exportedCount += 1;
-      } else {
-        const { error } = await supabase.from('prospecting_leads').update(leadUpdate).eq('id', lead.id);
-        if (error) throw error;
-        for (const [activityId, hubspotNoteId] of activityNoteEntries) {
-          const { error: activityNoteError } = await supabase
-            .from('prospecting_activities')
-            .update({ hubspot_note_id: hubspotNoteId })
-            .eq('id', activityId)
-            .eq('lead_id', lead.id);
-          if (activityNoteError) throw activityNoteError;
-        }
-        await supabase
-          .from('prospecting_hubspot_queue')
-          .update({ notes: result.message })
-          .eq('lead_id', lead.id)
-          .eq('status', 'queued');
-        await supabase.from('prospecting_activities').insert({
-          activity_type: 'hubspot_export',
-          body: result.message,
-          created_by: current.profile.id,
-          lead_id: lead.id,
-          result: 'Partial',
-        });
-        partialCount += 1;
-      }
+      if (result.status === 'exported') exportedCount += 1;
+      else if (result.status === 'partial') partialCount += 1;
+      else if (result.status === 'error') errorCount += 1;
     } catch (error) {
-      const message = hubspotPushErrorMessage(error);
+      console.error('[hubspot] push failed', { leadId: lead.id, error });
       errorCount += 1;
-      await supabase
-        .from('prospecting_leads')
-        .update({
-          hubspot_last_push_attempt_at: attemptAt,
-          hubspot_last_push_error: message,
-          updated_at: attemptAt,
-          updated_by: current.profile.id,
-        })
-        .eq('id', lead.id);
-      await supabase
-        .from('prospecting_hubspot_queue')
-        .update({ notes: message })
-        .eq('lead_id', lead.id)
-        .eq('status', 'queued');
     }
   }
 
@@ -1448,6 +1314,7 @@ function Toasts({ toast }: { toast: string }) {
     pipeline_bulk_missing: { message: 'Select at least one pipeline review lead first.', tone: 'error' },
     pipeline_bulk_stage_saved: { message: 'Pipeline review lead stages updated.', tone: 'success' },
     sample_outcome_error: { message: 'Unable to save that sample outcome.', tone: 'error' },
+    sample_contact_required: { message: SAMPLE_CONTACT_REQUIRED, tone: 'error' },
     sample_outcome_lost: { message: 'Sample lead marked lost.', tone: 'success' },
     sample_outcome_missing: { message: 'That sample-requested lead could not be found.', tone: 'error' },
     sample_outcome_won: { message: 'Sample lead marked won.', tone: 'success' },

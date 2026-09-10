@@ -309,6 +309,7 @@ async function hubSpotRequest<T>(
       'Content-Type': 'application/json',
     },
     method: options.method ?? (options.body === undefined ? 'GET' : 'POST'),
+    signal: AbortSignal.timeout(20_000),
   });
   const text = await response.text();
   const data = text ? JSON.parse(text) as unknown : {};
@@ -679,6 +680,7 @@ export async function pushProspectingLeadToHubSpot(options: {
   fetchImpl?: FetchLike;
   lead: HubSpotProspectingLead;
   ownerEmail?: string | null;
+  onProgress?: (progress: Partial<HubSpotPushResult>) => Promise<void>;
 }): Promise<HubSpotPushResult> {
   const ownerId = await lookupHubSpotOwnerIdByEmail(options.accessToken, options.ownerEmail, options.fetchImpl);
   const companyProperties = buildHubSpotCompanyProperties(options.lead, ownerId);
@@ -689,6 +691,7 @@ export async function pushProspectingLeadToHubSpot(options: {
     'lifecyclestage',
   ]);
   const primaryContact = primaryHubSpotContactWithEmail(options.contacts);
+  await options.onProgress?.({ companyId });
   const contactsWithEmail = hubSpotContactsWithEmail(options.contacts);
 
   if (!primaryContact || !contactsWithEmail.length) {
@@ -728,6 +731,7 @@ export async function pushProspectingLeadToHubSpot(options: {
   const primaryContactEmail = hubSpotContactEmail(primaryContact);
   const primaryContactIndex = contactsWithEmail.findIndex((contact) => hubSpotContactEmail(contact) === primaryContactEmail);
   const primaryContactId = contactIds[primaryContactIndex >= 0 ? primaryContactIndex : 0] ?? null;
+  await options.onProgress?.({ contactId: primaryContactId, contactIds });
   const dealId = await upsertHubSpotDeal({
     accessToken: options.accessToken,
     companyId,
@@ -742,6 +746,7 @@ export async function pushProspectingLeadToHubSpot(options: {
     }),
   });
   const noteBody = buildHubSpotProspectingNoteBody(options.contacts);
+  await options.onProgress?.({ dealId });
   const noteId = noteBody
     ? await upsertHubSpotProspectingNote({
         accessToken: options.accessToken,
@@ -755,6 +760,7 @@ export async function pushProspectingLeadToHubSpot(options: {
       })
     : null;
   const activityNoteIds: Record<string, string> = {};
+  if (noteId) await options.onProgress?.({ noteId });
   for (const activity of options.activities ?? []) {
     const noteId = await upsertHubSpotActivityNote({
       accessToken: options.accessToken,
@@ -766,6 +772,7 @@ export async function pushProspectingLeadToHubSpot(options: {
       ownerId,
     });
     activityNoteIds[activity.id] = noteId;
+    await options.onProgress?.({ activityNoteIds: { [activity.id]: noteId } });
   }
 
   return {

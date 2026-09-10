@@ -10,7 +10,7 @@ const LEAD_ID = '22222222-2222-4222-8222-222222222222';
 const SAMPLE_PRODUCT_ID = '33333333-3333-4333-8333-333333333333';
 const OTHER_PRODUCT_ID = '44444444-4444-4444-8444-444444444444';
 
-type TableName = 'orders' | 'order_items' | 'products' | 'prospecting_activities' | 'prospecting_leads';
+type TableName = 'orders' | 'order_items' | 'products' | 'prospecting_activities' | 'prospecting_leads' | 'prospecting_contacts';
 type Row = Record<string, any>;
 
 class Query {
@@ -109,6 +109,7 @@ class FakeSupabase {
     products: [],
     prospecting_activities: [],
     prospecting_leads: [],
+    prospecting_contacts: [],
   };
 
   constructor(seed: Partial<Record<TableName, Row[]>> = {}) {
@@ -282,6 +283,7 @@ describe('createProspectingSampleOrder', () => {
   it('updates a linked lead to sample requested', async () => {
     const supabase = new FakeSupabase({
       products: [sampleProduct()],
+      prospecting_contacts: [{ lead_id: LEAD_ID, full_name: 'Jane Buyer', email: 'jane@example.com' }],
       prospecting_leads: [{ assigned_profile_id: REP_ID, company_name: 'Sample Center', id: LEAD_ID, stage: 'interested' }],
     });
     const result = await createProspectingSampleOrder({
@@ -321,5 +323,24 @@ describe('createProspectingSampleOrder', () => {
 
     expect(result.error).toBe('unauthorized');
     expect(supabase.tables.orders).toHaveLength(0);
+  });
+
+  it.each([
+    [],
+    [{ full_name: 'Jane', email: '' }],
+    [{ full_name: '', email: 'jane@example.com' }],
+    [{ full_name: 'Jane', email: 'invalid' }],
+  ])('requires a named email contact before creating a linked sample order: %j', async (...contacts) => {
+    const supabase = new FakeSupabase({
+      products: [sampleProduct()],
+      prospecting_leads: [{ assigned_profile_id: REP_ID, id: LEAD_ID, stage: 'working', company_email: 'company@example.com' }],
+      prospecting_contacts: contacts.map((contact) => ({ ...contact, lead_id: LEAD_ID })),
+    });
+    const result = await createProspectingSampleOrder({
+      currentProfileId: REP_ID, input: validInput({ leadId: LEAD_ID }), isOwner: true, supabase,
+    });
+    expect(result.error).toBe('sample_contact_required');
+    expect(supabase.tables.orders).toHaveLength(0);
+    expect(supabase.tables.prospecting_leads[0].stage).toBe('working');
   });
 });

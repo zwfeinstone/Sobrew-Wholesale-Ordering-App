@@ -4,6 +4,9 @@
   "functions": {
     "app/api/cron/recurring-orders/route.ts": {
       "maxDuration": 300
+    },
+    "app/api/cron/prospecting-hubspot/route.ts": {
+      "maxDuration": 300
     }
   },
   "crons": [
@@ -14,6 +17,10 @@
     {
       "path": "/api/cron/recurring-orders",
       "schedule": "0 14 * * *"
+    },
+    {
+      "path": "/api/cron/prospecting-hubspot",
+      "schedule": "*/5 22,23 * * *"
     }
   ]
 }

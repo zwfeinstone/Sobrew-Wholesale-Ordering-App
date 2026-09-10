@@ -1,4 +1,5 @@
 import type { Json } from '@/lib/supabase/database.types';
+import { hasSampleRequestContact, isSampleContactError, SAMPLE_CONTACT_REQUIRED } from '@/lib/prospecting-sample-contact';
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import ConfirmSubmitButton from '@/components/confirm-submit-button';
@@ -569,6 +570,17 @@ async function saveRecordData(formData: FormData) {
     finalShouldMoveToSampleReview = activityShouldMoveToSampleReview;
   }
 
+  if (finalStage === 'sample_requested') {
+    const { data: savedContacts, error: contactsError } = await supabase
+      .from('prospecting_contacts').select('id,full_name,email').eq('lead_id', leadId);
+    if (contactsError) redirect(leadHref(leadId, 'save_error', queueContext));
+    const finalContacts = (savedContacts ?? []).map((contact) => ({
+      ...contact, ...contactUpdates.find((update) => update.id === contact.id),
+    }));
+    if (shouldAddContact) finalContacts.push({ id: '', ...newContact });
+    if (!hasSampleRequestContact(finalContacts)) redirect(leadHref(leadId, 'sample_contact_required', queueContext));
+  }
+
   const { data: savedLead, error: saveError } = await supabaseAdmin.rpc('save_prospecting_record_v1', {
     p_actor_id: current.profile.id,
     p_activity: activityPayload,
@@ -601,7 +613,7 @@ async function saveRecordData(formData: FormData) {
   });
 
   if (saveError || !savedLead) {
-    redirect(leadHref(leadId, saveError?.code === '40001' ? 'record_stale' : 'save_error', queueContext));
+    redirect(leadHref(leadId, isSampleContactError(saveError) ? 'sample_contact_required' : saveError?.code === '40001' ? 'record_stale' : 'save_error', queueContext));
   }
 
   if (finalShouldMoveToSampleReview) {
@@ -645,7 +657,7 @@ async function deleteContact(formData: FormData) {
     });
   }
 
-  redirect(leadHref(leadId, error ? 'contact_error' : 'contact_deleted', queueContext));
+  redirect(leadHref(leadId, isSampleContactError(error) ? 'sample_contact_required' : error ? 'contact_error' : 'contact_deleted', queueContext));
 }
 
 function Toasts({ toast }: { toast: string }) {
@@ -669,6 +681,7 @@ function Toasts({ toast }: { toast: string }) {
     save_error: { message: 'Unable to save this lead. Check for duplicate company and phone values.', tone: 'error' },
     sample_order_created: { message: 'Sample order created. Moved to the next record.', tone: 'success' },
     sample_requested: { message: 'Sample requested. Moved to the next record.', tone: 'success' },
+    sample_contact_required: { message: SAMPLE_CONTACT_REQUIRED, tone: 'error' },
   };
   const match = messages[toast];
   return match ? <StatusToast message={match.message} tone={match.tone} /> : null;
@@ -1002,6 +1015,7 @@ export default async function LeadDetailPage(
         <section className="card space-y-4">
           <div>
             <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Key Contacts</p>
+            <p className="mt-1 text-sm text-slate-600">Sample Requested requires a contact name and a valid email for that contact.</p>
             <h2 className="mt-2 text-xl font-semibold tracking-tight text-slate-950">People inside the company</h2>
           </div>
           <div className="space-y-3">

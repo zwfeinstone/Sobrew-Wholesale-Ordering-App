@@ -1,3 +1,5 @@
+import { hasSampleRequestContact, isSampleContactError } from '@/lib/prospecting-sample-contact';
+
 type SupabaseLike = {
   from: (table: string) => any;
 };
@@ -44,6 +46,7 @@ export type ProspectingSampleOrderError =
   | 'invalid_product'
   | 'lead_error'
   | 'missing_fields'
+  | 'sample_contact_required'
   | 'unauthorized'
   | null;
 
@@ -156,6 +159,10 @@ export async function createProspectingSampleOrder({
     lead = leadResult.data as ProspectingLeadRow;
     previousLeadStage = lead.stage;
     if (!isOwner && lead.assigned_profile_id !== currentProfileId) return { error: 'unauthorized' };
+    const { data: contacts, error: contactsError } = await supabase
+      .from('prospecting_contacts').select('full_name,email').eq('lead_id', leadId);
+    if (contactsError) return { error: 'lead_error' };
+    if (!hasSampleRequestContact(contacts ?? [])) return { error: 'sample_contact_required' };
   }
 
   const productIds = items.map((item) => item.productId);
@@ -238,7 +245,7 @@ export async function createProspectingSampleOrder({
 
     if (leadUpdateResult.error || !leadUpdateResult.data?.id) {
       await cleanupOrder(supabase, orderId);
-      return { error: 'lead_error' };
+      return { error: isSampleContactError(leadUpdateResult.error) ? 'sample_contact_required' : 'lead_error' };
     }
 
     const activityResult = await supabase.from('prospecting_activities').insert({

@@ -3182,6 +3182,32 @@ export type Database = {
           },
         ]
       }
+      prospecting_hubspot_push_locks: {
+        Row: {
+          expires_at: string
+          lead_id: string
+          token: string
+        }
+        Insert: {
+          expires_at: string
+          lead_id: string
+          token: string
+        }
+        Update: {
+          expires_at?: string
+          lead_id?: string
+          token?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "prospecting_hubspot_push_locks_lead_id_fkey"
+            columns: ["lead_id"]
+            isOneToOne: true
+            referencedRelation: "prospecting_leads"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       prospecting_hubspot_queue: {
         Row: {
           exported_at: string | null
@@ -3329,6 +3355,7 @@ export type Database = {
           phone_key: string
           postal_code: string | null
           priority: string
+          sample_requested_at: string | null
           source: string | null
           stage: string
           state: string | null
@@ -3370,6 +3397,7 @@ export type Database = {
           phone_key?: string
           postal_code?: string | null
           priority?: string
+          sample_requested_at?: string | null
           source?: string | null
           stage?: string
           state?: string | null
@@ -3411,6 +3439,7 @@ export type Database = {
           phone_key?: string
           postal_code?: string | null
           priority?: string
+          sample_requested_at?: string | null
           source?: string | null
           stage?: string
           state?: string | null
@@ -4268,6 +4297,10 @@ export type Database = {
       }
     }
     Functions: {
+      claim_prospecting_hubspot_push_v1: {
+        Args: { p_lead_id: string; p_token: string }
+        Returns: boolean
+      }
       admin_prospecting_report_v1: {
         Args: {
           p_as_of_date: string

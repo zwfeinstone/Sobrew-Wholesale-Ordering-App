@@ -97,6 +97,18 @@ Protected sessions are verified locally with a bundled copy of Supabase's public
 
 ## Running recurring orders locally
 
+### Daily sample-request HubSpot exports
+
+Prospects entering `sample_requested` must have a contact with a name and valid email on that same contact. Migration `20260910124119_prospecting_sample_contact_and_hubspot_schedule.sql` enforces this for all writes, including record saves, bulk updates, and sample orders.
+
+The migration records `sample_requested_at` on future stage entries only. Existing Sample Requested leads are intentionally not backfilled and stay outside automatic exports. They can still be pushed manually.
+
+The `/api/cron/prospecting-hubspot` job starts at 5 p.m. America/Chicago daily. Vercel's UTC schedule covers both daylight-saving offsets; the handler accepts only the 5 p.m. hour. Five-minute continuations finish/retry the queue as it stood at 5 p.m.; later stage entries wait for the next day. Successful exports are skipped, and manual/automatic pushes share a per-lead lease. HubSpot IDs are saved as each step completes, and failures are recorded on the lead and in `cron_run_log`.
+
+Production requires `CRON_SECRET`, `HUBSPOT_ACCESS_TOKEN`, `HUBSPOT_DEAL_PIPELINE`, and `HUBSPOT_SAMPLE_REQUESTED_DEAL_STAGE` (the existing HubSpot integration settings). Deploy the application after applying the migration to activate the schedule.
+
+### Recurring order command
+
 Recurring orders only generate when the cron endpoint is called.
 
 1. Set `CRON_SECRET` in `.env.local`.
