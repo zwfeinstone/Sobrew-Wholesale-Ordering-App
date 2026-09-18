@@ -164,8 +164,8 @@ export function buildHubSpotCompanyProperties(lead: HubSpotProspectingLead, owne
 export function buildHubSpotContactProperties(lead: HubSpotProspectingLead, contact: HubSpotProspectingContact, ownerId?: string | null) {
   const { firstname, lastname } = splitHubSpotName(contact.full_name);
   return compactProperties({
-    address: lead.address_line_1,
-    address2: lead.address_line_2,
+    // Contacts have a single Street Address field, including the unit/suite.
+    address: [lead.address_line_1, lead.address_line_2].map((line) => String(line ?? '').trim()).filter(Boolean).join(', '),
     city: lead.city,
     country: lead.country,
     email: contact.email,
@@ -373,7 +373,7 @@ async function searchCompany(accessToken: string, properties: Record<string, str
 async function searchContact(accessToken: string, email: string, fetchImpl?: FetchLike) {
   return searchHubSpotObject(accessToken, 'contacts', [
     { operator: 'EQ', propertyName: 'email', value: email },
-  ], ['email', 'firstname', 'lastname', 'phone', 'jobtitle', 'address', 'address2', 'city', 'state', 'zip', 'country', 'company', 'website', 'hubspot_owner_id', 'hs_lead_status', 'lifecyclestage'], fetchImpl);
+  ], ['email', 'firstname', 'lastname', 'phone', 'jobtitle', 'address', 'city', 'state', 'zip', 'country', 'company', 'website', 'hubspot_owner_id', 'hs_lead_status', 'lifecyclestage'], fetchImpl);
 }
 
 export async function lookupHubSpotOwnerIdByEmail(accessToken: string, email: string | null | undefined, fetchImpl?: FetchLike) {
@@ -709,7 +709,6 @@ export async function pushProspectingLeadToHubSpot(options: {
 
   const contactOverwriteProperties = [
     'address',
-    'address2',
     'city',
     'company',
     'country',

@@ -40,6 +40,11 @@ function jsonResponse(body: unknown, status = 200) {
 function mockHubSpotFetch(responses: unknown[]) {
   const calls: Array<{ body: unknown; method: string | undefined; url: string }> = [];
   const fetchImpl = async (url: string, init?: RequestInit) => {
+    const body = init?.body ? JSON.parse(String(init.body)) : null;
+    // Match the live contact schema so unsupported fields fail the full export tests.
+    if (/\/objects\/contacts(?:\/[^/]+)?$/.test(url) && !url.endsWith('/search') && body?.properties && 'address2' in body.properties) {
+      return jsonResponse({ message: 'Property "address2" does not exist' }, 400);
+    }
     calls.push({
       body: init?.body ? JSON.parse(String(init.body)) as unknown : null,
       method: init?.method,
@@ -84,8 +89,7 @@ describe('HubSpot prospecting mapping', () => {
       phone: '901-555-1212',
       title: 'Director',
     }, 'owner-1')).toMatchObject({
-      address: '123 Main St',
-      address2: 'Suite 4',
+      address: '123 Main St, Suite 4',
       city: 'Memphis',
       country: 'United States',
       email: 'maya@example.com',
@@ -109,6 +113,16 @@ describe('HubSpot prospecting mapping', () => {
       lifecyclestage: 'opportunity',
     });
     expect(buildHubSpotCompanyProperties({ ...lead, address_line_2: '' }, 'owner-1')).not.toHaveProperty('address2');
+  });
+
+  it.each([
+    ['123 Main St', 'Suite 4', '123 Main St, Suite 4'],
+    [' 123 Main St ', '  ', '123 Main St'],
+    [null, ' Suite 4 ', 'Suite 4'],
+  ])('preserves contact street and suite using the supported address field', (street, suite, address) => {
+    const properties = buildHubSpotContactProperties({ ...lead, address_line_1: street, address_line_2: suite }, { email: 'maya@example.com' });
+    expect(properties.address).toBe(address);
+    expect(properties).not.toHaveProperty('address2');
   });
 
   it('sets HubSpot deal name to the company, stage to Samples Requested, and priority to medium', () => {
@@ -212,8 +226,7 @@ describe('HubSpot prospecting push', () => {
     expect(calls[2].body).toEqual({ properties: expect.not.objectContaining({ city: 'Memphis' }) });
     expect(calls[4].body).toEqual({
       properties: expect.objectContaining({
-        address: '123 Main St',
-        address2: 'Suite 4',
+        address: '123 Main St, Suite 4',
         city: 'Memphis',
         company: 'Sobrew Recovery',
         country: 'United States',
@@ -445,7 +458,7 @@ describe('HubSpot prospecting push', () => {
     const { calls, fetchImpl } = mockHubSpotFetch([
       { results: [{ archived: false, email: 'maya@example.com', id: 'owner-1' }] },
       { results: [{ id: 'company-1', properties: { address: '123 Main St', address2: 'Suite 4', city: 'Memphis', country: 'United States', domain: 'sobrew.example', hs_lead_status: 'IN_PROGRESS', hubspot_owner_id: 'owner-1', lifecyclestage: 'opportunity', name: 'Sobrew Recovery', phone: '901-555-0101', state: 'TN', zip: '38103' } }] },
-      { results: [{ id: 'contact-1', properties: { address: '123 Main St', address2: 'Suite 4', city: 'Memphis', company: 'Sobrew Recovery', country: 'United States', email: 'maya@example.com', hs_lead_status: 'IN_PROGRESS', hubspot_owner_id: 'owner-1', lifecyclestage: 'opportunity', state: 'TN', website: 'https://www.sobrew.example/path', zip: '38103' } }] },
+      { results: [{ id: 'contact-1', properties: { address: '123 Main St, Suite 4', city: 'Memphis', company: 'Sobrew Recovery', country: 'United States', email: 'maya@example.com', hs_lead_status: 'IN_PROGRESS', hubspot_owner_id: 'owner-1', lifecyclestage: 'opportunity', state: 'TN', website: 'https://www.sobrew.example/path', zip: '38103' } }] },
       {},
       { id: 'deal-1' },
       {},
@@ -558,7 +571,7 @@ describe('HubSpot prospecting push', () => {
     const { calls, fetchImpl } = mockHubSpotFetch([
       { results: [{ archived: false, email: 'maya@example.com', id: 'owner-1' }] },
       { results: [{ id: 'company-1', properties: { address: '123 Main St', address2: 'Suite 4', city: 'Memphis', country: 'United States', domain: 'sobrew.example', hs_lead_status: 'IN_PROGRESS', hubspot_owner_id: 'owner-1', lifecyclestage: 'opportunity', name: 'Sobrew Recovery', phone: '901-555-0101', state: 'TN', zip: '38103' } }] },
-      { results: [{ id: 'contact-1', properties: { address: '123 Main St', address2: 'Suite 4', city: 'Memphis', company: 'Sobrew Recovery', country: 'United States', email: 'maya@example.com', hs_lead_status: 'IN_PROGRESS', hubspot_owner_id: 'owner-1', lifecyclestage: 'opportunity', state: 'TN', website: 'https://www.sobrew.example/path', zip: '38103' } }] },
+      { results: [{ id: 'contact-1', properties: { address: '123 Main St, Suite 4', city: 'Memphis', company: 'Sobrew Recovery', country: 'United States', email: 'maya@example.com', hs_lead_status: 'IN_PROGRESS', hubspot_owner_id: 'owner-1', lifecyclestage: 'opportunity', state: 'TN', website: 'https://www.sobrew.example/path', zip: '38103' } }] },
       {},
       { id: 'deal-1' },
       {},
@@ -596,7 +609,7 @@ describe('HubSpot prospecting push', () => {
     const { calls, fetchImpl } = mockHubSpotFetch([
       { results: [{ archived: false, email: 'maya@example.com', id: 'owner-1' }] },
       { results: [{ id: 'company-1', properties: { address: '123 Main St', address2: 'Suite 4', city: 'Memphis', country: 'United States', domain: 'sobrew.example', hs_lead_status: 'IN_PROGRESS', hubspot_owner_id: 'owner-1', lifecyclestage: 'opportunity', name: 'Sobrew Recovery', phone: '901-555-0101', state: 'TN', zip: '38103' } }] },
-      { results: [{ id: 'contact-1', properties: { address: '123 Main St', address2: 'Suite 4', city: 'Memphis', company: 'Sobrew Recovery', country: 'United States', email: 'maya@example.com', hs_lead_status: 'IN_PROGRESS', hubspot_owner_id: 'owner-1', lifecyclestage: 'opportunity', state: 'TN', website: 'https://www.sobrew.example/path', zip: '38103' } }] },
+      { results: [{ id: 'contact-1', properties: { address: '123 Main St, Suite 4', city: 'Memphis', company: 'Sobrew Recovery', country: 'United States', email: 'maya@example.com', hs_lead_status: 'IN_PROGRESS', hubspot_owner_id: 'owner-1', lifecyclestage: 'opportunity', state: 'TN', website: 'https://www.sobrew.example/path', zip: '38103' } }] },
       {},
       { id: 'deal-1' },
       {},

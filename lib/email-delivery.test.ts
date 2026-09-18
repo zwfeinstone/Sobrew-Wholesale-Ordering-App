@@ -99,7 +99,7 @@ describe('order email sales CC lookup', () => {
     const query = {
       select: vi.fn().mockReturnThis(),
       in: vi.fn(async (_column: string, ids: string[]) => ({
-        data: ids.map((id) => ({ center_id: id, sales_profile: { email: id === 'center-1' ? 'HASKINS@SOBREW.COM' : 'other@sobrew.com' } })),
+        data: ids.map((id) => ({ center_id: id, sales_profile: { email: id === 'center-1' ? 'HASKINS@SOBREW.COM' : id === 'center-2' ? 'ROB@SOBREW.COM' : 'other@sobrew.com' } })),
         error: null,
       })),
     };
@@ -108,6 +108,7 @@ describe('order email sales CC lookup', () => {
     const cc = await loadAdminOrderCcByCenter([...ids, ids[0]], client);
     expect(query.in.mock.calls.map((call) => call[1].length)).toEqual([200, 1]);
     expect(cc.get('center-1')).toEqual(['haskins@sobrew.com']);
-    expect(cc.get('center-2')).toEqual([]);
+    expect(cc.get('center-2')).toEqual(['rob@sobrew.com']);
+    expect(cc.get('center-3')).toEqual([]);
   });
 });

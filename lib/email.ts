@@ -8,7 +8,7 @@ import { usd } from '@/lib/utils';
 const RESEND_FROM = 'Sobrew Wholesale <orders@orders.sobrew.com>';
 const REPLY_TO_EMAIL = 'hello@sobrew.com';
 const ADMIN_EMAIL = 'hello@sobrew.com';
-const HASKINS_EMAIL = 'haskins@sobrew.com';
+const ORDER_EMAIL_CC_REPS = new Set(['haskins@sobrew.com', 'rob@sobrew.com']);
 const INVOICE_PDF_AUDIT_CC = 'zach@sobrew.com';
 const PORTAL_URL = 'https://app.sobrew.com';
 const WEBSITE_URL = 'https://sobrew.com';
@@ -223,7 +223,8 @@ function formatEmailDate(value?: Date | string | null) {
 }
 
 export function adminOrderCcForAssignedSalesEmail(email: string | null | undefined) {
-  return String(email ?? '').trim().toLowerCase() === HASKINS_EMAIL ? [HASKINS_EMAIL] : [];
+  const assignedEmail = String(email ?? '').trim().toLowerCase();
+  return ORDER_EMAIL_CC_REPS.has(assignedEmail) ? [assignedEmail] : [];
 }
 
 export async function loadAdminOrderCcByCenter(centerIds: string[], supabase = supabaseAdmin) {
