@@ -3,7 +3,7 @@ import { redirect } from 'next/navigation';
 import ConfirmSubmitButton from '@/components/confirm-submit-button';
 import PendingSubmitButton from '@/components/pending-submit-button';
 import { requireUser } from '@/lib/auth';
-import { daysForRecurringFrequency, formatNextRecurringOrderDate, isRecurringFrequency, labelForRecurringFrequency, RECURRING_FREQUENCY_OPTIONS } from '@/lib/recurring';
+import { daysForRecurringFrequency, formatScheduledRecurringOrderDate, isRecurringFrequency, labelForRecurringFrequency, RECURRING_FREQUENCY_OPTIONS } from '@/lib/recurring';
 import { getCenterLoginEmails } from '@/lib/center-logins';
 import { sendOrderEmails } from '@/lib/email';
 import { supabaseAdmin } from '@/lib/supabase/admin';
@@ -26,6 +26,7 @@ type RecurringOrderRow = {
   active?: boolean | null;
   created_at: string | null;
   last_generated_at: string | null;
+  next_run_at: string | null;
   source_order_id?: string | null;
   amount_cents?: number | null;
   profiles?: { email: string | null; full_name: string | null } | { email: string | null; full_name: string | null }[] | null;
@@ -451,7 +452,7 @@ async function setRecurringStatus(formData: FormData) {
     if (status === 'active') {
       const recurringOrderResult = await supabaseAdmin
         .from('recurring_orders')
-        .select('id,user_id,center_id,source_order_id,frequency,amount_cents,status,active,created_at,last_generated_at,profiles(email,full_name),centers(name)')
+        .select('id,user_id,center_id,source_order_id,frequency,amount_cents,status,active,created_at,last_generated_at,next_run_at,profiles(email,full_name),centers(name)')
         .eq('id', recurringOrderId)
         .eq('center_id', centerId)
         .maybeSingle();
@@ -508,7 +509,7 @@ export default async function RecurringOrdersPage(props: { searchParams?: Promis
 
     const recurringOrdersResult = await supabase
       .from('recurring_orders')
-      .select('id,frequency,status,active,created_at,last_generated_at,source_order_id,amount_cents')
+      .select('id,frequency,status,active,created_at,last_generated_at,next_run_at,source_order_id,amount_cents')
       .eq('center_id', centerId)
       .neq('status', 'canceled')
       .order('created_at', { ascending: false });
@@ -618,7 +619,7 @@ export default async function RecurringOrdersPage(props: { searchParams?: Promis
                 <div className="recurring-metrics grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
                   <div className="recurring-metric">
                     <p className="recurring-metric-label text-sm uppercase tracking-[0.18em] text-slate-500">Next order date</p>
-                    <p className="recurring-metric-value mt-2 text-lg font-semibold text-slate-950">{formatNextRecurringOrderDate(order.frequency, order.last_generated_at ?? order.created_at)}</p>
+                    <p className="recurring-metric-value mt-2 text-lg font-semibold text-slate-950">{formatScheduledRecurringOrderDate(order.next_run_at)}</p>
                   </div>
                   <div className="recurring-metric">
                     <p className="recurring-metric-label text-sm uppercase tracking-[0.18em] text-slate-500">Frequency</p>

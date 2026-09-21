@@ -1,12 +1,23 @@
 import { describe, expect, it } from 'vitest';
 import {
   formatNextRecurringOrderDate,
+  formatScheduledRecurringOrderDate,
   isRecurringFrequency,
   isRecurringOrderDue,
   nextRecurringOrderCalendarDate,
 } from '@/lib/recurring';
 
 describe('recurring order dates', () => {
+  it('displays the persisted rescheduled date without adding another interval', () => {
+    expect(formatScheduledRecurringOrderDate('2026-09-21T12:00:00Z')).toBe('Sep 21, 2026');
+    expect(formatScheduledRecurringOrderDate('2026-10-19T12:00:00Z')).toBe('Oct 19, 2026');
+  });
+
+  it('does not invent dates for inactive or invalid schedules', () => {
+    expect(formatScheduledRecurringOrderDate(null)).toBe('Not scheduled');
+    expect(formatScheduledRecurringOrderDate('invalid')).toBe('Not scheduled');
+  });
+
   it('recognizes only supported frequencies', () => {
     expect(isRecurringFrequency('2_weeks')).toBe(true);
     expect(isRecurringFrequency('monthly')).toBe(false);

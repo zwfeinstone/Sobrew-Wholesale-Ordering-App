@@ -94,6 +94,13 @@ export function formatNextRecurringOrderDate(frequency: string, anchorDate: stri
   return nextDate ? recurringDateDisplayFormatter.format(nextDate) : 'N/A';
 }
 
+// Existing schedules must display the same persisted date the cron selects.
+// Recomputing from creation/generation would ignore explicit rescheduling.
+export function formatScheduledRecurringOrderDate(nextRunAt: string | null | undefined) {
+  const date = calendarDateFor(nextRunAt);
+  return date ? recurringDateDisplayFormatter.format(dateFromCalendarDate(date)) : 'Not scheduled';
+}
+
 export function isRecurringOrderDue(
   frequency: string,
   anchorDate: string | number | Date | null | undefined,
