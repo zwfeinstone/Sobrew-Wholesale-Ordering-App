@@ -7,7 +7,7 @@ export default function PlanningSubmitButton({ disabled = false }: { disabled?: 
 
   return (
     <button className="btn-primary w-full" disabled={disabled || pending} type="submit" aria-busy={pending}>
-      {pending ? 'Adding...' : 'Add Production'}
+      {pending ? 'Recording...' : 'Record completed production'}
     </button>
   );
 }

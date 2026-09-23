@@ -1,16 +1,20 @@
 import type { Database } from '@/lib/supabase/schema';
 import {
-  convertInventoryQuantity,
   fixedRecipeCostBreakdownCents,
   fixedRecipeCostCents,
-  isWholeCountPackagingComponentRole,
   laborCostCents,
   normalizeInventoryNumber,
-  recipeComponentWasteMultiplier,
-  roundWholeCountQuantity,
   scaledRecipeCostForQuantity,
-  type InventoryUnit,
 } from '@/lib/inventory';
+import {
+  buildProductionMaterialPreview,
+  isProductionBoxComponent,
+  preferredProductionFallbackItem,
+  productionNeedsFallbackBoxes,
+  SAMPLE_BOX_FALLBACK_BOX_SKUS,
+  type ProductionMaterialComponent,
+  type ProductionMaterialItem,
+} from '@/lib/production-materials';
 
 type SupabaseLike = {
   from: (table: string) => any;
@@ -26,21 +30,8 @@ type ProductionRunError =
   | 'recipe_error'
   | 'unit_error';
 
-type InventoryItemRow = {
-  id: string;
-  base_unit: InventoryUnit;
-  active?: boolean | null;
-  sku?: string | null;
-};
-
-type RecipeComponentRow = {
-  id: string;
-  inventory_item_id: string;
-  quantity: number | string;
-  unit: InventoryUnit;
-  component_role: string | null;
-  inventory_items?: InventoryItemRow | InventoryItemRow[] | null;
-};
+type InventoryItemRow = ProductionMaterialItem;
+type RecipeComponentRow = ProductionMaterialComponent;
 
 type RecipeRow = {
   id: string;
@@ -57,117 +48,6 @@ type ProductCategoryRow = {
   category?: string | null;
   id: string;
 };
-
-type ProductionComponentPayload = {
-  inventory_item_id: string;
-  quantity_expected: number;
-  quantity_used: number;
-  unit: InventoryUnit;
-};
-
-const SAMPLE_BOX_CATEGORY = 'sample_boxes';
-const SAMPLE_BOX_PRIMARY_BOX_SKUS = new Set(['BOX-12X7X4', 'MAT-BOX-12X7X4']);
-const SAMPLE_BOX_FALLBACK_BOX_SKUS = ['MAT-BOX-12X6X4', 'BOX-12X6X4'];
-const QUANTITY_EPSILON = 0.0001;
-
-function relatedOne<T>(value: T | T[] | null | undefined): T | null {
-  if (Array.isArray(value)) return value[0] ?? null;
-  return value ?? null;
-}
-
-function normalizeSku(value: string | null | undefined) {
-  return String(value ?? '').trim().toUpperCase();
-}
-
-function isBoxComponent(component: RecipeComponentRow) {
-  const item = relatedOne(component.inventory_items);
-  const sku = normalizeSku(item?.sku);
-  return component.component_role === 'box' || sku.startsWith('BOX-') || sku.startsWith('MAT-BOX-');
-}
-
-function isSampleBoxPrimaryBoxComponent(component: RecipeComponentRow) {
-  const item = relatedOne(component.inventory_items);
-  return SAMPLE_BOX_PRIMARY_BOX_SKUS.has(normalizeSku(item?.sku));
-}
-
-function isActiveFallbackBoxItem(item: InventoryItemRow | null | undefined) {
-  return Boolean(item?.id && item.active !== false && SAMPLE_BOX_FALLBACK_BOX_SKUS.includes(normalizeSku(item.sku)));
-}
-
-function preferredFallbackBoxItem(items: InventoryItemRow[]) {
-  for (const sku of SAMPLE_BOX_FALLBACK_BOX_SKUS) {
-    const item = items.find((candidate) => isActiveFallbackBoxItem(candidate) && normalizeSku(candidate.sku) === sku);
-    if (item) return item;
-  }
-  return null;
-}
-
-function splitSampleBoxBoxComponent({
-  availableByItem,
-  component,
-  expectedBaseQty,
-  fallbackBoxItem,
-  remainingAvailableByItem,
-  usedBaseQty,
-}: {
-  availableByItem: Map<string, number>;
-  component: RecipeComponentRow;
-  expectedBaseQty: number;
-  fallbackBoxItem: InventoryItemRow | null;
-  remainingAvailableByItem: Map<string, number>;
-  usedBaseQty: number;
-}): ProductionComponentPayload[] | null {
-  const componentItem = relatedOne(component.inventory_items);
-  if (
-    !fallbackBoxItem ||
-    !isSampleBoxPrimaryBoxComponent(component) ||
-    !componentItem?.id ||
-    componentItem.base_unit !== fallbackBoxItem.base_unit
-  ) {
-    return null;
-  }
-
-  const primaryAvailable = Math.max(0, remainingAvailableByItem.get(component.inventory_item_id) ?? availableByItem.get(component.inventory_item_id) ?? 0);
-  if (primaryAvailable + QUANTITY_EPSILON >= usedBaseQty) {
-    remainingAvailableByItem.set(component.inventory_item_id, Math.max(0, primaryAvailable - usedBaseQty));
-    return null;
-  }
-
-  const primaryUsed = Math.max(0, Math.min(primaryAvailable, usedBaseQty));
-  const fallbackUsed = Math.max(0, usedBaseQty - primaryUsed);
-  const fallbackAvailable = Math.max(0, remainingAvailableByItem.get(fallbackBoxItem.id) ?? availableByItem.get(fallbackBoxItem.id) ?? 0);
-
-  if (fallbackUsed <= QUANTITY_EPSILON || fallbackAvailable + QUANTITY_EPSILON < fallbackUsed) {
-    return null;
-  }
-
-  remainingAvailableByItem.set(component.inventory_item_id, Math.max(0, primaryAvailable - primaryUsed));
-  remainingAvailableByItem.set(fallbackBoxItem.id, Math.max(0, fallbackAvailable - fallbackUsed));
-
-  const primaryExpected = usedBaseQty > QUANTITY_EPSILON
-    ? expectedBaseQty * (primaryUsed / usedBaseQty)
-    : 0;
-  const fallbackExpected = Math.max(0, expectedBaseQty - primaryExpected);
-  const payload: ProductionComponentPayload[] = [];
-
-  if (primaryUsed > QUANTITY_EPSILON || primaryExpected > QUANTITY_EPSILON) {
-    payload.push({
-      inventory_item_id: component.inventory_item_id,
-      quantity_expected: primaryExpected,
-      quantity_used: primaryUsed,
-      unit: componentItem.base_unit,
-    });
-  }
-
-  payload.push({
-    inventory_item_id: fallbackBoxItem.id,
-    quantity_expected: fallbackExpected,
-    quantity_used: fallbackUsed,
-    unit: fallbackBoxItem.base_unit,
-  });
-
-  return payload;
-}
 
 export async function recordRecipeProductionRun({
   actualLaborMinutes,
@@ -201,15 +81,14 @@ export async function recordRecipeProductionRun({
       .maybeSingle(),
   ]);
 
-  if (recipeResult.error || !recipeResult.data || quantityProduced <= 0) {
+  if (recipeResult.error || !recipeResult.data || productResult.error || !Number.isFinite(quantityProduced) || quantityProduced <= 0) {
     return { error: 'recipe_error' as const };
   }
 
   const typedRecipe = recipeResult.data as RecipeRow;
   const product = productResult.data as ProductCategoryRow | null;
-  const isSampleBoxProduct = product?.category === SAMPLE_BOX_CATEGORY;
   const components = (typedRecipe.product_recipe_components ?? []) as RecipeComponentRow[];
-  const shouldLoadFallbackBox = isSampleBoxProduct && components.some(isSampleBoxPrimaryBoxComponent);
+  const shouldLoadFallbackBox = productionNeedsFallbackBoxes(typedRecipe, product?.category);
   const fallbackBoxResult = shouldLoadFallbackBox
     ? await supabase
         .from('inventory_items')
@@ -220,18 +99,20 @@ export async function recordRecipeProductionRun({
 
   if (fallbackBoxResult.error) return { error: 'recipe_error' as const };
 
-  const fallbackBoxItem = preferredFallbackBoxItem((fallbackBoxResult.data ?? []) as InventoryItemRow[]);
+  const fallbackItems = (fallbackBoxResult.data ?? []) as InventoryItemRow[];
+  const fallbackBoxItem = preferredProductionFallbackItem(fallbackItems);
   const itemIds = [
     ...components.map((component) => component.inventory_item_id),
     ...(fallbackBoxItem ? [fallbackBoxItem.id] : []),
   ];
-  const { data: lots } = itemIds.length
+  const { data: lots, error: lotsError } = itemIds.length
     ? await supabase
         .from('inventory_lots')
         .select('inventory_item_id,quantity_remaining,unit_cost_cents')
         .in('inventory_item_id', itemIds)
         .gt('quantity_remaining', 0)
-    : { data: [] as any[] };
+    : { data: [] as any[], error: null };
+  if (lotsError) return { error: 'production_error' as const };
 
   const avgCostByItem = new Map<string, number>();
   const uniqueItemIds = [...new Set(itemIds)];
@@ -250,57 +131,21 @@ export async function recordRecipeProductionRun({
   }
 
   const outputQty = normalizeInventoryNumber(typedRecipe.output_qty) || 1;
-  const payload: ProductionComponentPayload[] = [];
-  let estimatedMaterialCost = 0;
-  const remainingAvailableByItem = new Map(availableByItem);
-
-  try {
-    for (const component of components) {
-      const item = relatedOne(component.inventory_items);
-      const baseUnit = item?.base_unit;
-      if (!baseUnit) throw new Error('Missing component base unit.');
-      const componentWasteMultiplier = recipeComponentWasteMultiplier(component.component_role, typedRecipe.waste_percent);
-      const expectedInRecipeUnit = (normalizeInventoryNumber(component.quantity) / outputQty) * quantityProduced * componentWasteMultiplier;
-      const actualInRecipeUnit = actualQuantityByComponentId.has(component.id)
-        ? Math.max(0, actualQuantityByComponentId.get(component.id) ?? expectedInRecipeUnit)
-        : expectedInRecipeUnit;
-      const expectedBaseQtyRaw = convertInventoryQuantity(expectedInRecipeUnit, component.unit, baseUnit);
-      const usedBaseQtyRaw = convertInventoryQuantity(actualInRecipeUnit, component.unit, baseUnit);
-      const shouldRoundPackaging = isWholeCountPackagingComponentRole(component.component_role) && baseUnit === 'each';
-      const expectedBaseQty = shouldRoundPackaging ? roundWholeCountQuantity(expectedBaseQtyRaw) : expectedBaseQtyRaw;
-      const usedBaseQty = shouldRoundPackaging ? roundWholeCountQuantity(usedBaseQtyRaw) : usedBaseQtyRaw;
-      const fallbackPayload = isSampleBoxProduct
-        ? splitSampleBoxBoxComponent({
-            availableByItem,
-            component,
-            expectedBaseQty,
-            fallbackBoxItem,
-            remainingAvailableByItem,
-            usedBaseQty,
-          })
-        : null;
-
-      if (fallbackPayload) {
-        for (const line of fallbackPayload) {
-          estimatedMaterialCost += line.quantity_expected * (avgCostByItem.get(line.inventory_item_id) ?? 0);
-          payload.push(line);
-        }
-      } else {
-        estimatedMaterialCost += expectedBaseQty * (avgCostByItem.get(component.inventory_item_id) ?? 0);
-        payload.push({
-          inventory_item_id: component.inventory_item_id,
-          quantity_expected: expectedBaseQty,
-          quantity_used: usedBaseQty,
-          unit: baseUnit,
-        });
-      }
-    }
-  } catch {
-    return { error: 'unit_error' as const };
-  }
+  const preview = buildProductionMaterialPreview({
+    recipe: typedRecipe,
+    productCategory: product?.category,
+    quantity: quantityProduced,
+    onHandByItemId: availableByItem,
+    fallbackItems,
+    actualQuantityByComponentId,
+  });
+  if (preview.invalidUnit) return { error: 'unit_error' as const };
+  if (preview.missingRecipe || preview.invalidRecipe) return { error: 'recipe_error' as const };
+  const payload = preview.components;
+  const estimatedMaterialCost = payload.reduce((sum, line) => sum + line.quantity_expected * (avgCostByItem.get(line.inventory_item_id) ?? 0), 0);
 
   const boxQtyForRecipeOutput = components
-    .filter(isBoxComponent)
+    .filter(isProductionBoxComponent)
     .reduce((sum, component) => sum + normalizeInventoryNumber(component.quantity), 0);
   const fixedCostForRecipeOutput = fixedRecipeCostCents({
     boxQty: boxQtyForRecipeOutput,

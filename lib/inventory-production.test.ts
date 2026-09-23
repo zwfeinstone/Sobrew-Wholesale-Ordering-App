@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { recordRecipeProductionRun } from '@/lib/inventory-production';
+import { buildProductionMaterialPreview, type ProductionMaterialComponent, type ProductionMaterialRecipe } from '@/lib/production-materials';
 
 const PRODUCT_ID = 'sample-product-1';
 const OLD_BOX_ID = 'box-12x7x4';
@@ -54,7 +55,8 @@ class Query {
   }
 
   private async execute() {
-    return { data: this.database.tables[this.table].filter((row) => this.matches(row)), error: null };
+    const error = this.database.errors[this.table];
+    return { data: error ? null : this.database.tables[this.table].filter((row) => this.matches(row)), error: error ? { message: error } : null };
   }
 
   private matches(row: Row) {
@@ -67,6 +69,7 @@ class Query {
 }
 
 class FakeSupabase {
+  errors: Partial<Record<TableName, string>> = {};
   rpcCalls: Array<{ args: Record<string, unknown>; fn: string }> = [];
   tables: Record<TableName, Row[]> = {
     inventory_items: [
@@ -185,5 +188,58 @@ describe('recordRecipeProductionRun sample box fallback boxes', () => {
     expect(productionComponents(supabase)).toEqual([
       { inventory_item_id: OLD_BOX_ID, quantity_expected: 2, quantity_used: 2, unit: 'each' },
     ]);
+  });
+});
+
+describe('recordRecipeProductionRun shared material calculations', () => {
+  it('records the same converted and rounded quantities as its planning preview', async () => {
+    const recipe: ProductionMaterialRecipe & Record<string, unknown> = {
+      ...sampleBoxRecipe(),
+      output_qty: 2,
+      waste_percent: 10,
+      product_recipe_components: [
+        ...(sampleBoxRecipe().product_recipe_components as ProductionMaterialComponent[]),
+        { id: 'coffee-component', inventory_item_id: 'coffee', inventory_items: { id: 'coffee', base_unit: 'lb' }, quantity: 12, unit: 'oz', component_role: 'raw_coffee' },
+      ],
+    };
+    const supabase = new FakeSupabase({
+      inventory_lots: [{ inventory_item_id: NEW_BOX_ID, quantity_remaining: 5, unit_cost_cents: 30 }, { inventory_item_id: 'coffee', quantity_remaining: 5, unit_cost_cents: 100 }],
+      product_recipes: [recipe],
+    });
+    const preview = buildProductionMaterialPreview({
+      recipe,
+      productCategory: 'sample_boxes',
+      quantity: 2,
+      onHandByItemId: new Map([[NEW_BOX_ID, 5], ['coffee', 5]]),
+      fallbackItems: [{ id: NEW_BOX_ID, base_unit: 'each', active: true, sku: 'MAT-BOX-12X6X4' }],
+    });
+    expect((await recordRecipeProductionRun({ productId: PRODUCT_ID, quantityProduced: 2, supabase })).error).toBeNull();
+    expect(productionComponents(supabase)).toEqual(preview.components);
+    expect(productionComponents(supabase)[1].quantity_used).toBeCloseTo(0.825);
+  });
+
+  it('does not record production when its material inventory could not be loaded', async () => {
+    const supabase = new FakeSupabase({ product_recipes: [sampleBoxRecipe()] });
+    supabase.errors.inventory_lots = 'Inventory unavailable';
+    expect(await recordRecipeProductionRun({ productId: PRODUCT_ID, quantityProduced: 1, supabase })).toEqual({ error: 'production_error' });
+    expect(supabase.rpcCalls).toHaveLength(0);
+  });
+
+  it('does not silently omit substitutions when the product category query failed', async () => {
+    const supabase = new FakeSupabase({ product_recipes: [sampleBoxRecipe()] });
+    supabase.errors.products = 'Product unavailable';
+    expect(await recordRecipeProductionRun({ productId: PRODUCT_ID, quantityProduced: 1, supabase })).toEqual({ error: 'recipe_error' });
+    expect(supabase.rpcCalls).toHaveLength(0);
+  });
+
+  it('rejects an empty recipe and incompatible material units before submitting a run', async () => {
+    const empty = new FakeSupabase({ product_recipes: [{ ...sampleBoxRecipe(), product_recipe_components: [] }] });
+    expect(await recordRecipeProductionRun({ productId: PRODUCT_ID, quantityProduced: 1, supabase: empty })).toEqual({ error: 'recipe_error' });
+    expect(empty.rpcCalls).toHaveLength(0);
+    const invalid = sampleBoxRecipe();
+    invalid.product_recipe_components[0].unit = 'lb';
+    const badUnits = new FakeSupabase({ product_recipes: [invalid] });
+    expect(await recordRecipeProductionRun({ productId: PRODUCT_ID, quantityProduced: 1, supabase: badUnits })).toEqual({ error: 'unit_error' });
+    expect(badUnits.rpcCalls).toHaveLength(0);
   });
 });
