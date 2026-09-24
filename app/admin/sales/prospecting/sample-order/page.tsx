@@ -1,365 +1,89 @@
 import Link from 'next/link';
-import { SAMPLE_CONTACT_REQUIRED } from '@/lib/prospecting-sample-contact';
+import { randomUUID } from 'node:crypto';
 import { redirect } from 'next/navigation';
-import PendingSubmitButton from '@/components/pending-submit-button';
-import StatusToast from '@/components/status-toast';
+import LegacySampleOrderPage from './legacy-page';
+import { isProspectingWorkspaceEnabled } from '@/lib/prospecting-rollout';
+import ProspectingSampleOrderForm, { type SampleOrderFields, type SampleOrderFormState } from '@/components/prospecting-sample-order-form';
 import { adminCanEdit, requireAdminSectionEdit, requireAdminSectionView } from '@/lib/admin-permissions';
-import {
-  createProspectingSampleOrder,
-  prospectingSampleOrderInputFromFormData,
-} from '@/lib/prospecting-sample-orders';
-import {
-  MISSING_STATE_FILTER,
-  US_STATE_OPTIONS,
-  postgrestIlikePattern,
-  prospectingLeadPath,
-  prospectingPath,
-  prospectingQueueContextFromParams,
-  prospectingQueueExcludesFollowUpDue,
-  prospectingQueueHiddenFields,
-  prospectingQueueOrderFields,
-  prospectingQueueQueryString,
-  prospectingQueueRequiresFollowUp,
-  prospectingQueueSkipsTouchedToday,
-  prospectingQueueStageFilter,
-  type ProspectingQueueContext,
-} from '@/lib/prospecting';
+import { createProspectingSampleOrder, prospectingSampleOrderInputFromFormData } from '@/lib/prospecting-sample-orders';
+import { hasSampleRequestContact } from '@/lib/prospecting-sample-contact';
+import { prospectingLeadPath, prospectingOriginPath, prospectingQueueContextFromParams, prospectingQueueHiddenFields } from '@/lib/prospecting';
 import { getSupabaseAdmin } from '@/lib/supabase/admin';
 import { createClient } from '@/lib/supabase/server';
-import { formatCentralDateInput, parseCentralDateInput } from '@/lib/time-clock';
 
 type SearchParams = Record<string, string | string[] | undefined>;
-type Related<T> = T | T[] | null | undefined;
-
-type LeadRow = {
-  address_line_1: string | null;
-  address_line_2: string | null;
-  assigned_profile_id: string | null;
-  city: string | null;
-  company_name: string;
-  id: string;
-  postal_code: string | null;
-  state: string | null;
-};
-
-type ContactRow = {
-  full_name: string | null;
-  is_primary: boolean | null;
-};
-
-type ProductRow = {
-  id: string;
-  name: string | null;
-  product_recipes?: Related<{ id: string | null }>;
-  sku: string | null;
-};
-
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const cleanId = (value: unknown) => typeof value === 'string' && UUID_PATTERN.test(value) ? value : '';
 
-function sampleOrderHref({
-  leadId,
-  nextRecordId,
-  previousRecordId,
-  queueContext,
-  toast,
-}: {
-  leadId?: string | null;
-  nextRecordId?: string;
-  previousRecordId?: string;
-  queueContext?: ProspectingQueueContext;
-  toast?: string;
-}) {
-  const params = new URLSearchParams(queueContext ? prospectingQueueQueryString(queueContext, { includePageSize: true }) : undefined);
-  if (leadId) params.set('lead', leadId);
-  if (nextRecordId) params.set('next_record_id', nextRecordId);
-  if (previousRecordId) params.set('previous_record_id', previousRecordId);
-  if (toast) params.set('toast', toast);
-  const query = params.toString();
-  return `/admin/sales/prospecting/sample-order${query ? `?${query}` : ''}`;
-}
-
-function cleanRecordId(value: FormDataEntryValue | string | string[] | null | undefined) {
-  const text = typeof value === 'string' ? value.trim() : '';
-  return UUID_PATTERN.test(text) ? text : '';
-}
-
-function QueueContextFields({ context }: { context: ProspectingQueueContext }) {
-  return (
-    <>
-      {prospectingQueueHiddenFields(context).map((field) => (
-        <input key={field.name} type="hidden" name={field.name} value={field.value} />
-      ))}
-    </>
-  );
-}
-
-async function sampleOrderCompletionHref({
-  currentProfileId,
-  isOwner,
-  nextRecordId,
-  previousRecordId,
-  queueContext,
-}: {
-  currentProfileId: string;
-  isOwner: boolean;
-  nextRecordId: string;
-  previousRecordId: string;
-  queueContext: ProspectingQueueContext;
-}) {
-  const candidateIds = [nextRecordId, previousRecordId].filter(Boolean);
-  if (!candidateIds.length) return prospectingPath(queueContext, { includePageSize: true, toast: 'sample_order_created' });
-
-  const supabase = getSupabaseAdmin();
-  const today = formatCentralDateInput(new Date());
-  const todayStart = parseCentralDateInput(today) ?? new Date();
-  const selectColumns = queueContext.listId ? 'id,prospecting_list_leads!inner(list_id)' : 'id';
-  let query = supabase
-    .from('prospecting_leads')
-    .select(selectColumns)
-    .in('id', candidateIds)
-    .is('archived_at', null);
-
-  if (isOwner) {
-    if (queueContext.repId) query = query.eq('assigned_profile_id', queueContext.repId);
-  } else {
-    query = query.eq('assigned_profile_id', currentProfileId);
+async function submitSampleOrder(_previous: SampleOrderFormState, formData: FormData): Promise<SampleOrderFormState> {
+  const current = await requireAdminSectionEdit('prospecting');
+  if (!isProspectingWorkspaceEnabled()) return { code: 'setup_required', error: 'The prospecting workspace changed while this form was open. Reload before submitting.' };
+  const input = prospectingSampleOrderInputFromFormData(formData);
+  const queue = prospectingQueueContextFromParams(formData);
+  try {
+    const result = await createProspectingSampleOrder({ currentProfileId: current.profile.id, input, isOwner: current.isOwner, supabase: getSupabaseAdmin() });
+    if (result.error || !result.orderId) return { code: result.error ?? 'save_error', error: result.message ?? ({ invalid_items: 'Choose at least one sample box with a whole-number quantity.', invalid_product: 'A selected sample box is unavailable.', lead_error: 'That linked lead is unavailable.' }[result.error as string] || 'The sample order could not be created. Your draft has been kept.') };
+    return { orderId: result.orderId, successHref: prospectingOriginPath(queue) };
+  } catch {
+    return { code: 'connection_error', error: 'The response was interrupted. Retry this same submission to check whether the order was created.' };
   }
-  query = query.in('stage', prospectingQueueStageFilter(queueContext));
-  if (prospectingQueueRequiresFollowUp(queueContext)) query = query.not('next_follow_up_at', 'is', null).lte('next_follow_up_at', today);
-  if (prospectingQueueExcludesFollowUpDue(queueContext)) query = query.or(`next_follow_up_at.is.null,next_follow_up_at.gt.${today}`);
-  if (prospectingQueueSkipsTouchedToday(queueContext)) query = query.or(`last_activity_at.is.null,last_activity_at.lt.${todayStart.toISOString()}`);
-  if (queueContext.priority) query = query.eq('priority', queueContext.priority);
-  if (queueContext.state === MISSING_STATE_FILTER) query = query.is('state_key', null);
-  else if (queueContext.state) query = query.eq('state_key', queueContext.state);
-  if (queueContext.listId) query = query.eq('prospecting_list_leads.list_id', queueContext.listId);
-  if (queueContext.q) {
-    const search = postgrestIlikePattern(queueContext.q);
-    query = query.or([
-      `company_name.ilike.${search}`,
-      `phone.ilike.${search}`,
-      `company_email.ilike.${search}`,
-      `city.ilike.${search}`,
-      `state.ilike.${search}`,
-      `last_result.ilike.${search}`,
-    ].join(','));
-  }
-  for (const order of prospectingQueueOrderFields(queueContext)) {
-    query = query.order(order.column, { ascending: order.ascending });
-  }
-
-  const { data } = await query;
-  const validIds = new Set(((data ?? []) as unknown as Array<{ id: string | null }>).map((row) => row.id).filter(Boolean));
-  const destinationId = candidateIds.find((id) => validIds.has(id));
-  return destinationId
-    ? prospectingLeadPath(destinationId, queueContext, { includePageSize: true, toast: 'sample_order_created' })
-    : prospectingPath(queueContext, { includePageSize: true, toast: 'sample_order_created' });
 }
 
-function productLabel(product: ProductRow) {
-  return product.sku ? `${product.name || 'Sample box'} (${product.sku})` : product.name || 'Sample box';
-}
-
-function relatedList<T>(value: Related<T>): T[] {
-  if (Array.isArray(value)) return value;
-  return value ? [value] : [];
-}
-
-function hasRecipe(product: ProductRow) {
-  return relatedList(product.product_recipes).some((recipe) => Boolean(recipe?.id));
-}
-
-function toastMessage(toast: string) {
-  const messages: Record<string, { message: string; tone: 'error' | 'success' }> = {
-    admin_write_denied: { message: 'You do not have permission to order samples.', tone: 'error' },
-    insert_error: { message: 'Unable to create the sample order.', tone: 'error' },
-    invalid_items: { message: 'Choose at least one sample box quantity.', tone: 'error' },
-    invalid_product: { message: 'Choose only active sample boxes with saved recipes.', tone: 'error' },
-    lead_error: { message: 'Unable to update the linked prospecting lead.', tone: 'error' },
-    missing_fields: { message: 'Enter the center, attention name, and full shipping address.', tone: 'error' },
-    sample_requested: { message: 'Sample request saved. Choose the sample box quantity to create the production order.', tone: 'success' },
-    sample_contact_required: { message: SAMPLE_CONTACT_REQUIRED, tone: 'error' },
-    unauthorized: { message: 'That lead is not assigned to you.', tone: 'error' },
-  };
-  return messages[toast];
-}
-
-async function submitSampleOrder(formData: FormData) {
-  'use server';
-
-  const leadId = String(formData.get('lead_id') ?? '').trim();
-  const queueContext = prospectingQueueContextFromParams(formData);
-  const nextRecordId = cleanRecordId(formData.get('next_record_id'));
-  const previousRecordId = cleanRecordId(formData.get('previous_record_id'));
-  const current = await requireAdminSectionEdit('prospecting', sampleOrderHref({ leadId, toast: 'admin_write_denied' }));
-  const supabase = getSupabaseAdmin();
-  const result = await createProspectingSampleOrder({
-    currentProfileId: current.profile.id,
-    input: prospectingSampleOrderInputFromFormData(formData),
-    isOwner: current.isOwner,
-    supabase,
-  });
-
-  if (result.error || !result.orderId) {
-    redirect(sampleOrderHref({ leadId, nextRecordId, previousRecordId, queueContext, toast: result.error ?? 'insert_error' }));
-  }
-
-  if (leadId) {
-    redirect(await sampleOrderCompletionHref({
-      currentProfileId: current.profile.id,
-      isOwner: current.isOwner,
-      nextRecordId,
-      previousRecordId,
-      queueContext,
-    }));
-  }
-
-  redirect(`/admin/orders/${result.orderId}?toast=sample_order_created`);
-}
-
-export default async function ProspectingSampleOrderPage(
-  props: {
-    searchParams?: Promise<SearchParams>;
-  }
-) {
-  const searchParams = await props.searchParams;
+export default async function ProspectingSampleOrderPage({ searchParams }: { searchParams?: Promise<SearchParams> }) {
+  if (!isProspectingWorkspaceEnabled()) return LegacySampleOrderPage({ searchParams });
+  const params = await searchParams;
   const current = await requireAdminSectionView('prospecting');
   const canEdit = current.isOwner || adminCanEdit(current.access, 'prospecting');
+  const queue = prospectingQueueContextFromParams(params);
+  const requestedLead = typeof params?.lead === 'string' ? params.lead : '';
+  const requestedRequest = typeof params?.request === 'string' ? params.request : '';
+  const leadId = cleanId(requestedLead);
+  const requestId = cleanId(requestedRequest);
+  if (requestId && current.isOwner) {
+    if (!queue.origin) queue.origin = 'samples';
+    if (!queue.returnTo) queue.returnTo = '/admin/sales/prospecting/admin?tab=requests';
+  }
+  const backHref = prospectingOriginPath(queue);
   const supabase = await createClient();
-  const toast = typeof searchParams?.toast === 'string' ? searchParams.toast : '';
-  const queueContext = prospectingQueueContextFromParams(searchParams);
-  const requestedLeadId = typeof searchParams?.lead === 'string' && UUID_PATTERN.test(searchParams.lead)
-    ? searchParams.lead
-    : '';
-  const nextRecordId = cleanRecordId(searchParams?.next_record_id);
-  const previousRecordId = cleanRecordId(searchParams?.previous_record_id);
-
-  let leadQuery = requestedLeadId
-    ? supabase
-        .from('prospecting_leads')
-        .select('id,assigned_profile_id,company_name,address_line_1,address_line_2,city,state,postal_code')
-        .eq('id', requestedLeadId)
-    : null;
-  if (leadQuery && !current.isOwner) leadQuery = leadQuery.eq('assigned_profile_id', current.profile.id);
-
-  const [leadResult, productsResult] = await Promise.all([
-    leadQuery ? leadQuery.maybeSingle() : { data: null, error: null },
-    supabase
-      .from('products')
-      .select('id,name,sku,product_recipes(id)')
-      .eq('active', true)
-      .eq('category', 'sample_boxes')
-      .order('name', { ascending: true }),
+  let query = leadId ? supabase.from('prospecting_leads').select('id,company_name,assigned_profile_id,stage,updated_at,address_line_1,address_line_2,city,state,postal_code,archived_at').eq('id', leadId).is('archived_at', null) : null;
+  if (query && !current.isOwner) query = query.eq('assigned_profile_id', current.profile.id).neq('stage', 'sample_requested');
+  const [leadResult, productsResult, requestResult] = await Promise.all([
+    query ? query.maybeSingle() : Promise.resolve({ data: null, error: null }),
+    supabase.from('products').select('id,name,sku,product_recipes(id)').eq('active', true).eq('category', 'sample_boxes').order('name'),
+    requestId && current.isOwner ? getSupabaseAdmin().from('prospecting_sample_requests').select('*').eq('id', requestId).eq('lead_id', leadId).maybeSingle() : Promise.resolve({ data: null, error: null }),
   ]);
-
-  const lead = leadResult.data as LeadRow | null;
-  const contactsResult = lead?.id
-    ? await supabase
-        .from('prospecting_contacts')
-        .select('full_name,is_primary')
-        .eq('lead_id', lead.id)
-    : { data: [] as ContactRow[] };
-  const contacts = (contactsResult.data ?? []) as ContactRow[];
-  const primaryContact = contacts.find((contact) => contact.is_primary) ?? contacts[0] ?? null;
-  const products = ((productsResult.data ?? []) as ProductRow[]).filter(hasRecipe);
-  const message = toastMessage(toast);
-
-  return (
-    <div className="space-y-6">
-      {message ? <StatusToast message={message.message} tone={message.tone} /> : null}
-      {requestedLeadId && !lead ? <StatusToast message="That lead could not be loaded for sample ordering." tone="error" /> : null}
-      {productsResult.error ? <StatusToast message="Sample box products could not be loaded." tone="error" /> : null}
-
-      <section className="panel">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-          <div>
-            <span className="eyebrow">Prospecting</span>
-            <h1 className="page-title mt-4">Order sample</h1>
-            <p className="page-subtitle mt-3">
-              {lead ? 'Review the lead details, choose sample boxes, and send the order to production.' : 'Enter the shipment details, choose sample boxes, and send a standalone order to production.'}
-            </p>
-          </div>
-          <Link className="btn-secondary w-full sm:w-auto" href={prospectingPath(queueContext, { includePageSize: true })}>Back to Prospecting</Link>
-        </div>
-      </section>
-
-      <form action={submitSampleOrder} className="card space-y-5">
-        <input type="hidden" name="lead_id" value={lead?.id ?? ''} />
-        <QueueContextFields context={queueContext} />
-        <input type="hidden" name="next_record_id" value={nextRecordId} />
-        <input type="hidden" name="previous_record_id" value={previousRecordId} />
-        <div className="grid gap-3 md:grid-cols-2">
-          <label className="text-sm font-semibold text-slate-700">
-            Center name
-            <input className="input mt-2" name="center_name" defaultValue={lead?.company_name ?? ''} required disabled={!canEdit} />
-          </label>
-          <label className="text-sm font-semibold text-slate-700">
-            Attention name
-            <input className="input mt-2" name="attention_name" defaultValue={primaryContact?.full_name ?? ''} required disabled={!canEdit} />
-          </label>
-          <label className="text-sm font-semibold text-slate-700">
-            Address 1
-            <input className="input mt-2" name="address1" defaultValue={lead?.address_line_1 ?? ''} required disabled={!canEdit} />
-          </label>
-          <label className="text-sm font-semibold text-slate-700">
-            Address 2
-            <input className="input mt-2" name="address2" defaultValue={lead?.address_line_2 ?? ''} disabled={!canEdit} />
-          </label>
-          <label className="text-sm font-semibold text-slate-700">
-            City
-            <input className="input mt-2" name="city" defaultValue={lead?.city ?? ''} required disabled={!canEdit} />
-          </label>
-          <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_10rem]">
-            <label className="text-sm font-semibold text-slate-700">
-              State
-              <select className="input mt-2" name="state" defaultValue={lead?.state ?? ''} required disabled={!canEdit}>
-                <option value="">Select state</option>
-                {US_STATE_OPTIONS.map((state) => <option key={state.id} value={state.id}>{state.id} - {state.label}</option>)}
-              </select>
-            </label>
-            <label className="text-sm font-semibold text-slate-700">
-              ZIP
-              <input className="input mt-2" name="zip" defaultValue={lead?.postal_code ?? ''} required disabled={!canEdit} />
-            </label>
-          </div>
-        </div>
-
-        <div className="rounded-2xl border border-slate-200 bg-white/60 p-4">
-          <p className="text-sm font-semibold text-slate-950">Sample box products</p>
-          {!products.length ? (
-            <p className="mt-3 text-sm text-slate-600">No active Sample Boxes products with saved recipes are available yet.</p>
-          ) : (
-            <div className="mt-3 space-y-3">
-              {products.map((product) => (
-                <div key={product.id} className="grid gap-3 rounded-xl border border-slate-200 bg-white/70 p-3 sm:grid-cols-[minmax(0,1fr)_8rem] sm:items-center">
-                  <div>
-                    <p className="font-semibold text-slate-950">{productLabel(product)}</p>
-                    <p className="mt-1 text-sm text-slate-500">Free sample order line</p>
-                  </div>
-                  <label className="text-sm font-semibold text-slate-700">
-                    Qty
-                    <input type="hidden" name="product_id" value={product.id} />
-                    <input className="input mt-2" name="quantity" type="number" min="0" step="1" defaultValue={lead ? '0' : '1'} disabled={!canEdit} />
-                  </label>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-
-        <label className="text-sm font-semibold text-slate-700">
-          Special notes
-          <textarea className="input mt-2 min-h-28" name="notes" placeholder="Delivery details, preferences, or context for production" disabled={!canEdit} />
-        </label>
-
-        <PendingSubmitButton
-          className="btn-primary w-full sm:w-auto"
-          data-press-lock-key="prospecting-sample-order"
-          disabled={!canEdit || !products.length}
-          disabledLabel={!canEdit ? 'Read-only access' : 'No sample boxes available'}
-          label="Submit sample order"
-          pendingLabel="Submitting..."
-        />
-      </form>
-    </div>
-  );
+  const lead = leadResult.data;
+  const request = requestResult.data;
+  const invalidLinked = Boolean(requestedLead && (!leadId || !lead || leadResult.error));
+  const invalidRequest = Boolean(requestedRequest && (!requestId || !current.isOwner || !request || requestResult.error || request.closed_at || request.status === 'order_created'));
+  if (invalidLinked || invalidRequest) return <div className="space-y-5"><h1 className="page-title">Sample request unavailable</h1><div className="card space-y-3" role="alert"><p>{request?.order_id ? 'This request already has an order.' : 'This linked lead or request could not be loaded. Reload the request or return to your queue.'}</p><div className="flex gap-3"><Link className="btn-secondary" href={backHref}>Back to prospecting</Link>{request?.order_id ? <Link className="btn-primary" href={`/admin/orders/${request.order_id}`}>View order</Link> : null}</div></div></div>;
+  if (lead && !request && lead.stage !== 'sample_requested') {
+    const href = prospectingLeadPath(lead.id, queue, { includePageSize: true });
+    redirect(`${href}${href.includes('?') ? '&' : '?'}sample=1`);
+  }
+  const contactsResult = lead ? await supabase.from('prospecting_contacts').select('id,full_name,email,is_primary').eq('lead_id', lead.id).order('is_primary', { ascending: false }).order('created_at') : { data: [], error: null };
+  if (contactsResult.error) return <div className="card space-y-3" role="alert"><h1 className="text-xl font-semibold">Contacts unavailable</h1><p>The sample contact could not be loaded. Reload before ordering.</p><Link className="btn-secondary" href={backHref}>Back to prospecting</Link></div>;
+  const contacts = (contactsResult.data ?? []).map(contact => ({ ...contact, eligible: hasSampleRequestContact([contact]) }));
+  const contact = contacts.find(item => item.id === request?.contact_id && item.eligible) ?? contacts.find(item => item.eligible);
+  const details = request?.details && typeof request.details === 'object' && !Array.isArray(request.details) ? request.details : {};
+  const detail = (name: string, fallback = '') => typeof details[name] === 'string' ? String(details[name]) : fallback;
+  const values: SampleOrderFields = {
+    center_name: detail('centerName', lead?.company_name ?? ''), attention_name: detail('attentionName', contact?.full_name ?? ''),
+    address1: detail('address1', lead?.address_line_1 ?? ''), address2: detail('address2', lead?.address_line_2 ?? ''),
+    city: detail('city', lead?.city ?? ''), state: detail('state', lead?.state ?? ''), zip: detail('zip', lead?.postal_code ?? ''),
+    notes: detail('notes'), contact_id: contact?.id ?? '',
+  };
+  const products = (productsResult.data ?? []).filter(product => Array.isArray(product.product_recipes) ? product.product_recipes.length > 0 : Boolean(product.product_recipes)).map(product => ({ id: product.id, label: product.sku ? `${product.name || 'Sample box'} (${product.sku})` : product.name || 'Sample box' }));
+  const initialQuantities: Record<string, number> = {};
+  if (Array.isArray(details.items)) for (const item of details.items) {
+    if (item && typeof item === 'object' && !Array.isArray(item) && typeof item.productId === 'string') initialQuantities[item.productId] = Number(item.quantity) || 0;
+  }
+  return <div className="mx-auto max-w-4xl space-y-6">
+    <section className="panel"><Link className="text-sm font-semibold text-teal-800 underline" href={backHref}>{request ? 'Back to sample requests' : 'Back to prospecting'}</Link><h1 className="page-title mt-4">{request ? 'Fulfill sample request' : 'Create sample order'}</h1><p className="page-subtitle mt-2">{lead ? `Samples for ${lead.company_name}. Review the contact, delivery address, and boxes before sending to production.` : 'Create a standalone sample shipment. Choose the quantities to include.'}</p>{request?.status === 'legacy_review' ? <p className="mt-3 rounded-lg bg-amber-50 p-3 text-sm text-amber-900">This older request needs review before another shipment is created.{request.order_id ? <> <Link className="font-semibold underline" href={`/admin/orders/${request.order_id}`}>Review its existing order</Link>.</> : null}</p> : null}</section>
+    {productsResult.error ? <div className="rounded-lg bg-rose-50 p-4 text-rose-900" role="alert">Sample boxes could not be loaded. Reload before submitting.</div> : null}
+    <ProspectingSampleOrderForm key={`${current.profile.id}:${lead?.id ?? "standalone"}:${request?.id ?? "none"}`} action={submitSampleOrder} initialValues={values} submissionId={randomUUID()} initialQuantities={initialQuantities} actorId={current.profile.id} contacts={contacts} products={products} canEdit={canEdit} productsUnavailable={Boolean(productsResult.error)} linked={Boolean(lead)} editLeadHref={lead ? prospectingLeadPath(lead.id, queue, { includePageSize: true }) : undefined} backHref={backHref} hiddenFields={[
+      { name: 'lead_id', value: lead?.id ?? '' }, { name: 'request_id', value: request?.id ?? '' },
+      { name: 'expected_updated_at', value: lead?.updated_at ?? '' }, ...prospectingQueueHiddenFields(queue),
+    ]} />
+  </div>;
 }

@@ -1,15 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { Database } from '@/lib/supabase/schema';
-import {
-  MISSING_STATE_FILTER,
-  postgrestIlikePattern,
-  prospectingQueueExcludesFollowUpDue,
-  prospectingQueueOrderFields,
-  prospectingQueueRequiresFollowUp,
-  prospectingQueueSkipsTouchedToday,
-  prospectingQueueStageFilter,
-  type ProspectingQueueContext,
-} from '@/lib/prospecting';
+import { prospectingQueueOrderFields } from '@/lib/prospecting';
+import { prospectingQueueAuthorizedQuery, prospectingQueueQuery, type ProspectingQueueOptions } from '@/lib/prospecting-queue';
 
 type QueueOrderField = { column: string; ascending: boolean; nullsFirst?: boolean };
 type Direction = 'previous' | 'next';
@@ -56,61 +48,46 @@ export function queueNeighborFilter(
   return branches.join(',');
 }
 
-type QueueOptions = {
-  context: ProspectingQueueContext;
-  profileId: string | null;
-  today: string;
-  todayStartIso: string;
-};
-
-const QUEUE_CURSOR_COLUMNS = 'id,next_follow_up_at,last_activity_at,created_at,stage,updated_at,state_key,city,company_name';
-
-function queueQuery(supabase: SupabaseClient<Database>, { context, profileId, today, todayStartIso }: QueueOptions) {
-  let query = context.listId
-    ? supabase.from('prospecting_leads').select(`${QUEUE_CURSOR_COLUMNS},prospecting_list_leads!inner(list_id)`)
-    : supabase.from('prospecting_leads').select(QUEUE_CURSOR_COLUMNS);
-  query = query.is('archived_at', null);
-  query = profileId ? query.eq('assigned_profile_id', profileId) : query.is('assigned_profile_id', null);
-  query = query.in('stage', prospectingQueueStageFilter(context));
-  if (prospectingQueueRequiresFollowUp(context)) query = query.not('next_follow_up_at', 'is', null).lte('next_follow_up_at', today);
-  if (prospectingQueueExcludesFollowUpDue(context)) query = query.or(`next_follow_up_at.is.null,next_follow_up_at.gt.${today}`);
-  if (prospectingQueueSkipsTouchedToday(context)) query = query.or(`last_activity_at.is.null,last_activity_at.lt.${todayStartIso}`);
-  if (context.priority) query = query.eq('priority', context.priority);
-  if (context.state === MISSING_STATE_FILTER) query = query.is('state_key', null);
-  else if (context.state) query = query.eq('state_key', context.state);
-  if (context.listId) query = query.eq('prospecting_list_leads.list_id', context.listId);
-  if (context.q) {
-    const search = quotedFilterValue(postgrestIlikePattern(context.q));
-    query = query.or(['company_name', 'phone', 'company_email', 'city', 'state', 'last_result']
-      .map((column) => `${column}.ilike.${search}`).join(','));
-  }
-  return query;
-}
-
 export async function loadProspectingQueueNeighbors(
   supabase: SupabaseClient<Database>,
-  options: QueueOptions & { currentLeadId: string },
+  options: ProspectingQueueOptions & { currentLeadId: string; excludedLeadIds?: string[] },
 ) {
   const fields = prospectingQueueOrderFields(options.context);
-  const { data: cursor, error } = await queueQuery(supabase, options).eq('id', options.currentLeadId).limit(1).maybeSingle();
-  if (error) return { previousLeadId: null, nextLeadId: null };
+  const { data: cursor, error } = await prospectingQueueAuthorizedQuery(supabase, options).eq('id', options.currentLeadId).limit(1).maybeSingle();
+  if (error) return { previousLeadId: null, nextLeadId: null, unavailable: true as const };
+  if (!cursor) return { previousLeadId: null, nextLeadId: null };
+  let unavailable = false;
+
+  const excludedIds = [...new Set((options.excludedLeadIds ?? []).filter((id) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)).map((id) => id.toLowerCase()))].slice(0, 5000);
+  const excluded = new Set(excludedIds);
+  const needsBatches = excludedIds.length > 100;
 
   function orderedQuery(direction: Direction) {
-    let query = queueQuery(supabase, options);
+    let query = prospectingQueueQuery(supabase, options);
     for (const { column, ascending, nullsFirst } of queueNeighborOrderFields(fields, direction)) {
       query = query.order(column, { ascending, nullsFirst });
     }
-    return query.limit(1);
+    if (excludedIds.length && !needsBatches) query = query.not('id', 'in', `(${excludedIds.join(',')})`);
+    return query.limit(needsBatches ? 100 : 1);
   }
 
-  if (!cursor) {
-    const { data } = await orderedQuery('next').neq('id', options.currentLeadId).maybeSingle();
-    return { previousLeadId: null, nextLeadId: data?.id ?? null };
+  async function neighbor(direction: Direction) {
+    let currentCursor = cursor as unknown as Record<string, unknown>;
+    // Large work sessions use bounded keyset batches instead of an oversized GET URL.
+    // At most the visited set plus one fresh batch is examined, never the full table.
+    for (let batch = 0; batch <= Math.ceil(excludedIds.length / 100); batch += 1) {
+      const { data, error: candidateError } = await orderedQuery(direction)
+        .or(queueNeighborFilter(fields, currentCursor, direction));
+      if (candidateError) { unavailable = true; return null; }
+      const candidates = (data ?? []) as unknown as Array<Record<string, unknown> & { id: string }>;
+      const next = candidates.find((candidate) => !excluded.has(candidate.id));
+      if (next) return next.id;
+      if (!needsBatches || candidates.length < 100) return null;
+      currentCursor = candidates[candidates.length - 1];
+    }
+    return null;
   }
 
-  const [previous, next] = await Promise.all([
-    orderedQuery('previous').or(queueNeighborFilter(fields, cursor, 'previous')).maybeSingle(),
-    orderedQuery('next').or(queueNeighborFilter(fields, cursor, 'next')).maybeSingle(),
-  ]);
-  return { previousLeadId: previous.data?.id ?? null, nextLeadId: next.data?.id ?? null };
+  const [previousLeadId, nextLeadId] = await Promise.all([neighbor('previous'), neighbor('next')]);
+  return { previousLeadId, nextLeadId, ...(unavailable ? { unavailable: true as const } : {}) };
 }

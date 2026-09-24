@@ -28,7 +28,7 @@ function totals(overrides: Partial<ProfitabilityTotals>): ProfitabilityTotals {
 }
 
 describe('buildLaborPaidGpmSummary', () => {
-  it('replaces shipped labor COGS with production-tagged payroll labor', () => {
+  it.each(['profile-1', null])('preserves production payroll labor with profile %s', (profileId) => {
     const summary = buildLaborPaidGpmSummary({
       allocations: [],
       current: totals({}),
@@ -40,7 +40,7 @@ describe('buildLaborPaidGpmSummary', () => {
           hourly_rate_cents_snapshot: 2000,
           id: 'entry-production',
           locked_at: '2026-07-12T00:00:00.000Z',
-          profile_id: 'profile-1',
+          profile_id: profileId,
           status: 'locked',
           work_type: 'production',
         },

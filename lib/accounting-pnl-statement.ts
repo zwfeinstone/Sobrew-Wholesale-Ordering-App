@@ -71,7 +71,7 @@ export type ProductionRunLaborRow = {
 export type AccountingPayrollTimeEntryRow = TimeClockEntryRow & {
   admin_time_breaks?: TimeClockBreakRow[] | null;
   id: string;
-  profile_id: string;
+  profile_id: string | null;
 };
 
 export type AccountingPayrollAllocationRow = {

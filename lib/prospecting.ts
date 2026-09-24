@@ -35,6 +35,7 @@ export const PROSPECTING_IMPORT_MAX_ROWS = 5000;
 export const MISSING_STATE_FILTER = 'missing';
 
 export const REP_PROSPECTING_TABS = [
+  { id: 'today', label: 'Today' },
   { id: 'list', label: 'List' },
   { id: 'pipeline', label: 'Pipeline' },
   { id: 'tasks', label: 'Tasks' },
@@ -42,7 +43,23 @@ export const REP_PROSPECTING_TABS = [
 
 export type RepProspectingTab = (typeof REP_PROSPECTING_TABS)[number]['id'];
 
+export const PROSPECTING_TODAY_PRESETS = [
+  { id: 'all', label: 'All today' },
+  { id: 'overdue', label: 'Overdue' },
+  { id: 'due_today', label: 'Due today' },
+  { id: 'new', label: 'New' },
+  { id: 'upcoming', label: 'Upcoming' },
+  { id: 'needs_scheduling', label: 'Needs scheduling' },
+] as const;
+export type ProspectingTodayPreset = (typeof PROSPECTING_TODAY_PRESETS)[number]['id'];
+export type ProspectingOrigin = 'rep' | 'leads' | 'imports' | 'samples' | 'hubspot' | 'reports';
+
 export type ProspectingQueueContext = {
+  /** Optional so existing saved URLs and callers keep their original queue semantics. */
+  preset?: ProspectingTodayPreset;
+  origin?: ProspectingOrigin;
+  returnTo?: string;
+  runId?: string;
   listId: string;
   page: number;
   pageSize: typeof PROSPECTING_PAGE_SIZES[number];
@@ -372,7 +389,7 @@ function queueParamWithFallback(source: ProspectingQueueParamSource, queueKey: s
 
 export function normalizeProspectingTab(value: string | string[] | null | undefined): RepProspectingTab {
   const text = typeof value === 'string' ? value : '';
-  return REP_PROSPECTING_TABS.some((tab) => tab.id === text) ? text as RepProspectingTab : 'list';
+  return REP_PROSPECTING_TABS.some((tab) => tab.id === text) ? text as RepProspectingTab : 'today';
 }
 
 export function normalizeProspectingListId(value: string | string[] | null | undefined) {
@@ -395,7 +412,18 @@ export function prospectingQueueContextFromParams(source: ProspectingQueueParamS
     ? requestedStage as ProspectingStage
     : '';
 
+  const requestedPreset = queueParamWithFallback(source, 'queue_preset', 'preset');
+  const preset = PROSPECTING_TODAY_PRESETS.some((item) => item.id === requestedPreset) ? requestedPreset as ProspectingTodayPreset : undefined;
+  const requestedOrigin = queueParamWithFallback(source, 'queue_origin', 'origin');
+  const origin = ['rep', 'leads', 'imports', 'samples', 'hubspot', 'reports'].includes(requestedOrigin) ? requestedOrigin as ProspectingOrigin : undefined;
+  const returnTo = safeProspectingReturnPath(queueParamWithFallback(source, 'queue_return_to', 'return_to'));
+  const runId = normalizeProspectingListId(queueParamWithFallback(source, 'queue_run_id', 'run_id'));
+
   return {
+    ...(tab === 'today' && preset ? { preset } : {}),
+    ...(origin ? { origin } : {}),
+    ...(returnTo ? { returnTo } : {}),
+    ...(runId ? { runId } : {}),
     listId: normalizeProspectingListId(queueParamWithFallback(source, 'queue_list', 'list', 'list_id')),
     page: normalizePageNumber(queueParamWithFallback(source, 'queue_page', 'page')),
     pageSize: normalizePageSize(queueParamWithFallback(source, 'queue_page_size', 'page_size')),
@@ -413,7 +441,11 @@ export function prospectingQueueQueryString(
   options: { includePageSize?: boolean; page?: number | string; toast?: string } = {},
 ) {
   const query = new URLSearchParams();
-  if (context.tab !== 'list') query.set('tab', context.tab);
+  if (context.tab !== 'today') query.set('tab', context.tab);
+  if (context.tab === 'today' && context.preset && context.preset !== 'all') query.set('preset', context.preset);
+  if (context.origin) query.set('origin', context.origin);
+  if (context.runId) query.set('run_id', context.runId);
+  if (context.returnTo && safeProspectingReturnPath(context.returnTo)) query.set('return_to', context.returnTo);
   if (context.q) query.set('q', context.q);
   if (context.priority) query.set('priority', context.priority);
   if (context.tab === 'pipeline' && context.stage) query.set('stage', context.stage);
@@ -455,7 +487,25 @@ export function prospectingQueueHiddenFields(context: ProspectingQueueContext) {
     { name: 'queue_page_size', value: String(context.pageSize) },
     { name: 'queue_list', value: context.listId },
     { name: 'queue_rep_id', value: context.repId },
+    ...(context.preset ? [{ name: 'queue_preset', value: context.preset }] : []),
+    ...(context.origin ? [{ name: 'queue_origin', value: context.origin }] : []),
+    ...(context.returnTo ? [{ name: 'queue_return_to', value: context.returnTo }] : []),
+    ...(context.runId ? [{ name: 'queue_run_id', value: context.runId }] : []),
   ];
+}
+
+export function safeProspectingReturnPath(value: string | null | undefined) {
+  if (!value || value.length > 4000 || /[\\\r\n]/.test(value)) return '';
+  const pathname = value.split('?')[0];
+  return ['/admin/sales/prospecting/admin', '/admin/reports', '/admin/sales/prospecting'].includes(pathname) ? value : '';
+}
+
+export function prospectingOriginPath(context: ProspectingQueueContext) {
+  const returnTo = safeProspectingReturnPath(context.returnTo);
+  if (returnTo) return returnTo;
+  const tabs = { leads: 'leads', imports: 'add', samples: 'samples', hubspot: 'hubspot', reports: 'overview' };
+  if (context.origin && context.origin !== 'rep') return `/admin/sales/prospecting/admin?tab=${tabs[context.origin]}`;
+  return prospectingPath(context, { includePageSize: true });
 }
 
 export function prospectingQueueWithoutStateFilter(context: ProspectingQueueContext): ProspectingQueueContext {
@@ -468,11 +518,13 @@ export function prospectingQueueWithoutStateFilter(context: ProspectingQueueCont
 
 export function prospectingQueueStageFilter(context: ProspectingQueueContext): ProspectingStage[] {
   if (context.stage) return [context.stage];
+  if (context.tab === 'today' && context.preset === 'new') return ['new'];
+  if (context.tab === 'today' && context.preset === 'needs_scheduling') return ['working', 'follow_up', 'interested'];
   return context.tab === 'list' ? ACTIVE_PROSPECTING_STAGES : REP_PIPELINE_STAGES;
 }
 
 export function prospectingQueueRequiresFollowUp(context: ProspectingQueueContext) {
-  return context.tab === 'tasks';
+  return context.tab === 'tasks' || (context.tab === 'today' && ['overdue', 'due_today'].includes(context.preset ?? 'all'));
 }
 
 export function prospectingQueueExcludesFollowUpDue(context: ProspectingQueueContext) {
@@ -480,11 +532,11 @@ export function prospectingQueueExcludesFollowUpDue(context: ProspectingQueueCon
 }
 
 export function prospectingQueueSkipsTouchedToday(context: ProspectingQueueContext) {
-  return context.tab === 'pipeline' && context.stage === 'new';
+  return (context.tab === 'pipeline' && context.stage === 'new') || (context.tab === 'today' && context.preset === 'new');
 }
 
 export function prospectingQueueOrderFields(context: ProspectingQueueContext) {
-  if (context.tab === 'tasks') {
+  if (context.tab === 'tasks' || (context.tab === 'today' && !['new', 'needs_scheduling'].includes(context.preset ?? 'all'))) {
     return [
       { column: 'next_follow_up_at', ascending: true },
       { column: 'last_activity_at', ascending: true },

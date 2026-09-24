@@ -1,6 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 import { describe, expect, it } from 'vitest';
-import { createProspectingSampleOrder } from '@/lib/prospecting-sample-orders';
+import { createProspectingSampleOrder } from '@/lib/prospecting-sample-orders-legacy';
 
 const RUN_LIVE = process.env.RUN_LIVE_SUPABASE_TEST === '1';
 

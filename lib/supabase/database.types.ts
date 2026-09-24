@@ -874,7 +874,7 @@ export type Database = {
           locked_by: string | null
           manual_reason: string | null
           notes: string | null
-          profile_id: string
+          profile_id: string | null
           status: string
           updated_at: string
           updated_by: string | null
@@ -900,7 +900,7 @@ export type Database = {
           locked_by?: string | null
           manual_reason?: string | null
           notes?: string | null
-          profile_id: string
+          profile_id?: string | null
           status?: string
           updated_at?: string
           updated_by?: string | null
@@ -926,7 +926,7 @@ export type Database = {
           locked_by?: string | null
           manual_reason?: string | null
           notes?: string | null
-          profile_id?: string
+          profile_id?: string | null
           status?: string
           updated_at?: string
           updated_by?: string | null
@@ -1121,7 +1121,7 @@ export type Database = {
           notes: string | null
           paid_at: string | null
           paid_by: string | null
-          profile_id: string
+          profile_id: string | null
           updated_at: string
           updated_by: string | null
           week_end_date: string
@@ -1135,7 +1135,7 @@ export type Database = {
           notes?: string | null
           paid_at?: string | null
           paid_by?: string | null
-          profile_id: string
+          profile_id?: string | null
           updated_at?: string
           updated_by?: string | null
           week_end_date: string
@@ -1149,7 +1149,7 @@ export type Database = {
           notes?: string | null
           paid_at?: string | null
           paid_by?: string | null
-          profile_id?: string
+          profile_id?: string | null
           updated_at?: string
           updated_by?: string | null
           week_end_date?: string

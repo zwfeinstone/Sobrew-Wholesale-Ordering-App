@@ -84,7 +84,7 @@ type TimeEntry = {
   locked_at: string | null;
   manual_reason: string | null;
   notes: string | null;
-  profile_id: string;
+  profile_id: string | null;
   status: string | null;
   void_reason: string | null;
   voided_at: string | null;
@@ -161,7 +161,7 @@ type WeeklySalesSpiffRow = {
   id: string;
   notes: string | null;
   paid_at: string | null;
-  profile_id: string;
+  profile_id: string | null;
   week_end_date: string;
   week_start_date: string;
 };
@@ -200,7 +200,7 @@ type WeeklyPaymentRow = {
   minutes: number;
   openEntryCount: number;
   profile: AdminProfileRow | null | undefined;
-  profileId: string;
+  profileId: string | null;
   unapprovedEntryCount: number;
   unpaidWageCents: number;
 };
@@ -212,7 +212,7 @@ type PayrollDayRow = {
   minutes: number;
   openEntryCount: number;
   profile: AdminProfileRow | null | undefined;
-  profileId: string;
+  profileId: string | null;
   spiffOwedCents: number;
   totalOwedCents: number;
   unapprovedEntryCount: number;
@@ -275,7 +275,7 @@ function profileForEntry(entry: TimeEntry) {
 }
 
 function profileLabel(profile: AdminProfileRow | null | undefined) {
-  return profile?.full_name || profile?.email || 'Unknown admin';
+  return profile?.full_name || profile?.email || 'Former employee';
 }
 
 function entryBreaks(entry: TimeEntry) {
@@ -1483,7 +1483,7 @@ function buildSegments(entries: TimeEntry[], allocationsByEntry: Map<string, All
 }
 
 function groupSegmentsByEmployee(segments: PayrollSegment[]) {
-  const grouped = new Map<string, EmployeePayrollGroup>();
+  const grouped = new Map<string | null, EmployeePayrollGroup>();
   for (const segment of segments) {
     const row = grouped.get(segment.entry.profile_id) ?? { entryCount: new Set<string>(), hourlyWageCents: 0, minutes: 0, salaryCents: 0, spiffCents: 0, workTypes: new Map<PayrollReportWorkType, number>() };
     row.entryCount.add(segment.entry.id);
@@ -1508,7 +1508,7 @@ function groupSegmentsByWorkType(segments: PayrollSegment[]) {
 }
 
 function buildWeeklyPaymentRows(entries: TimeEntry[], segments: PayrollSegment[], adminById: Map<string, AdminProfileRow>) {
-  const grouped = new Map<string, WeeklyPaymentRow>();
+  const grouped = new Map<string | null, WeeklyPaymentRow>();
   for (const entry of entries) {
     if (entry.status === 'void') continue;
     const row = grouped.get(entry.profile_id) ?? {
@@ -1519,7 +1519,7 @@ function buildWeeklyPaymentRows(entries: TimeEntry[], segments: PayrollSegment[]
       lockedEntryCount: 0,
       minutes: 0,
       openEntryCount: 0,
-      profile: adminById.get(entry.profile_id),
+      profile: adminById.get(entry.profile_id ?? ''),
       profileId: entry.profile_id,
       unapprovedEntryCount: 0,
       unpaidWageCents: 0,
@@ -1607,7 +1607,7 @@ function buildSalaryRows({
   return rows;
 }
 
-function applySalaryRowsToEmployeeGroups(grouped: Map<string, EmployeePayrollGroup>, salaryRows: SalaryPayrollRow[]) {
+function applySalaryRowsToEmployeeGroups(grouped: Map<string | null, EmployeePayrollGroup>, salaryRows: SalaryPayrollRow[]) {
   for (const salary of salaryRows) {
     const row = grouped.get(salary.profileId) ?? { entryCount: new Set<string>(), hourlyWageCents: 0, minutes: 0, salaryCents: 0, spiffCents: 0, workTypes: new Map<PayrollReportWorkType, number>() };
     row.salaryCents += salary.salaryCents;
@@ -1624,7 +1624,7 @@ function applySalaryRowsToWorkTypeGroups(grouped: Map<PayrollReportWorkType, Wor
   }
 }
 
-function applyWeeklySalesSpiffsToEmployeeGroups(grouped: Map<string, EmployeePayrollGroup>, spiffs: WeeklySalesSpiffRow[]) {
+function applyWeeklySalesSpiffsToEmployeeGroups(grouped: Map<string | null, EmployeePayrollGroup>, spiffs: WeeklySalesSpiffRow[]) {
   for (const spiff of spiffs) {
     const row = grouped.get(spiff.profile_id) ?? { entryCount: new Set<string>(), hourlyWageCents: 0, minutes: 0, salaryCents: 0, spiffCents: 0, workTypes: new Map<PayrollReportWorkType, number>() };
     row.spiffCents += normalizeMoneyCents(spiff.amount_cents);
@@ -1930,7 +1930,7 @@ function ManualEntriesPanel({
             <option value="">Choose shift</option>
             {completedEntries.map((entry) => {
               const profile = profileForEntry(entry);
-              const rate = timeByProfile.get(entry.profile_id);
+              const rate = timeByProfile.get(entry.profile_id ?? '');
               return (
                 <option key={entry.id} value={entry.id}>
                   {profileLabel(profile)} - {formatCentralDateTime(entry.clock_in_at)} ({dollarsInputFromCents(rate?.hourly_rate_cents)}/hr current)
@@ -1988,7 +1988,7 @@ function PaymentsTable({
         <tbody>
           {payments.map((row) => {
             const status = paymentStatus(row);
-            const canMarkPaid = canEditPayroll && row.completedEntryCount > 0 && row.openEntryCount === 0 && row.unapprovedEntryCount === 0 && row.lockedEntryCount < row.completedEntryCount;
+            const canMarkPaid = canEditPayroll && Boolean(row.profileId) && row.completedEntryCount > 0 && row.openEntryCount === 0 && row.unapprovedEntryCount === 0 && row.lockedEntryCount < row.completedEntryCount;
             return (
               <tr key={row.profileId} className="bg-white/70 align-top">
                 <td className="rounded-l-xl px-4 py-3">
@@ -2009,7 +2009,7 @@ function PaymentsTable({
                 <td className="rounded-r-xl px-4 py-3">
                   <form action={markEmployeeWeekPaid}>
                     {returnToInput(returnTo)}
-                    <input name="profile_id" type="hidden" value={row.profileId} />
+                    <input name="profile_id" type="hidden" value={row.profileId ?? ''} />
                     <input name="lock_start" type="hidden" value={fromInput} />
                     <input name="lock_end" type="hidden" value={toInput} />
                     <PendingSubmitButton
@@ -2286,11 +2286,11 @@ export default async function PayrollPage(
   const weeklyPaymentHours = weeklyPaymentRows.reduce((sum, row) => sum + row.minutes, 0);
   const weeklyPaymentOwedCents = weeklyPaymentDueRows.reduce((sum, row) => sum + row.unpaidWageCents, 0);
   const weeklyPaymentByProfile = new Map(weeklyPaymentRows.map((row) => [row.profileId, row]));
-  const unpaidSpiffsByProfile = new Map<string, number>();
+  const unpaidSpiffsByProfile = new Map<string | null, number>();
   for (const spiff of selectedUnpaidWeeklySalesSpiffs) {
     unpaidSpiffsByProfile.set(spiff.profile_id, (unpaidSpiffsByProfile.get(spiff.profile_id) ?? 0) + normalizeMoneyCents(spiff.amount_cents));
   }
-  const payrollDayProfileIds = new Set<string>();
+  const payrollDayProfileIds = new Set<string | null>();
   if (selectedAdmin) {
     payrollDayProfileIds.add(selectedAdmin);
   } else {
@@ -2309,7 +2309,7 @@ export default async function PayrollPage(
         lockedEntryCount: payment?.lockedEntryCount ?? 0,
         minutes: payment?.minutes ?? 0,
         openEntryCount: payment?.openEntryCount ?? 0,
-        profile: payment?.profile ?? adminById.get(profileId),
+        profile: payment?.profile ?? adminById.get(profileId ?? ''),
         profileId,
         spiffOwedCents,
         totalOwedCents: hourlyOwedCents + spiffOwedCents,
@@ -2361,7 +2361,7 @@ export default async function PayrollPage(
   const manualEntries = entries.filter((entry) => Boolean(entry.manual_reason));
   const correctedEntries = entries.filter((entry) => Boolean(entry.correction_reason));
   const voidedEntries = entries.filter((entry) => entry.status === 'void');
-  const productionByDayEmployee = new Map<string, { dateInput: string; entryCount: Set<string>; minutes: number; profileId: string; wageCents: number }>();
+  const productionByDayEmployee = new Map<string, { dateInput: string; entryCount: Set<string>; minutes: number; profileId: string | null; wageCents: number }>();
   for (const segment of productionSegments) {
     const dateInput = formatCentralDateInput(segment.entry.clock_in_at);
     const key = `${dateInput}:${segment.entry.profile_id}`;
@@ -2371,7 +2371,7 @@ export default async function PayrollPage(
     row.wageCents += segment.wageCents;
     productionByDayEmployee.set(key, row);
   }
-  const productionDailyRows = [...productionByDayEmployee.values()].sort((a, b) => `${b.dateInput}:${profileLabel(adminById.get(b.profileId))}`.localeCompare(`${a.dateInput}:${profileLabel(adminById.get(a.profileId))}`));
+  const productionDailyRows = [...productionByDayEmployee.values()].sort((a, b) => `${b.dateInput}:${profileLabel(adminById.get(b.profileId ?? ''))}`.localeCompare(`${a.dateInput}:${profileLabel(adminById.get(a.profileId ?? ''))}`));
   const rangeHasCoveringLock = payrollLocks.some((lock) => new Date(lock.lock_start_at) <= fromDate && new Date(lock.lock_end_at) >= toDate);
   const canCompletePayroll = !rangeHasCoveringLock && openEntries.length === 0 && unapprovedEntries.length === 0;
 
@@ -2539,7 +2539,7 @@ export default async function PayrollPage(
                     <tbody>
                       {selectedWeeklySalesSpiffs.map((spiff) => (
                         <tr key={spiff.id} className="bg-white/70">
-                          <td className="rounded-l-xl px-4 py-3 font-semibold text-slate-950">{profileLabel(adminById.get(spiff.profile_id))}</td>
+                          <td className="rounded-l-xl px-4 py-3 font-semibold text-slate-950">{profileLabel(adminById.get(spiff.profile_id ?? ''))}</td>
                           <td className="px-4 py-3 text-slate-700">{formatDateInputLabel(spiff.week_start_date)} to {formatDateInputLabel(spiff.week_end_date)}</td>
                           <td className="px-4 py-3 text-right font-semibold text-slate-950">{usd(normalizeMoneyCents(spiff.amount_cents))}</td>
                           <td className="px-4 py-3 text-slate-700">
@@ -2647,7 +2647,7 @@ export default async function PayrollPage(
                       .join(', ');
                     return (
                       <tr key={profileId} className="bg-white/70">
-                        <td className="rounded-l-xl px-4 py-3 font-semibold text-slate-950">{profileLabel(adminById.get(profileId))}</td>
+                        <td className="rounded-l-xl px-4 py-3 font-semibold text-slate-950">{profileLabel(adminById.get(profileId ?? ''))}</td>
                         <td className="px-4 py-3 text-right text-slate-700">{row.entryCount.size}</td>
                         <td className="px-4 py-3 text-right text-slate-700">{hoursLabel(row.minutes)}</td>
                         <td className="px-4 py-3 text-right text-slate-700">{usd(row.hourlyWageCents)}</td>
@@ -2712,7 +2712,7 @@ export default async function PayrollPage(
                   <tbody>
                     {selectedPaidWeeklySalesSpiffs.map((spiff) => (
                       <tr key={spiff.id} className="bg-white/70">
-                        <td className="rounded-l-xl px-4 py-3 font-semibold text-slate-950">{profileLabel(adminById.get(spiff.profile_id))}</td>
+                        <td className="rounded-l-xl px-4 py-3 font-semibold text-slate-950">{profileLabel(adminById.get(spiff.profile_id ?? ''))}</td>
                         <td className="px-4 py-3 text-slate-700">{formatDateInputLabel(spiff.week_start_date)} to {formatDateInputLabel(spiff.week_end_date)}</td>
                         <td className="px-4 py-3 text-right font-semibold text-slate-950">{usd(normalizeMoneyCents(spiff.amount_cents))}</td>
                         <td className="px-4 py-3 text-slate-700">{formatCentralDateTime(spiff.paid_at, 'Not paid')}</td>
@@ -2765,7 +2765,7 @@ export default async function PayrollPage(
                     {productionDailyRows.map((row) => (
                       <tr key={`${row.dateInput}-${row.profileId}`} className="bg-white/70">
                         <td className="rounded-l-xl px-4 py-3 font-semibold text-slate-950">{formatDateInputLabel(row.dateInput)}</td>
-                        <td className="px-4 py-3 text-slate-700">{profileLabel(adminById.get(row.profileId))}</td>
+                        <td className="px-4 py-3 text-slate-700">{profileLabel(adminById.get(row.profileId ?? ''))}</td>
                         <td className="px-4 py-3 text-right text-slate-700">{row.entryCount.size}</td>
                         <td className="px-4 py-3 text-right font-semibold text-slate-950">{hoursLabel(row.minutes)}</td>
                         <td className="rounded-r-xl px-4 py-3 text-right font-semibold text-slate-950">{usd(row.wageCents)}</td>
@@ -2859,7 +2859,7 @@ export default async function PayrollPage(
                     ) : canEditPayroll ? (
                       <form action={approveMonthlySalaryPayment} className="space-y-2">
                         {returnToInput(currentUrl)}
-                        <input name="profile_id" type="hidden" value={row.profileId} />
+                        <input name="profile_id" type="hidden" value={row.profileId ?? ''} />
                         <input name="payroll_month" type="hidden" value={monthlySalaryWindow.payrollMonthInput} />
                         <input name="period_start_date" type="hidden" value={monthlySalaryWindow.periodStartInput} />
                         <input name="period_end_date" type="hidden" value={monthlySalaryWindow.periodEndInput} />

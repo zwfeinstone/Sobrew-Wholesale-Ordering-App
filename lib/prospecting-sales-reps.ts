@@ -7,14 +7,8 @@ export type ProspectingSalesRepProfile = {
   is_active: boolean | null;
 };
 
-const EXCLUDED_PROSPECTING_SALES_REP_PATTERN = /\bbenjamin\b/i;
-
-function profileIdentity(profile: Pick<ProspectingSalesRepProfile, 'email' | 'full_name'>) {
-  return [profile.full_name, profile.email].filter(Boolean).join(' ');
-}
-
 export function isEligibleProspectingSalesRepProfile(profile: ProspectingSalesRepProfile) {
-  return profile.is_active !== false && !EXCLUDED_PROSPECTING_SALES_REP_PATTERN.test(profileIdentity(profile));
+  return profile.is_active !== false;
 }
 
 export function filterProspectingSalesRepProfiles<T extends ProspectingSalesRepProfile>(profiles: T[]) {

@@ -14,7 +14,7 @@ export type LaborPaidGpmTimeEntryRow = TimeClockEntryRow & {
   admin_time_breaks?: TimeClockBreakRow[] | null;
   id: string;
   locked_at?: string | null;
-  profile_id: string;
+  profile_id: string | null;
 };
 
 export type LaborPaidGpmAllocationRow = {

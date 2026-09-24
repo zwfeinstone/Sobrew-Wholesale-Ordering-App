@@ -33,7 +33,7 @@ type ExportEntry = TimeClockEntryRow & {
   locked_at: string | null;
   manual_reason: string | null;
   notes: string | null;
-  profile_id: string;
+  profile_id: string | null;
   status: string | null;
   void_reason: string | null;
   voided_at: string | null;
@@ -73,7 +73,7 @@ type ExportWeeklySalesSpiff = {
   amount_cents: number | string | null;
   notes: string | null;
   paid_at: string | null;
-  profile_id: string;
+  profile_id: string | null;
   week_end_date: string;
   week_start_date: string;
 };
@@ -85,11 +85,11 @@ function csvCell(value: unknown) {
 
 function profileLabel(entry: ExportEntry) {
   const profile = Array.isArray(entry.admin_profile) ? entry.admin_profile[0] : entry.admin_profile;
-  return profile?.full_name || profile?.email || 'Unknown admin';
+  return profile?.full_name || profile?.email || 'Former employee';
 }
 
 function adminProfileLabel(profile: ExportAdminProfile | null | undefined) {
-  return profile?.full_name || profile?.email || 'Unknown admin';
+  return profile?.full_name || profile?.email || 'Former employee';
 }
 
 function normalizeExportWorkTypeFilter(value: string | null | undefined) {
@@ -297,7 +297,7 @@ export async function GET(request: NextRequest) {
     ]),
     ...paidWeeklySalesSpiffs.map((spiff) => [
       'sales_spiff_paid',
-      adminProfileLabel(adminById.get(spiff.profile_id)),
+      adminProfileLabel(adminById.get(spiff.profile_id ?? '')),
       'paid',
       workTypeLabel('sales'),
       spiff.week_start_date,

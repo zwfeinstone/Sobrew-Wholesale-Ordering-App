@@ -31,11 +31,23 @@ type OrderTrashRow = {
 export type Database = Omit<GeneratedDatabase, 'public'> & {
   public: Omit<PublicSchema, 'Tables' | 'Functions'> & {
     Tables: PublicSchema['Tables'] & {
+      prospecting_sample_requests: {
+        Row: { id: string; lead_id: string; requested_by: string | null; contact_id: string | null; status: 'pending' | 'order_created' | 'legacy_review'; order_id: string | null; details: Json; created_at: string; updated_at: string; closed_at: string | null };
+        Insert: never; Update: never;
+        Relationships: [
+          { foreignKeyName: 'prospecting_sample_requests_lead_id_fkey'; columns: ['lead_id']; isOneToOne: false; referencedRelation: 'prospecting_leads'; referencedColumns: ['id'] },
+          { foreignKeyName: 'prospecting_sample_requests_contact_id_fkey'; columns: ['contact_id']; isOneToOne: false; referencedRelation: 'prospecting_contacts'; referencedColumns: ['id'] },
+          { foreignKeyName: 'prospecting_sample_requests_order_id_fkey'; columns: ['order_id']; isOneToOne: false; referencedRelation: 'orders'; referencedColumns: ['id'] },
+        ];
+      };
+      prospecting_submission_receipts: { Row: { submission_id: string; actor_id: string; submission_signature: string | null; payload: Json; receipt: Json; created_at: string }; Insert: never; Update: never; Relationships: [] };
       order_trash: { Row: OrderTrashRow; Insert: never; Update: never; Relationships: [] };
       order_activity: { Row: { id: string; order_id: string; center_id: string | null; actor_name: string | null; action: string; before_value: Json; after_value: Json; created_at: string }; Insert: never; Update: never; Relationships: [] };
       user_product_prices: PublicSchema['Tables']['user_product_prices'] & { Row: PublicSchema['Tables']['user_product_prices']['Row'] & { allow_zero_price: boolean } };
     };
     Functions: Omit<Functions, 'admin_prospecting_report_v1' | 'save_prospecting_record_v1'> & {
+      read_prospecting_receipt_v2: { Args: { p_actor_id: string; p_submission_id: string; p_submission_signature?: string | null }; Returns: Json };
+      commit_prospecting_record_v2: { Args: { p_actor_id: string; p_submission_id: string; p_lead_id: string | null; p_expected_updated_at: string | null; p_lead?: Json; p_contact_updates?: Json; p_new_contact?: Json; p_activity?: Json; p_audit_activities?: Json; p_contact_delete_ids?: string[]; p_sample?: Json; p_submission_signature?: string | null; p_next_href?: string | null }; Returns: Json };
       admin_prospecting_report_v1: NullableArgs<Functions['admin_prospecting_report_v1'], 'p_center_ids' | 'p_sales_profile_id'>;
       save_prospecting_record_v1: NullableArgs<Functions['save_prospecting_record_v1'], 'p_expected_updated_at'>;
       move_order_to_trash: { Args: { p_order_id: string; p_reason: string }; Returns: string };

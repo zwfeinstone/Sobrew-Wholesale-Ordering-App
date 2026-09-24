@@ -80,6 +80,8 @@ const rows: Row[] = Array.from({ length: 27 }, (_, index) => ({
 
 describe('prospecting queue neighbor cursors', () => {
   it.each([
+    { tab: 'today' },
+    { tab: 'today', preset: 'new' },
     { tab: 'list' },
     { tab: 'tasks' },
     { tab: 'pipeline' },
@@ -161,7 +163,8 @@ describe('prospecting neighbor requests through the installed Supabase client', 
       previousLeadId: PREVIOUS_ID, nextLeadId: NEXT_ID,
     });
     expect(requests).toHaveLength(3);
-    for (const url of requests) {
+    expect(requests[0].searchParams.get('assigned_profile_id')).toBe(`eq.${REP_ID}`);
+    for (const url of requests.slice(1)) {
       expect(url.searchParams.get('limit')).toBe('1');
       expect(url.searchParams.get('assigned_profile_id')).toBe(`eq.${REP_ID}`);
       expect(url.searchParams.get('archived_at')).toBe('is.null');
@@ -188,7 +191,7 @@ describe('prospecting neighbor requests through the installed Supabase client', 
     expect(await loadProspectingQueueNeighbors(supabase, { ...options, context, profileId: null })).toEqual({
       previousLeadId: null, nextLeadId: null,
     });
-    for (const url of requests) {
+    for (const url of requests.slice(1)) {
       expect(url.searchParams.get('assigned_profile_id')).toBe('is.null');
       expect(url.searchParams.get('state_key')).toBe('is.null');
       expect(url.searchParams.getAll('next_follow_up_at')).toEqual(['not.is.null', 'lte.2026-09-08']);
@@ -196,24 +199,55 @@ describe('prospecting neighbor requests through the installed Supabase client', 
     }
   });
 
-  it('falls back to the first matching queue row when the current lead left its filters', async () => {
+  it('ends the session when the current lead is no longer in the authorized scope', async () => {
     const { supabase, requests } = queryFixture((url) => url.searchParams.get('id') === `eq.${CURRENT_ID}` ? [] : [{ id: NEXT_ID }]);
     const context = prospectingQueueContextFromParams({ tab: 'list', list: LIST_ID });
 
     expect(await loadProspectingQueueNeighbors(supabase, { ...options, context })).toEqual({
-      previousLeadId: null, nextLeadId: NEXT_ID,
+      previousLeadId: null, nextLeadId: null,
     });
-    expect(requests).toHaveLength(2);
-    expect(requests[1].searchParams.get('id')).toBe(`neq.${CURRENT_ID}`);
-    expect(requests[1].searchParams.get('limit')).toBe('1');
-    expect(requests[1].searchParams.get('order')).toBe('state_key.asc.nullslast,city.asc.nullslast,company_name.asc.nullslast,id.asc.nullslast');
+    expect(requests).toHaveLength(1);
+  });
+
+  it('keeps the broader authorized cursor but filters processed IDs only from candidates', async () => {
+    const { supabase, requests } = queryFixture((url) => url.searchParams.get('id') === `eq.${CURRENT_ID}` ? [cursor] : []);
+    const context = prospectingQueueContextFromParams({ tab: 'today', preset: 'overdue' });
+    expect(await loadProspectingQueueNeighbors(supabase, { ...options, context, excludedLeadIds: [PREVIOUS_ID, PREVIOUS_ID, 'bad-id'] })).toEqual({ previousLeadId: null, nextLeadId: null });
+    expect(requests).toHaveLength(3);
+    expect(requests[0].searchParams.has('stage')).toBe(false);
+    expect(requests[0].searchParams.getAll('id')).toEqual([`eq.${CURRENT_ID}`]);
+    for (const request of requests.slice(1)) {
+      expect(request.searchParams.get('id')).toBe(`not.in.(${PREVIOUS_ID})`);
+      expect(request.searchParams.getAll('next_follow_up_at')).toEqual(['not.is.null', 'lt.2026-09-08']);
+    }
+  });
+
+  it('batches a large visited set without placing thousands of IDs in a GET URL', async () => {
+    const visited = Array.from({ length: 5000 }, (_, index) => `10000000-0000-0000-0000-${String(index).padStart(12, '0')}`);
+    let nextBatches = 0;
+    const { supabase, requests } = queryFixture((url) => {
+      if (url.searchParams.get('id') === `eq.${CURRENT_ID}`) return [cursor];
+      if (url.searchParams.get('order')?.startsWith('created_at.desc')) return [];
+      nextBatches += 1;
+      return nextBatches === 1
+        ? visited.slice(0, 100).map((id) => ({ ...cursor, id }))
+        : [{ ...cursor, id: NEXT_ID }];
+    });
+    const context = prospectingQueueContextFromParams({ tab: 'pipeline', stage: 'working' });
+    expect(await loadProspectingQueueNeighbors(supabase, { ...options, context, excludedLeadIds: visited })).toEqual({ previousLeadId: null, nextLeadId: NEXT_ID });
+    expect(nextBatches).toBe(2);
+    for (const request of requests.slice(1)) {
+      expect(request.searchParams.get('limit')).toBe('100');
+      expect(request.searchParams.has('id')).toBe(false);
+      expect(request.toString().length).toBeLessThan(3000);
+    }
   });
 
   it('does not mistake a membership query failure for a lead leaving the queue', async () => {
     const { supabase, requests } = queryFixture(() => [], 400);
     const context = prospectingQueueContextFromParams({ tab: 'list' });
     expect(await loadProspectingQueueNeighbors(supabase, { ...options, context })).toEqual({
-      previousLeadId: null, nextLeadId: null,
+      previousLeadId: null, nextLeadId: null, unavailable: true,
     });
     expect(requests).toHaveLength(1);
   });

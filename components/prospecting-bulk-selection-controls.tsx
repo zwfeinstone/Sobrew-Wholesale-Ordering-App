@@ -33,7 +33,13 @@ export default function ProspectingBulkSelectionControls({
     const form = document.getElementById(formId) as HTMLFormElement | null;
     if (!form) return undefined;
 
-    const refresh = () => {
+    const refresh = (event?: Event) => {
+      const target = event?.target;
+      if (target instanceof HTMLInputElement && target.matches('input[data-lead-select="true"]')) {
+        // Editing a page selection cancels the broader scope; excluded rows must
+        // never remain part of an invisible all-filtered operation.
+        setScope(form, 'selected');
+      }
       setSelectedCount(leadCheckboxes(form).filter((checkbox) => checkbox.checked).length);
       const checkedScope = form.querySelector<HTMLInputElement>('input[name="scope"]:checked')?.value;
       setScopeState(checkedScope === 'all_filtered' ? 'all_filtered' : 'selected');
@@ -58,7 +64,9 @@ export default function ProspectingBulkSelectionControls({
   function useAllFiltered() {
     const form = document.getElementById(formId) as HTMLFormElement | null;
     if (!form) return;
+    leadCheckboxes(form).forEach((checkbox) => { checkbox.checked = true; });
     setScope(form, 'all_filtered');
+    setSelectedCount(pageCount);
     setScopeState('all_filtered');
   }
 
@@ -69,17 +77,17 @@ export default function ProspectingBulkSelectionControls({
           Select page ({pageCount.toLocaleString()})
         </button>
         <button className="btn-secondary w-full sm:w-auto" type="button" onClick={() => updatePageSelection(false)}>
-          Clear page
+          Clear selection
         </button>
         {allowAllFiltered ? (
           <button className="btn-secondary w-full sm:w-auto" type="button" onClick={useAllFiltered}>
-            Use all filtered ({totalCount.toLocaleString()})
+            Select all filtered ({totalCount.toLocaleString()})
           </button>
         ) : null}
       </div>
-      <p className="text-sm font-semibold text-slate-700">
+      <p className="text-sm font-semibold text-slate-700" aria-live="polite">
         {scope === 'all_filtered'
-          ? allFilteredMessage ?? `All ${totalCount.toLocaleString()} filtered leads will be assigned.`
+          ? allFilteredMessage ?? `All ${totalCount.toLocaleString()} filtered leads selected, including other pages.`
           : `${selectedCount.toLocaleString()} selected on this page.`}
       </p>
     </div>

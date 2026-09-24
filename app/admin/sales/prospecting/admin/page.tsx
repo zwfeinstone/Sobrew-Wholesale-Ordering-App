@@ -6,7 +6,11 @@ import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import ConfirmSubmitButton from '@/components/confirm-submit-button';
 import PendingSubmitButton from '@/components/pending-submit-button';
-import ProspectingBulkSelectionControls from '@/components/prospecting-bulk-selection-controls';
+import ProspectingSampleRequestList from '@/components/prospecting-sample-request-list';
+import ProspectingManagerBulkActions from '@/components/prospecting-manager-bulk-actions';
+import { PROSPECTING_MANAGER_GROUPS, PROSPECTING_MANAGER_TABS, managerGroupForTab, managerTabFromSearch, normalizeManagerTab, reviewedBulkCountMatches, type ProspectingManagerTab } from '@/lib/prospecting-manager-navigation';
+import { isProspectingWorkspaceEnabled } from '@/lib/prospecting-rollout';
+import LegacyProspectingAdminPage from './legacy-page';
 import StatusToast from '@/components/status-toast';
 import { adminCanEdit, requireAdminSectionEdit, requireAdminSectionView } from '@/lib/admin-permissions';
 import { env } from '@/lib/env';
@@ -37,7 +41,6 @@ import {
   MISSING_STATE_FILTER,
   PARKED_PROSPECTING_STAGES,
   PROSPECTING_CSV_HEADERS,
-  PROSPECTING_IMPORT_MAX_ROWS,
   PROSPECTING_PAGE_SIZES,
   PROSPECTING_PRIORITIES,
   PROSPECTING_STAGES,
@@ -238,17 +241,7 @@ const BUCKETS = [
 
 type Bucket = (typeof BUCKETS)[number]['id'];
 
-const PROSPECTING_ADMIN_TABS = [
-  { id: 'overview', label: 'Overview' },
-  { id: 'pipeline', label: 'Pipeline Review' },
-  { id: 'samples', label: 'Sample Outcomes' },
-  { id: 'recycle', label: 'Recycle Report' },
-  { id: 'add', label: 'Add & Import' },
-  { id: 'leads', label: 'Lead Workspace' },
-  { id: 'hubspot', label: 'HubSpot Tools' },
-] as const;
-
-type ProspectingAdminTab = (typeof PROSPECTING_ADMIN_TABS)[number]['id'];
+type ProspectingAdminTab = ProspectingManagerTab;
 
 function stringParam(value: string | string[] | undefined) {
   return typeof value === 'string' ? value : '';
@@ -258,30 +251,8 @@ function normalizeBucket(value: string | string[] | undefined): Bucket {
   return BUCKETS.some((bucket) => bucket.id === value) ? value as Bucket : 'active';
 }
 
-function normalizeAdminTab(value: string | string[] | undefined): ProspectingAdminTab {
-  return PROSPECTING_ADMIN_TABS.some((tab) => tab.id === value) ? value as ProspectingAdminTab : 'overview';
-}
-
-function defaultAdminTab(searchParams: SearchParams | undefined): ProspectingAdminTab {
-  if (searchParams?.tab) return normalizeAdminTab(searchParams.tab);
-  if (searchParams?.review_rep || searchParams?.review_stage || searchParams?.review_page || searchParams?.review_page_size) return 'pipeline';
-  if (searchParams?.sample_page || searchParams?.sample_page_size) return 'samples';
-  if (searchParams?.recycle_page || searchParams?.recycle_page_size) return 'recycle';
-  if (
-    searchParams?.bucket
-    || searchParams?.list
-    || searchParams?.page
-    || searchParams?.page_size
-    || searchParams?.priority
-    || searchParams?.q
-    || searchParams?.rep
-    || searchParams?.stage
-    || searchParams?.state
-  ) {
-    return 'leads';
-  }
-  return 'overview';
-}
+const normalizeAdminTab = normalizeManagerTab;
+const defaultAdminTab = managerTabFromSearch;
 
 function isMaintenanceBucket(bucket: Bucket) {
   return bucket === 'not_a_fit_review' || bucket === 'lost_review';
@@ -307,6 +278,7 @@ function prospectingHref(params: {
   reviewPageSize?: number | string;
   reviewRep?: string;
   reviewStage?: string;
+  sampleMissing?: string;
   samplePage?: number | string;
   samplePageSize?: number | string;
   stage?: string;
@@ -324,6 +296,7 @@ function prospectingHref(params: {
     else if (key === 'reviewPageSize') query.set('review_page_size', String(value));
     else if (key === 'reviewRep') query.set('review_rep', String(value));
     else if (key === 'reviewStage') query.set('review_stage', String(value));
+    else if (key === 'sampleMissing') query.set('sample_missing', String(value));
     else if (key === 'samplePage') query.set('sample_page', String(value));
     else if (key === 'samplePageSize') query.set('sample_page_size', String(value));
     else query.set(key, String(value));
@@ -364,7 +337,7 @@ function assignmentRedirectFromForm(formData: FormData, toast: string) {
   });
 }
 
-function pipelineReviewRedirectFromForm(formData: FormData, toast: string) {
+function pipelineReviewRedirectFromForm(formData: FormData, toast: string, sampleMissing = '') {
   return prospectingHref({
     bucket: normalizeBucket(String(formData.get('bucket') ?? 'active')),
     list: String(formData.get('list') ?? '').trim(),
@@ -379,6 +352,7 @@ function pipelineReviewRedirectFromForm(formData: FormData, toast: string) {
     reviewPageSize: normalizePageSize(String(formData.get('review_page_size') ?? String(DEFAULT_PROSPECTING_PAGE_SIZE))),
     reviewRep: String(formData.get('review_rep') ?? '').trim(),
     reviewStage: String(formData.get('review_stage') ?? '').trim(),
+    sampleMissing,
     samplePage: normalizePageNumber(String(formData.get('sample_page') ?? '1')),
     samplePageSize: normalizePageSize(String(formData.get('sample_page_size') ?? String(DEFAULT_PROSPECTING_PAGE_SIZE))),
     stage: String(formData.get('stage') ?? '').trim(),
@@ -388,9 +362,11 @@ function pipelineReviewRedirectFromForm(formData: FormData, toast: string) {
   });
 }
 
-function leadDetailHref(leadId: string, stateKey: '' | ProspectingStateFilter = '') {
+function buildLeadDetailHref(leadId: string, stateKey: '' | ProspectingStateFilter = '', origin = 'leads', returnTo = PROSPECTING_ADMIN_PATH) {
   const query = new URLSearchParams();
   if (stateKey) query.set('state', stateKey);
+  query.set('origin', origin);
+  query.set('return_to', returnTo);
   const qs = query.toString();
   return `/admin/sales/prospecting/${leadId}${qs ? `?${qs}` : ''}`;
 }
@@ -493,14 +469,13 @@ function filteredLeadQuery(
 async function fetchFilteredLeadIds(
   supabase: Awaited<ReturnType<typeof createClient>>,
   filters: LeadFilterState,
-  maxRows = PROSPECTING_IMPORT_MAX_ROWS,
 ) {
   const ids: string[] = [];
   const batchSize = 1000;
-  while (ids.length < maxRows) {
+  while (true) {
     const { data, error } = await filteredLeadQuery(supabase, filters, 'id')
       .order('id', { ascending: true })
-      .range(ids.length, Math.min(ids.length + batchSize - 1, maxRows - 1));
+      .range(ids.length, ids.length + batchSize - 1);
     if (error) return { error, ids };
     const rows = ((data ?? []) as unknown as Array<{ id: string | null }>).map((row) => row.id).filter(Boolean) as string[];
     ids.push(...rows);
@@ -786,7 +761,9 @@ async function bulkAssignLeads(formData: FormData) {
   const supabase = await createClient();
   const scope = String(formData.get('scope') ?? 'selected') === 'all_filtered' ? 'all_filtered' : 'selected';
   let leadIds = [...new Set(formData.getAll('lead_id').map(String).filter(Boolean))];
-  const salesProfileId = String(formData.get('sales_profile_id') ?? '').trim() || null;
+  const bulkAction = String(formData.get('bulk_action') ?? '');
+  const salesProfileId = bulkAction === 'unassign' ? null : String(formData.get('sales_profile_id') ?? '').trim() || null;
+  if (!['assign', 'unassign'].includes(bulkAction) || (bulkAction === 'assign' && !salesProfileId)) redirect(assignmentRedirectFromForm(formData, 'bulk_action_required'));
 
   if (salesProfileId) {
     const isEligibleRep = await isEligibleProspectingSalesRep(supabase, salesProfileId);
@@ -812,6 +789,7 @@ async function bulkAssignLeads(formData: FormData) {
   }
 
   if (!leadIds.length) redirect(assignmentRedirectFromForm(formData, 'bulk_missing'));
+  if (!reviewedBulkCountMatches(formData.get('reviewed_count'), leadIds.length)) redirect(assignmentRedirectFromForm(formData, 'bulk_review_changed'));
 
   const error = await updateLeadAssignments({
     actorId: current.profile.id,
@@ -831,10 +809,13 @@ async function bulkUpdatePipelineReviewLeads(formData: FormData) {
   const leadIds = [...new Set(formData.getAll('lead_id').map(String).filter(Boolean))];
   if (!leadIds.length) redirect(pipelineReviewRedirectFromForm(formData, 'pipeline_bulk_missing'));
 
-  const bulkAction = String(formData.get('bulk_action') ?? 'reassign') === 'move_stage' ? 'move_stage' : 'reassign';
+  if (!reviewedBulkCountMatches(formData.get('reviewed_count'), leadIds.length)) redirect(pipelineReviewRedirectFromForm(formData, 'bulk_review_changed'));
+  const bulkAction = String(formData.get('bulk_action') ?? '');
+  if (!['assign', 'unassign', 'move_stage'].includes(bulkAction)) redirect(pipelineReviewRedirectFromForm(formData, 'bulk_action_required'));
 
-  if (bulkAction === 'reassign') {
-    const salesProfileId = String(formData.get('sales_profile_id') ?? '').trim() || null;
+  if (bulkAction === 'assign' || bulkAction === 'unassign') {
+    const salesProfileId = bulkAction === 'unassign' ? null : String(formData.get('sales_profile_id') ?? '').trim() || null;
+    if (bulkAction === 'assign' && !salesProfileId) redirect(pipelineReviewRedirectFromForm(formData, 'bulk_action_required'));
     if (salesProfileId) {
       const isEligibleRep = await isEligibleProspectingSalesRep(supabase, salesProfileId);
       if (!isEligibleRep) redirect(pipelineReviewRedirectFromForm(formData, 'invalid_rep'));
@@ -854,6 +835,12 @@ async function bulkUpdatePipelineReviewLeads(formData: FormData) {
   }
 
   const targetStage = requestedStage as ProspectingStage;
+  if (targetStage === 'sample_requested') {
+    const contactsResult = await fetchPipelineReviewContacts(supabase, leadIds);
+    if (contactsResult.error) redirect(pipelineReviewRedirectFromForm(formData, 'pipeline_bulk_error'));
+    const missingIds = leadIds.filter((id) => !hasSampleRequestContact(contactsResult.contacts.filter((contact) => contact.lead_id === id)));
+    if (missingIds.length) redirect(pipelineReviewRedirectFromForm(formData, 'sample_contact_required', missingIds.join(',')));
+  }
   const shouldUnassign = PARKED_PROSPECTING_STAGES.includes(targetStage);
   const shouldQueueHubspot = HUBSPOT_QUEUE_STAGES.includes(targetStage);
   const now = new Date().toISOString();
@@ -1283,6 +1270,8 @@ async function recycleMaintenanceLead(formData: FormData) {
 function Toasts({ toast }: { toast: string }) {
   const messages: Record<string, { message: string; tone: 'success' | 'error' }> = {
     admin_write_denied: { message: 'Only a superadmin can change lead imports, assignment, or HubSpot export status.', tone: 'error' },
+    bulk_action_required: { message: 'Choose Assign and a sales rep, Unassign, or a stage change explicitly.', tone: 'error' },
+    bulk_review_changed: { message: 'The affected selection changed. Review the current lead count before applying again.', tone: 'error' },
     bulk_error: { message: 'Unable to update those lead assignments.', tone: 'error' },
     bulk_missing: { message: 'Select at least one lead first.', tone: 'error' },
     bulk_saved: { message: 'Lead assignments updated.', tone: 'success' },
@@ -1367,13 +1356,17 @@ function MissingBadges({ missing }: { missing: string[] }) {
 }
 
 export default async function ProspectingAdminPage(props: { searchParams?: Promise<SearchParams> }) {
+  if (!await isProspectingWorkspaceEnabled()) return LegacyProspectingAdminPage(props);
   const searchParams = await props.searchParams;
+  const activeTab = defaultAdminTab(searchParams);
+  const activeGroup = managerGroupForTab(activeTab);
+  const showLeadWorkspace = activeTab === 'leads' || activeTab === 'hubspot_queue';
   const current = await requireAdminSectionView('prospecting');
   if (!current.isOwner) redirect('/admin/access-denied?section=prospecting');
   const canEdit = adminCanEdit(current.access, 'prospecting');
   const isOwner = current.isOwner;
   const supabase = await createClient();
-  const bucket = normalizeBucket(searchParams?.bucket);
+  const bucket = activeTab === 'hubspot_queue' ? 'hubspot' : normalizeBucket(searchParams?.bucket);
   const requestedListId = stringParam(searchParams?.list);
   const requestedRepId = stringParam(searchParams?.rep);
   const requestedStage = stringParam(searchParams?.stage);
@@ -1395,7 +1388,6 @@ export default async function ProspectingAdminPage(props: { searchParams?: Promi
   const { from: sampleFrom, to: sampleTo } = paginationRange(samplePage, samplePageSize);
   const q = stringParam(searchParams?.q).trim();
   const toast = stringParam(searchParams?.toast);
-  const activeTab = defaultAdminTab(searchParams);
 
   const [salesReps, { data: listsData }] = await Promise.all([
     isOwner ? loadProspectingSalesReps(supabase) : Promise.resolve([current.profile as ProfileRow]),
@@ -1412,7 +1404,7 @@ export default async function ProspectingAdminPage(props: { searchParams?: Promi
   const selectedReviewStage = PIPELINE_REVIEW_STAGES.some((stage) => stage === requestedReviewStage) ? requestedReviewStage as ProspectingStage : '';
   const selectedReviewRep = selectedReviewRepId ? salesRepsRows.find((rep) => rep.id === selectedReviewRepId) ?? null : null;
   const adminTabHref = (tab: ProspectingAdminTab) => prospectingHref({
-    bucket,
+    bucket: tab === 'hubspot_queue' ? 'hubspot' : bucket === 'hubspot' ? 'active' : bucket,
     list: selectedListId,
     page,
     pageSize,
@@ -1431,6 +1423,8 @@ export default async function ProspectingAdminPage(props: { searchParams?: Promi
     state: selectedStateKey,
     tab,
   });
+
+  const leadDetailHref = (leadId: string, stateKey: '' | ProspectingStateFilter = '') => buildLeadDetailHref(leadId, stateKey, activeGroup, adminTabHref(activeTab));
 
   const filters: LeadFilterState = {
     bucket,
@@ -1644,6 +1638,8 @@ export default async function ProspectingAdminPage(props: { searchParams?: Promi
   const reviewDisplayStart = reviewTotalRows ? reviewFrom + 1 : 0;
   const reviewDisplayEnd = Math.min(reviewTo + 1, reviewTotalRows);
   const visiblePipelineReviewRows = pipelineReviewRows.slice(reviewFrom, reviewTo + 1);
+  const missingSampleIds = new Set(stringParam(searchParams?.sample_missing).split(',').filter(Boolean));
+  const missingSampleLeads = pipelineReviewLeadRows.filter((lead) => missingSampleIds.has(lead.id));
 
   const recycleActivitiesResult = isOwner
     ? await supabase
@@ -1730,43 +1726,37 @@ export default async function ProspectingAdminPage(props: { searchParams?: Promi
     <div className="space-y-6">
       <Toasts toast={toast} />
       {leadsError ? (
-        <StatusToast message="Prospecting lead storage is not ready. Apply migration 043_prospecting_lead_workspace.sql." tone="error" />
+        <StatusToast message="Prospects could not be loaded. Try again shortly." tone="error" />
       ) : null}
 
       <section className="panel">
         <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
           <div>
             <span className="eyebrow">Prospecting Admin</span>
-            <h1 className="page-title mt-4">Lead lists, assignment, reporting, and HubSpot handoff</h1>
+            <h1 className="page-title mt-4">Manage prospecting</h1>
             <p className="page-subtitle mt-3">
-              Add leads, assign reps, review team activity, and manage the HubSpot handoff without cluttering the rep workspace.
+              Organize leads, review your team’s pipeline, and keep sample requests moving.
             </p>
           </div>
           <div className="flex flex-col gap-2 sm:flex-row lg:justify-end">
             <Link className="btn-secondary inline-flex" href="/admin/sales/prospecting">Rep Board</Link>
-            <Link className="btn-secondary inline-flex" href="/admin/sales/prospecting/template">CSV Template</Link>
-            <Link className="btn-secondary inline-flex" href="/admin/sales/prospecting/sample-boxes">Sample Boxes</Link>
-            {isOwner ? <Link className="btn-primary inline-flex" href="/admin/sales/prospecting/hubspot-export">Export HubSpot CSV</Link> : null}
+            <Link className="btn-primary inline-flex" href={adminTabHref('add')}>Add lead</Link>
           </div>
         </div>
       </section>
 
-      <section className="card">
-        <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-7">
-          {PROSPECTING_ADMIN_TABS.map((tab) => (
-            <Link
-              key={tab.id}
-              className={`rounded-xl border px-4 py-3 text-sm font-semibold transition-all duration-200 ${
-                activeTab === tab.id
-                  ? 'border-teal-200 bg-teal-50 text-teal-900'
-                  : 'border-slate-200 bg-white/70 text-slate-700 hover:border-teal-200 hover:text-teal-800'
-              }`}
-              href={adminTabHref(tab.id)}
-            >
-              {tab.label}
-            </Link>
+      <section className="card space-y-4">
+        <nav aria-label="Prospecting management" className="grid grid-cols-2 gap-2 sm:grid-cols-5">
+          {PROSPECTING_MANAGER_GROUPS.map((group) => (
+            <Link key={group.id} aria-current={activeGroup === group.id ? 'page' : undefined} className={`rounded-xl border px-4 py-3 text-sm font-semibold ${activeGroup === group.id ? 'border-teal-200 bg-teal-50 text-teal-900' : 'border-slate-200 bg-white/70 text-slate-700 hover:border-teal-200'}`} href={adminTabHref(group.tab)}>{group.label}</Link>
           ))}
-        </div>
+        </nav>
+        <nav aria-label={`${PROSPECTING_MANAGER_GROUPS.find((group) => group.id === activeGroup)?.label} views`} className="flex flex-wrap gap-2 border-t border-slate-100 pt-3">
+          {PROSPECTING_MANAGER_TABS.filter((tab) => tab.group === activeGroup).map((tab) => <Link key={tab.id} aria-current={activeTab === tab.id ? 'page' : undefined} className={`rounded-lg px-3 py-2 text-sm font-semibold ${activeTab === tab.id ? 'bg-slate-900 text-white' : 'bg-slate-50 text-slate-700 hover:bg-slate-100'}`} href={adminTabHref(tab.id)}>{tab.label}</Link>)}
+          {activeGroup === 'imports' ? <Link className="btn-secondary" href="/admin/sales/prospecting/template">Download CSV template</Link> : null}
+          {activeGroup === 'samples' ? <Link className="btn-secondary" href="/admin/sales/prospecting/sample-boxes">Sample boxes</Link> : null}
+          {activeGroup === 'hubspot' ? <Link className="btn-secondary" href="/admin/sales/prospecting/hubspot-export">Export HubSpot CSV</Link> : null}
+        </nav>
       </section>
 
       {activeTab === 'overview' ? (
@@ -1857,7 +1847,7 @@ export default async function ProspectingAdminPage(props: { searchParams?: Promi
           <StatCard label="Data Gaps" value={pipelineReview.metrics.dataGaps.toLocaleString()} detail="Missing phone, email, state, or contact." />
         </section>
 
-        <form id="pipeline-review-bulk-actions" action={bulkUpdatePipelineReviewLeads} className="card space-y-4">
+        <form key={`pipeline-${toast}-${selectedReviewRepId}-${selectedReviewStage}-${reviewPage}-${reviewPageSize}-${visiblePipelineReviewRows.map((summary) => summary.lead.id).join()}`} id="pipeline-review-bulk-actions" action={bulkUpdatePipelineReviewLeads} className="card space-y-4">
           <input type="hidden" name="tab" value="pipeline" />
           <input type="hidden" name="bucket" value={bucket} />
           <input type="hidden" name="list" value={selectedListId} />
@@ -2008,46 +1998,8 @@ export default async function ProspectingAdminPage(props: { searchParams?: Promi
             </div>
           ) : null}
 
-          <section className="rounded-lg border border-slate-200 bg-white/60 p-3">
-            <div className="grid gap-3 xl:grid-cols-[11rem_minmax(12rem,1fr)_minmax(12rem,1fr)_auto] xl:items-end">
-              <label className="text-sm font-semibold text-slate-700">
-                Bulk action
-                <select className="input mt-2" name="bulk_action" defaultValue="reassign">
-                  <option value="reassign">Reassign selected</option>
-                  <option value="move_stage">Move selected</option>
-                </select>
-              </label>
-              <label className="text-sm font-semibold text-slate-700">
-                Assign to
-                <select className="input mt-2" name="sales_profile_id" defaultValue="">
-                  <option value="">Unassigned</option>
-                  {salesRepsRows.map((rep) => <option key={rep.id} value={rep.id}>{profileLabel(rep)}</option>)}
-                </select>
-              </label>
-              <label className="text-sm font-semibold text-slate-700">
-                Move to stage
-                <select className="input mt-2" name="target_stage" defaultValue="">
-                  <option value="">Choose stage</option>
-                  {PROSPECTING_STAGES.map((stage) => <option key={stage.id} value={stage.id}>{stage.label}</option>)}
-                </select>
-              </label>
-              <PendingSubmitButton
-                className="btn-primary w-full xl:w-auto"
-                disabled={!canEdit || !visiblePipelineReviewRows.length}
-                disabledLabel={!canEdit ? 'No edit access' : 'No leads'}
-                label="Apply bulk update"
-                pendingLabel="Updating..."
-              />
-            </div>
-            <div className="mt-3">
-              <ProspectingBulkSelectionControls
-                allowAllFiltered={false}
-                formId="pipeline-review-bulk-actions"
-                pageCount={visiblePipelineReviewRows.length}
-                totalCount={reviewTotalRows}
-              />
-            </div>
-          </section>
+          {missingSampleLeads.length ? <div role="alert" className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-950"><p className="font-semibold">No stages were changed. Add a contact name and email for each prospect below, then select the leads and try again.</p><ul className="mt-2 list-disc space-y-1 pl-5">{missingSampleLeads.map((lead) => <li key={lead.id}><Link className="font-semibold underline" href={leadDetailHref(lead.id, selectedStateKey)}>{lead.company_name}</Link> — contact name and email required</li>)}</ul></div> : null}
+          <ProspectingManagerBulkActions formId="pipeline-review-bulk-actions" pageCount={visiblePipelineReviewRows.length} totalCount={reviewTotalRows} filterSummary={`${profileLabel(selectedReviewRep)} · ${selectedReviewStage ? stageLabel(selectedReviewStage) : 'All open stages'}`} reps={salesRepsRows.map((rep) => ({ id: rep.id, label: profileLabel(rep) }))} stages={PROSPECTING_STAGES} disabled={!canEdit || !visiblePipelineReviewRows.length} />
 
           <div className="overflow-x-auto">
             <table className="w-full min-w-[90rem] border-separate border-spacing-y-2 text-left text-sm">
@@ -2131,6 +2083,8 @@ export default async function ProspectingAdminPage(props: { searchParams?: Promi
         </form>
       </section>
       ) : null}
+
+      {activeTab === 'requests' && isOwner ? <ProspectingSampleRequestList page={samplePage} pageSize={samplePageSize} history={searchParams?.request_view === 'orders'} canEdit={canEdit} /> : null}
 
       {activeTab === 'samples' && isOwner ? (
         <section className="space-y-4">
@@ -2309,7 +2263,7 @@ export default async function ProspectingAdminPage(props: { searchParams?: Promi
           </div>
 
           {recycleActivitiesResult.error ? (
-            <StatusToast message="Recycle reporting is waiting on the latest database migration." tone="error" />
+            <StatusToast message="Recycle reporting is temporarily unavailable. Try again shortly." tone="error" />
           ) : null}
 
           <div className="flex flex-col gap-3 rounded-lg bg-white/60 px-3 py-2 text-sm text-slate-600 md:flex-row md:items-center md:justify-between">
@@ -2535,6 +2489,11 @@ export default async function ProspectingAdminPage(props: { searchParams?: Promi
             </div>
           </form>
 
+        </section>
+      ) : null}
+
+      {activeTab === 'imports' && isOwner ? (
+        <section className="space-y-5">
           <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_minmax(22rem,0.7fr)]">
           <form action="/admin/sales/prospecting/import" method="post" encType="multipart/form-data" className="card space-y-4">
             <div>
@@ -2590,7 +2549,7 @@ export default async function ProspectingAdminPage(props: { searchParams?: Promi
         </section>
       ) : null}
 
-      {activeTab === 'leads' ? (
+      {showLeadWorkspace ? (
       <section className="card space-y-4">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
           <div>
@@ -2598,7 +2557,7 @@ export default async function ProspectingAdminPage(props: { searchParams?: Promi
             <h2 className="mt-2 text-xl font-semibold tracking-tight text-slate-950">{BUCKETS.find((item) => item.id === bucket)?.label}</h2>
           </div>
           <nav className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-8">
-            {BUCKETS.map((item) => (
+            {BUCKETS.filter((item) => activeTab === 'hubspot_queue' ? item.id === 'hubspot' : item.id !== 'hubspot').map((item) => (
               <Link
                 key={item.id}
                 className={`rounded-lg border px-3 py-2 text-center text-sm font-semibold ${bucket === item.id ? 'border-teal-200 bg-teal-50 text-teal-900' : 'border-slate-200 bg-white/70 text-slate-700'}`}
@@ -2731,7 +2690,7 @@ export default async function ProspectingAdminPage(props: { searchParams?: Promi
       </section>
       ) : null}
 
-      {activeTab === 'leads' && leadRows.length && isMaintenanceBucket(bucket) ? (
+      {showLeadWorkspace && leadRows.length && isMaintenanceBucket(bucket) ? (
         <section className="space-y-3">
           {leadRows.map((lead) => {
             const leadContacts = contactsByLead.get(lead.id) ?? [];
@@ -2808,8 +2767,8 @@ export default async function ProspectingAdminPage(props: { searchParams?: Promi
             );
           })}
         </section>
-      ) : activeTab === 'leads' && leadRows.length ? (
-        <form id="prospecting-bulk-assignment" action={bulkAssignLeads} className="space-y-3">
+      ) : showLeadWorkspace && leadRows.length ? (
+        <form key={JSON.stringify([filters, page, pageSize, leadIds, toast])} id="prospecting-bulk-assignment" action={bulkAssignLeads} className="space-y-3">
           <input type="hidden" name="tab" value="leads" />
           <input type="hidden" name="bucket" value={bucket} />
           <input type="hidden" name="list" value={selectedListId} />
@@ -2821,33 +2780,7 @@ export default async function ProspectingAdminPage(props: { searchParams?: Promi
           <input type="hidden" name="page" value={page} />
           <input type="hidden" name="page_size" value={pageSize} />
 
-          {isOwner ? (
-            <section className="rounded-lg border border-slate-200 bg-white/60 p-3">
-              <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] lg:items-end">
-                <label className="text-sm font-semibold text-slate-700">
-                  Assign to
-                  <select className="input mt-2" name="sales_profile_id" defaultValue="">
-                    <option value="">Unassigned</option>
-                    {salesRepsRows.map((rep) => <option key={rep.id} value={rep.id}>{profileLabel(rep)}</option>)}
-                  </select>
-                </label>
-                <fieldset className="grid gap-2 rounded-lg bg-white/70 p-3 text-sm text-slate-700">
-                  <label className="flex items-center gap-2">
-                    <input className="h-5 w-5 accent-teal-600" type="radio" name="scope" value="selected" defaultChecked />
-                    <span>Selected leads on this page</span>
-                  </label>
-                  <label className="flex items-center gap-2">
-                    <input className="h-5 w-5 accent-teal-600" type="radio" name="scope" value="all_filtered" />
-                    <span>All leads matching current filters</span>
-                  </label>
-                </fieldset>
-                <PendingSubmitButton className="btn-primary w-full md:w-auto" label="Apply Assignment" pendingLabel="Assigning..." />
-              </div>
-              <div className="mt-3">
-                <ProspectingBulkSelectionControls formId="prospecting-bulk-assignment" pageCount={leadRows.length} totalCount={totalLeads} />
-              </div>
-            </section>
-          ) : null}
+          {isOwner ? <ProspectingManagerBulkActions formId="prospecting-bulk-assignment" pageCount={leadRows.length} totalCount={totalLeads} filterSummary={[BUCKETS.find((item) => item.id === bucket)?.label, selectedListId ? listRows.find((list) => list.id === selectedListId)?.name : 'All lists', selectedRepId ? profileLabel(salesRepsRows.find((rep) => rep.id === selectedRepId)) : 'All reps', selectedStateKey || 'All states', selectedStage ? stageLabel(selectedStage) : '', selectedPriority ? priorityLabel(selectedPriority) : '', q ? `Search: ${q}` : ''].filter(Boolean).join(' · ')} reps={salesRepsRows.map((rep) => ({ id: rep.id, label: profileLabel(rep) }))} disabled={!canEdit} /> : null}
 
           <section className="space-y-3">
             {leadRows.map((lead) => {
@@ -2930,14 +2863,14 @@ export default async function ProspectingAdminPage(props: { searchParams?: Promi
             })}
           </section>
         </form>
-      ) : activeTab === 'leads' ? (
+      ) : showLeadWorkspace && !leadsError ? (
         <div className="card border-dashed py-12 text-center">
           <h2 className="text-xl font-semibold text-slate-950">No leads found</h2>
           <p className="mt-2 text-sm text-slate-500">Try another bucket, clear filters, or import a CSV list.</p>
         </div>
       ) : null}
 
-      {activeTab === 'hubspot' && isOwner && duplicateReviews.length ? (
+      {activeTab === 'duplicates' && isOwner ? (
         <section className="card space-y-4">
           <div>
             <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Duplicate Review</p>
@@ -2955,6 +2888,7 @@ export default async function ProspectingAdminPage(props: { searchParams?: Promi
                 </tr>
               </thead>
               <tbody>
+                {!duplicateReviews.length ? <tr><td colSpan={5} className="px-3 py-8 text-center text-slate-500">No duplicate imports need review.</td></tr> : null}
                 {duplicateReviews.map((row) => (
                   <tr key={row.id} className="bg-white/70">
                     <td className="rounded-l-lg px-3 py-2 font-semibold text-slate-950">{row.company_name || 'Missing company'}</td>

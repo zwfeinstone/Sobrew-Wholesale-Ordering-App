@@ -441,6 +441,28 @@ describe('detailed accounting P&L statement', () => {
     expect(summary).toEqual({ ...detailed, detailSections: [] });
   });
 
+  it('preserves P&L totals after a payroll profile is removed', () => {
+    const entry = {
+      admin_time_breaks: [],
+      clock_in_at: '2026-07-10T14:00:00.000Z',
+      clock_out_at: '2026-07-10T16:00:00.000Z',
+      hourly_rate_cents_snapshot: 2000,
+      id: 'historical-entry',
+      profile_id: 'former-profile',
+      status: 'locked',
+      work_type: 'production',
+    };
+    const original = buildAccountingPnlStatement({ categories, transactions, payrollTimeEntries: [entry] });
+    const anonymized = buildAccountingPnlStatement({
+      categories,
+      transactions,
+      payrollTimeEntries: [{ ...entry, profile_id: null }],
+    });
+
+    expect(anonymized).toEqual(original);
+    expect(anonymized.laborCogsCents).toBe(4000);
+  });
+
   it('retains production-run labor estimates when payroll has no production labor', () => {
     const statement = buildAccountingPnlStatement({
       categories,

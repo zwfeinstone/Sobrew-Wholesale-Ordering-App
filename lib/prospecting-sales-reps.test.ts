@@ -2,10 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { filterProspectingSalesRepProfiles } from '@/lib/prospecting-sales-reps';
 
 describe('Prospecting sales rep filters', () => {
-  it('removes Benjamin from Prospecting sales rep options', () => {
+  it('includes active Prospecting sales reps', () => {
     expect(filterProspectingSalesRepProfiles([
       { email: 'avery@example.com', full_name: 'Avery Jones', id: 'rep-a', is_active: true },
-      { email: 'benjamin@example.com', full_name: 'Benjamin Stone', id: 'rep-b', is_active: true },
       { email: 'casey@example.com', full_name: 'Casey Lee', id: 'rep-c', is_active: true },
     ])).toEqual([
       { email: 'avery@example.com', full_name: 'Avery Jones', id: 'rep-a', is_active: true },
