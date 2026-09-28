@@ -1,16 +1,22 @@
 import Link from 'next/link';
+import { ArrowRight, CalendarDays, Check, ChevronDown, ClipboardCheck, Clock3, Download, FileChartColumn, ListChecks, Users, Wallet } from 'lucide-react';
 import { redirect } from 'next/navigation';
+import { revalidatePath } from 'next/cache';
+import PayrollCompensationFields from '@/components/payroll-compensation-fields';
+import PayrollMonthlyCommissions from '@/components/payroll-monthly-commissions';
+import './payroll.css';
 import PendingSubmitButton from '@/components/pending-submit-button';
 import StatusToast from '@/components/status-toast';
 import { recordAdminAuditLog } from '@/lib/admin-audit';
 import { adminCanEdit, requireAdminSectionEdit, requireAdminSectionView } from '@/lib/admin-permissions';
-import { numericPercent } from '@/lib/commissions';
+import { commissionMonthForDate, numericPercent } from '@/lib/commissions';
+import { isPayrollCommissionMonth, loadPayrollCommissions, recordPayrollCommissionPaid } from '@/lib/payroll-commissions';
 import { getCurrentMonthlySalaryPayrollWindow, getCurrentPayrollWeekWindow } from '@/lib/payroll-status';
+import { calculatePayrollWages, distributePayrollWages, payrollOvertimeContextRange, type PayrollEntryWages } from '@/lib/payroll-wages';
 import { supabaseAdmin } from '@/lib/supabase/admin';
+import { fetchAllByIds, fetchAllPages } from '@/lib/supabase/pagination';
 import {
-  COMPENSATION_TYPES,
   LABOR_WORK_TYPES,
-  SALARY_PAY_FREQUENCIES,
   SALARY_LABOR_WORK_TYPES,
   UNASSIGNED_WORK_TYPE,
   completedBreakMinutes,
@@ -126,6 +132,8 @@ type PayrollSegment = {
   allocated: boolean;
   entry: TimeEntry;
   minutes: number;
+  overtimeMinutes: number;
+  overtimePremiumCents: number;
   productionRunId: string | null;
   wageCents: number;
   workType: TimeEntryWorkType;
@@ -198,6 +206,8 @@ type WeeklyPaymentRow = {
   hourlyWageCents: number;
   lockedEntryCount: number;
   minutes: number;
+  overtimeMinutes: number;
+  unpaidOvertimePremiumCents: number;
   openEntryCount: number;
   profile: AdminProfileRow | null | undefined;
   profileId: string | null;
@@ -210,6 +220,8 @@ type PayrollDayRow = {
   hourlyOwedCents: number;
   lockedEntryCount: number;
   minutes: number;
+  overtimeMinutes: number;
+  unpaidOvertimePremiumCents: number;
   openEntryCount: number;
   profile: AdminProfileRow | null | undefined;
   profileId: string | null;
@@ -218,15 +230,15 @@ type PayrollDayRow = {
   unapprovedEntryCount: number;
 };
 
-const PAYROLL_TABS: Array<{ id: PayrollTab; label: string }> = [
-  { id: 'review', label: 'Review' },
-  { id: 'payroll-day', label: 'Payroll Day' },
-  { id: 'payments', label: 'Payments' },
-  { id: 'time', label: 'Time' },
-  { id: 'reports', label: 'Reports' },
-  { id: 'settings', label: 'Settings' },
-  { id: 'export', label: 'Export' },
-];
+const PAYROLL_TABS = [
+  { id: 'review', label: 'Review payroll', icon: ClipboardCheck },
+  { id: 'payroll-day', label: 'Pay summary', icon: ListChecks },
+  { id: 'payments', label: 'Payments', icon: Wallet },
+  { id: 'time', label: 'Time & corrections', icon: Clock3 },
+  { id: 'reports', label: 'Reports', icon: FileChartColumn },
+  { id: 'settings', label: 'Employee settings', icon: Users },
+  { id: 'export', label: 'Export CSV', icon: Download },
+] as const;
 
 const OPEN_SHIFT_ALERT_MINUTES = 12 * 60;
 const OPEN_LUNCH_ALERT_MINUTES = 2 * 60;
@@ -245,6 +257,7 @@ function formatDateInputLabel(value: string) {
   return new Date(Date.UTC(year, month - 1, day)).toLocaleDateString('en-US', {
     day: 'numeric',
     month: 'short',
+    timeZone: 'UTC',
   });
 }
 
@@ -330,6 +343,7 @@ function payrollReportWorkTypeLabel(value: PayrollReportWorkType | string | null
 
 function errorMessage(error: string) {
   if (error === 'write_denied') return 'You do not have edit access to Payroll.';
+  if (error === 'commission_payment_error') return 'Unable to record the commission payment. Refresh and check the monthly amount before trying again.';
   if (error === 'save_error') return 'Unable to save payroll settings.';
   if (error === 'salary_invalid') return 'Choose a valid monthly salary payment.';
   if (error === 'salary_not_ready') return 'That employee is not an active monthly salaried employee.';
@@ -344,6 +358,8 @@ function errorMessage(error: string) {
 }
 
 function successMessage(success: string) {
+  if (success === 'commission_paid') return 'Monthly commission marked paid.';
+  if (success === 'commission_already_paid') return 'That monthly commission was already marked paid.';
   if (success === 'saved') return 'Payroll settings saved.';
   if (success === 'work_type_updated') return 'Labor tag updated.';
   if (success === 'entry_corrected') return 'Time entry corrected.';
@@ -367,6 +383,37 @@ function successMessage(success: string) {
   if (success === 'entry_approved') return 'Shift approved.';
   if (success === 'entry_voided') return 'Shift voided.';
   return '';
+}
+
+async function markMonthlyCommissionPaid(formData: FormData) {
+  'use server';
+
+  const current = await requireAdminSectionEdit('payroll', payrollHref({ error: 'write_denied' }));
+  const salesProfileId = String(formData.get('sales_profile_id') ?? '');
+  const commissionMonth = String(formData.get('commission_month') ?? '');
+  const returnTo = safeReturnHref(formData);
+  const result = await recordPayrollCommissionPaid({ commissionMonth, salesProfileId, actorProfileId: current.profile.id });
+  const returnUrl = new URL(returnTo, 'http://localhost');
+  returnUrl.searchParams.delete('error');
+  returnUrl.searchParams.delete('success');
+  returnUrl.hash = 'monthly-commissions';
+  if (result.error) {
+    console.error('[admin-payroll] commission payment failed', result.error);
+    returnUrl.searchParams.set('error', 'commission_payment_error');
+    redirect(`${returnUrl.pathname}${returnUrl.search}${returnUrl.hash}`);
+  }
+  if (!result.alreadyPaid && result.payout) {
+    await recordAdminAuditLog({
+      action: 'monthly_commission_paid', actorProfileId: current.profile.id,
+      after: result.payout, before: result.before ?? null, sectionKey: 'payroll',
+      supabase: supabaseAdmin, targetProfileId: salesProfileId,
+    });
+  }
+  revalidatePath('/admin/payroll');
+  revalidatePath('/admin/sales-admin');
+  revalidatePath('/admin/commission');
+  returnUrl.searchParams.set('success', result.alreadyPaid ? 'commission_already_paid' : 'commission_paid');
+  redirect(`${returnUrl.pathname}${returnUrl.search}${returnUrl.hash}`);
 }
 
 async function updatePayrollSettings(formData: FormData) {
@@ -1451,31 +1498,49 @@ function EmptyState({ message }: { message: string }) {
   return <div className="rounded-2xl border border-slate-200 bg-white/60 p-4 text-sm text-slate-600">{message}</div>;
 }
 
-function buildSegments(entries: TimeEntry[], allocationsByEntry: Map<string, AllocationRow[]>) {
+function buildSegments(entries: TimeEntry[], allocationsByEntry: Map<string, AllocationRow[]>, wagesByEntry: Map<string, PayrollEntryWages>) {
   const segments: PayrollSegment[] = [];
   for (const entry of entries) {
-    if (entry.status === 'void' || !entry.clock_out_at) continue;
-    const allocations = allocationsByEntry.get(entry.id) ?? [];
+    if (entry.status === 'void' || entry.status === 'open' || !entry.clock_out_at) continue;
+    const pay = wagesByEntry.get(entry.id)!;
+    if (pay.minutes <= 0) continue;
+    const allocations = (allocationsByEntry.get(entry.id) ?? []).filter((allocation) => numericValue(allocation.minutes) > 0);
     if (allocations.length) {
-      for (const allocation of allocations) {
+      const weights = allocations.map((allocation) => numericValue(allocation.minutes));
+      const remainingMinutes = Math.max(0, pay.minutes - weights.reduce((sum, minutes) => sum + minutes, 0));
+      const parts = distributePayrollWages(pay, [...weights, remainingMinutes]);
+      allocations.forEach((allocation, index) => {
+        const part = parts[index];
         segments.push({
           allocated: true,
           entry,
-          minutes: numericValue(allocation.minutes),
+          minutes: part.minutes,
+          overtimeMinutes: part.overtimeMinutes,
+          overtimePremiumCents: part.overtimePremiumCents,
           productionRunId: allocation.production_run_id,
-          wageCents: numericValue(allocation.wage_cents),
+          // Preserve stored allocation base pay; distribute only the overtime premium.
+          wageCents: numericValue(allocation.wage_cents) + part.overtimePremiumCents,
           workType: normalizeWorkType(allocation.work_type),
+        });
+      });
+      if (remainingMinutes > 0) {
+        const remainder = parts[parts.length - 1];
+        segments.push({
+          allocated: false, entry, minutes: remainder.minutes,
+          overtimeMinutes: remainder.overtimeMinutes, overtimePremiumCents: remainder.overtimePremiumCents,
+          productionRunId: null, wageCents: remainder.wageCents, workType: normalizeWorkType(entry.work_type),
         });
       }
       continue;
     }
-    const minutes = paidMinutes(entry, entryBreaks(entry));
     segments.push({
       allocated: false,
       entry,
-      minutes,
+      minutes: pay.minutes,
+      overtimeMinutes: pay.overtimeMinutes,
+      overtimePremiumCents: pay.overtimePremiumCents,
       productionRunId: null,
-      wageCents: wageCentsForMinutes(minutes, entry.hourly_rate_cents_snapshot),
+      wageCents: pay.wageCents,
       workType: normalizeWorkType(entry.work_type),
     });
   }
@@ -1518,6 +1583,8 @@ function buildWeeklyPaymentRows(entries: TimeEntry[], segments: PayrollSegment[]
       hourlyWageCents: 0,
       lockedEntryCount: 0,
       minutes: 0,
+      overtimeMinutes: 0,
+      unpaidOvertimePremiumCents: 0,
       openEntryCount: 0,
       profile: adminById.get(entry.profile_id ?? ''),
       profileId: entry.profile_id,
@@ -1540,8 +1607,12 @@ function buildWeeklyPaymentRows(entries: TimeEntry[], segments: PayrollSegment[]
     const row = grouped.get(segment.entry.profile_id);
     if (!row) continue;
     row.minutes += segment.minutes;
+    row.overtimeMinutes += segment.overtimeMinutes;
     row.hourlyWageCents += segment.wageCents;
-    if (segment.entry.status !== 'locked') row.unpaidWageCents += segment.wageCents;
+    if (segment.entry.status !== 'locked') {
+      row.unpaidWageCents += segment.wageCents;
+      row.unpaidOvertimePremiumCents += segment.overtimePremiumCents;
+    }
   }
 
   return [...grouped.values()].sort((a, b) => profileLabel(a.profile).localeCompare(profileLabel(b.profile)));
@@ -1655,10 +1726,12 @@ function EntriesTable({
   allocationsByEntry,
   entries,
   returnTo,
+  wagesByEntry,
 }: {
   allocationsByEntry: Map<string, AllocationRow[]>;
   entries: TimeEntry[];
   returnTo: string;
+  wagesByEntry: Map<string, PayrollEntryWages>;
 }) {
   if (!entries.length) return <EmptyState message="No time entries found for the selected filters." />;
 
@@ -1683,8 +1756,9 @@ function EntriesTable({
           {entries.map((entry) => {
             const breaks = entryBreaks(entry);
             const lunchMinutes = completedBreakMinutes(breaks);
-            const entryPaidMinutes = paidMinutes(entry, breaks);
-            const wageCents = wageCentsForMinutes(entryPaidMinutes, entry.hourly_rate_cents_snapshot);
+            const entryPay = wagesByEntry.get(entry.id)!;
+            const entryPaidMinutes = entryPay.minutes;
+            const wageCents = entryPay.wageCents;
             const profile = profileForEntry(entry);
             const allocations = allocationsByEntry.get(entry.id) ?? [];
             const allocatedMinutes = allocations.reduce((sum, allocation) => sum + numericValue(allocation.minutes), 0);
@@ -1702,8 +1776,8 @@ function EntriesTable({
                 <td className="px-4 py-3 text-slate-700">{formatCentralDateTime(entry.clock_out_at)}</td>
                 <td className="px-4 py-3 text-slate-700">{workTypeLabel(entry.work_type)}</td>
                 <td className="px-4 py-3 text-right text-slate-700">{hoursLabel(lunchMinutes)}</td>
-                <td className="px-4 py-3 text-right font-semibold text-slate-950">{hoursLabel(entryPaidMinutes)}</td>
-                <td className="px-4 py-3 text-right font-semibold text-slate-950">{usd(wageCents)}</td>
+                <td className="px-4 py-3 text-right font-semibold text-slate-950">{hoursLabel(entryPaidMinutes)}{entryPay.overtimeMinutes > 0 ? <p className="mt-1 text-xs font-medium text-teal-800">{hoursLabel(entryPay.overtimeMinutes)} overtime</p> : null}</td>
+                <td className="px-4 py-3 text-right font-semibold text-slate-950">{usd(wageCents)}{entryPay.overtimePremiumCents > 0 ? <p className="mt-1 text-xs font-medium text-teal-800">Includes {usd(entryPay.overtimePremiumCents)} OT premium</p> : null}</td>
                 <td className="max-w-72 px-4 py-3 text-slate-600">
                   {entry.notes ? <p className="whitespace-pre-line">{entry.notes}</p> : null}
                   {entry.correction_request_note ? <p className="mt-2 rounded-xl bg-amber-50 p-2 text-amber-800">Correction request: {entry.correction_request_note}</p> : null}
@@ -1974,7 +2048,7 @@ function PaymentsTable({
 
   return (
     <div className="overflow-x-auto">
-      <table className="w-full min-w-[64rem] border-separate border-spacing-y-2 text-left text-sm">
+      <table className="payroll-payment-table w-full border-separate border-spacing-y-2 text-left text-sm">
         <thead>
           <tr className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
             <th className="px-4 py-2">Employee</th>
@@ -1991,22 +2065,22 @@ function PaymentsTable({
             const canMarkPaid = canEditPayroll && Boolean(row.profileId) && row.completedEntryCount > 0 && row.openEntryCount === 0 && row.unapprovedEntryCount === 0 && row.lockedEntryCount < row.completedEntryCount;
             return (
               <tr key={row.profileId} className="bg-white/70 align-top">
-                <td className="rounded-l-xl px-4 py-3">
+                <td data-label="Employee" className="rounded-l-xl px-4 py-3">
                   <p className="font-semibold text-slate-950">{profileLabel(row.profile)}</p>
                   <p className="mt-1 break-all text-xs text-slate-500">{row.profile?.email}</p>
                 </td>
-                <td className="px-4 py-3 text-right text-slate-700">
+                <td data-label="Shifts" className="px-4 py-3 text-right text-slate-700">
                   <p className="font-semibold text-slate-950">{row.completedEntryCount}</p>
                   {row.openEntryCount ? <p className="mt-1 text-xs text-amber-700">{row.openEntryCount} open</p> : null}
                 </td>
-                <td className="px-4 py-3 text-right font-semibold text-slate-950">{hoursLabel(row.minutes)}</td>
-                <td className="px-4 py-3 text-right font-semibold text-slate-950">{usd(row.unpaidWageCents)}</td>
-                <td className="px-4 py-3">
+                <td data-label="Hours" className="px-4 py-3 text-right font-semibold text-slate-950">{hoursLabel(row.minutes)}<p className="mt-1 text-xs font-normal text-slate-500">{hoursLabel(row.minutes - row.overtimeMinutes)} regular · {hoursLabel(row.overtimeMinutes)} OT</p></td>
+                <td data-label="Amount owed" className="px-4 py-3 text-right font-semibold text-slate-950">{usd(row.unpaidWageCents)}{row.unpaidOvertimePremiumCents > 0 ? <p className="mt-1 text-xs font-medium text-teal-800">Includes {usd(row.unpaidOvertimePremiumCents)} OT premium</p> : null}</td>
+                <td data-label="Status" className="px-4 py-3">
                   <span className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ring-1 ${status.tone}`}>{status.label}</span>
                   {row.unapprovedEntryCount ? <p className="mt-2 text-xs text-rose-700">{row.unapprovedEntryCount} shift{row.unapprovedEntryCount === 1 ? '' : 's'} need approval</p> : null}
                   {row.lockedEntryCount ? <p className="mt-2 text-xs text-slate-500">{row.lockedEntryCount} already paid</p> : null}
                 </td>
-                <td className="rounded-r-xl px-4 py-3">
+                <td data-label="Action" className="rounded-r-xl px-4 py-3">
                   <form action={markEmployeeWeekPaid}>
                     {returnToInput(returnTo)}
                     <input name="profile_id" type="hidden" value={row.profileId ?? ''} />
@@ -2015,8 +2089,8 @@ function PaymentsTable({
                     <PendingSubmitButton
                       className="btn-primary w-full"
                       disabled={!canMarkPaid}
-                      disabledLabel={!canEditPayroll ? 'View Only' : row.openEntryCount ? 'Close Shift First' : row.unapprovedEntryCount ? 'Approve First' : 'Paid'}
-                      label="Paid"
+                      disabledLabel={!canEditPayroll ? 'View Only' : !row.profileId ? 'Historical record' : row.openEntryCount ? 'Close Shift First' : row.unapprovedEntryCount ? 'Approve First' : 'Paid'}
+                      label="Mark paid"
                       pendingLabel="Saving..."
                     />
                   </form>
@@ -2035,7 +2109,7 @@ function PayrollDayTable({ rows }: { rows: PayrollDayRow[] }) {
 
   return (
     <div className="overflow-x-auto">
-      <table className="w-full min-w-[48rem] border-separate border-spacing-y-2 text-left text-sm">
+      <table className="payroll-payment-table w-full border-separate border-spacing-y-2 text-left text-sm">
         <thead>
           <tr className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
             <th className="px-4 py-2">Employee</th>
@@ -2050,19 +2124,21 @@ function PayrollDayTable({ rows }: { rows: PayrollDayRow[] }) {
             const statusDetail = payrollDayStatusDetail(row);
             return (
               <tr key={row.profileId} className="bg-white/70 align-top">
-                <td className="rounded-l-xl px-4 py-3">
+                <td data-label="Employee" className="rounded-l-xl px-4 py-3">
                   <p className="font-semibold text-slate-950">{profileLabel(row.profile)}</p>
                   <p className="mt-1 break-all text-xs text-slate-500">{row.profile?.email}</p>
                 </td>
-                <td className="px-4 py-3 text-right">
+                <td data-label="Hours" className="px-4 py-3 text-right">
                   <p className="font-semibold text-slate-950">{hoursLabel(row.minutes)}</p>
+                  <p className="mt-1 text-xs text-slate-500">{hoursLabel(row.minutes - row.overtimeMinutes)} regular · {hoursLabel(row.overtimeMinutes)} OT</p>
                   <p className="mt-1 text-xs text-slate-500">{row.completedEntryCount} shift{row.completedEntryCount === 1 ? '' : 's'}</p>
                 </td>
-                <td className="px-4 py-3 text-right">
+                <td data-label="Amount owed" className="px-4 py-3 text-right">
                   <p className="text-lg font-semibold text-slate-950">{usd(row.totalOwedCents)}</p>
                   <p className="mt-1 text-xs text-slate-500">Hourly {usd(row.hourlyOwedCents)} / SPIFF {usd(row.spiffOwedCents)}</p>
+                  {row.unpaidOvertimePremiumCents > 0 ? <p className="mt-1 text-xs font-medium text-teal-800">Includes {usd(row.unpaidOvertimePremiumCents)} OT premium</p> : null}
                 </td>
-                <td className="rounded-r-xl px-4 py-3">
+                <td data-label="Status" className="rounded-r-xl px-4 py-3">
                   <span className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ring-1 ${status.tone}`}>{status.label}</span>
                   {statusDetail ? <p className="mt-2 text-xs text-slate-500">{statusDetail}</p> : null}
                 </td>
@@ -2090,6 +2166,10 @@ export default async function PayrollPage(
   const todayInput = formatCentralDateInput();
   const currentPayrollWeek = getCurrentPayrollWeekWindow();
   const monthlySalaryWindow = getCurrentMonthlySalaryPayrollWindow();
+  const commissionMonthParam = stringParam(searchParams?.commission_month);
+  const commissionMonthCandidate = /^\d{4}-\d{2}$/.test(commissionMonthParam) ? `${commissionMonthParam}-01` : commissionMonthParam;
+  const commissionMonth = isPayrollCommissionMonth(commissionMonthCandidate) ? commissionMonthCandidate : monthlySalaryWindow.payrollMonthInput;
+  const showMonthlyCommissions = ['review', 'payroll-day', 'payments'].includes(activeTab);
   const defaultFrom = activeTab === 'reports' ? `${todayInput.slice(0, 8)}01` : currentPayrollWeek.weekStartInput;
   const defaultTo = activeTab === 'reports' ? todayInput : currentPayrollWeek.weekEndInput;
   const fromInput = stringParam(searchParams?.from) || defaultFrom;
@@ -2100,6 +2180,7 @@ export default async function PayrollPage(
   const toDate = parseCentralDateInput(toInput, true) ?? parseCentralDateInput(defaultTo, true)!;
   const currentParams = {
     admin: selectedAdmin,
+    commission_month: commissionMonthParam ? commissionMonth.slice(0, 7) : '',
     from: fromInput,
     to: toInput,
     work_type: filterWorkType,
@@ -2110,6 +2191,24 @@ export default async function PayrollPage(
     tab: activeTab,
   });
 
+  if (toDate < fromDate) {
+    return (
+      <section className="card space-y-4">
+        <h1 className="page-title">Payroll</h1>
+        <p role="alert" className="text-sm text-rose-700">Choose an end date on or after the start date.</p>
+        <form className="grid gap-4 sm:grid-cols-3 sm:items-end" method="get" action="/admin/payroll">
+          <input type="hidden" name="tab" value={activeTab} />
+          <input type="hidden" name="admin" value={selectedAdmin} />
+          <input type="hidden" name="work_type" value={filterWorkType} />
+          {currentParams.commission_month ? <input name="commission_month" type="hidden" value={currentParams.commission_month} /> : null}
+          <label className="space-y-2 text-sm font-medium text-slate-700">From<input className="input" name="from" type="date" defaultValue={fromInput} required /></label>
+          <label className="space-y-2 text-sm font-medium text-slate-700">To<input className="input" name="to" type="date" defaultValue={toInput} required /></label>
+          <button className="btn-primary" type="submit">Apply dates</button>
+        </form>
+      </section>
+    );
+  }
+
   const [
     adminsResult,
     timeSettingsResult,
@@ -2119,6 +2218,7 @@ export default async function PayrollPage(
     payrollLocksResult,
     salaryPaymentsResult,
     weeklySalesSpiffsResult,
+    monthlyCommissionsResult,
   ] = await Promise.all([
     supabaseAdmin
       .from('profiles')
@@ -2159,26 +2259,35 @@ export default async function PayrollPage(
       .order('week_start_date', { ascending: false })
       .order('paid_at', { ascending: false })
       .limit(500),
+    showMonthlyCommissions ? loadPayrollCommissions({ commissionMonth }) : Promise.resolve({ rows: [], error: null }),
   ]);
 
+  const overtimeContext = payrollOvertimeContextRange(fromDate, toDate);
+  const endExclusive = new Date(toDate.getTime() + 1000);
   let entriesQuery = supabaseAdmin
     .from('admin_time_entries')
     .select('id,profile_id,clock_in_at,clock_out_at,hourly_rate_cents_snapshot,status,notes,correction_request_note,manual_reason,correction_reason,voided_at,void_reason,approved_at,locked_at,created_at,work_type,admin_profile:profiles!admin_time_entries_profile_id_fkey(id,email,full_name,is_active),admin_time_breaks(id,break_start_at,break_end_at,status,notes,manual_reason,correction_reason,voided_at,void_reason)')
-    .gte('clock_in_at', fromDate.toISOString())
-    .lte('clock_in_at', toDate.toISOString())
+    .or(`clock_in_at.gte.${overtimeContext.start.toISOString()},clock_out_at.gt.${overtimeContext.start.toISOString()}`)
+    .lt('clock_in_at', overtimeContext.endExclusive.toISOString())
     .order('clock_in_at', { ascending: false })
-    .limit(1000);
+    .order('id', { ascending: false });
   if (selectedAdmin) entriesQuery = entriesQuery.eq('profile_id', selectedAdmin);
-  if (filterWorkType) entriesQuery = entriesQuery.eq('work_type', filterWorkType);
 
-  const entriesResult = await entriesQuery;
-  const entryIds = ((entriesResult.data ?? []) as TimeEntry[]).map((entry) => entry.id);
-  const allocationsResult = entryIds.length
-    ? await supabaseAdmin
-        .from('admin_time_entry_allocations')
-        .select('id,time_entry_id,work_type,production_run_id,minutes,wage_cents,notes')
-        .in('time_entry_id', entryIds)
-    : { data: [] as AllocationRow[], error: null };
+  const entriesResult = await fetchAllPages<TimeEntry>((from, to) => entriesQuery.range(from, to));
+  const contextEntries = entriesResult.data;
+  const entries = contextEntries.filter((entry) => {
+    const clockIn = new Date(entry.clock_in_at);
+    return clockIn >= fromDate && clockIn < endExclusive
+      && (!selectedAdmin || entry.profile_id === selectedAdmin)
+      && (!filterWorkType || normalizeWorkType(entry.work_type) === filterWorkType);
+  });
+  const entryIds = entries.map((entry) => entry.id);
+  const allocationsResult = await fetchAllByIds<AllocationRow>(entryIds, (ids, from, to) => supabaseAdmin
+    .from('admin_time_entry_allocations')
+    .select('id,time_entry_id,work_type,production_run_id,minutes,wage_cents,notes')
+    .in('time_entry_id', ids)
+    .order('id', { ascending: true })
+    .range(from, to));
 
   if (entriesResult.error || allocationsResult.error) {
     console.error('[admin-payroll] page load failed', {
@@ -2211,7 +2320,7 @@ export default async function PayrollPage(
   const admins = ((adminsResult.data ?? []) as AdminProfileRow[]).sort((a, b) => profileLabel(a).localeCompare(profileLabel(b)));
   const activeAdmins = admins.filter((admin) => admin.is_active !== false);
   const deactivatedAdmins = admins.filter((admin) => admin.is_active === false);
-  const settingsAdmins = settingsView === 'deactivated' ? deactivatedAdmins : activeAdmins;
+  const settingsAdmins = (settingsView === 'deactivated' ? deactivatedAdmins : activeAdmins).filter((admin) => !selectedAdmin || admin.id === selectedAdmin);
   const activeSettingsHref = payrollHref({ ...currentParams, tab: 'settings' });
   const deactivatedSettingsHref = payrollHref({ ...currentParams, settings_view: 'deactivated', tab: 'settings' });
   const adminById = new Map(admins.map((admin) => [admin.id, admin]));
@@ -2227,7 +2336,6 @@ export default async function PayrollPage(
     tagsByProfile.set(assignment.profile_id, tags);
   }
 
-  const entries = (entriesResult.data ?? []) as TimeEntry[];
   const allocations = (allocationsResult.data ?? []) as AllocationRow[];
   const allocationsByEntry = new Map<string, AllocationRow[]>();
   for (const allocation of allocations) {
@@ -2239,7 +2347,8 @@ export default async function PayrollPage(
   const salaryPayments = salaryPaymentsResult.error ? [] : (salaryPaymentsResult.data ?? []) as SalaryPaymentRow[];
   const weeklySalesSpiffs = weeklySalesSpiffsResult.error ? [] : (weeklySalesSpiffsResult.data ?? []) as WeeklySalesSpiffRow[];
   const salaryPaymentsByProfileMonth = new Map(salaryPayments.map((payment) => [`${payment.profile_id}:${payment.payroll_month}`, payment]));
-  const segments = buildSegments(entries, allocationsByEntry);
+  const wagesByEntry = calculatePayrollWages(contextEntries);
+  const segments = buildSegments(entries, allocationsByEntry, wagesByEntry);
   const salaryRows = buildSalaryRows({ filterWorkType, fromDate, selectedAdmin, timeSettings, toDate });
   const monthlySalaryRows = timeSettings
     .filter((setting) => setting.active !== false)
@@ -2308,6 +2417,8 @@ export default async function PayrollPage(
         hourlyOwedCents,
         lockedEntryCount: payment?.lockedEntryCount ?? 0,
         minutes: payment?.minutes ?? 0,
+        overtimeMinutes: payment?.overtimeMinutes ?? 0,
+        unpaidOvertimePremiumCents: payment?.unpaidOvertimePremiumCents ?? 0,
         openEntryCount: payment?.openEntryCount ?? 0,
         profile: payment?.profile ?? adminById.get(profileId ?? ''),
         profileId,
@@ -2324,6 +2435,8 @@ export default async function PayrollPage(
   const payrollDayNeedsReviewCount = payrollDayRows.filter((row) => row.openEntryCount || row.unapprovedEntryCount).length;
 
   const totalPaidMinutes = segments.reduce((sum, segment) => sum + segment.minutes, 0);
+  const totalOvertimeMinutes = segments.reduce((sum, segment) => sum + segment.overtimeMinutes, 0);
+  const totalOvertimePremiumCents = segments.reduce((sum, segment) => sum + segment.overtimePremiumCents, 0);
   const totalHourlyWages = segments.reduce((sum, segment) => sum + segment.wageCents, 0);
   const totalSalaryPay = salaryRows.reduce((sum, salary) => sum + salary.salaryCents, 0);
   const totalPay = totalHourlyWages + totalSalaryPay + selectedPaidSalesSpiffCents;
@@ -2376,69 +2489,108 @@ export default async function PayrollPage(
   const canCompletePayroll = !rangeHasCoveringLock && openEntries.length === 0 && unapprovedEntries.length === 0;
 
   return (
-    <div className="space-y-6">
+    <div className="payroll-workspace min-w-0 space-y-5">
       {successMessage(success) ? <StatusToast message={successMessage(success)} tone="success" /> : null}
       {error ? <StatusToast message={errorMessage(error)} tone="error" /> : null}
       {salaryPaymentsResult.error ? <section className="card text-sm text-red-700">Salary payment records are not available yet. Run the monthly salary payroll migration to approve and mark salary paid.</section> : null}
       {weeklySalesSpiffsResult.error ? <section className="card text-sm text-red-700">Weekly sales SPIFF records are not available yet. Run the weekly sales SPIFF migration to save and report SPIFF payouts.</section> : null}
 
-      <section className="panel">
-        <span className="eyebrow">Payroll</span>
-        <h1 className="page-title mt-4">Payroll and labor reporting</h1>
-        <p className="page-subtitle mt-3">Review weekly hours, manage time entries, and report labor by employee, tag, and production day.</p>
-      </section>
+      <header className="flex flex-wrap items-center justify-between gap-4">
+        <div>
+          <h1 className="text-3xl font-semibold tracking-tight text-slate-950">Payroll</h1>
+          <p className="mt-1 text-sm text-slate-600">Review your team’s time, pay, and payment records.</p>
+        </div>
+        <div className="flex items-center gap-3">
+          {!canEditPayroll ? <span className="rounded-full bg-slate-100 px-3 py-1 text-sm font-medium text-slate-600">View only</span> : null}
+          <span className="hidden sm:inline"><Link className="btn-secondary gap-2" href={tabHref('export', currentParams)}><Download size={16} aria-hidden="true" /> Export</Link></span>
+        </div>
+      </header>
 
-      <nav aria-label="Payroll sections" className="grid gap-2 sm:grid-cols-2 xl:grid-cols-7">
+      <nav aria-label="Payroll sections" className="payroll-nav">
         {PAYROLL_TABS.map((tab) => (
-          <Link
-            key={tab.id}
-            className={`rounded-2xl border px-4 py-3 text-sm font-semibold transition-all duration-200 ${activeTab === tab.id ? 'border-teal-200 bg-teal-50 text-teal-900' : 'border-slate-200 bg-white/70 text-slate-700 hover:border-teal-100 hover:bg-white'}`}
-            href={tabHref(tab.id, currentParams)}
-          >
+          <Link key={tab.id} aria-current={activeTab === tab.id ? 'page' : undefined} href={tabHref(tab.id, currentParams)}>
+            <tab.icon size={17} aria-hidden="true" />
             {tab.label}
+            {tab.id === 'review' && openEntries.length + unapprovedEntries.length > 0 ? <span className="payroll-count">{openEntries.length + unapprovedEntries.length}</span> : null}
           </Link>
         ))}
       </nav>
 
-      <form className="card grid gap-3 md:grid-cols-5">
-        <input name="tab" type="hidden" value={activeTab} />
-        {activeTab === 'settings' && settingsView === 'deactivated' ? <input name="settings_view" type="hidden" value="deactivated" /> : null}
-        <label className="space-y-2 text-sm font-medium text-slate-700">
-          From
-          <input className="input" name="from" type="date" defaultValue={fromInput} />
-        </label>
-        <label className="space-y-2 text-sm font-medium text-slate-700">
-          To
-          <input className="input" name="to" type="date" defaultValue={toInput} />
-        </label>
-        <label className="space-y-2 text-sm font-medium text-slate-700">
-          Admin
-          <select className="input" name="admin" defaultValue={selectedAdmin}>
-            <option value="">All admins</option>
-            {admins.map((admin) => (
-              <option key={admin.id} value={admin.id}>{profileLabel(admin)}{admin.is_active === false ? ' (inactive)' : ''}</option>
-            ))}
-          </select>
-        </label>
-        <label className="space-y-2 text-sm font-medium text-slate-700">
-          Labor tag
-          <select className="input" name="work_type" defaultValue={filterWorkType}>
-            <option value="">All tags</option>
-            <option value={UNASSIGNED_WORK_TYPE}>Unassigned</option>
-            {SALARY_LABOR_WORK_TYPES.map((workType) => (
-              <option key={workType.value} value={workType.value}>{workType.label}</option>
-            ))}
-          </select>
-        </label>
-        <div className="flex items-end">
-          <button className="btn-primary w-full" type="submit">Update</button>
-        </div>
-      </form>
+      <section className="card space-y-4" aria-label={activeTab === 'settings' ? 'Employee filters' : 'Pay period and filters'}>
+        {activeTab !== 'settings' ? <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <CalendarDays className="text-teal-700" size={20} aria-hidden="true" />
+            <div><p className="text-xs font-semibold uppercase tracking-wider text-slate-500">{activeTab === 'reports' ? 'Report period' : 'Selected period'} · Central time</p><p className="mt-1 font-semibold text-slate-950">{formatDateInputLabel(fromInput)}{fromInput.slice(0, 4) !== toInput.slice(0, 4) ? `, ${fromInput.slice(0, 4)}` : ''} – {formatDateInputLabel(toInput)}, {toInput.slice(0, 4)}</p></div>
+          </div>
+          <div className="flex flex-wrap gap-2 text-sm font-medium">
+            <Link className="payroll-shortcut" href={payrollHref({ ...currentParams, tab: activeTab, from: currentPayrollWeek.weekStartInput, to: currentPayrollWeek.weekEndInput })}>Current week</Link>
+            <Link className="payroll-shortcut" href={payrollHref({ ...currentParams, tab: activeTab, from: `${todayInput.slice(0, 8)}01`, to: todayInput })}>Month to date</Link>
+          </div>
+        </div> : null}
+        <details className="payroll-disclosure" open={activeTab === 'settings' || Boolean(selectedAdmin || filterWorkType) || fromInput !== defaultFrom || toInput !== defaultTo}>
+          <summary className="flex cursor-pointer items-center gap-2 text-sm font-semibold text-slate-700"><ChevronDown className="payroll-chevron" size={16} aria-hidden="true" />{activeTab === 'settings' ? 'Find an employee' : 'Custom dates & employee filters'}{selectedAdmin || filterWorkType ? <span className="payroll-count">{[selectedAdmin, filterWorkType].filter(Boolean).length} active</span> : null}</summary>
+        <form className={`mt-4 grid items-end gap-3 ${activeTab === 'settings' ? 'sm:grid-cols-[minmax(0,1fr)_auto_auto]' : 'sm:grid-cols-2 xl:grid-cols-[1fr_1fr_1.25fr_1.25fr_auto_auto]'}`}>
+          <input name="tab" type="hidden" value={activeTab} />
+          {currentParams.commission_month ? <input name="commission_month" type="hidden" value={currentParams.commission_month} /> : null}
+          {activeTab === 'settings' && settingsView === 'deactivated' ? <input name="settings_view" type="hidden" value="deactivated" /> : null}
+          {activeTab === 'settings' ? <><input name="from" type="hidden" value={fromInput} /><input name="to" type="hidden" value={toInput} /><input name="work_type" type="hidden" value={filterWorkType} /></> : <>
+            <label className="grid gap-1.5 text-sm font-medium text-slate-700">From<input className="input" name="from" type="date" defaultValue={fromInput} required /></label>
+            <label className="grid gap-1.5 text-sm font-medium text-slate-700">To<input className="input" name="to" type="date" defaultValue={toInput} required /></label>
+          </>}
+          <label className="grid gap-1.5 text-sm font-medium text-slate-700">
+            Employee
+            <select className="input" name="admin" defaultValue={selectedAdmin}>
+              <option value="">All employees</option>
+              {admins.map((admin) => <option key={admin.id} value={admin.id}>{profileLabel(admin)}{admin.is_active === false ? ' (inactive)' : ''}</option>)}
+            </select>
+          </label>
+          {activeTab !== 'settings' ? <label className="grid gap-1.5 text-sm font-medium text-slate-700">
+            Labor tag
+            <select className="input" name="work_type" defaultValue={filterWorkType}>
+              <option value="">All tags</option>
+              <option value={UNASSIGNED_WORK_TYPE}>Unassigned</option>
+              {SALARY_LABOR_WORK_TYPES.map((workType) => <option key={workType.value} value={workType.value}>{workType.label}</option>)}
+            </select>
+          </label> : null}
+          <button className="btn-primary" type="submit">Apply filters</button>
+          <Link className="btn-secondary" href={payrollHref({ tab: activeTab, settings_view: activeTab === 'settings' ? settingsView : '', from: fromInput, to: toInput, commission_month: currentParams.commission_month })}>Reset filters</Link>
+        </form>
+        </details>
+        {filterWorkType && (activeTab === 'review' || activeTab === 'payments') ? <p className="text-sm text-slate-500">Approvals, hourly payments, and week completion apply to all labor tags for the selected employee and dates.</p> : null}
+      </section>
+
+      {activeTab !== 'settings' ? <p className="rounded-lg bg-teal-50 px-4 py-3 text-sm text-teal-900"><strong>Overtime included:</strong> paid hours over 40 per employee each Monday–Sunday week (Central time) are paid at 1.5× the shift’s hourly rate. Unpaid breaks are excluded; all labor tags count toward the weekly total.</p> : null}
+
+      {['review', 'payroll-day', 'payments'].includes(activeTab) ? <nav aria-label="Weekly payroll workflow" className="grid gap-2 sm:grid-cols-3">
+        {[
+          { tab: 'review' as const, label: 'Review time', detail: openEntries.length + unapprovedEntries.length ? `${openEntries.length} open · ${unapprovedEntries.length} to approve` : 'Time review up to date' },
+          { tab: 'payroll-day' as const, label: 'Check pay summary', detail: `${usd(payrollDayTotalOwedCents)} hourly + SPIFFs owed` },
+          { tab: 'payments' as const, label: 'Record payments', detail: `${weeklyPaymentPaidRows.length} hourly employee${weeklyPaymentPaidRows.length === 1 ? '' : 's'} marked paid` },
+        ].map((step, index) => <Link key={step.tab} href={tabHref(step.tab, currentParams)} aria-current={activeTab === step.tab ? 'step' : undefined} className="payroll-step">
+          <span className="payroll-step-number">{index === 0 && !openEntries.length && !unapprovedEntries.length ? <Check size={16} aria-label="Reviewed" /> : index + 1}</span>
+          <span><span className="block font-semibold">{step.label}</span><span className="mt-0.5 block text-xs text-slate-500">{step.detail}</span></span>
+        </Link>)}
+      </nav> : null}
+
+      {showMonthlyCommissions ? <PayrollMonthlyCommissions
+        action={markMonthlyCommissionPaid}
+        canEdit={canEditPayroll}
+        commissionMonth={commissionMonth}
+        currentMonth={commissionMonthForDate()}
+        error={Boolean(monthlyCommissionsResult.error)}
+        profiles={adminById}
+        rows={monthlyCommissionsResult.rows}
+        salesProfileIds={[...commissionByProfile.values()].filter((setting) => setting.is_sales_rep && adminById.get(setting.profile_id)?.is_active !== false).map((setting) => setting.profile_id)}
+        selectedAdmin={selectedAdmin}
+        currentParams={currentParams}
+        activeTab={activeTab}
+        returnTo={currentUrl}
+      /> : null}
 
       {activeTab === 'payroll-day' ? (
         <section className="space-y-5">
-          <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-            <StatTile label="Total Owed" value={usd(payrollDayTotalOwedCents)} detail={`${payrollDayEmployeesWithPayDueCount} employee${payrollDayEmployeesWithPayDueCount === 1 ? '' : 's'} with pay due.`} />
+          <section className="payroll-metrics grid grid-cols-2 gap-3 xl:grid-cols-4">
+            <StatTile label="Hourly + SPIFFs owed" value={usd(payrollDayTotalOwedCents)} detail={`${payrollDayEmployeesWithPayDueCount} employee${payrollDayEmployeesWithPayDueCount === 1 ? '' : 's'} with pay due.`} />
             <StatTile label="Hourly" value={usd(payrollDayHourlyOwedCents)} detail={`${hoursLabel(weeklyPaymentHours)} completed hours.`} />
             <StatTile label="SPIFFs" value={usd(payrollDaySpiffOwedCents)} detail={`${selectedUnpaidWeeklySalesSpiffs.length} not marked paid.`} />
             <StatTile label="Needs Review" value={String(payrollDayNeedsReviewCount)} detail="Open or unapproved time." />
@@ -2446,32 +2598,53 @@ export default async function PayrollPage(
 
           <section className="card space-y-4">
             <div>
-              <h2 className="text-xl font-semibold text-slate-950">Payroll Day</h2>
+              <h2 className="text-xl font-semibold text-slate-950">Employee pay summary</h2>
               <p className="mt-1 text-sm text-slate-500">
                 {formatDateInputLabel(fromInput)} to {formatDateInputLabel(toInput)}{selectedAdmin ? ` for ${profileLabel(adminById.get(selectedAdmin))}` : ''}.
               </p>
             </div>
+            <p className="text-sm text-slate-600">Includes unpaid hourly wages and sales incentives (SPIFFs). Review <Link className="font-semibold text-teal-800 underline" href={`${tabHref('review', currentParams)}#monthly-salary`}>monthly salary payments</Link> separately; salary estimates for all pay frequencies are in <Link className="font-semibold text-teal-800 underline" href={tabHref('reports', currentParams)}>Reports</Link>.</p>
             <PayrollDayTable rows={payrollDayRows} />
+            <div className="flex justify-end"><Link className="btn-primary gap-2" href={tabHref('payments', currentParams)}>Continue to payments <ArrowRight size={16} aria-hidden="true" /></Link></div>
           </section>
         </section>
       ) : null}
 
       {activeTab === 'payments' ? (
         <section className="space-y-5">
-          <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
-            <StatTile label="People to Pay" value={String(weeklyPaymentDueRows.length)} detail="Closed and approved, not yet marked paid." />
+          <section className="payroll-metrics grid grid-cols-2 gap-3 xl:grid-cols-5">
+            <StatTile label="Ready to pay" value={String(weeklyPaymentDueRows.length)} detail="Employees with closed and approved shifts." />
             <StatTile label="Hours Worked" value={hoursLabel(weeklyPaymentHours)} detail="Completed, non-void paid hours in this week." />
-            <StatTile label="Amount Owed" value={usd(weeklyPaymentOwedCents)} detail="Ready-to-pay hourly wages only." />
+            <StatTile label="Approved hourly pay" value={usd(weeklyPaymentOwedCents)} detail="Ready-to-pay hourly wages only." />
             <StatTile label="SPIFFs Due" value={usd(selectedUnpaidSalesSpiffCents)} detail={`${selectedUnpaidWeeklySalesSpiffs.length} not marked paid.`} />
             <StatTile label="Paid" value={String(weeklyPaymentPaidRows.length)} detail="People already marked paid for this week." />
           </section>
 
+          <section className="card space-y-5">
+            <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
+              <div>
+                <h2 className="text-xl font-semibold text-slate-950">Hourly payments</h2>
+                <p className="mt-1 text-sm text-slate-500">
+                  {formatDateInputLabel(fromInput)} to {formatDateInputLabel(toInput)}{selectedAdmin ? ` for ${profileLabel(adminById.get(selectedAdmin))}` : ''}.
+                </p>
+              </div>
+              <Link className="btn-secondary w-full lg:w-auto" href={payrollHref({ ...currentParams, tab: 'review' })}>Review approvals</Link>
+            </div>
+            <p className="text-sm text-slate-600">Mark paid after you pay each employee. This records payment and locks their shifts; it does not transfer money.</p>
+            <PaymentsTable
+              canEditPayroll={canEditPayroll}
+              fromInput={fromInput}
+              payments={weeklyPaymentRows}
+              returnTo={currentUrl}
+              toInput={toInput}
+            />
+          </section>
           <section className="grid gap-5 xl:grid-cols-[0.85fr_1.15fr]">
             {canEditPayroll ? (
               <form action={addWeeklySalesSpiff} className="card space-y-4">
                 {returnToInput(currentUrl)}
                 <div>
-                  <h2 className="text-xl font-semibold text-slate-950">Add sales SPIFF</h2>
+                  <h2 className="text-xl font-semibold text-slate-950">Add sales incentive (SPIFF)</h2>
                   <p className="mt-1 text-sm text-slate-500">
                     {formatDateInputLabel(fromInput)} to {formatDateInputLabel(toInput)}
                   </p>
@@ -2499,7 +2672,7 @@ export default async function PayrollPage(
                   Amount
                   <input className="input" name="amount" type="number" min="0.01" step="0.01" required />
                 </label>
-                <textarea className="input min-h-20" name="notes" placeholder="Optional note" />
+                <textarea aria-label="Sales incentive note" className="input min-h-20" name="notes" placeholder="Optional note" />
                 <PendingSubmitButton
                   className="btn-primary w-full sm:w-auto"
                   disabled={!salesRepAdmins.length || Boolean(weeklySalesSpiffsResult.error)}
@@ -2510,7 +2683,7 @@ export default async function PayrollPage(
               </form>
             ) : (
               <section className="card space-y-3">
-                <h2 className="text-xl font-semibold text-slate-950">Add sales SPIFF</h2>
+                <h2 className="text-xl font-semibold text-slate-950">Add sales incentive (SPIFF)</h2>
                 <p className="text-sm text-slate-500">View only</p>
               </section>
             )}
@@ -2576,24 +2749,6 @@ export default async function PayrollPage(
             </section>
           </section>
 
-          <section className="card space-y-5">
-            <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
-              <div>
-                <h2 className="text-xl font-semibold text-slate-950">Weekly payments</h2>
-                <p className="mt-1 text-sm text-slate-500">
-                  {formatDateInputLabel(fromInput)} to {formatDateInputLabel(toInput)}{selectedAdmin ? ` for ${profileLabel(adminById.get(selectedAdmin))}` : ''}.
-                </p>
-              </div>
-              <Link className="btn-secondary w-full lg:w-auto" href={payrollHref({ ...currentParams, tab: 'review' })}>Review approvals</Link>
-            </div>
-            <PaymentsTable
-              canEditPayroll={canEditPayroll}
-              fromInput={fromInput}
-              payments={weeklyPaymentRows}
-              returnTo={currentUrl}
-              toInput={toInput}
-            />
-          </section>
         </section>
       ) : null}
 
@@ -2604,13 +2759,13 @@ export default async function PayrollPage(
             <StatTile label="Production Run Labor COGS" value={usd(productionRunLaborCogs)} detail={productionRunCogsDetail} />
             <StatTile label="Labor Difference" value={usd(laborDifference)} detail={laborDifferenceDetail} />
           </div>
-          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-            <StatTile label="Paid Hours" value={hoursLabel(totalPaidMinutes)} detail="Completed, non-void time in range." />
+          <div className="payroll-metrics grid grid-cols-2 gap-3 xl:grid-cols-4">
+            <StatTile label="Paid Hours" value={hoursLabel(totalPaidMinutes)} detail={`${hoursLabel(totalOvertimeMinutes)} overtime hours included.`} />
             <StatTile label="Unpaid Lunch" value={hoursLabel(totalLunchMinutes)} detail="Completed, non-void lunch time." />
-            <StatTile label="Estimated Wages" value={usd(totalHourlyWages)} detail="Uses each shift's rate snapshot." />
+            <StatTile label="Estimated Wages" value={usd(totalHourlyWages)} detail={`Includes ${usd(totalOvertimePremiumCents)} overtime premium.`} />
             <StatTile label="Open Issues" value={String(longOpenEntries.length + longOpenBreaks.length + unapprovedEntries.length)} detail="Long open shifts/lunches and unapproved shifts." />
           </div>
-          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
+          <div className="payroll-metrics grid grid-cols-2 gap-3 xl:grid-cols-5">
             <StatTile label="Estimated Salary" value={usd(totalSalaryPay)} detail="Prorated estimate for salaried employees in range." />
             <StatTile label="Paid Salary Records" value={usd(selectedSalaryPaidCents)} detail={`${selectedSalaryPaymentRows.length} salary payment record${selectedSalaryPaymentRows.length === 1 ? '' : 's'} in range.`} />
             <StatTile label="Paid SPIFFs" value={usd(selectedPaidSalesSpiffCents)} detail={`${selectedPaidWeeklySalesSpiffs.length} paid SPIFF record${selectedPaidWeeklySalesSpiffs.length === 1 ? '' : 's'} in range.`} />
@@ -2649,7 +2804,7 @@ export default async function PayrollPage(
                       <tr key={profileId} className="bg-white/70">
                         <td className="rounded-l-xl px-4 py-3 font-semibold text-slate-950">{profileLabel(adminById.get(profileId ?? ''))}</td>
                         <td className="px-4 py-3 text-right text-slate-700">{row.entryCount.size}</td>
-                        <td className="px-4 py-3 text-right text-slate-700">{hoursLabel(row.minutes)}</td>
+                        <td className="px-4 py-3 text-right text-slate-700">{hoursLabel(row.minutes)}<p className="mt-1 text-xs text-slate-500">{hoursLabel(weeklyPaymentByProfile.get(profileId)?.overtimeMinutes ?? 0)} OT</p></td>
                         <td className="px-4 py-3 text-right text-slate-700">{usd(row.hourlyWageCents)}</td>
                         <td className="px-4 py-3 text-right text-slate-700">{usd(row.salaryCents)}</td>
                         <td className="px-4 py-3 text-right text-slate-700">{usd(row.spiffCents)}</td>
@@ -2803,7 +2958,7 @@ export default async function PayrollPage(
             <h2 className="text-xl font-semibold text-slate-950">Entries & corrections</h2>
             <p className="mt-1 text-sm text-slate-500">Correct times, tags, rate snapshots, approve entries, void bad punches, and split labor across work types.</p>
           </div>
-          <EntriesTable allocationsByEntry={allocationsByEntry} entries={entries} returnTo={currentUrl} />
+          <fieldset disabled={!canEditPayroll} className="min-w-0"><EntriesTable allocationsByEntry={allocationsByEntry} entries={entries} returnTo={currentUrl} wagesByEntry={wagesByEntry} /></fieldset>
         </section>
       ) : null}
 
@@ -2813,85 +2968,19 @@ export default async function PayrollPage(
             <h2 className="text-xl font-semibold text-slate-950">Breaks / lunch</h2>
             <p className="mt-1 text-sm text-slate-500">Correct lunch and unpaid break records or void bad break punches.</p>
           </div>
-          <BreaksTable entries={entries} returnTo={currentUrl} />
+          <fieldset disabled={!canEditPayroll} className="min-w-0"><BreaksTable entries={entries} returnTo={currentUrl} /></fieldset>
         </section>
       ) : null}
 
       {activeTab === 'time' ? (
-        <ManualEntriesPanel admins={admins} entries={entries} returnTo={currentUrl} selectedAdmin={selectedAdmin} timeByProfile={timeByProfile} />
+        <details className="card payroll-disclosure" id="manual-time">
+          <summary className="flex cursor-pointer items-center justify-between gap-3 font-semibold text-slate-950">Add a missing shift or break <ChevronDown className="payroll-chevron" size={18} aria-hidden="true" /></summary>
+          <fieldset disabled={!canEditPayroll} className="mt-4 min-w-0"><ManualEntriesPanel admins={admins} entries={entries} returnTo={currentUrl} selectedAdmin={selectedAdmin} timeByProfile={timeByProfile} /></fieldset>
+        </details>
       ) : null}
 
       {activeTab === 'review' ? (
-        <section className="space-y-5">
-          <section className={`card space-y-4 ${monthlySalaryDueRows.length ? 'border-rose-200 bg-rose-50/50' : 'border-emerald-100 bg-emerald-50/40'}`}>
-            <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-start">
-              <div>
-                <h2 className="text-xl font-semibold text-slate-950">Monthly salary payroll</h2>
-                <p className="mt-1 text-sm text-slate-600">
-                  {formatDateInputLabel(monthlySalaryWindow.periodStartInput)} to {formatDateInputLabel(monthlySalaryWindow.periodEndInput)}.
-                </p>
-              </div>
-              <span className={`w-fit rounded-full px-3 py-1 text-sm font-semibold ${monthlySalaryDueRows.length ? 'bg-white text-rose-800 ring-1 ring-rose-100' : 'bg-emerald-100 text-emerald-800'}`}>
-                {monthlySalaryDueRows.length ? 'Needs paid' : 'Complete'}
-              </span>
-            </div>
-            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-              <StatTile label="Monthly Employees" value={String(monthlySalaryRows.length)} detail="Active monthly salaried employees." />
-              <StatTile label="Need Paid" value={String(monthlySalaryDueRows.length)} detail="Missing paid records for the month." />
-              <StatTile label="Paid Records" value={String(monthlySalaryPaidRows.length)} detail="Approved and marked paid." />
-              <StatTile label="Amount Due" value={usd(monthlySalaryDueCents)} detail={`${usd(monthlySalaryTotalCents)} total monthly salary.`} />
-            </div>
-            {!monthlySalaryRows.length ? <EmptyState message="No active monthly salaried employees found." /> : null}
-            {monthlySalaryRows.length ? (
-              <div className="space-y-2">
-                {monthlySalaryRows.map((row) => (
-                  <div key={row.profileId} className="grid gap-3 rounded-2xl border border-slate-200 bg-white/70 p-4 lg:grid-cols-[minmax(0,1fr)_8rem_9rem_14rem] lg:items-center">
-                    <div>
-                      <p className="font-semibold text-slate-950">{profileLabel(row.profile)}</p>
-                      <p className="mt-1 text-sm text-slate-500">{salaryLaborWorkTypeLabel(row.workType)} salary for {formatDateInputLabel(monthlySalaryWindow.periodStartInput)} to {formatDateInputLabel(monthlySalaryWindow.periodEndInput)}</p>
-                    </div>
-                    <p className="text-sm font-semibold text-slate-950 lg:text-right">{usd(row.salaryAmountCents)}</p>
-                    <span className={`w-fit rounded-full px-3 py-1 text-xs font-semibold uppercase tracking-[0.12em] ${row.payment?.paid_at ? 'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-100' : 'bg-rose-50 text-rose-700 ring-1 ring-rose-100'}`}>
-                      {row.payment?.paid_at ? 'Paid' : 'Due'}
-                    </span>
-                    {row.payment?.paid_at ? (
-                      <p className="text-sm text-slate-500">Paid {formatCentralDateTime(row.payment.paid_at)}</p>
-                    ) : canEditPayroll ? (
-                      <form action={approveMonthlySalaryPayment} className="space-y-2">
-                        {returnToInput(currentUrl)}
-                        <input name="profile_id" type="hidden" value={row.profileId ?? ''} />
-                        <input name="payroll_month" type="hidden" value={monthlySalaryWindow.payrollMonthInput} />
-                        <input name="period_start_date" type="hidden" value={monthlySalaryWindow.periodStartInput} />
-                        <input name="period_end_date" type="hidden" value={monthlySalaryWindow.periodEndInput} />
-                        <input className="input" name="notes" placeholder="Optional note" />
-                        <PendingSubmitButton className="btn-primary w-full" label="Approve & Mark Paid" pendingLabel="Saving..." />
-                      </form>
-                    ) : (
-                      <p className="text-sm text-slate-500">View only</p>
-                    )}
-                  </div>
-                ))}
-              </div>
-            ) : null}
-            {salaryPayments.length ? (
-              <details className="rounded-2xl border border-slate-200 bg-white/60 p-4">
-                <summary className="cursor-pointer text-sm font-semibold text-slate-700">Recent salary payment records</summary>
-                <div className="mt-3 space-y-2">
-                  {salaryPayments.slice(0, 10).map((payment) => (
-                    <div key={payment.id} className="grid gap-2 rounded-xl border border-slate-200 bg-white/70 p-3 text-sm sm:grid-cols-[minmax(0,1fr)_8rem_12rem] sm:items-center">
-                      <div>
-                        <p className="font-semibold text-slate-950">{profileLabel(adminById.get(payment.profile_id))}</p>
-                        <p className="mt-1 text-slate-500">{formatDateInputLabel(payment.period_start_date)} to {formatDateInputLabel(payment.period_end_date)}</p>
-                      </div>
-                      <p className="font-semibold text-slate-950 sm:text-right">{usd(normalizeMoneyCents(payment.salary_pay_cents))}</p>
-                      <p className="text-slate-500">Paid {formatCentralDateTime(payment.paid_at, 'Not paid')}</p>
-                    </div>
-                  ))}
-                </div>
-              </details>
-            ) : null}
-          </section>
-
+        <fieldset disabled={!canEditPayroll} className="min-w-0 space-y-5">
           <section className={`card space-y-4 ${rangeHasCoveringLock ? 'border-emerald-200 bg-emerald-50/60' : 'border-amber-100 bg-amber-50/40'}`}>
             <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-start">
               <div>
@@ -2901,14 +2990,14 @@ export default async function PayrollPage(
                 </p>
               </div>
               <span className={`w-fit rounded-full px-3 py-1 text-sm font-semibold ${rangeHasCoveringLock ? 'bg-emerald-100 text-emerald-800' : 'bg-white text-amber-800 ring-1 ring-amber-100'}`}>
-                {rangeHasCoveringLock ? 'Completed' : 'Needs approval'}
+                {rangeHasCoveringLock ? 'Completed' : !weeklyPaymentRows.length ? 'No time recorded' : openEntries.length ? 'Open shifts to resolve' : unapprovedEntries.length ? 'Approval needed' : 'Ready for payments'}
               </span>
             </div>
-            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+            <div className="payroll-metrics grid grid-cols-2 gap-3 xl:grid-cols-4">
               <StatTile label="Open Shifts" value={String(openEntries.length)} detail="Must be clocked out before completion." />
               <StatTile label="Need Approval" value={String(unapprovedEntries.length)} detail="Completed shifts not approved or locked." />
-              <StatTile label="Paid Hours" value={hoursLabel(totalPaidMinutes)} detail="Completed, non-void time in this range." />
-              <StatTile label="Total Pay" value={usd(totalPay)} detail="Hourly wages, prorated salary, and paid sales SPIFFs." />
+              <StatTile label="Paid Hours" value={hoursLabel(totalPaidMinutes)} detail={`${hoursLabel(totalOvertimeMinutes)} overtime hours included.`} />
+              <StatTile label="Estimated total pay" value={usd(totalPay)} detail="Hourly wages + prorated salary + paid SPIFFs." />
             </div>
             <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap">
               <form action={approveCompletedWeekEntries}>
@@ -2924,9 +3013,20 @@ export default async function PayrollPage(
                   pendingLabel="Approving..."
                 />
               </form>
-              <Link className="btn-secondary w-full sm:w-auto" href={payrollHref({ ...currentParams, tab: 'time' })}>Review Time Entries</Link>
+              <Link className="btn-secondary w-full sm:w-auto" href={payrollHref({ ...currentParams, tab: 'time' })}>Review time & corrections</Link>
+              <Link className="btn-secondary gap-2" href={tabHref('payroll-day', currentParams)}>Check pay summary <ArrowRight size={16} aria-hidden="true" /></Link>
             </div>
           </section>
+
+          {openEntries.length ? <section className="rounded-xl border border-amber-200 bg-amber-50 p-4" aria-label="Open shifts to resolve">
+            <h2 className="font-semibold text-amber-950">Close open shifts before finishing payroll</h2>
+            <div className="mt-3 space-y-3">
+              {openEntries.map((entry) => <div key={entry.id} className="flex flex-wrap items-center justify-between gap-3 text-sm">
+                <span><span className="font-semibold text-slate-900">{profileLabel(profileForEntry(entry))}</span><span className="mt-0.5 block text-slate-600">Clocked in {formatCentralDateTime(entry.clock_in_at)}</span></span>
+                <Link className="btn-secondary" href={payrollHref({ ...currentParams, admin: entry.profile_id || '', tab: 'time' })}>Review shift</Link>
+              </div>)}
+            </div>
+          </section> : null}
 
           <section className="card space-y-4">
             <div>
@@ -2958,12 +3058,87 @@ export default async function PayrollPage(
             </div>
           </section>
 
+          <details id="monthly-salary" className="card payroll-disclosure" open={monthlySalaryDueRows.length > 0}>
+            <summary className="flex cursor-pointer flex-wrap items-center justify-between gap-3">
+              <span><span className="block text-lg font-semibold text-slate-950">Monthly salary payroll</span><span className="mt-1 block text-sm text-slate-500">{formatDateInputLabel(monthlySalaryWindow.periodStartInput)} – {formatDateInputLabel(monthlySalaryWindow.periodEndInput)} · Separate from the selected weekly period</span></span>
+              <span className="flex items-center gap-3"><span className="text-sm font-semibold text-teal-800">{monthlySalaryDueRows.length ? `${usd(monthlySalaryDueCents)} to record` : 'Up to date'}</span><ChevronDown size={18} className="payroll-chevron" aria-hidden="true" /></span>
+            </summary>
+            <div className="mt-5 space-y-4">
+            <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-start">
+              <div>
+                <h2 className="text-base font-semibold text-slate-950">Salary payments</h2>
+                <p className="mt-1 text-sm text-slate-600">
+                  {formatDateInputLabel(monthlySalaryWindow.periodStartInput)} to {formatDateInputLabel(monthlySalaryWindow.periodEndInput)}.
+                </p>
+              </div>
+              <span className={`w-fit rounded-full px-3 py-1 text-sm font-semibold ${monthlySalaryDueRows.length ? 'bg-white text-rose-800 ring-1 ring-rose-100' : 'bg-emerald-100 text-emerald-800'}`}>
+                {monthlySalaryDueRows.length ? 'Payment not recorded' : 'Complete'}
+              </span>
+            </div>
+            <div className="payroll-metrics grid grid-cols-2 gap-3 xl:grid-cols-4">
+              <StatTile label="Monthly Employees" value={String(monthlySalaryRows.length)} detail="Active monthly salaried employees." />
+              <StatTile label="Awaiting payment" value={String(monthlySalaryDueRows.length)} detail="Missing paid records for the month." />
+              <StatTile label="Paid Records" value={String(monthlySalaryPaidRows.length)} detail="Approved and marked paid." />
+              <StatTile label="Amount Due" value={usd(monthlySalaryDueCents)} detail={`${usd(monthlySalaryTotalCents)} total monthly salary.`} />
+            </div>
+            {!monthlySalaryRows.length ? <EmptyState message="No active monthly salaried employees found." /> : null}
+            {monthlySalaryRows.length ? (
+              <div className="space-y-2">
+                {monthlySalaryRows.map((row) => (
+                  <div key={row.profileId} className="grid gap-3 rounded-2xl border border-slate-200 bg-white/70 p-4 lg:grid-cols-[minmax(0,1fr)_8rem_9rem_14rem] lg:items-center">
+                    <div>
+                      <p className="font-semibold text-slate-950">{profileLabel(row.profile)}</p>
+                      <p className="mt-1 text-sm text-slate-500">{salaryLaborWorkTypeLabel(row.workType)} salary for {formatDateInputLabel(monthlySalaryWindow.periodStartInput)} to {formatDateInputLabel(monthlySalaryWindow.periodEndInput)}</p>
+                    </div>
+                    <p className="text-sm font-semibold text-slate-950 lg:text-right">{usd(row.salaryAmountCents)}</p>
+                    <span className={`w-fit rounded-full px-3 py-1 text-xs font-semibold uppercase tracking-[0.12em] ${row.payment?.paid_at ? 'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-100' : 'bg-rose-50 text-rose-700 ring-1 ring-rose-100'}`}>
+                      {row.payment?.paid_at ? 'Paid' : 'Due'}
+                    </span>
+                    {row.payment?.paid_at ? (
+                      <p className="text-sm text-slate-500">Paid {formatCentralDateTime(row.payment.paid_at)}</p>
+                    ) : canEditPayroll ? (
+                      <form action={approveMonthlySalaryPayment} className="space-y-2">
+                        {returnToInput(currentUrl)}
+                        <input name="profile_id" type="hidden" value={row.profileId ?? ''} />
+                        <input name="payroll_month" type="hidden" value={monthlySalaryWindow.payrollMonthInput} />
+                        <input name="period_start_date" type="hidden" value={monthlySalaryWindow.periodStartInput} />
+                        <input name="period_end_date" type="hidden" value={monthlySalaryWindow.periodEndInput} />
+                        <input aria-label="Salary payment note" className="input" name="notes" placeholder="Optional note" />
+                        <PendingSubmitButton className="btn-primary w-full" label="Approve & Mark Paid" pendingLabel="Saving..." />
+                      </form>
+                    ) : (
+                      <p className="text-sm text-slate-500">View only</p>
+                    )}
+                  </div>
+                ))}
+              </div>
+            ) : null}
+            {salaryPayments.length ? (
+              <details className="rounded-2xl border border-slate-200 bg-white/60 p-4">
+                <summary className="cursor-pointer text-sm font-semibold text-slate-700">Recent salary payment records</summary>
+                <div className="mt-3 space-y-2">
+                  {salaryPayments.slice(0, 10).map((payment) => (
+                    <div key={payment.id} className="grid gap-2 rounded-xl border border-slate-200 bg-white/70 p-3 text-sm sm:grid-cols-[minmax(0,1fr)_8rem_12rem] sm:items-center">
+                      <div>
+                        <p className="font-semibold text-slate-950">{profileLabel(adminById.get(payment.profile_id))}</p>
+                        <p className="mt-1 text-slate-500">{formatDateInputLabel(payment.period_start_date)} to {formatDateInputLabel(payment.period_end_date)}</p>
+                      </div>
+                      <p className="font-semibold text-slate-950 sm:text-right">{usd(normalizeMoneyCents(payment.salary_pay_cents))}</p>
+                      <p className="text-slate-500">Paid {formatCentralDateTime(payment.paid_at, 'Not paid')}</p>
+                    </div>
+                  ))}
+                </div>
+              </details>
+            ) : null}
+            </div>
+          </details>
+
           <section className="grid gap-5 xl:grid-cols-[0.9fr_1.1fr]">
             <form action={lockPayrollRange} className="card space-y-4">
               {returnToInput(currentUrl)}
               <div>
                 <h2 className="text-xl font-semibold text-slate-950">Complete payroll week</h2>
-                <p className="mt-1 text-sm text-slate-500">Locks the selected week after all shifts are closed and approved.</p>
+                <p className="mt-1 text-sm text-slate-500">Locks all shifts in this range and marks their hourly pay as paid. Complete this after paying your team; no money is transferred here.</p>
               </div>
               <div className="grid gap-3 sm:grid-cols-2">
                 <label className="space-y-2 text-sm font-medium text-slate-700">
@@ -2976,15 +3151,15 @@ export default async function PayrollPage(
                 </label>
               </div>
               <label className="space-y-2 text-sm font-medium text-slate-700">
-                Admin
+                Employee
                 <select className="input" name="profile_id" defaultValue={selectedAdmin}>
-                  <option value="">All admins</option>
+                  <option value="">All employees</option>
                   {admins.map((admin) => (
                     <option key={admin.id} value={admin.id}>{profileLabel(admin)}{admin.is_active === false ? ' (inactive)' : ''}</option>
                   ))}
                 </select>
               </label>
-              <textarea className="input min-h-20" name="notes" placeholder="Optional lock note" />
+              <textarea aria-label="Payroll completion note" className="input min-h-20" name="notes" placeholder="Optional lock note" />
               <PendingSubmitButton
                 className="btn-primary w-full sm:w-auto"
                 disabled={!canCompletePayroll}
@@ -2994,8 +3169,8 @@ export default async function PayrollPage(
               />
             </form>
 
-            <section className="card space-y-4">
-              <h2 className="text-xl font-semibold text-slate-950">Recent locks</h2>
+            <details className="card payroll-disclosure">
+              <summary className="cursor-pointer text-lg font-semibold text-slate-950">Completed payroll periods ({payrollLocks.length})</summary>
               {!payrollLocks.length ? <EmptyState message="No payroll ranges have been locked yet." /> : null}
               <div className="space-y-2">
                 {payrollLocks.map((lock) => (
@@ -3005,9 +3180,9 @@ export default async function PayrollPage(
                   </div>
                 ))}
               </div>
-            </section>
+            </details>
           </section>
-        </section>
+        </fieldset>
       ) : null}
 
       {activeTab === 'settings' ? (
@@ -3033,83 +3208,34 @@ export default async function PayrollPage(
             </nav>
           </section>
           {!admins.length ? <EmptyState message="No admin employees found." /> : null}
-          {admins.length && !settingsAdmins.length ? <EmptyState message={settingsView === 'deactivated' ? 'No deactivated admin employees found.' : 'No active admin employees found.'} /> : null}
+          {admins.length && !settingsAdmins.length ? <EmptyState message={selectedAdmin ? 'No employees match this filter in the selected account view. Reset filters or switch between Active and Deactivated.' : settingsView === 'deactivated' ? 'No deactivated admin employees found.' : 'No active admin employees found.'} /> : null}
           {settingsAdmins.map((admin) => {
             const timeSetting = timeByProfile.get(admin.id);
             const commissionSetting = commissionByProfile.get(admin.id);
             const employeeTags = tagsByProfile.get(admin.id) ?? new Set<LaborWorkType>();
             return (
-              <form key={admin.id} action={updatePayrollSettings} className="card space-y-4">
-                {returnToInput(currentUrl)}
-                <input type="hidden" name="profile_id" value={admin.id} />
-                <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_10rem_10rem_10rem_auto] lg:items-end">
-                  <div>
-                    <p className="text-lg font-semibold text-slate-950">{profileLabel(admin)}</p>
-                    <p className="mt-1 break-all text-sm text-slate-500">{admin.email}</p>
-                    <p className="mt-1 text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">{admin.is_active === false ? 'Inactive' : 'Active'}</p>
-                  </div>
-                  <label className="space-y-2 text-sm font-medium text-slate-700">
-                    Pay type
-                    <select className="input" name="compensation_type" defaultValue={normalizeCompensationType(timeSetting?.compensation_type)}>
-                      {COMPENSATION_TYPES.map((type) => (
-                        <option key={type.value} value={type.value}>{type.label}</option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="space-y-2 text-sm font-medium text-slate-700">
-                    Hourly rate
-                    <input className="input" name="hourly_rate" type="number" min="0" step="0.01" defaultValue={dollarsInputFromCents(timeSetting?.hourly_rate_cents)} />
-                  </label>
-                  <label className="space-y-2 text-sm font-medium text-slate-700">
-                    Commission %
-                    <input className="input" name="commission_percent" type="number" min="0" max="100" step="0.01" defaultValue={percentInputValue(commissionSetting?.commission_percent)} />
-                  </label>
-                  <PendingSubmitButton className="btn-primary w-full lg:w-auto" label="Save" pendingLabel="Saving..." />
-                </div>
-                <div className="grid gap-4 md:grid-cols-3">
-                  <label className="space-y-2 text-sm font-medium text-slate-700">
-                    Salary amount
-                    <input className="input" name="salary_amount" type="number" min="0" step="0.01" defaultValue={dollarsInputFromCents(timeSetting?.salary_amount_cents)} />
-                  </label>
-                  <label className="space-y-2 text-sm font-medium text-slate-700">
-                    Salary frequency
-                    <select className="input" name="salary_frequency" defaultValue={normalizeSalaryPayFrequency(timeSetting?.salary_frequency)}>
-                      {SALARY_PAY_FREQUENCIES.map((frequency) => (
-                        <option key={frequency.value} value={frequency.value}>{frequency.label}</option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="space-y-2 text-sm font-medium text-slate-700">
-                    Salary labor tag
-                    <select className="input" name="salary_labor_work_type" defaultValue={normalizeSalaryLaborWorkType(timeSetting?.salary_labor_work_type)}>
-                      {SALARY_LABOR_WORK_TYPES.map((workType) => (
-                        <option key={workType.value} value={workType.value}>{workType.label}</option>
-                      ))}
-                    </select>
-                  </label>
-                </div>
-                <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
-                  <p className="text-sm text-slate-500">
-                    Current setup: {compensationTypeLabel(timeSetting?.compensation_type)}{normalizeCompensationType(timeSetting?.compensation_type) === 'salary' ? ` - ${usd(normalizeMoneyCents(timeSetting?.salary_amount_cents))} ${salaryPayFrequencyLabel(timeSetting?.salary_frequency).toLowerCase()}` : ''}.
-                  </p>
-                  <label className="flex min-h-[3.25rem] items-center gap-3 rounded-2xl border border-slate-200 bg-white/65 px-4 py-3 text-sm font-semibold text-slate-700">
-                    <input type="checkbox" name="is_sales_rep" defaultChecked={Boolean(commissionSetting?.is_sales_rep)} />
-                    Sales Rep
-                  </label>
-                </div>
-                <div>
-                  <p className="mb-2 text-sm font-semibold text-slate-950">Labor tags</p>
-                  <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-                    {LABOR_WORK_TYPES.map((workType) => (
-                      <label key={workType.value} className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-white/65 px-4 py-3 text-sm font-medium text-slate-700">
-                        <input type="checkbox" name="labor_tag" value={workType.value} defaultChecked={employeeTags.has(workType.value)} />
-                        {workType.label}
-                      </label>
-                    ))}
-                  </div>
-                  <p className="mt-2 text-xs text-slate-500">If more than one tag is checked, this employee chooses what they are doing when they clock in.</p>
-                </div>
-              </form>
+              <details key={admin.id} className="card payroll-disclosure" open={Boolean(selectedAdmin)}>
+                <summary className="flex cursor-pointer flex-wrap items-center justify-between gap-4">
+                  <span className="min-w-0"><span className="block text-base font-semibold text-slate-950">{profileLabel(admin)}</span><span className="mt-1 block break-all text-sm text-slate-500">{admin.email}</span></span>
+                  <span className="flex items-center gap-4"><span className="text-right text-sm"><span className="block font-semibold text-slate-800">{normalizeCompensationType(timeSetting?.compensation_type) === 'salary' ? `${usd(normalizeMoneyCents(timeSetting?.salary_amount_cents))} · ${salaryPayFrequencyLabel(timeSetting?.salary_frequency)}` : `${usd(normalizeMoneyCents(timeSetting?.hourly_rate_cents))} / hour`}</span><span className="mt-1 block text-slate-500">{admin.is_active === false ? 'Inactive' : compensationTypeLabel(timeSetting?.compensation_type)}{commissionSetting?.is_sales_rep ? ' · Sales rep' : ''} · {canEditPayroll ? 'Edit settings' : 'View settings'}</span></span><ChevronDown size={18} className="payroll-chevron" aria-hidden="true" /></span>
+                </summary>
+                <form action={updatePayrollSettings} className="mt-5 border-t border-slate-200 pt-5">
+                  {returnToInput(currentUrl)}
+                  <input type="hidden" name="profile_id" value={admin.id} />
+                  <PayrollCompensationFields
+                    key={`${timeSetting?.compensation_type}:${timeSetting?.hourly_rate_cents}:${timeSetting?.salary_amount_cents}:${timeSetting?.salary_frequency}:${timeSetting?.salary_labor_work_type}:${commissionSetting?.commission_percent}:${commissionSetting?.is_sales_rep}:${[...employeeTags].sort().join(',')}`}
+                    initialCompensationType={normalizeCompensationType(timeSetting?.compensation_type)}
+                    initialHourlyRate={dollarsInputFromCents(timeSetting?.hourly_rate_cents)}
+                    initialSalaryAmount={dollarsInputFromCents(timeSetting?.salary_amount_cents)}
+                    initialSalaryFrequency={normalizeSalaryPayFrequency(timeSetting?.salary_frequency)}
+                    initialSalaryLaborWorkType={normalizeSalaryLaborWorkType(timeSetting?.salary_labor_work_type)}
+                    initialCommissionPercent={percentInputValue(commissionSetting?.commission_percent)}
+                    initialIsSalesRep={Boolean(commissionSetting?.is_sales_rep)}
+                    initialLaborTags={[...employeeTags]}
+                    canEdit={canEditPayroll}
+                  />
+                </form>
+              </details>
             );
           })}
         </section>
@@ -3119,12 +3245,12 @@ export default async function PayrollPage(
         <section className="card space-y-4">
           <h2 className="text-xl font-semibold text-slate-950">Export payroll</h2>
           <p className="text-sm text-slate-500">Exports include time entries, salary rows, labor tag, lunch time, paid hours, pay amount, and review metadata.</p>
-          <Link
+          {canEditPayroll ? <Link
             className="btn-primary w-full sm:w-fit"
             href={`/api/export/time-entries?from=${encodeURIComponent(fromInput)}&to=${encodeURIComponent(toInput)}${selectedAdmin ? `&admin=${encodeURIComponent(selectedAdmin)}` : ''}${filterWorkType ? `&work_type=${encodeURIComponent(filterWorkType)}` : ''}`}
           >
             Export CSV
-          </Link>
+          </Link> : <p className="text-sm text-slate-600">Payroll edit access is required to download exports.</p>}
         </section>
       ) : null}
     </div>

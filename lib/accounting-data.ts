@@ -9,6 +9,7 @@ import type {
   ProductionRunLaborRow,
 } from '@/lib/accounting-pnl-statement';
 import { fetchAllPages } from '@/lib/supabase/pagination';
+import { payrollOvertimeContextRange } from '@/lib/payroll-wages';
 
 type AccountingClient = Pick<SupabaseClient<Database>, 'from'>;
 
@@ -17,6 +18,7 @@ export type AccountingPnlInputs = {
   payrollAllocations: AccountingPayrollAllocationRow[];
   payrollSalaryPayments: AccountingSalaryPaymentRow[];
   payrollTimeEntries: AccountingPayrollTimeEntryRow[];
+  payrollOvertimeContextEntries: AccountingPayrollTimeEntryRow[];
   productionRuns: ProductionRunLaborRow[];
   transactions: AccountingPnlTransactionRow[];
 };
@@ -52,6 +54,9 @@ export async function loadAccountingPnlInputs({
 }): Promise<{ data: AccountingPnlInputs; error: null } | { data: null; error: { message?: string } }> {
   const payrollStart = `${start}T00:00:00.000Z`;
   const payrollEnd = `${endExclusive}T00:00:00.000Z`;
+  const payrollStartMs = Date.parse(payrollStart);
+  const payrollEndMs = Date.parse(payrollEnd);
+  const overtimeContext = payrollOvertimeContextRange(new Date(payrollStart), new Date(`${end}T23:59:59.999Z`));
   const empty = <T>() => ({ data: [] as T[], error: null });
   const [categories, transactions, productionRuns, payrollTimeEntries, payrollSalaryPayments, payrollAllocations] = await Promise.all([
     loadAccountingCategories(supabase),
@@ -79,8 +84,8 @@ export async function loadAccountingPnlInputs({
       ? fetchAllPages<AccountingPayrollTimeEntryRow>(async (from, to) => payrollSupabase
         .from('admin_time_entries')
         .select('id,profile_id,clock_in_at,clock_out_at,hourly_rate_cents_snapshot,status,work_type,admin_time_breaks(break_start_at,break_end_at,status)')
-        .gte('clock_in_at', payrollStart)
-        .lt('clock_in_at', payrollEnd)
+        .or(`clock_in_at.gte.${overtimeContext.start.toISOString()},clock_out_at.gt.${overtimeContext.start.toISOString()}`)
+        .lt('clock_in_at', overtimeContext.endExclusive.toISOString())
         .order('id', { ascending: true })
         .range(from, to))
       : empty<AccountingPayrollTimeEntryRow>(),
@@ -114,7 +119,11 @@ export async function loadAccountingPnlInputs({
       categories: categories.data ?? [],
       payrollAllocations: payrollAllocations.data ?? [],
       payrollSalaryPayments: payrollSalaryPayments.data ?? [],
-      payrollTimeEntries: payrollTimeEntries.data ?? [],
+      payrollTimeEntries: (payrollTimeEntries.data ?? []).filter((entry) => {
+        const clockInMs = Date.parse(entry.clock_in_at);
+        return clockInMs >= payrollStartMs && clockInMs < payrollEndMs;
+      }),
+      payrollOvertimeContextEntries: payrollTimeEntries.data ?? [],
       productionRuns: productionRuns.data ?? [],
       transactions: transactions.data ?? [],
     },

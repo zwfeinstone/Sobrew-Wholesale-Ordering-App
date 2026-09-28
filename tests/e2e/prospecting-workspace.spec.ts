@@ -9,7 +9,8 @@ test.describe.configure({ mode: 'default' });
 test.beforeAll(async () => { fixture = await buildProspectingBrowserFixture(); });
 async function openFixture(page: Page, query = '') {
   await page.route('https://prospecting.test/**', (route) => route.fulfill({ status: 200, contentType: 'text/html', body: fixture }));
-  await page.goto(`https://prospecting.test/admin/sales/prospecting/00000000-0000-4000-8000-000000000001${query ? `?${query}` : ''}`);
+  const path = query.includes('workspace=1') ? '/admin/sales/prospecting?lead=00000000-0000-4000-8000-000000000001&' : '/admin/sales/prospecting/00000000-0000-4000-8000-000000000001?';
+  await page.goto(`https://prospecting.test${path}${query}`);
   await expect(page.getByRole('heading', { name: 'Lakeview Recovery', exact: true })).toBeVisible();
 }
 async function calls(page: Page) { return page.evaluate(() => window.prospectingFixture.calls); }
@@ -147,4 +148,94 @@ test('fits each viewport and passes serious accessibility checks, including the 
   expect(bounds!.width).toBeLessThanOrEqual(page.viewportSize()!.width);
   const dialogAudit = await new AxeBuilder({ page }).include('dialog[open]').withTags(['wcag2a', 'wcag2aa']).analyze();
   expect(dialogAudit.violations.filter((issue) => issue.impact === 'serious' || issue.impact === 'critical')).toEqual([]);
+});
+
+test.describe('lead pane navigation', () => {
+  test.beforeEach(async ({ page }) => {
+    test.skip(page.viewportSize()!.width < 1280, 'The persistent queue rail is a desktop layout.');
+    await openFixture(page, 'workspace=1');
+  });
+
+  test('keeps the queue DOM, search, filters and scroll while only the lead pane loads', async ({ page }) => {
+    const rail = page.locator('[data-prospecting-rail]');
+    const originalRail = await rail.elementHandle();
+    const pane = page.getByRole('region', { name: 'Lead details' });
+    await rail.getByLabel('Search leads', { exact: true }).fill('unsent search');
+    await rail.getByText('Filters', { exact: true }).click();
+    await rail.getByLabel('Queue priority').selectOption('high');
+    await rail.evaluate((element) => { element.scrollTop = 100; });
+    await page.evaluate(() => { window.prospectingFixture.navigationDelay = 900; });
+    await pane.getByRole('link', { name: 'Next', exact: true }).click();
+    await expect(pane).toHaveAttribute('aria-busy', 'true');
+    await expect(pane.getByRole('status')).toHaveText('Loading lead…');
+    await expect(rail).not.toHaveAttribute('aria-busy', 'true');
+    await expect(pane.getByRole('heading', { name: 'Riverside Recovery', exact: true })).toBeVisible();
+    await expect(pane).toHaveAttribute('aria-busy', 'false');
+    expect(await originalRail!.evaluate((element) => element === document.querySelector('[data-prospecting-rail]'))).toBe(true);
+    await expect(rail.getByLabel('Search leads', { exact: true })).toHaveValue('unsent search');
+    await expect(rail.getByTestId('queue-filters')).toHaveAttribute('open', '');
+    await expect(rail.getByLabel('Queue priority')).toHaveValue('high');
+    expect(await rail.evaluate((element) => element.scrollTop)).toBe(100);
+
+    await pane.locator(':scope > div').first().evaluate((element) => { element.scrollTop = 150; });
+    await rail.getByRole('link', { name: 'Oakwood Recovery', exact: true }).click();
+    await expect(pane).toHaveAttribute('aria-busy', 'true');
+    await expect(pane.getByRole('heading', { name: 'Oakwood Recovery', exact: true })).toBeVisible();
+    expect(await rail.evaluate((element) => element.scrollTop)).toBe(100);
+    expect(await originalRail!.evaluate((element) => element.isConnected)).toBe(true);
+    expect(await pane.locator(':scope > div').first().evaluate((element) => element.scrollTop)).toBe(0);
+    await expect(rail.getByRole('link', { name: 'Oakwood Recovery', exact: true })).toHaveAttribute('aria-current', 'page');
+    expect(await page.evaluate(() => performance.getEntriesByType('navigation').length)).toBe(1);
+  });
+
+  test('guards rail selection with stay, discard, and save before continuing', async ({ page }) => {
+    const rail = page.locator('[data-prospecting-rail]');
+    const pane = page.getByRole('region', { name: 'Lead details' });
+    const guard = page.getByRole('dialog', { name: 'Save your changes?' });
+    await pane.getByRole('button', { name: 'Add note', exact: true }).click();
+    await pane.getByLabel('Note', { exact: true }).fill('Keep until I decide.');
+    await rail.getByRole('link', { name: 'Riverside Recovery', exact: true }).click();
+    await expect(guard).toBeVisible();
+    await expect(pane).toHaveAttribute('aria-busy', 'false');
+    expect(await calls(page)).toHaveLength(0);
+    await guard.getByRole('button', { name: 'Stay here', exact: true }).click();
+    await expect(pane.getByLabel('Note', { exact: true })).toHaveValue('Keep until I decide.');
+    await expect(pane.getByRole('heading', { name: 'Lakeview Recovery', exact: true })).toBeVisible();
+
+    await rail.getByRole('link', { name: 'Riverside Recovery', exact: true }).click();
+    await guard.getByRole('button', { name: 'Discard and leave', exact: true }).click();
+    await expect(pane.getByRole('heading', { name: 'Riverside Recovery', exact: true })).toBeVisible();
+    expect(await calls(page)).toHaveLength(0);
+    await pane.getByRole('button', { name: 'Add note', exact: true }).click();
+    await pane.getByLabel('Note', { exact: true }).fill('Save Riverside before changing leads.');
+    await rail.getByRole('link', { name: 'Oakwood Recovery', exact: true }).click();
+    await guard.getByRole('button', { name: 'Save and leave', exact: true }).click();
+    await expect(pane.getByRole('heading', { name: 'Oakwood Recovery', exact: true })).toBeVisible();
+    const inputs = await calls(page);
+    expect(inputs).toHaveLength(1);
+    expect(inputs[0]).toMatchObject({ leadId: '00000000-0000-4000-8000-000000000002', draft: { activity: { type: 'note', body: 'Save Riverside before changing leads.' } } });
+    await rail.getByRole('link', { name: 'Lakeview Recovery', exact: true }).click();
+    await expect(pane.getByRole('heading', { name: 'Lakeview Recovery', exact: true })).toBeVisible();
+    await expect(pane.getByText('No unsaved changes', { exact: true })).toBeVisible();
+  });
+
+  test('supports Back and Forward and keeps the most recently selected lead during overlapping loads', async ({ page }) => {
+    const rail = page.locator('[data-prospecting-rail]');
+    const originalRail = await rail.elementHandle();
+    const pane = page.getByRole('region', { name: 'Lead details' });
+    await pane.getByRole('link', { name: 'Next', exact: true }).click();
+    await expect(pane.getByRole('heading', { name: 'Riverside Recovery', exact: true })).toBeVisible();
+    await page.goBack();
+    await expect(pane.getByRole('heading', { name: 'Lakeview Recovery', exact: true })).toBeVisible();
+    await page.goForward();
+    await expect(pane.getByRole('heading', { name: 'Riverside Recovery', exact: true })).toBeVisible();
+    await page.evaluate(() => { window.prospectingFixture.navigationDelay = 900; });
+    await rail.getByRole('link', { name: 'Oakwood Recovery', exact: true }).click();
+    await expect(pane).toHaveAttribute('aria-busy', 'true');
+    await rail.getByRole('link', { name: 'Lakeview Recovery', exact: true }).click();
+    await expect(pane).toHaveAttribute('aria-busy', 'false');
+    await expect(pane.getByRole('heading', { name: 'Lakeview Recovery', exact: true })).toBeVisible();
+    await expect(page).toHaveURL(/lead=00000000-0000-4000-8000-000000000001/);
+    expect(await originalRail!.evaluate((element) => element.isConnected)).toBe(true);
+  });
 });

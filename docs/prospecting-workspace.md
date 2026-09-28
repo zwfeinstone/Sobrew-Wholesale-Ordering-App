@@ -1,8 +1,16 @@
 # Prospecting workspace rollout and verification
 
-Implementation date: September 24, 2026. The new workspace is available in development. Production remains on the legacy UI unless the server explicitly enables `PROSPECTING_WORKSPACE_V2=true` (or `1`). Setting it to `false` or `0` restores the legacy screens in any environment.
+Implementation date: September 24, 2026. Production activation was authorized on September 25, 2026. The production server flag is `PROSPECTING_WORKSPACE_V2=true`. Setting it to `false` or `0` and redeploying restores the legacy screens; retain the additive database schema when rolling back.
 
 Final automated validation: **707 tests passed across 85 suites**, with two opt-in live suites skipped; typecheck and lint passed. **18 isolated PostgreSQL scenarios passed.** The browser suite discovers **36 cases**; execution and release gates below remain pending.
+
+## Production activation — September 25, 2026
+
+- Set the Vercel Production environment variable `PROSPECTING_WORKSPACE_V2=true` after applying and verifying the migration.
+- Redeployed commit `af4775568fd7668b136c6dca56439be9d3b2b6c6` as `dpl_3arHKesrEuzpVRDXwSmMRBTmH9vF`. Vercel reports **READY**, with `app.sobrew.com` assigned successfully. [Deployment details](https://vercel.com/zach-7146s-projects/sobrew-wholesale-ordering-app/3arHKesrEuzpVRDXwSmMRBTmH9vF).
+- Authenticated production browser checks confirmed Today / Leads / Pipeline, the compact activity summary, populated daily queues, no initially selected lead, Start working, the record composer, preserved follow-up selection, and activity history. The Overdue filter and return to the rep board navigated successfully.
+- Manage → Samples renders all 113 legacy requests through the production application. Direct page loading works. Management tab clicks did not complete in the automated browser check despite clean browser/server logs; in-place management tab navigation remains an unresolved interaction check. Source review found no draft-guard listener leak or incorrect link destination.
+- No error/fatal runtime logs were reported for this deployment during the activation checks. No lead edits, outreach activities, or shipment orders were submitted during production verification. The earlier isolated tests remain the write-path verification evidence; this activation does not claim full browser or real rep/owner usability sign-off.
 
 ## Behavior and feature preservation
 
@@ -29,7 +37,9 @@ This table distinguishes implemented coverage from release sign-off. It does not
 
 ## Database contract
 
-Apply `db/migrations/20260924213453_prospecting_atomic_workspace.sql` before enabling the new workspace in a deployed environment. It is additive and has not been applied to a live database by this implementation task.
+The exact additive migration `db/migrations/20260924213453_prospecting_atomic_workspace.sql` was applied to production project `ovrzooxvvernqqcotpkv` on September 25, 2026. Supabase recorded it as version `20260925132240`, name `prospecting_atomic_workspace`.
+
+Post-migration checks confirmed both tables have RLS enabled, anonymous/authenticated table access and RPC execution are denied, and `service_role` has the required access. All 113 active historical sample leads have `legacy_review` requests, including two retained order links. There are no missing or duplicate open requests. The security advisor reports the expected [RLS-without-policies informational notice](https://supabase.com/docs/guides/database/database-linter?lint=0008_rls_enabled_no_policy) for these deliberately server-only tables; unrelated existing advisor warnings remain outside this activation.
 
 - `commit_prospecting_record_v2` locks actor/permission/lead rows, checks the loaded version and current ownership, and commits record, contacts, history, sample request, shipment and receipt together.
 - Both new public RPCs are restricted to `service_role`. Server actions derive the actor from the authenticated session; clients do not choose it. The new tables deny direct anonymous/authenticated access.
@@ -67,11 +77,11 @@ The browser fixture bundles the actual editor and CSS with simulated server acti
 PLAYWRIGHT_BASE_URL=http://fixture.invalid npm run test:e2e -- tests/e2e/prospecting-workspace.spec.ts
 ```
 
-The fixture matrix covers 320, 390, 768 and 1440px: activity logging, outcome changes, preserved follow-ups, response interruption/retry, draft recovery, keyboard navigation, conflict links, sample Back/cancel/retry, collapsed invalid fields, read-only controls, overflow and serious/critical axe checks. Discovery and fixture bundling were verified. Automated Chromium execution hit a sandbox boundary and was not retried. The browser policy also blocked opening the local HTML fixture. These browser cases must run in a permitted test environment before rollout.
+The fixture matrix covers 320, 390, 768 and 1440px: activity logging, outcome changes, preserved follow-ups, response interruption/retry, draft recovery, keyboard navigation, conflict links, sample Back/cancel/retry, collapsed invalid fields, read-only controls, overflow and serious/critical axe checks. Discovery and fixture bundling were verified. Automated Chromium execution hit a sandbox boundary and was not retried. The browser policy also blocked opening the local HTML fixture. These browser cases remain pending in a permitted test environment; production activation was explicitly authorized with that limitation documented.
 
 Read-only checks in the existing in-app browser verified the 1440×900 split layout, visible composer, queue counts, outcome switching, draft restoration, and the unsaved-changes dialog's focus/Escape behavior. No live writes were performed. The viewport override did not change the reported viewport, so mobile visual acceptance remains pending. Later list navigation was blocked by the browser (`ERR_BLOCKED_BY_CLIENT`); no retry or alternate browser probe was attempted after that boundary. The local QA draft was discarded without saving.
 
-The production build was attempted but could not fetch the existing Manrope font from `fonts.googleapis.com` (`ENOTFOUND`). Retry `npm run build` with font-network access; do not count the blocked build as a passing release gate.
+The local production build could not fetch the existing Manrope font from `fonts.googleapis.com` (`ENOTFOUND`). Vercel successfully built the committed implementation (`af47755`) in deployment `dpl_95tzxvQwJmFsa1FJVJyhmhHipTvA`; the local network limitation is not an outstanding hosted-build failure.
 
 ## Release gates and pilot
 

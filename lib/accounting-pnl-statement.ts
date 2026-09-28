@@ -11,9 +11,7 @@ import {
   normalizeMoneyCents,
   normalizeSalaryLaborWorkType,
   normalizeWorkType,
-  paidMinutes,
   salaryLaborWorkTypeLabel,
-  wageCentsForMinutes,
   workTypeLabel,
   type SalaryLaborWorkType,
   type TimeClockBreakRow,
@@ -21,6 +19,7 @@ import {
   type TimeEntryWorkType,
 } from '@/lib/time-clock';
 import { fetchAllPages } from '@/lib/supabase/pagination';
+import { calculatePayrollWages, distributePayrollWages } from '@/lib/payroll-wages';
 
 export const ACCOUNTING_PNL_PAGE_SIZE = 1000;
 
@@ -219,13 +218,16 @@ export function buildAccountingLaborSummary({
   allocations,
   salaryPayments,
   timeEntries,
+  overtimeContextEntries = timeEntries,
 }: {
   allocations: AccountingPayrollAllocationRow[];
   salaryPayments: AccountingSalaryPaymentRow[];
   timeEntries: AccountingPayrollTimeEntryRow[];
+  overtimeContextEntries?: AccountingPayrollTimeEntryRow[];
 }): AccountingLaborSummary {
   const totalsByWorkType = new Map<AccountingLaborWorkType, number>();
   const allocationsByEntry = new Map<string, AccountingPayrollAllocationRow[]>();
+  const wagesByEntry = calculatePayrollWages(overtimeContextEntries);
 
   for (const allocation of allocations) {
     const rows = allocationsByEntry.get(allocation.time_entry_id) ?? [];
@@ -234,24 +236,30 @@ export function buildAccountingLaborSummary({
   }
 
   for (const entry of timeEntries) {
-    if (entry.status === 'void' || !entry.clock_out_at) continue;
+    if (entry.status === 'void' || entry.status === 'open' || !entry.clock_out_at) continue;
+    const pay = wagesByEntry.get(entry.id);
+    if (!pay || pay.minutes <= 0) continue;
     const entryAllocations = allocationsByEntry.get(entry.id) ?? [];
     if (entryAllocations.length) {
-      for (const allocation of entryAllocations) {
+      const allocatedMinutes = entryAllocations.map((allocation) => Math.max(0, normalizeAccountingNumber(allocation.minutes)));
+      const remainingMinutes = Math.max(0, pay.minutes - allocatedMinutes.reduce((sum, minutes) => sum + minutes, 0));
+      const allocationPay = distributePayrollWages(pay, [...allocatedMinutes, remainingMinutes]);
+      // Saved allocation wages remain the base; share only the new overtime premium.
+      for (const [index, allocation] of entryAllocations.entries()) {
         addLaborAmount(
           totalsByWorkType,
           normalizeWorkType(allocation.work_type),
-          normalizeMoneyCents(allocation.wage_cents),
+          normalizeMoneyCents(allocation.wage_cents) + allocationPay[index].overtimePremiumCents,
         );
       }
+      addLaborAmount(totalsByWorkType, normalizeWorkType(entry.work_type), allocationPay[entryAllocations.length].wageCents);
       continue;
     }
 
-    const minutes = paidMinutes(entry, entry.admin_time_breaks ?? []);
     addLaborAmount(
       totalsByWorkType,
       normalizeWorkType(entry.work_type),
-      wageCentsForMinutes(minutes, entry.hourly_rate_cents_snapshot),
+      pay.wageCents,
     );
   }
 
@@ -413,6 +421,7 @@ export function buildAccountingPnlStatement({
   payrollAllocations = [],
   payrollSalaryPayments = [],
   payrollTimeEntries = [],
+  payrollOvertimeContextEntries = payrollTimeEntries,
   productionRuns = [],
   transactions,
 }: {
@@ -421,6 +430,7 @@ export function buildAccountingPnlStatement({
   payrollAllocations?: AccountingPayrollAllocationRow[];
   payrollSalaryPayments?: AccountingSalaryPaymentRow[];
   payrollTimeEntries?: AccountingPayrollTimeEntryRow[];
+  payrollOvertimeContextEntries?: AccountingPayrollTimeEntryRow[];
   productionRuns?: ProductionRunLaborRow[];
   transactions: AccountingPnlTransactionRow[];
 }): AccountingPnlStatement {
@@ -429,6 +439,7 @@ export function buildAccountingPnlStatement({
     allocations: payrollAllocations,
     salaryPayments: payrollSalaryPayments,
     timeEntries: payrollTimeEntries,
+    overtimeContextEntries: payrollOvertimeContextEntries,
   });
   const productionRunLaborCogsCents = productionLaborCogsForRuns(productionRuns);
   const laborCogsCents = payrollLaborSummary.productionLaborCogsCents || productionRunLaborCogsCents;

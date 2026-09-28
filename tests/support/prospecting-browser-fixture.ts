@@ -1,7 +1,7 @@
 import { resolve } from 'node:path';
 import { build, type Plugin } from 'vite';
 
-/** Bundle the actual editor and styles; only routing and server actions are fake. */
+/** Bundle the actual editor, workspace shell and styles; only routing and server actions are fake. */
 export async function buildProspectingBrowserFixture() {
   const root = process.cwd();
   const nextStubs: Plugin = {
@@ -9,7 +9,7 @@ export async function buildProspectingBrowserFixture() {
     resolveId(id) { if (id === 'next/link' || id === 'next/navigation') return `\0fixture:${id}`; return null; },
     load(id) {
       if (id === '\0fixture:next/link') return `import {createElement} from 'react'; export default function Link({prefetch,replace,scroll,...props}) {return createElement('a',props)}`;
-      if (id === '\0fixture:next/navigation') return `const router={push(href){window.prospectingFixture.navigation=href},replace(href){window.prospectingFixture.navigation=href},refresh(){window.prospectingFixture.refreshCount++;window.prospectingFixture.refreshRecord()}};export function useRouter(){return router}export function usePathname(){return location.pathname}export function useSearchParams(){return new URLSearchParams(location.search)}`;
+      if (id === '\0fixture:next/navigation') return `const router={push(href){window.prospectingFixture.navigation=href;window.prospectingFixture.navigate?.(href)},replace(href){window.prospectingFixture.navigation=href;window.prospectingFixture.navigate?.(href,true)},refresh(){window.prospectingFixture.refreshCount++;window.prospectingFixture.refreshRecord()}};export function useRouter(){return router}export function usePathname(){return location.pathname}export function useSearchParams(){return new URLSearchParams(location.search)}`;
       return null;
     },
   };

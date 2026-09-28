@@ -21,7 +21,10 @@ import {
   type CommissionSummary,
 } from '@/lib/commissions';
 import { supabaseAdmin } from '@/lib/supabase/admin';
+import { fetchAllPages } from '@/lib/supabase/pagination';
+import { recordPayrollCommissionPaid } from '@/lib/payroll-commissions';
 import { usd } from '@/lib/utils';
+import { revalidatePath } from 'next/cache';
 import { redirect } from 'next/navigation';
 
 type AdminRow = {
@@ -327,51 +330,83 @@ async function updateMonthlyPayout(formData: FormData) {
   const action = String(formData.get('payout_action') ?? '');
   if (!salesProfileId || !['locked', 'paid'].includes(action)) redirect(salesAdminHref('payout_error', commissionMonth));
 
-  const { data: snapshots, error: snapshotsError } = await supabaseAdmin
-    .from('order_commission_snapshots')
-    .select('id,order_id,center_id,sales_profile_id,shipped_at,commission_month,revenue_cents,product_cogs_cents,shipping_cogs_cents,processing_fee_cogs_cents,donation_cogs_cents,total_cogs_cents,gross_profit_cents,commission_percent,commission_cents,cogs_estimated')
-    .eq('sales_profile_id', salesProfileId)
-    .eq('commission_month', commissionMonth);
+  if (action === 'paid') {
+    const result = await recordPayrollCommissionPaid({
+      actorProfileId: current.profile.id,
+      commissionMonth,
+      salesProfileId,
+      supabase: supabaseAdmin,
+    });
+    if (result.error || !result.payout) redirect(salesAdminHref('payout_error', commissionMonth));
+    if (!result.alreadyPaid) {
+      await recordAdminAuditLog({
+        action: 'monthly_commission_paid',
+        actorProfileId: current.profile.id,
+        after: result.payout,
+        before: result.before,
+        sectionKey: 'sales_admin',
+        supabase: supabaseAdmin,
+        targetProfileId: salesProfileId,
+      });
+      revalidatePath('/admin/payroll');
+      revalidatePath('/admin/sales-admin');
+      revalidatePath('/admin/commission');
+    }
+    redirect(salesAdminHref('payout_paid', commissionMonth));
+  }
 
-  if (snapshotsError) redirect(salesAdminHref('payout_error', commissionMonth));
-
-  const summary = summarizeCommissionRows((snapshots ?? []) as CommissionSnapshotRow[]);
-  const { data: before } = await supabaseAdmin
+  const { data: before, error: beforeError } = await supabaseAdmin
     .from('monthly_commission_payouts')
     .select('*')
     .eq('sales_profile_id', salesProfileId)
     .eq('commission_month', commissionMonth)
     .maybeSingle();
 
+  if (beforeError) redirect(salesAdminHref('payout_error', commissionMonth));
+  if (before) {
+    redirect(salesAdminHref(before.status === 'paid' || before.paid_at ? 'payout_paid' : 'payout_locked', commissionMonth));
+  }
+
+  const { data: snapshots, error: snapshotsError } = await fetchAllPages<CommissionSnapshotRow>((from, to) => supabaseAdmin
+    .from('order_commission_snapshots')
+    .select('id,order_id,center_id,sales_profile_id,shipped_at,commission_month,revenue_cents,product_cogs_cents,shipping_cogs_cents,processing_fee_cogs_cents,donation_cogs_cents,total_cogs_cents,gross_profit_cents,commission_percent,commission_cents,cogs_estimated')
+    .eq('sales_profile_id', salesProfileId)
+    .eq('commission_month', commissionMonth)
+    .order('id', { ascending: true })
+    .range(from, to));
+
+  if (snapshotsError) redirect(salesAdminHref('payout_error', commissionMonth));
+
+  const summary = summarizeCommissionRows(snapshots);
   const now = new Date().toISOString();
   const payload = {
     commission_cents: summary.commissionCents,
     commission_month: commissionMonth,
     gross_profit_cents: summary.grossProfitCents,
-    locked_at: before?.locked_at ?? now,
-    locked_by: before?.locked_by ?? current.profile.id,
+    locked_at: now,
+    locked_by: current.profile.id,
     order_count: summary.orderCount,
-    paid_at: action === 'paid' ? now : before?.paid_at ?? null,
-    paid_by: action === 'paid' ? current.profile.id : before?.paid_by ?? null,
+    paid_at: null,
+    paid_by: null,
     donation_cogs_cents: summary.donationCogsCents,
     processing_fee_cogs_cents: summary.processingFeeCogsCents,
     product_cogs_cents: summary.productCogsCents,
     revenue_cents: summary.revenueCents,
     sales_profile_id: salesProfileId,
     shipping_cogs_cents: summary.shippingCogsCents,
-    status: action,
+    status: 'locked',
     total_cogs_cents: summary.totalCogsCents,
     updated_at: now,
   };
 
   const result = await supabaseAdmin
     .from('monthly_commission_payouts')
-    .upsert(payload, { onConflict: 'sales_profile_id,commission_month' });
+    .insert(payload);
 
   if (result.error) redirect(salesAdminHref('payout_error', commissionMonth));
 
   await recordAdminAuditLog({
-    action: action === 'paid' ? 'monthly_commission_paid' : 'monthly_commission_locked',
+    action: 'monthly_commission_locked',
     actorProfileId: current.profile.id,
     after: payload,
     before,
@@ -380,7 +415,10 @@ async function updateMonthlyPayout(formData: FormData) {
     targetProfileId: salesProfileId,
   });
 
-  redirect(salesAdminHref(action === 'paid' ? 'payout_paid' : 'payout_locked', commissionMonth));
+  revalidatePath('/admin/payroll');
+  revalidatePath('/admin/sales-admin');
+  revalidatePath('/admin/commission');
+  redirect(salesAdminHref('payout_locked', commissionMonth));
 }
 
 function StatTile({ label, value, detail }: { detail: string; label: string; value: string }) {

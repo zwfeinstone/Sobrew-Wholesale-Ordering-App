@@ -62,8 +62,8 @@ describe('complete financial exports', () => {
     expect(csv.match(/"sales_spiff_paid"/g)).toHaveLength(2);
     expect(stub.reads.every((read) => ['id', 'profile_id'].includes(read.orders.at(-1)?.column ?? ''))).toBe(true);
     expect(stub.reads.find((read) => read.table === 'admin_time_entries')?.filters).toEqual([
-      { operator: 'gte', column: 'clock_in_at', value: '2026-07-01T05:00:00.000Z' },
-      { operator: 'lt', column: 'clock_in_at', value: '2026-08-01T05:00:00.000Z' },
+      { operator: 'or', column: '', value: 'clock_out_at.gt.2026-06-29T05:00:00.000Z,clock_in_at.gte.2026-06-29T05:00:00.000Z' },
+      { operator: 'lt', column: 'clock_in_at', value: '2026-08-03T05:00:00.000Z' },
     ]);
   });
 

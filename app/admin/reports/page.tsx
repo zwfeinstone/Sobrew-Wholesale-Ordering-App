@@ -37,6 +37,7 @@ import {
   type LaborPaidGpmSalaryPaymentRow,
   type LaborPaidGpmTimeEntryRow,
 } from '@/lib/labor-paid-gpm-reporting';
+import { payrollOvertimeContextRange } from '@/lib/payroll-wages';
 import {
   buildBaselineRanges,
   buildProfitabilityDashboard,
@@ -2064,6 +2065,7 @@ function buildLaborDifferenceTrend({
   allocations,
   centers,
   entries,
+  overtimeContextEntries,
   orderItems,
   orders,
   products,
@@ -2075,6 +2077,7 @@ function buildLaborDifferenceTrend({
   allocations: LaborPaidGpmAllocationRow[];
   centers: ReportingCenterRow[];
   entries: LaborPaidGpmTimeEntryRow[];
+  overtimeContextEntries: LaborPaidGpmTimeEntryRow[];
   orderItems: ProfitabilityOrderItemRow[];
   orders: ProfitabilityOrderRow[];
   products: ReportingProductRow[];
@@ -2119,6 +2122,7 @@ function buildLaborDifferenceTrend({
       allocations,
       current: bucketDashboard.current,
       entries: bucketEntries,
+      overtimeContextEntries,
       productionRunLaborCogsCents: bucketDashboard.productionSummary.laborCostCents,
       productionRuns,
       salaryPayments: bucketSalaryPayments,
@@ -3578,6 +3582,7 @@ export default async function AdminReportsPage(
   }
 
   let laborPaidTimeEntries: LaborPaidGpmTimeEntryRow[] = [];
+  let laborPaidOvertimeContextEntries: LaborPaidGpmTimeEntryRow[] = [];
   let laborPaidAllocations: LaborPaidGpmAllocationRow[] = [];
   let laborPaidSalaryPayments: LaborPaidGpmSalaryPaymentRow[] = [];
   let laborPaidLoadError: string | null = null;
@@ -3585,12 +3590,13 @@ export default async function AdminReportsPage(
   if (dataNeeds.laborPaidGpm) {
     const payrollSupabase = getSupabaseAdmin();
     const rangeEndInput = formatDateInput(addDays(rangeEndExclusive, -1));
+    const overtimeContext = payrollOvertimeContextRange(rangeStart, new Date(rangeEndExclusive.getTime() - 1));
     const [timeEntriesResult, salaryPaymentsResult] = await Promise.all([
       fetchAllPages((from, to) => payrollSupabase
         .from('admin_time_entries')
         .select('id,profile_id,clock_in_at,clock_out_at,hourly_rate_cents_snapshot,status,locked_at,work_type,admin_time_breaks(break_start_at,break_end_at,status)')
-        .gte('clock_in_at', rangeStart.toISOString())
-        .lt('clock_in_at', rangeEndExclusive.toISOString()).order('id').range(from, to)),
+        .or(`clock_in_at.gte.${overtimeContext.start.toISOString()},clock_out_at.gt.${overtimeContext.start.toISOString()}`)
+        .lt('clock_in_at', overtimeContext.endExclusive.toISOString()).order('id').range(from, to)),
       fetchAllPages((from, to) => payrollSupabase
         .from('admin_salary_payroll_payments')
         .select('id,paid_at,period_start_date,period_end_date,salary_labor_work_type,salary_pay_cents')
@@ -3602,7 +3608,8 @@ export default async function AdminReportsPage(
     if (timeEntriesResult.error || salaryPaymentsResult.error) {
       laborPaidLoadError = 'The Labor Paid GPM report could not load payroll records.';
     } else {
-      laborPaidTimeEntries = (timeEntriesResult.data ?? []) as LaborPaidGpmTimeEntryRow[];
+      laborPaidOvertimeContextEntries = (timeEntriesResult.data ?? []) as LaborPaidGpmTimeEntryRow[];
+      laborPaidTimeEntries = laborPaidOvertimeContextEntries.filter((entry) => dateInRange(entry.clock_in_at, rangeStart, rangeEndExclusive));
       laborPaidSalaryPayments = (salaryPaymentsResult.data ?? []) as LaborPaidGpmSalaryPaymentRow[];
       const entryIds = laborPaidTimeEntries.map((entry) => entry.id);
       if (entryIds.length) {
@@ -3703,6 +3710,7 @@ export default async function AdminReportsPage(
     allocations: dataNeeds.laborPaidGpm ? laborPaidAllocations : [],
     current: profitabilityDashboard.current,
     entries: dataNeeds.laborPaidGpm ? laborPaidTimeEntries : [],
+    overtimeContextEntries: dataNeeds.laborPaidGpm ? laborPaidOvertimeContextEntries : [],
     productionRunLaborCogsCents: profitabilityDashboard.productionSummary.laborCostCents,
     productionRuns: dataNeeds.laborPaidGpm && !productionRunsResult.error ? (productionRunsResult.data ?? []) as any[] : [],
     salaryPayments: dataNeeds.laborPaidGpm ? laborPaidSalaryPayments : [],
@@ -3712,6 +3720,7 @@ export default async function AdminReportsPage(
       allocations: laborPaidAllocations,
       centers,
       entries: laborPaidTimeEntries,
+      overtimeContextEntries: laborPaidOvertimeContextEntries,
       orderItems: (orderItemsResult.data ?? []) as ProfitabilityOrderItemRow[],
       orders: (ordersResult.data ?? []) as ProfitabilityOrderRow[],
       products,

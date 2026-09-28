@@ -3,6 +3,7 @@ import {
   ACTIVE_PROSPECTING_STAGES,
   REP_PIPELINE_STAGES,
   prospectingLeadPath,
+  prospectingWorkspaceLeadPath,
   prospectingPath,
   prospectingQueueContextFromParams,
   prospectingQueueExcludesFollowUpDue,
@@ -66,6 +67,44 @@ describe('prospecting queue context', () => {
     expect(prospectingLeadPath('lead-123', context, { includePageSize: true })).toBe(
       `/admin/sales/prospecting/lead-123?tab=tasks&q=Chicago&priority=high&state=missing&list=${LIST_ID}&rep=${REP_ID}&page_size=25&page=4`,
     );
+  });
+
+  it('switches workspace lead selection without changing the route or working queue', () => {
+    const context = prospectingQueueContextFromParams({
+      list: LIST_ID,
+      page: '4',
+      page_size: '25',
+      priority: 'high',
+      q: 'Chicago & Evanston',
+      rep: REP_ID,
+      state: 'IL',
+      stage: 'working',
+      tab: 'pipeline',
+      origin: 'leads',
+      return_to: '/admin/sales/prospecting/admin?tab=pipeline&state=IL',
+      run_id: LIST_ID,
+    });
+    const first = new URL(prospectingWorkspaceLeadPath(LIST_ID, context, { includePageSize: true }), 'https://example.test');
+    const next = new URL(prospectingWorkspaceLeadPath(REP_ID, context, { includePageSize: true }), first);
+
+    expect(first.pathname).toBe('/admin/sales/prospecting');
+    expect(next.pathname).toBe(first.pathname);
+    expect(first.searchParams.get('lead')).toBe(LIST_ID);
+    expect(next.searchParams.get('lead')).toBe(REP_ID);
+    expect(prospectingQueueContextFromParams(first.searchParams)).toEqual(context);
+    expect(prospectingQueueContextFromParams(next.searchParams)).toEqual(context);
+    first.searchParams.delete('lead');
+    next.searchParams.delete('lead');
+    expect(next.search).toBe(first.search);
+  });
+
+  it('supports default queues and save messages in workspace lead links', () => {
+    const context = prospectingQueueContextFromParams({});
+    expect(prospectingWorkspaceLeadPath(LIST_ID, context)).toBe(`/admin/sales/prospecting?lead=${LIST_ID}`);
+    const url = new URL(prospectingWorkspaceLeadPath(LIST_ID, context, { includePageSize: true, toast: 'record_saved' }), 'https://example.test');
+    expect(url.searchParams.get('page_size')).toBe('50');
+    expect(url.searchParams.get('toast')).toBe('record_saved');
+    expect(url.searchParams.getAll('lead')).toEqual([LIST_ID]);
   });
 
   it('normalizes invalid or irrelevant queue params instead of carrying them forward', () => {

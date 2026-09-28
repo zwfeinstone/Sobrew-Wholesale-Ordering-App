@@ -1,0 +1,50 @@
+.payroll-workspace .card { background: rgba(255, 255, 255, .94); box-shadow: 0 2px 8px rgba(15, 23, 42, .025); }
+.payroll-workspace .stat-card { padding: 1rem; box-shadow: none; background: white; border-color: #e2e8f0; }
+.payroll-workspace .stat-card > p:nth-child(2) { margin-top: .5rem; font-variant-numeric: tabular-nums; }
+.payroll-workspace .input { min-width: 0; border-radius: .625rem; padding: .625rem .75rem; background: white; }
+.payroll-workspace label { display: block; }
+.payroll-workspace label > .input { display: block; margin-top: .375rem; }
+.payroll-workspace label:has(input[type='checkbox']), .payroll-workspace label:has(input[type='radio']) { display: flex; }
+.payroll-workspace .btn-primary, .payroll-workspace .btn-secondary { min-height: 42px; border-radius: .625rem; box-shadow: none; }
+.payroll-workspace button:disabled { cursor: not-allowed; opacity: .55; transform: none; }
+.payroll-workspace a:focus-visible, .payroll-workspace summary:focus-visible { outline: 2px solid #0f766e; outline-offset: 4px; border-radius: .375rem; }
+.payroll-nav { display: flex; flex-wrap: wrap; column-gap: 1.25rem; border-bottom: 1px solid #cbd5e1; padding: 0 .125rem; }
+.payroll-nav > a { display: flex; flex-shrink: 0; align-items: center; gap: .5rem; min-height: 52px; border-bottom: 3px solid transparent; color: #64748b; font-size: .875rem; font-weight: 600; white-space: nowrap; }
+.payroll-nav > a:hover { color: #0f766e; }
+.payroll-nav > a[aria-current='page'] { color: #115e59; border-color: #0f766e; }
+.payroll-count { border-radius: 999px; padding: .125rem .5rem; background: #fef3c7; color: #92400e; font-size: .75rem; }
+.payroll-shortcut { border: 1px solid #e2e8f0; border-radius: .5rem; padding: .4rem .65rem; background: white; color: #475569; }
+.payroll-shortcut:hover { border-color: #0f766e; color: #115e59; }
+.payroll-step { display: flex; align-items: center; gap: .75rem; padding: .875rem 1rem; border: 1px solid #e2e8f0; border-radius: .75rem; background: rgba(255,255,255,.7); font-size: .875rem; color: #475569; }
+.payroll-step[aria-current='step'] { border-color: #99c9c1; background: #f0fdfa; color: #115e59; }
+.payroll-step-number { flex-shrink: 0; display: flex; justify-content: center; align-items: center; width: 1.75rem; height: 1.75rem; border-radius: 50%; background: #e2e8f0; font-size: .75rem; font-weight: 700; }
+.payroll-step[aria-current='step'] .payroll-step-number { background: #115e59; color: white; }
+.payroll-disclosure > summary { list-style: none; }
+.payroll-disclosure > summary::-webkit-details-marker { display: none; }
+.payroll-disclosure[open] > summary .payroll-chevron { transform: rotate(180deg); }
+.payroll-workspace td, .payroll-workspace th { font-variant-numeric: tabular-nums; }
+.payroll-workspace td { border-bottom: 1px solid #f1f5f9; }
+.payroll-workspace fieldset { min-width: 0; }
+.payroll-workspace table.payroll-payment-table { min-width: 42rem; }
+@media (min-width: 900px) {
+  .payroll-metrics { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }
+}
+@media (max-width: 639px) {
+  .payroll-workspace .card { padding: 1rem; }
+  .payroll-workspace .stat-card { padding: .875rem; }
+  .payroll-nav { flex-wrap: nowrap; gap: 1rem; overflow-x: auto; padding-bottom: .25rem; }
+  .payroll-workspace nav[aria-label='Weekly payroll workflow'] { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .payroll-step { flex-direction: column; align-items: flex-start; gap: .375rem; padding: .625rem; font-size: .75rem; }
+  .payroll-step > span:last-child > span:last-child { display: none; }
+  .payroll-workspace table.payroll-payment-table { display: block; min-width: 0; }
+  .payroll-payment-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  .payroll-payment-table tbody { display: grid; gap: .75rem; }
+  .payroll-payment-table tr { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); border: 1px solid #e2e8f0; border-radius: .75rem; padding: .5rem; }
+  .payroll-workspace .payroll-payment-table td { display: block; min-width: 0; padding: .625rem; border: 0; text-align: left; overflow-wrap: anywhere; }
+  .payroll-payment-table td::before { content: attr(data-label); display: block; margin-bottom: .375rem; font-size: .75rem; font-weight: 500; color: #64748b; }
+  .payroll-payment-table td:first-child, .payroll-payment-table td[data-label='Status'], .payroll-payment-table td[data-label='Action'] { grid-column: 1 / -1; }
+  .payroll-payment-table td:first-child::before, .payroll-payment-table td[data-label='Action']::before { display: none; }
+  .payroll-commission-table td[data-label='Status'] { grid-column: auto; }
+  .payroll-commission-table td[data-label='Payment'] { grid-column: 1 / -1; }
+  .payroll-commission-table td[data-label='Payment']::before { display: none; }
+}

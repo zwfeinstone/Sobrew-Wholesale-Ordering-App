@@ -2,19 +2,18 @@ import { NextRequest } from 'next/server';
 import { requireAdminSectionEdit } from '@/lib/admin-permissions';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { fetchAllPages } from '@/lib/supabase/pagination';
+import { calculatePayrollWages, payrollOvertimeContextRange } from '@/lib/payroll-wages';
 import {
   completedBreakMinutes,
   formatCentralDateTime,
   hoursFromMinutes,
   isSalaryLaborWorkType,
   normalizeSalaryLaborWorkType,
-  paidMinutes,
   parseCentralDateInput,
   salaryCentsForDateRange,
   salaryLaborWorkTypeLabel,
   salaryPayFrequencyLabel,
   UNASSIGNED_WORK_TYPE,
-  wageCentsForMinutes,
   workTypeLabel,
   type TimeClockBreakRow,
   type TimeClockEntryRow,
@@ -114,17 +113,17 @@ export async function GET(request: NextRequest) {
   }
   // parseCentralDateInput(..., true) ends at 23:59:59; include its fractional second.
   const endExclusive = new Date(to.getTime() + 1000);
+  const overtimeContext = payrollOvertimeContextRange(from, to);
 
   let query = supabaseAdmin
     .from('admin_time_entries')
     .select('id,profile_id,clock_in_at,clock_out_at,hourly_rate_cents_snapshot,status,notes,correction_request_note,manual_reason,approved_at,locked_at,voided_at,void_reason,work_type,admin_profile:profiles!admin_time_entries_profile_id_fkey(email,full_name),admin_time_breaks(break_start_at,break_end_at,status)')
-    .gte('clock_in_at', from.toISOString())
-    .lt('clock_in_at', endExclusive.toISOString())
+    .or(`clock_out_at.gt.${overtimeContext.start.toISOString()},clock_in_at.gte.${overtimeContext.start.toISOString()}`)
+    .lt('clock_in_at', overtimeContext.endExclusive.toISOString())
     .order('clock_in_at', { ascending: true })
     .order('id', { ascending: true });
 
   if (adminId) query = query.eq('profile_id', adminId);
-  if (hasWorkTypeFilter) query = query.eq('work_type', workType);
   let salaryPaymentsQuery = supabaseAdmin
     .from('admin_salary_payroll_payments')
     .select('profile_id,payroll_month,period_start_date,period_end_date,salary_amount_cents,salary_frequency,salary_labor_work_type,salary_pay_cents,approved_at,paid_at,notes')
@@ -167,7 +166,15 @@ export async function GET(request: NextRequest) {
     console.error('[export-time-entries] payroll records failed', error);
     return new Response('Unable to load all payroll records. Please try again.', { status: 500 });
   }
-  const data = entriesResult.data ?? [];
+  // Calculate against complete employee workweeks before narrowing the CSV rows.
+  // Earlier work in another date or work-type filter still earns overtime credit.
+  const contextEntries = entriesResult.data ?? [];
+  const wagesByEntryId = calculatePayrollWages(contextEntries);
+  const data = contextEntries.filter((entry) => {
+    const clockIn = new Date(entry.clock_in_at);
+    return clockIn >= from && clockIn < endExclusive
+      && (!hasWorkTypeFilter || entry.work_type === workType);
+  });
 
   const adminById = new Map(((adminsResult.data ?? []) as ExportAdminProfile[]).map((admin) => [admin.id, admin]));
   const salaryRows = ((settingsResult.data ?? []) as ExportTimeSetting[])
@@ -219,11 +226,15 @@ export async function GET(request: NextRequest) {
       'salary_frequency',
       'payroll_month',
       'paid_at',
+      'regular_hours',
+      'overtime_hours',
+      'overtime_premium',
     ],
     ...((data ?? []) as ExportEntry[]).map((entry) => {
       const breaks = (entry.admin_time_breaks ?? []).filter((entryBreak) => entryBreak.status !== 'void');
       const lunchMinutes = completedBreakMinutes(breaks);
-      const entryPaidMinutes = paidMinutes(entry, breaks);
+      const pay = wagesByEntryId.get(entry.id);
+      const entryPaidMinutes = pay?.minutes ?? 0;
       const rateCents = Number(entry.hourly_rate_cents_snapshot ?? 0);
       return [
         'time_entry',
@@ -235,7 +246,7 @@ export async function GET(request: NextRequest) {
         hoursFromMinutes(lunchMinutes).toFixed(2),
         hoursFromMinutes(entryPaidMinutes).toFixed(2),
         usd(rateCents),
-        usd(wageCentsForMinutes(entryPaidMinutes, rateCents)),
+        usd(pay?.wageCents ?? 0),
         entry.notes ?? '',
         entry.correction_request_note ?? '',
         entry.manual_reason ?? '',
@@ -247,6 +258,9 @@ export async function GET(request: NextRequest) {
         '',
         '',
         '',
+        hoursFromMinutes(pay?.regularMinutes ?? 0).toFixed(2),
+        hoursFromMinutes(pay?.overtimeMinutes ?? 0).toFixed(2),
+        usd(pay?.overtimePremiumCents ?? 0),
       ];
     }),
     ...salaryRows.map((salary) => [
@@ -269,6 +283,9 @@ export async function GET(request: NextRequest) {
       '',
       'salary',
       salaryPayFrequencyLabel(salary.salary_frequency),
+      '',
+      '',
+      '',
       '',
       '',
     ]),
@@ -294,6 +311,9 @@ export async function GET(request: NextRequest) {
       salaryPayFrequencyLabel(salary.salary_frequency),
       salary.payroll_month,
       formatCentralDateTime(salary.paid_at, ''),
+      '',
+      '',
+      '',
     ]),
     ...paidWeeklySalesSpiffs.map((spiff) => [
       'sales_spiff_paid',
@@ -317,6 +337,9 @@ export async function GET(request: NextRequest) {
       '',
       spiff.week_start_date,
       formatCentralDateTime(spiff.paid_at, ''),
+      '',
+      '',
+      '',
     ]),
   ];
 

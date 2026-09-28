@@ -2,13 +2,12 @@ import {
   normalizeMoneyCents,
   normalizeSalaryLaborWorkType,
   normalizeWorkType,
-  paidMinutes,
-  wageCentsForMinutes,
   type TimeClockBreakRow,
   type TimeClockEntryRow,
   type TimeEntryWorkType,
 } from './time-clock';
 import type { ProfitabilityTotals } from './profitability-reporting';
+import { calculatePayrollWages, distributePayrollWages } from './payroll-wages';
 
 export type LaborPaidGpmTimeEntryRow = TimeClockEntryRow & {
   admin_time_breaks?: TimeClockBreakRow[] | null;
@@ -76,10 +75,6 @@ function activeProductionQuantity(run: LaborPaidGpmProductionRunRow) {
   return Math.max(0, numericValue(run.quantity_produced) - numericValue(run.quantity_voided));
 }
 
-function breaksForEntry(entry: LaborPaidGpmTimeEntryRow) {
-  return entry.admin_time_breaks ?? [];
-}
-
 type LaborSegment = {
   entry: LaborPaidGpmTimeEntryRow;
   minutes: number;
@@ -87,8 +82,13 @@ type LaborSegment = {
   workType: TimeEntryWorkType;
 };
 
-function buildHourlySegments(entries: LaborPaidGpmTimeEntryRow[], allocations: LaborPaidGpmAllocationRow[]) {
+function buildHourlySegments(
+  entries: LaborPaidGpmTimeEntryRow[],
+  allocations: LaborPaidGpmAllocationRow[],
+  overtimeContextEntries: LaborPaidGpmTimeEntryRow[],
+) {
   const allocationsByEntry = new Map<string, LaborPaidGpmAllocationRow[]>();
+  const wagesByEntry = calculatePayrollWages(overtimeContextEntries);
   for (const allocation of allocations) {
     const rows = allocationsByEntry.get(allocation.time_entry_id) ?? [];
     rows.push(allocation);
@@ -97,25 +97,38 @@ function buildHourlySegments(entries: LaborPaidGpmTimeEntryRow[], allocations: L
 
   const segments: LaborSegment[] = [];
   for (const entry of entries) {
-    if (entry.status === 'void' || !entry.clock_out_at) continue;
+    if (entry.status === 'void' || entry.status === 'open' || !entry.clock_out_at) continue;
+    const pay = wagesByEntry.get(entry.id);
+    if (!pay || pay.minutes <= 0) continue;
     const entryAllocations = allocationsByEntry.get(entry.id) ?? [];
     if (entryAllocations.length) {
-      for (const allocation of entryAllocations) {
+      const allocatedMinutes = entryAllocations.map((allocation) => Math.max(0, numericValue(allocation.minutes)));
+      const remainingMinutes = Math.max(0, pay.minutes - allocatedMinutes.reduce((sum, minutes) => sum + minutes, 0));
+      const allocationPay = distributePayrollWages(pay, [...allocatedMinutes, remainingMinutes]);
+      // Saved allocation wages remain the base; share only the new overtime premium.
+      for (const [index, allocation] of entryAllocations.entries()) {
         segments.push({
           entry,
-          minutes: numericValue(allocation.minutes),
-          wageCents: normalizeMoneyCents(allocation.wage_cents),
+          minutes: allocationPay[index].minutes,
+          wageCents: normalizeMoneyCents(allocation.wage_cents) + allocationPay[index].overtimePremiumCents,
           workType: normalizeWorkType(allocation.work_type),
+        });
+      }
+      if (remainingMinutes > 0) {
+        segments.push({
+          entry,
+          minutes: allocationPay[entryAllocations.length].minutes,
+          wageCents: allocationPay[entryAllocations.length].wageCents,
+          workType: normalizeWorkType(entry.work_type),
         });
       }
       continue;
     }
 
-    const minutes = paidMinutes(entry, breaksForEntry(entry));
     segments.push({
       entry,
-      minutes,
-      wageCents: wageCentsForMinutes(minutes, entry.hourly_rate_cents_snapshot),
+      minutes: pay.minutes,
+      wageCents: pay.wageCents,
       workType: normalizeWorkType(entry.work_type),
     });
   }
@@ -127,6 +140,7 @@ export function buildLaborPaidGpmSummary({
   allocations,
   current,
   entries,
+  overtimeContextEntries = entries,
   productionRunLaborCogsCents,
   productionRuns,
   salaryPayments,
@@ -134,11 +148,12 @@ export function buildLaborPaidGpmSummary({
   allocations: LaborPaidGpmAllocationRow[];
   current: ProfitabilityTotals;
   entries: LaborPaidGpmTimeEntryRow[];
+  overtimeContextEntries?: LaborPaidGpmTimeEntryRow[];
   productionRunLaborCogsCents?: number;
   productionRuns: LaborPaidGpmProductionRunRow[];
   salaryPayments: LaborPaidGpmSalaryPaymentRow[];
 }): LaborPaidGpmSummary {
-  const productionSegments = buildHourlySegments(entries, allocations)
+  const productionSegments = buildHourlySegments(entries, allocations, overtimeContextEntries)
     .filter((segment) => segment.workType === 'production');
   const hourlyLaborPaidCents = productionSegments.reduce((sum, segment) => sum + segment.wageCents, 0);
   const productionMinutes = productionSegments.reduce((sum, segment) => sum + segment.minutes, 0);

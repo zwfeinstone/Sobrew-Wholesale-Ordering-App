@@ -76,7 +76,7 @@ describe('prospecting record server action boundaries', () => {
     expect(state.neighbors.mock.calls[0][1]).toMatchObject({ profileId: state.actor, context: { repId: state.actor, state: 'IL' }, excludedLeadIds: [OTHER_ID] });
     expect(state.commit.mock.calls[0][0]).toMatchObject({ actorId: state.actor, leadId: LEAD_ID, expectedUpdatedAt: loadedVersion, lead: { assigned_profile_id: state.actor } });
     expect(result.ok).toBe(true);
-    if (result.ok) { const url = new URL(result.nextHref!, 'https://example.test');expect(url.pathname).toContain(NEXT_ID);expect(url.searchParams.get('rep')).toBe(state.actor); }
+    if (result.ok) { const url = new URL(result.nextHref!, 'https://example.test');expect(url.pathname).toBe('/admin/sales/prospecting');expect(url.searchParams.get('lead')).toBe(NEXT_ID);expect(url.searchParams.get('rep')).toBe(state.actor); }
   });
   it('rejects a stale browser version without building a neighbor query or committing', async () => {
     state.lead = { ...lead, updated_at: '2026-09-24T11:00:00Z' };

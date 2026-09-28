@@ -3,12 +3,14 @@
 import { useEffect, useRef, useState } from 'react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { installProspectingHistoryGuard } from '@/lib/prospecting-history';
+import { useProspectingPaneNavigation } from '@/components/prospecting-lead-workspace';
 
 type BrowserNavigateEvent = Event & { canIntercept: boolean; navigationType: string; destination: { url: string; sameDocument: boolean } };
 
 /** Browser unload + all in-app links share a single guard. Native traverse interception is progressive. */
 export function useProspectingDraftNavigation(dirty: boolean, pending: boolean) {
   const router = useRouter();
+  const navigatePane = useProspectingPaneNavigation();
   const pathname = usePathname();
   const search = useSearchParams().toString();
   const bypass = useRef(false);
@@ -56,7 +58,9 @@ export function useProspectingDraftNavigation(dirty: boolean, pending: boolean) 
     else {
       // A push to the identical query may not trigger a React route update.
       if (target.pathname === location.pathname && target.search === location.search) bypass.current = false;
-      router.push(`${target.pathname}${target.search}${target.hash}`, { scroll: false });
+      const path = `${target.pathname}${target.search}${target.hash}`;
+      if (navigatePane) navigatePane(path);
+      else router.push(path, { scroll: false });
     }
   }
   return { destination, stay: () => setDestination(null), navigate, bypass };

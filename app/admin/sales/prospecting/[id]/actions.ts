@@ -7,7 +7,7 @@ import { commitProspectingRecord, readProspectingMutationReceiptChecked } from '
 import { prospectingSubmissionSignature } from '@/lib/prospecting-submission';
 import { buildProspectingRecordMutation, type RecordActionResult, type RecordContact, type RecordLead, type RecordSaveInput } from '@/lib/prospecting-record';
 import { isEligibleProspectingSalesRep } from '@/lib/prospecting-sales-reps';
-import { prospectingQueueContextFromParams, prospectingLeadPath, prospectingOriginPath, type ProspectingQueueContext } from '@/lib/prospecting';
+import { prospectingQueueContextFromParams, prospectingWorkspaceLeadPath, prospectingOriginPath, type ProspectingQueueContext } from '@/lib/prospecting';
 import { loadProspectingQueueNeighbors } from '@/lib/prospecting-queue-neighbors';
 import { formatCentralDateInput, parseCentralDateInput } from '@/lib/time-clock';
 import { isProspectingWorkspaceEnabled } from '@/lib/prospecting-rollout';
@@ -66,7 +66,7 @@ async function saveRecord(input: RecordSaveInput): Promise<RecordActionResult> {
   try { neighbors = await loadProspectingQueueNeighbors(supabase, { context, currentLeadId: input.leadId, profileId, today, todayStartIso: (parseCentralDateInput(today) || new Date()).toISOString(), excludedLeadIds }); }
   catch { return failure('queue_unavailable', 'The next lead could not be checked. Your draft has been kept; try saving again.'); }
   if (neighbors.unavailable) return failure('queue_unavailable', 'The next lead could not be checked. Your draft has been kept; try saving again.');
-  const nextHref = neighbors.nextLeadId ? prospectingLeadPath(neighbors.nextLeadId, context, { includePageSize: true }) : queueExit(context, 'queue_end');
+  const nextHref = neighbors.nextLeadId ? prospectingWorkspaceLeadPath(neighbors.nextLeadId, context, { includePageSize: true }) : queueExit(context, 'queue_end');
   const result = await commitProspectingRecord({ actorId: current.profile.id, submissionId: input.submissionId, submissionSignature, nextHref, leadId: input.leadId, expectedUpdatedAt: input.expectedUpdatedAt, ...mutation, sample: input.sample });
   if (!result.ok) return result;
   revalidatePath('/admin/sales/prospecting', 'layout');

@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import ProspectingLeadDetail from '@/components/prospecting-lead-detail';
 import ProspectingQueuePanel from '@/components/prospecting-queue-panel';
 import StatusToast from '@/components/status-toast';
 import { requireAdminSectionView } from '@/lib/admin-permissions';
@@ -19,6 +20,9 @@ function calendarDay(value: string, offset: number) {
 export default async function ProspectingPage(props: { searchParams?: Promise<SearchParams> }) {
   if (!await isProspectingWorkspaceEnabled()) return LegacyProspectingPage(props);
   const searchParams = await props.searchParams;
+  if (typeof searchParams?.lead === 'string' && searchParams.lead) {
+    return <ProspectingLeadDetail params={Promise.resolve({ id: searchParams.lead })} searchParams={Promise.resolve(searchParams)} />;
+  }
   const current = await requireAdminSectionView('prospecting');
   const context = { ...prospectingQueueContextFromParams(searchParams), repId: current.profile.id };
   const today = formatCentralDateInput(new Date());

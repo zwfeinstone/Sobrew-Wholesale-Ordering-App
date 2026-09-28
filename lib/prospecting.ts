@@ -476,6 +476,18 @@ export function prospectingLeadPath(
   return `/admin/sales/prospecting/${leadId}${qs ? `?${qs}` : ''}`;
 }
 
+/** Keep modern record selection on the workspace route so its queue stays mounted. */
+export function prospectingWorkspaceLeadPath(
+  leadId: string,
+  context: ProspectingQueueContext,
+  options: { includePageSize?: boolean; toast?: string } = {},
+) {
+  const query = new URLSearchParams({ lead: leadId });
+  const queue = new URLSearchParams(prospectingQueueQueryString(context, options));
+  queue.forEach((value, key) => query.set(key, value));
+  return `/admin/sales/prospecting?${query}`;
+}
+
 export function prospectingQueueHiddenFields(context: ProspectingQueueContext) {
   return [
     { name: 'queue_tab', value: context.tab },

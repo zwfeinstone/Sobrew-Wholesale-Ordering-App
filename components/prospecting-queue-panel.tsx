@@ -14,7 +14,7 @@ import {
   missingLeadFields,
   paginationRange,
   priorityLabel,
-  prospectingLeadPath,
+  prospectingWorkspaceLeadPath,
   prospectingPath,
   stageLabel,
   type ProspectingQueueContext,
@@ -124,9 +124,10 @@ export async function ProspectingQueuePanel({ context, currentLeadId, profileId,
         return <div key={lead.id}>
           {showGroup ? <h3 className="mb-2 mt-4 text-xs font-semibold uppercase tracking-wide text-slate-500">{group}</h3> : null}
           <Link
+            scroll={false}
             aria-current={isSelected ? 'page' : undefined}
             className={`block min-w-0 rounded-xl border p-3 transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-teal-700 ${isSelected ? 'border-teal-500 bg-teal-50 shadow-sm' : 'border-slate-200 bg-white hover:border-teal-300 hover:bg-teal-50/40'}`}
-            href={prospectingLeadPath(lead.id, context, { includePageSize: true })}
+            href={prospectingWorkspaceLeadPath(lead.id, context, { includePageSize: true })}
           >
             <div className="flex items-start justify-between gap-2">
               <p className="min-w-0 break-words text-sm font-semibold text-slate-950">{lead.company_name}</p>
@@ -143,7 +144,7 @@ export async function ProspectingQueuePanel({ context, currentLeadId, profileId,
             {names.length ? <p className="mt-1 truncate text-xs text-slate-500">{names.join(' · ')}</p> : null}
             {missing.length ? <p className="mt-2 text-[11px] text-amber-800" title={missing.join(', ')}>Needs details ({missing.length})</p> : null}
           </Link>
-          <div className="px-2 pt-1 text-right"><Link className="text-xs font-medium text-teal-700 hover:underline" href={`${prospectingLeadPath(lead.id, context, { includePageSize: true })}&sample=1`}>Request sample</Link></div>
+          <div className="px-2 pt-1 text-right"><Link className="text-xs font-medium text-teal-700 hover:underline" href={`${prospectingWorkspaceLeadPath(lead.id, context, { includePageSize: true })}&sample=1`}>Request sample</Link></div>
         </div>;
       })}
     </div>
@@ -182,8 +183,8 @@ export async function ProspectingQueuePanel({ context, currentLeadId, profileId,
         {to + 1 < total ? <Link className="rounded-md border border-slate-200 bg-white px-2 py-1" href={prospectingPath(context, { includePageSize: true, page: context.page + 1 })}>Next page</Link> : null}
       </div>
     </div>
-    {!compact && leads[0] ? <Link className="btn-primary inline-flex xl:hidden" href={prospectingLeadPath(leads[0].id, startContext, { includePageSize: true })}>Start working</Link> : null}
-    {compact ? queue : <div className="grid min-w-0 gap-5 xl:grid-cols-[minmax(20rem,1fr)_minmax(0,1.3fr)]"><div className="min-w-0">{queue}</div><div className="hidden self-start rounded-2xl border border-dashed border-slate-200 bg-white/60 px-8 py-16 text-center xl:block"><p className="text-lg font-semibold text-slate-900">Choose a lead to get started</p><p className="mx-auto mt-2 max-w-sm text-sm leading-6 text-slate-500">Company details, contacts, and your activity log open here. Work through one conversation at a time.</p>{leads[0] ? <Link className="btn-primary mt-5 inline-flex" href={prospectingLeadPath(leads[0].id, startContext, { includePageSize: true })}>Start working</Link> : null}</div></div>}
+    {!compact && leads[0] ? <Link className="btn-primary inline-flex xl:hidden" href={prospectingWorkspaceLeadPath(leads[0].id, startContext, { includePageSize: true })}>Start working</Link> : null}
+    {compact ? queue : <div className="grid min-w-0 gap-5 xl:grid-cols-[minmax(20rem,1fr)_minmax(0,1.3fr)]"><div className="min-w-0">{queue}</div><div className="hidden self-start rounded-2xl border border-dashed border-slate-200 bg-white/60 px-8 py-16 text-center xl:block"><p className="text-lg font-semibold text-slate-900">Choose a lead to get started</p><p className="mx-auto mt-2 max-w-sm text-sm leading-6 text-slate-500">Company details, contacts, and your activity log open here. Work through one conversation at a time.</p>{leads[0] ? <Link className="btn-primary mt-5 inline-flex" href={prospectingWorkspaceLeadPath(leads[0].id, startContext, { includePageSize: true })}>Start working</Link> : null}</div></div>}
   </section></ProspectingQueueScroll>;
 }
 

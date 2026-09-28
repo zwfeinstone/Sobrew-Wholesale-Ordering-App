@@ -19,7 +19,8 @@ describe('complete accounting inputs', () => {
         })),
         production_runs: Array.from({ length: count }, () => ({ actual_labor_cost_cents: 20, quantity_produced: 1, quantity_voided: 0, status: 'completed' })),
         admin_time_entries: Array.from({ length: count }, (_, index) => ({
-          id: `entry-${index}`, profile_id: 'employee', clock_in_at: '2026-07-01T12:00:00Z',
+          // Distinct employees keep this pagination fixture independent of weekly overtime.
+          id: `entry-${index}`, profile_id: `employee-${index}`, clock_in_at: '2026-07-01T12:00:00Z',
           clock_out_at: '2026-07-01T13:00:00Z', status: 'approved', work_type: 'production', hourly_rate_cents_snapshot: 100,
         })),
         admin_time_entry_allocations: Array.from({ length: count }, (_, index) => ({
@@ -46,6 +47,10 @@ describe('complete accounting inputs', () => {
     expect(stub.reads.find((read) => read.table === 'accounting_transactions')?.filters).toEqual([
       { operator: 'gte', column: 'transaction_date', value: '2026-07-01' },
       { operator: 'lt', column: 'transaction_date', value: '2026-08-01' },
+    ]);
+    expect(stub.reads.find((read) => read.table === 'admin_time_entries')?.filters).toEqual([
+      { operator: 'or', column: '', value: 'clock_in_at.gte.2026-06-29T05:00:00.000Z,clock_out_at.gt.2026-06-29T05:00:00.000Z' },
+      { operator: 'lt', column: 'clock_in_at', value: '2026-08-03T05:00:00.000Z' },
     ]);
     expect(stub.reads.find((read) => read.table === 'admin_time_entry_allocations')?.filters).toEqual([
       { operator: 'gte', column: 'admin_time_entries.clock_in_at', value: '2026-07-01T00:00:00.000Z' },
@@ -74,5 +79,27 @@ describe('complete accounting inputs', () => {
     const result = await loadAccountingPnlInputs({ ...range, supabase: stub.client as unknown as AccountingClient });
     expect(result.error).toBeNull();
     expect(stub.reads.map((read) => read.table)).toEqual(['accounting_categories', 'accounting_transactions']);
+  });
+
+  it('retains outside-range shifts as overtime context without adding them to selected wages', async () => {
+    const entries = [6, 7, 8, 9, 10].map((day) => ({
+      id: `entry-${day}`, profile_id: 'employee', clock_in_at: `2026-07-${day.toString().padStart(2, '0')}T12:00:00Z`,
+      clock_out_at: `2026-07-${day.toString().padStart(2, '0')}T22:00:00Z`,
+      hourly_rate_cents_snapshot: 2000, work_type: day === 10 ? 'production' : 'shipping',
+      status: day === 10 ? 'approved' : 'locked',
+    }));
+    const stub = supabaseReadStub({ tables: { admin_time_entries: entries } });
+    const client = stub.client as unknown as AccountingClient;
+    const result = await loadAccountingPnlInputs({
+      start: '2026-07-10', end: '2026-07-10', endExclusive: '2026-07-11',
+      supabase: client, payrollSupabase: client,
+    });
+
+    expect(result.error).toBeNull();
+    expect(result.data?.payrollTimeEntries.map((entry) => entry.id)).toEqual(['entry-10']);
+    expect(result.data?.payrollOvertimeContextEntries).toHaveLength(5);
+    const statement = buildAccountingPnlStatement(result.data!);
+    expect(statement.payrollLaborSummary.totalLaborCents).toBe(30000);
+    expect(statement.payrollLaborSummary.productionLaborCogsCents).toBe(30000);
   });
 });
