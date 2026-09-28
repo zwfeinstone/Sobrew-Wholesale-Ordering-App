@@ -37,6 +37,7 @@ export default function ProspectingRecordEditor(props: Props) {
   const { lead, contacts, actorId, canEdit, isOwner, salesReps, products, productsError, contactsError, today, queueParams, backHref, previousHref, nextHref, action, history, source } = props;
   const router = useRouter();
   const [draft, setDraft] = useState(() => { const initial = initialRecordDraft(lead, contacts); if (props.initialSampleOpen && canEdit) initial.lead.stage = 'sample_requested'; return initial; });
+  const [activityTab, setActivityTab] = useState<RecordDraft['activity']['type']>('call');
   const [sample, setSampleValue] = useState(() => initialSample(lead, contacts, products));
   const [expectedUpdatedAt, setExpectedUpdatedAt] = useState(lead.updated_at);
   const [submissionId, setSubmissionId] = useState('');
@@ -68,6 +69,7 @@ export default function ProspectingRecordEditor(props: Props) {
     try {
       const stored = JSON.parse(sessionStorage.getItem(storageKey) || 'null');
       if (!props.fresh && stored?.draft?.lead && stored.draft.contacts && stored.updatedAt && Date.now() - stored.savedAt < 24 * 60 * 60 * 1000) {
+        setActivityTab(['none', 'call', 'email', 'note'].includes(stored.activityTab) ? stored.activityTab : stored.draft.activity.type);
         setDraft(stored.draft); setSample(stored.sample || initialSample(lead, contacts, products)); setExpectedUpdatedAt(stored.updatedAt); setRestored(true);
         if (typeof stored.submissionId === 'string') id = stored.submissionId;
         if (stored.retryPayload?.leadId === lead.id && stored.retryPayload.submissionId === id) retryPayload.current = stored.retryPayload;
@@ -82,10 +84,10 @@ export default function ProspectingRecordEditor(props: Props) {
   useEffect(() => {
     if (!ready) return;
     try {
-      if (dirty) sessionStorage.setItem(storageKey, JSON.stringify({ draft, sample, updatedAt: expectedUpdatedAt, submissionId, retryPayload: retryPayload.current, savedAt: Date.now() }));
+      if (dirty) sessionStorage.setItem(storageKey, JSON.stringify({ draft, sample, activityTab, updatedAt: expectedUpdatedAt, submissionId, retryPayload: retryPayload.current, savedAt: Date.now() }));
       else sessionStorage.removeItem(storageKey);
     } catch { /* Keep editing if browser storage is unavailable. */ }
-  }, [draft, sample, dirty, ready, storageKey, expectedUpdatedAt, submissionId]);
+  }, [draft, sample, activityTab, dirty, ready, storageKey, expectedUpdatedAt, submissionId]);
 
   useEffect(() => { if (error) errorRef.current?.focus(); }, [error]);
 
@@ -107,6 +109,8 @@ export default function ProspectingRecordEditor(props: Props) {
   }
   function editNewContact(contact: EditableContact) { updateDraft({ ...draft, newContact: contact, contacts: contact.is_primary ? draft.contacts.map((item) => ({ ...item, is_primary: false })) : draft.contacts }); }
   function setChannel(type: RecordDraft['activity']['type']) {
+    if (type === activityTab) return;
+    setActivityTab(type);
     const inferred = resolveActivityStage({ currentStage: lead.stage, result: draft.activity.result });
     updateDraft({ ...draft, lead: { ...draft.lead, stage: draft.activity.result && draft.lead.stage === inferred ? (lead.stage || 'new') as ProspectingStage : draft.lead.stage }, activity: { ...draft.activity, type, result: '', contactId: type === 'none' ? '' : draft.activity.contactId, body: type === 'none' ? '' : draft.activity.body } });
   }
@@ -117,7 +121,7 @@ export default function ProspectingRecordEditor(props: Props) {
     const cleanSample = initialSample(lead, contacts, products);
     retryPayload.current = null;
     baseline.current = JSON.stringify(clean); sampleBaseline.current = JSON.stringify(cleanSample);
-    setDraft(clean); setSampleValue(cleanSample); setError(null); setRestored(false);
+    setDraft(clean); setActivityTab('call'); setSampleValue(cleanSample); setError(null); setRestored(false);
     clearStoredDraft(); navigation.navigate(href);
   }
   function revealMissingDetails() {
@@ -139,7 +143,7 @@ export default function ProspectingRecordEditor(props: Props) {
     setPending(true); setError(null); setMessage('');
     const input: RecordSaveInput = retryPayload.current || { leadId: lead.id, expectedUpdatedAt, submissionId, draft, sample: sampleConfirmed ? sample : undefined, queueParams, visitedIds: storedVisited() };
     retryPayload.current = input;
-    try { sessionStorage.setItem(storageKey, JSON.stringify({ draft, sample, updatedAt: expectedUpdatedAt, submissionId, retryPayload: input, savedAt: Date.now() })); } catch { /* In-memory retry remains available. */ }
+    try { sessionStorage.setItem(storageKey, JSON.stringify({ draft, sample, activityTab, updatedAt: expectedUpdatedAt, submissionId, retryPayload: input, savedAt: Date.now() })); } catch { /* In-memory retry remains available. */ }
     try {
       const result = await action(input);
       if (!result.ok) { setError(result.error); if (sampleConfirmed) { setSampleError(result.error.message); } return; }
@@ -164,7 +168,7 @@ export default function ProspectingRecordEditor(props: Props) {
     if (step === 0 && selectedSampleContact && !sample.attentionName) setSample({ ...sample, attentionName: selectedSampleContact.full_name });
     setStep((value) => value + 1);
   }
-  const channelResults = draft.activity.type === 'call' ? CALL_RESULTS : EMAIL_RESULTS;
+  const channelResults = activityTab === 'call' ? CALL_RESULTS : EMAIL_RESULTS;
   const bestContact = draft.contacts.find((contact) => contact.is_primary && !draft.deletedContactIds.includes(contact.id)) || draft.contacts.find((contact) => !draft.deletedContactIds.includes(contact.id));
   const phone = bestContact?.phone || draft.lead.phone;
   const email = bestContact?.email || draft.lead.company_email;
@@ -183,8 +187,8 @@ export default function ProspectingRecordEditor(props: Props) {
     <form ref={formRef} data-prospecting-record="true" onInvalidCapture={(event) => { if (event.target instanceof HTMLElement) { let container = event.target.closest('details'); while (container) { container.open = true; container = container.parentElement?.closest('details') || null; } event.target.focus(); } }} onSubmit={(event) => { event.preventDefault(); void save(); }} className="space-y-4">
       <header className="rounded-xl border border-slate-200 bg-white p-4 sm:p-5"><div className="flex flex-wrap items-start justify-between gap-3"><div className="min-w-0"><p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Prospect</p><h1 className="mt-1 break-words text-2xl font-semibold tracking-tight text-slate-950">{draft.lead.company_name || 'Unnamed prospect'}</h1><p className="mt-1 text-sm text-slate-600">{[draft.lead.city, draft.lead.state].filter(Boolean).join(', ') || 'Location not recorded'} · {stageLabel(draft.lead.stage)}</p></div>{missingDetails ? <button type="button" onClick={revealMissingDetails} className="rounded-full bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-900">Needs details</button> : null}</div><div className="mt-4 flex flex-wrap gap-x-5 gap-y-2 text-sm"><span className="font-semibold">{bestContact?.full_name || 'Company contact'}</span>{phone ? <a className="break-all text-teal-800 underline" href={`tel:${phone}`}>{phone}</a> : <span className="text-slate-500">No phone recorded</span>}{email ? <a className="break-all text-teal-800 underline" href={`mailto:${email}`}>{email}</a> : <span className="text-slate-500">No email recorded</span>}</div><div className="mt-3 flex flex-wrap gap-x-5 gap-y-1 text-xs text-slate-600"><span>Follow-up: <strong>{formatDate(lead.next_follow_up_at)}</strong></span><span>Priority: <strong className="capitalize">{draft.lead.priority}</strong></span><span>Last result: {lead.last_result || 'None recorded'}</span>{lead.hubspot_status && lead.hubspot_status !== 'not_queued' ? <span>HubSpot: {lead.hubspot_status.replaceAll('_', ' ')}</span> : null}</div>{draft.lead.do_not_contact ? <p className="mt-3 font-semibold text-rose-800">Do Not Contact</p> : null}</header>
       <fieldset disabled={!canEdit || contactsError || pending || committed || Boolean(receipt)} className="min-w-0 space-y-4">
-        <section className="rounded-xl border border-teal-200 bg-white p-4 sm:p-5" aria-labelledby="outreach-title"><div className="mb-3 flex flex-wrap items-center justify-between gap-2"><h2 id="outreach-title" className="font-semibold text-slate-950">Outreach & next step</h2><button type="button" className="text-sm font-semibold text-teal-800 underline" onClick={startSample}>Request samples</button></div><div className="mb-4 flex flex-wrap gap-2" role="group" aria-label="Activity to record">{([['none', 'Edit only'], ['call', 'Log call'], ['email', 'Log email'], ['note', 'Add note']] as const).map(([type, label]) => <button type="button" key={type} aria-pressed={draft.activity.type === type} className={`min-h-10 rounded-lg border px-3 text-sm font-semibold ${draft.activity.type === type ? 'border-teal-800 bg-teal-800 text-white' : 'border-slate-200 text-slate-700'}`} onClick={() => setChannel(type)}>{label}</button>)}</div>
-          {draft.activity.type !== 'none' ? <div className="mb-4 space-y-3"><div className="grid gap-3 sm:grid-cols-2"><label className="text-sm font-medium text-slate-700">Contact<select className="input mt-1" value={draft.activity.contactId} onChange={(event) => updateDraft({ ...draft, activity: { ...draft.activity, contactId: event.target.value } })}><option value="">Company level</option>{draft.contacts.filter(({ id }) => !draft.deletedContactIds.includes(id)).map((contact) => <option key={contact.id} value={contact.id}>{contact.full_name || contact.email || 'Unnamed contact'}</option>)}</select></label>{draft.activity.type !== 'note' ? <label className="text-sm font-medium text-slate-700">Outcome<select className="input mt-1" value={draft.activity.result} onChange={(event) => { const result = event.target.value; updateDraft({ ...draft, activity: { ...draft.activity, result }, lead: { ...draft.lead, stage: resolveActivityStage({ currentStage: lead.stage, result }) } }); }}><option value="">No outcome recorded</option>{channelResults.map((result) => <option key={result} value={result}>{result}</option>)}</select></label> : null}</div><label className="block text-sm font-medium text-slate-700">{draft.activity.type === 'note' ? 'Note' : 'What happened?'}<textarea className="input mt-1 min-h-24" name="activity_body" required={draft.activity.type === 'note'} value={draft.activity.body} onChange={(event) => updateDraft({ ...draft, activity: { ...draft.activity, body: event.target.value } })} placeholder="Conversation, useful context, and what happens next" /></label></div> : <p className="mb-4 text-sm text-slate-500">Save company or contact edits without recording an outreach activity.</p>}
+        <section className="rounded-xl border border-teal-200 bg-white p-4 sm:p-5" aria-labelledby="outreach-title"><div className="mb-3 flex flex-wrap items-center justify-between gap-2"><h2 id="outreach-title" className="font-semibold text-slate-950">Outreach & next step</h2><button type="button" className="text-sm font-semibold text-teal-800 underline" onClick={startSample}>Request samples</button></div><div className="mb-4 flex flex-wrap gap-2" role="group" aria-label="Activity to record">{([['none', 'Edit only'], ['call', 'Log call'], ['email', 'Log email'], ['note', 'Add note']] as const).map(([type, label]) => <button type="button" key={type} aria-pressed={activityTab === type} className={`min-h-10 rounded-lg border px-3 text-sm font-semibold ${activityTab === type ? 'border-teal-800 bg-teal-800 text-white' : 'border-slate-200 text-slate-700'}`} onClick={() => setChannel(type)}>{label}</button>)}</div>
+          {activityTab !== 'none' ? <div className="mb-4 space-y-3"><div className="grid gap-3 sm:grid-cols-2"><label className="text-sm font-medium text-slate-700">Contact<select className="input mt-1" value={draft.activity.contactId} onChange={(event) => updateDraft({ ...draft, activity: { ...draft.activity, type: activityTab, contactId: event.target.value } })}><option value="">Company level</option>{draft.contacts.filter(({ id }) => !draft.deletedContactIds.includes(id)).map((contact) => <option key={contact.id} value={contact.id}>{contact.full_name || contact.email || 'Unnamed contact'}</option>)}</select></label>{activityTab !== 'note' ? <label className="text-sm font-medium text-slate-700">Outcome<select className="input mt-1" value={draft.activity.result} onChange={(event) => { const result = event.target.value; updateDraft({ ...draft, activity: { ...draft.activity, type: activityTab, result }, lead: { ...draft.lead, stage: resolveActivityStage({ currentStage: lead.stage, result }) } }); }}><option value="">No outcome recorded</option>{channelResults.map((result) => <option key={result} value={result}>{result}</option>)}</select></label> : null}</div><label className="block text-sm font-medium text-slate-700">{activityTab === 'note' ? 'Note' : 'What happened?'}<textarea className="input mt-1 min-h-24" name="activity_body" required={activityTab === 'note'} value={draft.activity.body} onChange={(event) => updateDraft({ ...draft, activity: { ...draft.activity, type: activityTab, body: event.target.value } })} placeholder="Conversation, useful context, and what happens next" /></label></div> : <p className="mb-4 text-sm text-slate-500">Save company or contact edits without recording an outreach activity.</p>}
           <div className="grid gap-3 sm:grid-cols-2">
             <label className="text-sm font-medium text-slate-700">Stage after saving<select className="input mt-1" value={draft.lead.stage} onChange={(event) => updateDraft({ ...draft, lead: { ...draft.lead, stage: event.target.value as ProspectingStage } })}>{PROSPECTING_STAGES.map(({ id, label }) => <option key={id} value={id}>{label}</option>)}</select></label>
             <div className="min-w-0 space-y-2">
