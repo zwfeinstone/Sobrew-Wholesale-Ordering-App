@@ -2,7 +2,7 @@ import { resolve } from 'node:path';
 import { build, type Plugin } from 'vite';
 
 /** Bundle the actual editor, workspace shell and styles; only routing and server actions are fake. */
-export async function buildProspectingBrowserFixture() {
+export async function buildProspectingBrowserFixture(entry = 'tests/fixtures/prospecting-record.fixture.tsx') {
   const root = process.cwd();
   const nextStubs: Plugin = {
     name: 'prospecting-fixture-next-stubs', enforce: 'pre',
@@ -13,7 +13,7 @@ export async function buildProspectingBrowserFixture() {
       return null;
     },
   };
-  const result = await build({ configFile: false, root, logLevel: 'warn', plugins: [nextStubs], resolve: { alias: { '@': root } }, define: { 'process.env.NODE_ENV': '"production"' }, oxc: { jsx: { runtime: 'automatic' } }, build: { write: false, minify: false, lib: { entry: resolve(root, 'tests/fixtures/prospecting-record.fixture.tsx'), formats: ['iife'], name: 'ProspectingFixture' } } });
+  const result = await build({ configFile: false, root, logLevel: 'warn', plugins: [nextStubs], resolve: { alias: { '@': root } }, define: { 'process.env.NODE_ENV': '"production"' }, oxc: { jsx: { runtime: 'automatic' } }, build: { write: false, minify: false, lib: { entry: resolve(root, entry), formats: ['iife'], name: 'ProspectingFixture' } } });
   const outputs = (Array.isArray(result) ? result : [result]) as unknown as { output: { type: string; code?: string; fileName: string; source?: string | Uint8Array }[] }[];
   const files = outputs.flatMap((item) => item.output);
   const javascript = files.filter((item) => item.type === 'chunk').map((item) => item.code || '').join('\n');

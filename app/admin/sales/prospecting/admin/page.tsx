@@ -1,5 +1,6 @@
 import { pushProspectingHubSpotLeadWithTracking } from '@/lib/prospecting-hubspot-export';
-import { mergeMissingFields } from '@/lib/prospecting-lead-merge';
+import { createSingleLead } from './create-lead';
+import ProspectingSingleLeadForm from '@/components/prospecting-single-lead-form';
 import { hasSampleRequestContact, isSampleContactError, SAMPLE_CONTACT_REQUIRED } from '@/lib/prospecting-sample-contact';
 import type { TablesUpdate } from '@/lib/supabase/database.types';
 import Link from 'next/link';
@@ -55,12 +56,8 @@ import {
   missingLeadFields,
   normalizePageNumber,
   normalizePageSize,
-  normalizePhoneKey,
-  normalizePriority,
   normalizeStateFilter,
-  normalizeStateKey,
   normalizeStage,
-  normalizeTextKey,
   paginationRange,
   postgrestIlikePattern,
   priorityLabel,
@@ -403,10 +400,6 @@ function salesRepOptionRows(profiles: ProfileRow[]) {
     .sort((a, b) => profileLabel(a).localeCompare(profileLabel(b)));
 }
 
-function safeDateInput(value: FormDataEntryValue | null) {
-  const text = String(value ?? '').trim();
-  return /^\d{4}-\d{2}-\d{2}$/.test(text) ? text : null;
-}
 
 function pipelineReviewUrgencyScore(summary: PipelineReviewLeadSummary<LeadRow>, today: string) {
   const followUpDate = pipelineReviewFollowUpDateInput(summary.lead);
@@ -601,158 +594,6 @@ async function updateLeadAssignments({
   return null;
 }
 
-
-async function createSingleLead(formData: FormData) {
-  'use server';
-
-  const current = await requireProspectingOwner();
-  const supabase = await createClient();
-  const companyName = cleanText(formData.get('company_name'));
-  if (!companyName) redirect(prospectingHref({ tab: 'add', toast: 'single_company_required' }));
-
-  const salesProfileId = String(formData.get('assigned_profile_id') ?? '').trim() || null;
-  if (salesProfileId) {
-    const isEligibleRep = await isEligibleProspectingSalesRep(supabase, salesProfileId);
-    if (!isEligibleRep) redirect(prospectingHref({ tab: 'add', toast: 'invalid_rep' }));
-  }
-
-  const requestedListId = String(formData.get('existing_list_id') ?? '').trim();
-  const listName = String(formData.get('list_name') ?? '').trim();
-  let listId = requestedListId;
-  if (!listId && listName) {
-    const { data: createdList, error: listError } = await supabase
-      .from('prospecting_lists')
-      .insert({
-        created_by: current.profile.id,
-        description: 'Created from a single manual lead.',
-        name: listName,
-        source: 'manual',
-        updated_by: current.profile.id,
-      })
-      .select('id')
-      .single();
-    if (listError || !createdList) redirect(prospectingHref({ tab: 'add', toast: 'single_error' }));
-    listId = createdList.id;
-  }
-
-  const phone = cleanText(formData.get('phone'));
-  const state = cleanText(formData.get('state'));
-  const companyNameKey = normalizeTextKey(companyName);
-  const phoneKey = normalizePhoneKey(phone);
-  const stage = normalizeStage(String(formData.get('stage') ?? 'new'));
-  const contactFullName = cleanText(formData.get('contact_full_name'));
-  const contactTitle = cleanText(formData.get('contact_title'));
-  const contactEmail = cleanText(formData.get('contact_email'));
-  const contactPhone = cleanText(formData.get('contact_phone'));
-  if (stage === 'sample_requested' && !hasSampleRequestContact([{ full_name: contactFullName, email: contactEmail }])) {
-    redirect(prospectingHref({ tab: 'add', toast: 'sample_contact_required' }));
-  }
-  const shouldParkLead = PARKED_PROSPECTING_STAGES.includes(stage);
-  const payload = {
-    address_line_1: cleanText(formData.get('address_line_1')),
-    address_line_2: cleanText(formData.get('address_line_2')),
-    assigned_profile_id: shouldParkLead ? null : salesProfileId,
-    city: cleanText(formData.get('city')),
-    company_email: cleanText(formData.get('company_email')),
-    company_name: companyName,
-    company_name_key: companyNameKey,
-    company_website: cleanText(formData.get('company_website')),
-    country: cleanText(formData.get('country')) || 'US',
-    created_by: current.profile.id,
-    last_result: cleanText(formData.get('last_result')),
-    next_follow_up_at: shouldParkLead ? null : safeDateInput(formData.get('next_follow_up_at')),
-    notes: cleanText(formData.get('notes')),
-    phone,
-    phone_key: phoneKey,
-    postal_code: cleanText(formData.get('postal_code')),
-    priority: normalizePriority(String(formData.get('priority') ?? 'normal')),
-    source: listName || 'manual',
-    stage,
-    state,
-    state_key: normalizeStateKey(state),
-    updated_by: current.profile.id,
-  };
-
-  const { data: existingData, error: existingError } = await supabase
-    .from('prospecting_leads')
-    .select('*')
-    .eq('company_name_key', companyNameKey);
-  if (existingError) redirect(prospectingHref({ tab: 'add', toast: 'single_error' }));
-
-  const existingRows = (existingData ?? []) as LeadRow[];
-  const exact = existingRows.find((lead) => `${lead.company_name_key}:${lead.phone_key ?? ''}` === `${companyNameKey}:${phoneKey}`);
-  const sameCompanyDifferentPhone = existingRows.find((lead) => (lead.phone_key ?? '') !== phoneKey);
-  if (!exact && sameCompanyDifferentPhone) {
-    redirect(prospectingHref({ tab: 'add', toast: 'single_duplicate_review' }));
-  }
-
-  let leadId = exact?.id ?? '';
-  let wasMerge = false;
-  if (exact) {
-    const updates = mergeMissingFields(exact, payload, current.profile.id);
-    if (!exact.next_follow_up_at && payload.next_follow_up_at) updates.next_follow_up_at = payload.next_follow_up_at;
-    if (!exact.last_result && payload.last_result) updates.last_result = payload.last_result;
-    if (Object.keys(updates).length) {
-      const { error } = await supabase.from('prospecting_leads').update(updates).eq('id', exact.id);
-      if (error) redirect(prospectingHref({ tab: 'add', toast: 'single_error' }));
-    }
-    wasMerge = true;
-  } else {
-    const { data: createdLead, error } = await supabase
-      .from('prospecting_leads')
-      .insert({ ...payload, stage: stage === 'sample_requested' ? 'new' : stage })
-      .select('id')
-      .single();
-    if (error || !createdLead) redirect(prospectingHref({ tab: 'add', toast: 'single_error' }));
-    leadId = createdLead.id;
-  }
-
-  if (listId) {
-    const { error } = await supabase.from('prospecting_list_leads').upsert({
-      added_by: current.profile.id,
-      lead_id: leadId,
-      list_id: listId,
-    }, { onConflict: 'list_id,lead_id' });
-    if (error) redirect(prospectingHref({ tab: 'add', toast: 'single_error' }));
-  }
-
-  if (contactFullName || contactTitle || contactEmail || contactPhone) {
-    const { error } = await supabase.from('prospecting_contacts').insert({
-      created_by: current.profile.id,
-      email: contactEmail,
-      full_name: contactFullName,
-      is_primary: true,
-      lead_id: leadId,
-      phone: contactPhone,
-      title: contactTitle,
-      updated_by: current.profile.id,
-    });
-    if (error) redirect(prospectingHref({ tab: 'add', toast: 'single_error' }));
-  }
-
-  if (!wasMerge && stage === 'sample_requested') {
-    const { error } = await supabase.from('prospecting_leads')
-      .update({ stage, hubspot_status: 'queued' }).eq('id', leadId);
-    if (error) redirect(prospectingHref({ tab: 'add', toast: isSampleContactError(error) ? 'sample_contact_required' : 'single_error' }));
-  }
-
-  await supabase.from('prospecting_activities').insert({
-    activity_type: wasMerge ? 'enrichment' : 'enrichment',
-    body: wasMerge ? 'Manual single-lead entry merged missing fields.' : 'Manual single-lead entry created.',
-    created_by: current.profile.id,
-    lead_id: leadId,
-    next_follow_up_at: payload.next_follow_up_at,
-    next_stage: stage,
-    result: wasMerge ? 'Manual merge' : 'Manual add',
-  });
-
-  redirect(prospectingHref({
-    bucket: stage === 'sample_requested' ? 'sample_requested' : stage === 'interested' ? 'interested' : ACTIVE_PROSPECTING_STAGES.includes(stage) ? 'active' : 'all',
-    list: listId,
-    tab: 'leads',
-    toast: wasMerge ? 'single_merged' : 'single_created',
-  }));
-}
 
 async function bulkAssignLeads(formData: FormData) {
   'use server';
@@ -2369,18 +2210,7 @@ export default async function ProspectingAdminPage(props: { searchParams?: Promi
 
       {activeTab === 'add' && isOwner ? (
         <section className="space-y-5">
-          <form action={createSingleLead} className="card space-y-5">
-            <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-              <div>
-                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Single Lead</p>
-                <h2 className="mt-2 text-xl font-semibold tracking-tight text-slate-950">Add one prospect</h2>
-                <p className="mt-1 text-sm leading-6 text-slate-500">
-                  Add a single company directly, assign it to a rep, and optionally place it into a lead list.
-                </p>
-              </div>
-              <PendingSubmitButton className="btn-primary w-full sm:w-auto" disabled={!canEdit} disabledLabel="No edit access" label="Add Lead" pendingLabel="Adding..." />
-            </div>
-
+          <ProspectingSingleLeadForm action={createSingleLead} canEdit={canEdit}>
             <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
               <label className="text-sm font-semibold text-slate-700">
                 Company name
@@ -2487,7 +2317,7 @@ export default async function ProspectingAdminPage(props: { searchParams?: Promi
                 <textarea className="input mt-2 min-h-24" name="notes" />
               </label>
             </div>
-          </form>
+          </ProspectingSingleLeadForm>
 
         </section>
       ) : null}
