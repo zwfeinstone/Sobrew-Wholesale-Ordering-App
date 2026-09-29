@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { installProspectingHistoryGuard } from '@/lib/prospecting-history';
-import { useProspectingPaneNavigation } from '@/components/prospecting-lead-workspace';
+import { useProspectingPaneNavigation, useProspectingPaneRefresh } from '@/components/prospecting-lead-workspace';
 
 type BrowserNavigateEvent = Event & { canIntercept: boolean; navigationType: string; destination: { url: string; sameDocument: boolean } };
 
@@ -11,6 +11,7 @@ type BrowserNavigateEvent = Event & { canIntercept: boolean; navigationType: str
 export function useProspectingDraftNavigation(dirty: boolean, pending: boolean) {
   const router = useRouter();
   const navigatePane = useProspectingPaneNavigation();
+  const refreshPane = useProspectingPaneRefresh();
   const pathname = usePathname();
   const search = useSearchParams().toString();
   const bypass = useRef(false);
@@ -51,7 +52,7 @@ export function useProspectingDraftNavigation(dirty: boolean, pending: boolean) 
     });
     return () => { document.removeEventListener('click', onClick, true); document.removeEventListener('submit', onSubmit, true); window.removeEventListener('beforeunload', onUnload); navigation?.removeEventListener('navigate', onNavigate); removeHistoryGuard?.(); };
   }, [dirty, pending]);
-  function navigate(href: string) {
+  function navigate(href: string, options?: { refreshCurrent?: boolean }) {
     bypass.current = true; setDestination(null);
     const target = new URL(href, location.href);
     if (target.origin !== location.origin) window.location.assign(target.href);
@@ -59,9 +60,10 @@ export function useProspectingDraftNavigation(dirty: boolean, pending: boolean) 
       // A push to the identical query may not trigger a React route update.
       if (target.pathname === location.pathname && target.search === location.search) bypass.current = false;
       const path = `${target.pathname}${target.search}${target.hash}`;
-      if (navigatePane) navigatePane(path);
+      if (navigatePane) navigatePane(path, options);
+      else if (options?.refreshCurrent && path === `${location.pathname}${location.search}${location.hash}`) router.refresh();
       else router.push(path, { scroll: false });
     }
   }
-  return { destination, stay: () => setDestination(null), navigate, bypass };
+  return { destination, stay: () => setDestination(null), navigate, refresh: refreshPane || router.refresh, bypass };
 }

@@ -2,7 +2,6 @@
 
 import Link from 'next/link';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { useRouter } from 'next/navigation';
 import { CALL_RESULTS, EMAIL_RESULTS, PROSPECTING_PRIORITIES, PROSPECTING_STAGES, formatDate, formatDateTime, resolveActivityStage, stageLabel, type ProspectingStage } from '@/lib/prospecting';
 import { initialRecordDraft, validFollowUpDate, type EditableContact, type RecordActionResult, type RecordContact, type RecordDraft, type RecordLead, type RecordSampleDraft, type RecordSaveInput, type RecordTextField } from '@/lib/prospecting-record';
 import ProspectingDialog from '@/components/prospecting-dialog';
@@ -35,7 +34,6 @@ function initialSample(lead: RecordLead, contacts: RecordContact[], products: Pr
 
 export default function ProspectingRecordEditor(props: Props) {
   const { lead, contacts, actorId, canEdit, isOwner, salesReps, products, productsError, contactsError, today, queueParams, backHref, previousHref, nextHref, action, history, source } = props;
-  const router = useRouter();
   const [draft, setDraft] = useState(() => { const initial = initialRecordDraft(lead, contacts); if (props.initialSampleOpen && canEdit) initial.lead.stage = 'sample_requested'; return initial; });
   const [activityTab, setActivityTab] = useState<RecordDraft['activity']['type']>('call');
   const [sample, setSampleValue] = useState(() => initialSample(lead, contacts, products));
@@ -150,8 +148,8 @@ export default function ProspectingRecordEditor(props: Props) {
       retryPayload.current = null; clearStoredDraft(); baseline.current = JSON.stringify(draft); sampleBaseline.current = JSON.stringify(sample); setExpectedUpdatedAt(result.receipt.updatedAt); setSampleOpen(false); setCommitted(true); navigation.bypass.current = true;
       try { sessionStorage.setItem(runKey, JSON.stringify([...new Set([...storedVisited(), lead.id])].slice(-5000))); } catch { /* optional */ }
       if (result.receipt.requestId || result.receipt.orderId || result.handedOff) { setReceipt(result); return; }
-      if (destination || advance) { navigation.navigate(destination || result.nextHref || backHref); return; }
-      setMessage('Saved.'); setSubmissionId(crypto.randomUUID()); router.refresh();
+      if (destination || advance) { navigation.navigate(destination || result.nextHref || backHref, { refreshCurrent: true }); return; }
+      setMessage('Saved.'); setSubmissionId(crypto.randomUUID()); navigation.refresh();
     } catch { setError({ code: 'connection_error', message: 'The response was interrupted. Your draft is here. Retry without changing it to check whether it was saved.', fieldErrors: {} }); }
     finally { setPending(false); }
   }
