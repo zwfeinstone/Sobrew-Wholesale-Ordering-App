@@ -18,7 +18,7 @@ export default async function NewUserWizardPage(
       <section className="panel">
         <span className="eyebrow">Center Admin</span>
         <h1 className="page-title mt-4">Create center wizard</h1>
-        <p className="page-subtitle mt-3">Add the customer’s address and first login, choose their order guide, and connect them to QuickBooks.</p>
+        <p className="page-subtitle mt-3">Add the customer’s address, first login, and invoice recipients, choose their order guide, and connect them to QuickBooks.</p>
       </section>
       {error ? (
         <div className="card text-sm text-red-700">
@@ -32,6 +32,8 @@ export default async function NewUserWizardPage(
               ? 'Enter a customer name, valid login email, and temporary password of at least 8 characters.'
             : error === 'catalog_invalid'
               ? 'The selected order guide could not be read. Please review the selected products and try again.'
+            : error === 'billing_email_invalid'
+              ? 'Enter a valid invoice email address separately from the login email. No customer or login was created, and no welcome email was sent.'
             : error === 'billing_cc_invalid'
               ? 'Enter up to 20 valid invoice CC email addresses, separated by commas, semicolons, or new lines. No customer or login was created, and no welcome email was sent.'
             : 'Could not create the center right now. Check the login email and try again.'}

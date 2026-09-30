@@ -11,6 +11,7 @@ import { recordAdminAuditLog } from '@/lib/admin-audit';
 import { adminCanEdit, requireAdminSectionEdit, requireAdminSectionView } from '@/lib/admin-permissions';
 import { commissionMonthForDate, numericPercent } from '@/lib/commissions';
 import { isPayrollCommissionMonth, loadPayrollCommissions, recordPayrollCommissionPaid } from '@/lib/payroll-commissions';
+import { getCommissionInvoiceEligibility } from '@/lib/commission-invoice-eligibility';
 import { getCurrentMonthlySalaryPayrollWindow, getCurrentPayrollWeekWindow } from '@/lib/payroll-status';
 import { calculatePayrollWages, distributePayrollWages, payrollOvertimeContextRange, type PayrollEntryWages } from '@/lib/payroll-wages';
 import { supabaseAdmin } from '@/lib/supabase/admin';
@@ -165,6 +166,7 @@ type SalaryPaymentRow = {
 };
 
 type WeeklySalesSpiffRow = {
+  first_order_id: string | null;
   amount_cents: number | string | null;
   id: string;
   notes: string | null;
@@ -348,6 +350,8 @@ function errorMessage(error: string) {
   if (error === 'salary_invalid') return 'Choose a valid monthly salary payment.';
   if (error === 'salary_not_ready') return 'That employee is not an active monthly salaried employee.';
   if (error === 'spiff_invalid') return 'Choose a valid sales SPIFF week, amount, and sales rep.';
+  if (error === 'spiff_invoice_unpaid') return 'This first-order SPIFF is on hold until QuickBooks confirms the first order invoice is fully paid.';
+  if (error === 'spiff_invoice_error') return 'Unable to verify the first order invoice in QuickBooks. Refresh before recording this SPIFF payment.';
   if (error === 'spiff_not_ready') return 'That employee is not marked as an active sales rep.';
   if (error === 'invalid_time') return 'Check the time values and available unallocated minutes.';
   if (error === 'missing_reason') return 'A reason is required for that change.';
@@ -392,7 +396,9 @@ async function markMonthlyCommissionPaid(formData: FormData) {
   const salesProfileId = String(formData.get('sales_profile_id') ?? '');
   const commissionMonth = String(formData.get('commission_month') ?? '');
   const returnTo = safeReturnHref(formData);
-  const result = await recordPayrollCommissionPaid({ commissionMonth, salesProfileId, actorProfileId: current.profile.id });
+  const result = await recordPayrollCommissionPaid({ commissionMonth, salesProfileId, actorProfileId: current.profile.id,
+    expectedPaymentCents: formData.has('payment_amount_cents') ? Number(formData.get('payment_amount_cents')) : undefined,
+  });
   const returnUrl = new URL(returnTo, 'http://localhost');
   returnUrl.searchParams.delete('error');
   returnUrl.searchParams.delete('success');
@@ -1115,12 +1121,19 @@ async function markWeeklySalesSpiffPaid(formData: FormData) {
 
   const before = await supabaseAdmin
     .from('admin_weekly_sales_spiffs')
-    .select('*')
+    .select('*,first_order_id')
     .eq('id', spiffId)
     .maybeSingle();
 
   if (before.error || !before.data) redirect(`${returnTo}${returnTo.includes('?') ? '&' : '?'}error=save_error`);
   if (before.data.paid_at) redirect(`${returnTo}${returnTo.includes('?') ? '&' : '?'}success=spiff_already_paid`);
+
+  if (before.data.first_order_id) {
+    const eligibility = await getCommissionInvoiceEligibility([before.data.first_order_id]);
+    if (eligibility.error || !eligibility.paidOrderIds.has(before.data.first_order_id)) {
+      redirect(`${returnTo}${returnTo.includes('?') ? '&' : '?'}error=${eligibility.error ? 'spiff_invoice_error' : 'spiff_invoice_unpaid'}`);
+    }
+  }
 
   const now = new Date().toISOString();
   const result = await supabaseAdmin
@@ -1131,7 +1144,12 @@ async function markWeeklySalesSpiffPaid(formData: FormData) {
       updated_at: now,
       updated_by: current.profile.id,
     })
-    .eq('id', spiffId);
+    .eq('id', spiffId)
+    .is('paid_at', null)
+    .select('id')
+    .maybeSingle();
+
+  if (!result.error && !result.data) redirect(`${returnTo}${returnTo.includes('?') ? '&' : '?'}success=spiff_already_paid`);
 
   if (!result.error) {
     await recordAdminAuditLog({
@@ -2251,14 +2269,13 @@ export default async function PayrollPage(
       .order('payroll_month', { ascending: false })
       .order('paid_at', { ascending: false })
       .limit(500),
-    supabaseAdmin
+    fetchAllPages<WeeklySalesSpiffRow>((from, to) => supabaseAdmin
       .from('admin_weekly_sales_spiffs')
-      .select('id,profile_id,week_start_date,week_end_date,amount_cents,paid_at,notes')
-      .lte('week_start_date', toInput)
-      .gte('week_end_date', fromInput)
+      .select('id,profile_id,week_start_date,week_end_date,amount_cents,paid_at,notes,first_order_id')
+      .or(`and(week_start_date.lte.${toInput},week_end_date.gte.${fromInput}),and(first_order_id.not.is.null,paid_at.is.null,week_start_date.lte.${toInput})`)
       .order('week_start_date', { ascending: false })
       .order('paid_at', { ascending: false })
-      .limit(500),
+      .order('id', { ascending: true }).range(from, to)),
     showMonthlyCommissions ? loadPayrollCommissions({ commissionMonth }) : Promise.resolve({ rows: [], error: null }),
   ]);
 
@@ -2376,11 +2393,15 @@ export default async function PayrollPage(
     .filter((payment) => !filterWorkType || normalizeSalaryLaborWorkType(payment.salary_labor_work_type) === filterWorkType);
   const selectedSalaryPaidCents = selectedSalaryPaymentRows.reduce((sum, payment) => sum + normalizeMoneyCents(payment.salary_pay_cents), 0);
   const selectedWeeklySalesSpiffs = weeklySalesSpiffs
-    .filter((spiff) => spiff.week_start_date <= toInput && spiff.week_end_date >= fromInput)
+    .filter((spiff) => spiff.week_start_date <= toInput && (spiff.week_end_date >= fromInput || Boolean(spiff.first_order_id && !spiff.paid_at)))
     .filter((spiff) => !selectedAdmin || spiff.profile_id === selectedAdmin)
     .filter(() => !filterWorkType || filterWorkType === 'sales');
   const selectedPaidWeeklySalesSpiffs = selectedWeeklySalesSpiffs.filter((spiff) => spiff.paid_at);
-  const selectedUnpaidWeeklySalesSpiffs = selectedWeeklySalesSpiffs.filter((spiff) => !spiff.paid_at);
+  const spiffInvoiceEligibility = await getCommissionInvoiceEligibility(selectedWeeklySalesSpiffs
+    .filter((spiff) => !spiff.paid_at && spiff.first_order_id)
+    .map((spiff) => spiff.first_order_id as string));
+  const spiffIsPayable = (spiff: WeeklySalesSpiffRow) => !spiff.first_order_id || spiffInvoiceEligibility.paidOrderIds.has(spiff.first_order_id);
+  const selectedUnpaidWeeklySalesSpiffs = selectedWeeklySalesSpiffs.filter((spiff) => !spiff.paid_at && spiffIsPayable(spiff));
   const selectedPaidSalesSpiffCents = selectedPaidWeeklySalesSpiffs.reduce((sum, spiff) => sum + normalizeMoneyCents(spiff.amount_cents), 0);
   const selectedUnpaidSalesSpiffCents = selectedUnpaidWeeklySalesSpiffs.reduce((sum, spiff) => sum + normalizeMoneyCents(spiff.amount_cents), 0);
   const byEmployee = groupSegmentsByEmployee(segments);
@@ -2692,7 +2713,7 @@ export default async function PayrollPage(
               <div>
                 <h2 className="text-xl font-semibold text-slate-950">Weekly sales SPIFFs</h2>
                 <p className="mt-1 text-sm text-slate-500">
-                  {usd(selectedUnpaidSalesSpiffCents)} due and {usd(selectedPaidSalesSpiffCents)} paid in the selected range.
+                  {usd(selectedUnpaidSalesSpiffCents)} due and {usd(selectedPaidSalesSpiffCents)} paid. New first-order SPIFFs from September 30, 2026 require a fully paid first invoice and carry forward until paid. Existing SPIFFs keep their original rules.
                 </p>
               </div>
               {!selectedWeeklySalesSpiffs.length ? <EmptyState message="No weekly sales SPIFF records found for the selected filters." /> : null}
@@ -2716,7 +2737,9 @@ export default async function PayrollPage(
                           <td className="px-4 py-3 text-slate-700">{formatDateInputLabel(spiff.week_start_date)} to {formatDateInputLabel(spiff.week_end_date)}</td>
                           <td className="px-4 py-3 text-right font-semibold text-slate-950">{usd(normalizeMoneyCents(spiff.amount_cents))}</td>
                           <td className="px-4 py-3 text-slate-700">
-                            {spiff.paid_at ? formatCentralDateTime(spiff.paid_at) : (
+                            {spiff.paid_at ? formatCentralDateTime(spiff.paid_at) : !spiffIsPayable(spiff) ? (
+                              <span className="text-sm text-amber-800">{spiffInvoiceEligibility.error ? 'Invoice verification unavailable' : 'Awaiting invoice payment'}</span>
+                            ) : (
                               <span className="inline-flex rounded-full bg-rose-50 px-3 py-1 text-xs font-semibold uppercase tracking-[0.12em] text-rose-700 ring-1 ring-rose-100">Not paid</span>
                             )}
                           </td>
@@ -2730,6 +2753,8 @@ export default async function PayrollPage(
                               </form>
                             ) : spiff.paid_at ? (
                               <span className="text-sm text-slate-500">Paid</span>
+                            ) : !spiffIsPayable(spiff) ? (
+                              <Link className="text-sm font-medium text-teal-800 underline" href="/admin/invoicing?view=accounts-receivable">Check invoice</Link>
                             ) : canEditPayroll ? (
                               <form action={markWeeklySalesSpiffPaid}>
                                 {returnToInput(currentUrl)}
@@ -3190,7 +3215,7 @@ export default async function PayrollPage(
           <section className="card space-y-4">
             <div className="space-y-2">
               <h2 className="text-xl font-semibold text-slate-950">Rates, commissions, and labor tags</h2>
-              <p className="text-sm text-slate-500">Hourly rates snapshot when employees clock in. Salary pay is prorated into the selected payroll date range. Commission percentages apply to shipped-order gross profit and snapshot when orders ship.</p>
+              <p className="text-sm text-slate-500">Hourly rates snapshot when employees clock in. Salary pay is prorated into the selected payroll date range. Commission rates and gross profit snapshot when orders ship. Commissions earned from September 30, 2026 require a fully paid QuickBooks invoice; earlier earnings keep their original rules.</p>
             </div>
             <nav aria-label="Payroll settings account views" className="flex flex-wrap gap-2">
               <Link

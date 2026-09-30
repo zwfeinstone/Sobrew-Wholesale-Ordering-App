@@ -1,8 +1,9 @@
 import 'server-only';
 
+import { createHash } from 'node:crypto';
 import { env } from '@/lib/env';
 import { mapWithConcurrency } from '@/lib/async-work';
-import { parseBillingEmailCc } from '@/lib/billing-email';
+import { parseBillingEmail, parseBillingEmailCc } from '@/lib/billing-email';
 import {
   performQuickBooksRequest,
   QuickBooksRequestTimeoutError,
@@ -14,6 +15,7 @@ import {
   QUICKBOOKS_WRITE_TIMEOUT_MS,
 } from '@/lib/quickbooks-request';
 import { getSupabaseAdmin } from '@/lib/supabase/admin';
+import type { Database } from '@/lib/supabase/schema';
 
 const QUICKBOOKS_CONNECTION_ID = 'default';
 const QUICKBOOKS_ACCOUNTING_SCOPE = 'com.intuit.quickbooks.accounting';
@@ -77,6 +79,7 @@ type QuickBooksOrderItem = {
 type QuickBooksInvoiceCenter = {
   billing_email?: string | null;
   billing_email_cc?: string[] | null;
+  invoice_recipients_configured_at?: string | null;
   customer_tax_status?: CustomerTaxStatus | string | null;
   id?: string | null;
   quickbooks_customer_id?: string | null;
@@ -316,6 +319,7 @@ export type QuickBooksPortalCenter = {
   billing_address2?: string | null;
   billing_city?: string | null;
   billing_email?: string | null;
+  invoice_recipients_configured_at?: string | null;
   billing_phone?: string | null;
   billing_state?: string | null;
   billing_zip?: string | null;
@@ -381,6 +385,10 @@ export class QuickBooksConfigurationError extends Error {
     this.name = 'QuickBooksConfigurationError';
   }
 }
+
+class QuickBooksNoSavedPaymentMethodError extends QuickBooksConfigurationError {}
+
+class QuickBooksPaymentDeclinedError extends Error {}
 
 function relatedOne<T>(value: T | T[] | null | undefined): T | null {
   if (Array.isArray(value)) return value[0] ?? null;
@@ -638,8 +646,10 @@ async function resolveSavedPaymentMethodForOrder(
   const result = await getQuickBooksSavedPaymentMethodsForCustomer(connection, customerRef.value);
   const method = result.methods[0];
   if (!method) {
-    const detail = result.errors.length ? ` ${result.errors.join(' ')}` : '';
-    throw new QuickBooksConfigurationError(`No saved QuickBooks payment method was found for this customer.${detail}`);
+    if (result.errors.length) {
+      throw new QuickBooksConfigurationError(`Unable to check saved QuickBooks payment methods. ${result.errors.join(' ')}`);
+    }
+    throw new QuickBooksNoSavedPaymentMethodError('No saved QuickBooks payment method was found for this customer.');
   }
   await cacheQuickBooksSavedPaymentMethodForOrder(supabase, order, method);
   return method;
@@ -997,11 +1007,21 @@ async function quickBooksRequest(
     const fallback = service === 'accounting'
       ? 'QuickBooks request failed'
       : service === 'payments' ? 'QuickBooks Payments request failed' : 'QuickBooks Payments customer request failed';
-    throw new Error(quickBooksErrorMessage(
+    const message = quickBooksErrorMessage(
       payload,
       quickBooksHttpFallback(response, fallback),
       response.headers.get('intuit_tid')
-    ));
+    );
+    // Only an explicit processor decline is safe to turn into an unpaid invoice.
+    // Authentication, rate limits, transport failures and ambiguous results need review.
+    if (service === 'payments' && method === 'POST' && ['/charges', '/echecks'].includes(path)
+      && [400, 402].includes(response.status)
+      && Array.isArray(payload?.errors)
+      && payload.errors.some((error: { code?: string; message?: string }) =>
+        /\bdeclined\b/i.test(cleanText(error.message)) || /(^|_)declined$/i.test(cleanText(error.code)))) {
+      throw new QuickBooksPaymentDeclinedError('QuickBooks Payments declined the saved payment method.');
+    }
+    throw new Error(message);
   }
   return payload;
 }
@@ -1164,8 +1184,14 @@ export function normalizeQuickBooksInvoiceReceivable(invoice: any, today = quick
   const id = cleanText(invoice?.Id);
   if (!id) return null;
 
+  // An omitted or malformed balance is unknown, not proof that an invoice was paid.
+  const balance = invoice?.Balance;
+  if ((typeof balance !== 'number' && typeof balance !== 'string')
+    || (typeof balance === 'string' && !balance.trim())
+    || !Number.isFinite(Number(balance))) return null;
+
   const amountCents = Math.max(0, centsFromAmount(invoice?.TotalAmt));
-  const balanceCents = Math.max(0, centsFromAmount(invoice?.Balance));
+  const balanceCents = Math.max(0, centsFromAmount(balance));
   const paidAmountCents = Math.max(0, amountCents - balanceCents);
   const dueDate = cleanText(invoice?.DueDate) || null;
   const txnDate = cleanText(invoice?.TxnDate) || null;
@@ -1722,12 +1748,6 @@ function customerNameForOrder(order: QuickBooksInvoiceOrder) {
     || `Sobrew order ${order.id.slice(0, 8)}`;
 }
 
-function invoiceEmailForOrder(order: QuickBooksInvoiceOrder) {
-  const center = relatedOne(order.centers);
-  const profile = relatedOne(order.profiles);
-  return cleanText(center?.billing_email) || cleanText(profile?.email);
-}
-
 function splitEmailAddresses(value: unknown) {
   return cleanText(value)
     .split(/[,;\n]+/)
@@ -1776,11 +1796,25 @@ function emailAddressPayload(addresses: string[]) {
   return address ? { Address: address } : undefined;
 }
 
+function hasConfiguredInvoiceRecipients(center: { invoice_recipients_configured_at?: string | null } | null | undefined) {
+  return Boolean(center?.invoice_recipients_configured_at);
+}
+
 export function buildQuickBooksInvoiceEmailRecipients(
   order: QuickBooksInvoiceOrder,
   quickBooksCustomer?: unknown,
   invoice?: QuickBooksInvoiceRecord | null
 ): QuickBooksInvoiceEmailRecipients {
+  const center = relatedOne(order.centers);
+  if (hasConfiguredInvoiceRecipients(center)) {
+    // New customers choose their invoice recipients explicitly. Keep that
+    // choice independent of login emails and historical QuickBooks contacts.
+    const to = [parseBillingEmail(center?.billing_email)];
+    const cc = parseBillingEmailCc(center?.billing_email_cc ?? [])
+      .filter((address) => !to.some((toAddress) => toAddress.toLowerCase() === address.toLowerCase()));
+    const all = uniqueEmailAddresses([...to, ...cc]);
+    return { all, cc, display: all.length ? emailAddressString(all) : null, to };
+  }
   const quickBooksCustomerRecord = quickBooksCustomer && typeof quickBooksCustomer === 'object'
     ? quickBooksCustomer as Record<string, unknown>
     : {};
@@ -1788,17 +1822,24 @@ export function buildQuickBooksInvoiceEmailRecipients(
     ...emailAddressesFromValue(quickBooksCustomerRecord.PrimaryEmailAddr),
     ...emailAddressesFromValue(quickBooksCustomerRecord.BillEmail),
   ]);
+  // This exception belongs only to invoice delivery. Customer contact sync and
+  // other order messages continue to use their existing recipient rules.
+  const sendToOrderCreator = [center?.name, center?.quickbooks_display_name,
+    quickBooksCustomerRecord.DisplayName, quickBooksCustomerRecord.CompanyName]
+    .some((name) => cleanText(name).toLowerCase().replace(/[^a-z0-9]/g, '') === 'cooperriis');
   const invoiceEmails = uniqueEmailAddresses(emailAddressesFromValue(invoice?.BillEmail));
-  const primaryEmails = quickBooksPrimaryEmails.length
-    ? quickBooksPrimaryEmails
-    : invoiceEmails.length ? invoiceEmails : uniqueEmailAddresses(splitEmailAddresses(invoiceEmailForOrder(order)));
+  const primaryEmails = sendToOrderCreator
+    ? uniqueEmailAddresses(emailAddressesFromValue(relatedOne(order.profiles)?.email))
+    : quickBooksPrimaryEmails.length ? quickBooksPrimaryEmails : invoiceEmails;
   const to = primaryEmails.slice(0, 1);
-  const center = relatedOne(order.centers);
-  // The optional portal list is authoritative, including its empty default.
-  // Merging old invoice CC would restore addresses an admin removed.
+  // QuickBooks stores invoice CC in BillEmailCc. Keep those saved recipients
+  // and add the app's optional CC list; an empty app list does not clear QBO CC.
   const billingCc = parseBillingEmailCc(center?.billing_email_cc ?? []);
   const cc = uniqueEmailAddresses([
     ...primaryEmails.slice(1),
+    ...(sendToOrderCreator ? quickBooksPrimaryEmails.slice(1) : []),
+    ...emailAddressesFromValue(quickBooksCustomerRecord.BillEmailCc),
+    ...emailAddressesFromValue(invoice?.BillEmailCc),
     ...billingCc,
   ]
     .filter((address) => !to.some((toAddress) => toAddress.toLowerCase() === address.toLowerCase())));
@@ -1848,12 +1889,12 @@ function addressForOrder(order: QuickBooksInvoiceOrder) {
   };
 }
 
-function centerUpdateFromQuickBooksCustomer(customer: QuickBooksCustomerRecord) {
+function centerUpdateFromQuickBooksCustomer(customer: QuickBooksCustomerRecord, preserveInvoiceRecipients = false) {
   return {
     billing_address1: customer.billAddress.line1,
     billing_address2: customer.billAddress.line2,
     billing_city: customer.billAddress.city,
-    billing_email: customer.email,
+    ...(preserveInvoiceRecipients ? {} : { billing_email: customer.email }),
     billing_phone: customer.phone,
     billing_state: customer.billAddress.state,
     billing_zip: customer.billAddress.postalCode,
@@ -1911,7 +1952,8 @@ export function buildQuickBooksCustomerPayloadFromCenter(
 ) {
   const displayName = cleanText(center.name) || `Portal center ${center.id.slice(0, 8)}`;
   const companyName = cleanText(center.legal_name) || displayName;
-  const billingEmails = splitEmailAddresses(center.billing_email);
+  const billingEmails = hasConfiguredInvoiceRecipients(center)
+    ? [parseBillingEmail(center.billing_email)] : splitEmailAddresses(center.billing_email);
   const email = emailAddressString(billingEmails.length ? billingEmails : contactEmails.flatMap(splitEmailAddresses));
   const phone = cleanText(center.billing_phone);
   const address = quickBooksAddressPayload(billingAddressFromPortalCenter(center));
@@ -2198,10 +2240,11 @@ async function updateQuickBooksInvoiceEmailRecipients(
   });
 }
 
-async function sendQuickBooksInvoiceEmail(connection: QuickBooksConnection, invoiceId: string, recipients: QuickBooksInvoiceEmailRecipients) {
+async function sendQuickBooksInvoiceEmail(connection: QuickBooksConnection, invoiceId: string, recipients: QuickBooksInvoiceEmailRecipients, requestId?: string) {
   if (!recipients.to.length) throw new Error('Add a primary billing email before sending the QuickBooks invoice.');
   // Send using the invoice's persisted To/CC fields, without a recipient override.
-  await quickBooksRequest(connection, `/invoice/${encodeURIComponent(invoiceId)}/send`, {
+  const path = `/invoice/${encodeURIComponent(invoiceId)}/send${requestId ? `?requestid=${encodeURIComponent(requestId)}` : ''}`;
+  await quickBooksRequest(connection, path, {
     headers: {
       'Content-Type': 'application/octet-stream',
     },
@@ -2226,7 +2269,9 @@ async function prepareQuickBooksInvoiceEmail(
     assertQuickBooksInvoiceCustomer(order, invoice);
     recipients = buildQuickBooksInvoiceEmailRecipients(order, customer, invoice);
     if (!recipients.to.length) throw new Error('Add a primary billing email before sending the invoice.');
-    if (sendEmail) await updateQuickBooksInvoiceEmailRecipients(connection, recipients, invoice);
+    if (sendEmail || hasConfiguredInvoiceRecipients(relatedOne(order.centers))) {
+      await updateQuickBooksInvoiceEmailRecipients(connection, recipients, invoice);
+    }
     return {
       emailError: null,
       emailSentAt: sendEmail ? await sendQuickBooksInvoiceEmail(connection, invoiceId, recipients) : null,
@@ -2252,7 +2297,7 @@ function assertQuickBooksInvoiceCustomer(order: QuickBooksInvoiceOrder, invoice:
 async function loadQuickBooksInvoiceEmailRecipientsForOrder(orderId: string, requireInvoice: boolean): Promise<QuickBooksInvoiceEmailRecipients> {
   const { data: order, error } = await getSupabaseAdmin()
     .from('orders')
-    .select('id,quickbooks_invoice_id,centers(name,billing_email,billing_email_cc,quickbooks_customer_id),profiles(email,full_name)')
+    .select('id,quickbooks_invoice_id,centers(name,billing_email,billing_email_cc,invoice_recipients_configured_at,quickbooks_customer_id),profiles(email,full_name)')
     .eq('id', orderId)
     .single();
   if (error || !order) throw new Error(error?.message || 'Order not found.');
@@ -2354,7 +2399,7 @@ export async function createQuickBooksInvoiceForOrder(
   const supabase = getSupabaseAdmin();
   const { data: order, error } = await supabase
     .from('orders')
-    .select('id,status,archived_at,created_at,notes,subtotal_cents,quickbooks_invoice_id,quickbooks_invoice_doc_number,quickbooks_invoice_url,shipping_company,shipping_name,shipping_address1,shipping_address2,shipping_city,shipping_state,shipping_zip,profiles(email,full_name),centers(name,billing_email,billing_email_cc,customer_tax_status,quickbooks_customer_id,quickbooks_display_name),order_items(qty,unit_price_cents,line_total_cents,product_id,product_name_snapshot,products(name,sku,quickbooks_item_id,quickbooks_item_name))')
+    .select('id,status,archived_at,created_at,notes,subtotal_cents,quickbooks_invoice_id,quickbooks_invoice_doc_number,quickbooks_invoice_url,shipping_company,shipping_name,shipping_address1,shipping_address2,shipping_city,shipping_state,shipping_zip,profiles(email,full_name),centers(name,billing_email,billing_email_cc,invoice_recipients_configured_at,customer_tax_status,quickbooks_customer_id,quickbooks_display_name),order_items(qty,unit_price_cents,line_total_cents,product_id,product_name_snapshot,products(name,sku,quickbooks_item_id,quickbooks_item_name))')
     .eq('id', orderId)
     .single();
   if (error || !order) throw new Error(error?.message || 'Order not found.');
@@ -2429,8 +2474,14 @@ export async function createQuickBooksInvoiceForOrder(
   let invoice: QuickBooksInvoiceRecord | null = null;
   for (let attempt = 1; attempt <= QUICKBOOKS_INVOICE_CREATE_MAX_ATTEMPTS; attempt += 1) {
     const invoicePayload = buildQuickBooksInvoicePayload(order as QuickBooksInvoiceOrder, customerRef, { docNumber: portalDocNumber, emailRecipients, taxableStates: salesTaxSettings.states });
+    // Legacy customers retain saved QuickBooks CC. Explicit recipient choices
+    // are persisted on the invoice and never inherit that saved CC list.
+    if (prepareEmailRecipients && !hasConfiguredInvoiceRecipients(relatedOne((order as QuickBooksInvoiceOrder).centers))) {
+      delete invoicePayload.BillEmailCc;
+    }
     try {
-      const created = await quickBooksRequest(connection, '/invoice', {
+      const requestId = `invoice-${createHash('sha256').update(`${orderId}:${portalDocNumber}`).digest('hex').slice(0, 40)}`;
+      const created = await quickBooksRequest(connection, `/invoice?requestid=${requestId}`, {
         body: JSON.stringify(invoicePayload),
         method: 'POST',
       });
@@ -2493,7 +2544,12 @@ function paymentChargeRequestId(orderId: string, invoiceId: string, paymentMetho
 }
 
 function paymentChargeWasDeclined(status: string) {
-  return ['CANCELLED', 'DECLINED', 'FAILED', 'REFUNDED', 'VOIDED'].includes(status.toUpperCase());
+  return ['CANCELLED', 'DECLINED', 'FAILED'].includes(status.toUpperCase());
+}
+
+function paymentChargeWasAccepted(status: string, type: QuickBooksSavedPaymentMethodType) {
+  return (type === 'card' ? ['CAPTURED', 'SETTLED'] : ['PENDING', 'SUCCEEDED', 'SETTLED'])
+    .includes(status.toUpperCase());
 }
 
 async function createQuickBooksPaymentCharge(
@@ -2514,10 +2570,10 @@ async function createQuickBooksPaymentCharge(
   });
   const chargeId = cleanText(charge?.id);
   const chargeStatus = cleanText(charge?.status) || 'UNKNOWN';
-  if (!chargeId) throw new Error('QuickBooks Payments did not return a payment transaction ID.');
   if (paymentChargeWasDeclined(chargeStatus)) {
-    throw new Error(`QuickBooks Payments did not accept the payment: ${chargeStatus}.`);
+    throw new QuickBooksPaymentDeclinedError(`QuickBooks Payments did not accept the payment: ${chargeStatus}.`);
   }
+  if (!chargeId) throw new Error('QuickBooks Payments did not return a payment transaction ID. Check QuickBooks before retrying.');
   return { charge, chargeId, chargeStatus };
 }
 
@@ -2528,7 +2584,7 @@ export async function createQuickBooksPaidInvoiceForOrder(orderId: string): Prom
   const supabase = getSupabaseAdmin();
   const { data: order, error } = await supabase
     .from('orders')
-    .select('id,status,archived_at,created_at,notes,subtotal_cents,quickbooks_payment_charge_id,quickbooks_payment_id,quickbooks_payment_status,shipping_company,shipping_name,shipping_address1,shipping_address2,shipping_city,shipping_state,shipping_zip,profiles(email,full_name),centers(id,name,billing_email,billing_email_cc,customer_tax_status,quickbooks_customer_id,quickbooks_display_name,quickbooks_payment_method_brand,quickbooks_payment_method_exp_month,quickbooks_payment_method_exp_year,quickbooks_payment_method_id,quickbooks_payment_method_last4,quickbooks_payment_method_type),order_items(qty,unit_price_cents,line_total_cents,product_id,product_name_snapshot,products(name,sku,quickbooks_item_id,quickbooks_item_name))')
+    .select('id,status,archived_at,created_at,notes,subtotal_cents,quickbooks_payment_charge_id,quickbooks_payment_id,quickbooks_payment_status,quickbooks_payment_method_type,quickbooks_payment_method_label,shipping_company,shipping_name,shipping_address1,shipping_address2,shipping_city,shipping_state,shipping_zip,profiles(email,full_name),centers(id,name,billing_email,billing_email_cc,invoice_recipients_configured_at,customer_tax_status,quickbooks_customer_id,quickbooks_display_name,quickbooks_payment_method_brand,quickbooks_payment_method_exp_month,quickbooks_payment_method_exp_year,quickbooks_payment_method_id,quickbooks_payment_method_last4,quickbooks_payment_method_type),order_items(qty,unit_price_cents,line_total_cents,product_id,product_name_snapshot,products(name,sku,quickbooks_item_id,quickbooks_item_name))')
     .eq('id', cleanOrderId)
     .single();
   if (error || !order) throw new Error(error?.message || 'Order not found.');
@@ -2539,7 +2595,20 @@ export async function createQuickBooksPaidInvoiceForOrder(orderId: string): Prom
 
   const connection = await getAuthorizedConnection();
   const customerRef = quickBooksCustomerRefFromCenter(order as QuickBooksInvoiceOrder);
-  const method = await resolveSavedPaymentMethodForOrder(connection, supabase, order as QuickBooksInvoiceOrder, customerRef);
+  let paymentChargeId = cleanText(order.quickbooks_payment_charge_id);
+  let paymentChargeStatus = cleanText(order.quickbooks_payment_status);
+  if (!paymentChargeId && paymentChargeStatus === 'CHARGE_PENDING') {
+    throw new Error('A previous QuickBooks charge has an uncertain result. Check QuickBooks and reconcile the payment before retrying or emailing an unpaid invoice.');
+  }
+  // A recorded charge must be reconciled even if the customer's saved method
+  // has since been removed or changed. It must never become an unpaid fallback.
+  const recordedMethodType = normalizeQuickBooksSavedPaymentMethodType(order.quickbooks_payment_method_type);
+  if (paymentChargeId && !recordedMethodType) {
+    throw new Error('Review the recorded QuickBooks charge before retrying: its payment method type is missing.');
+  }
+  const method: QuickBooksSavedPaymentMethod = paymentChargeId
+    ? { id: '', type: recordedMethodType!, label: cleanText(order.quickbooks_payment_method_label) || 'Saved payment method' }
+    : await resolveSavedPaymentMethodForOrder(connection, supabase, order as QuickBooksInvoiceOrder, customerRef);
   const invoice = await createQuickBooksInvoiceForOrder(cleanOrderId, { prepareEmailRecipients: true, sendQuickBooksEmail: false });
   const description = `Sobrew invoice ${invoice.docNumber || invoice.id}`;
   const invoiceAuditUpdate = await supabase
@@ -2555,17 +2624,42 @@ export async function createQuickBooksPaidInvoiceForOrder(orderId: string): Prom
     throw new Error(`Unable to save QuickBooks invoice details before payment: ${invoiceAuditUpdate.error.message}`);
   }
   if (invoice.emailError) throw new Error(invoice.emailError);
-  let paymentChargeId = cleanText((order as any).quickbooks_payment_charge_id);
-  let paymentChargeStatus = cleanText((order as any).quickbooks_payment_status);
+  // QuickBooks calculates sales tax; the portal subtotal is not the amount due.
+  const currentInvoice = await readQuickBooksInvoice(connection, invoice.id);
+  if (!currentInvoice?.Id) throw new Error('Unable to verify the QuickBooks invoice amount before payment.');
+  assertQuickBooksInvoiceCustomer(order as QuickBooksInvoiceOrder, currentInvoice);
+  const amountCents = centsFromAmount(currentInvoice.TotalAmt);
+  if (amountCents <= 0 || !Number.isFinite(Number(currentInvoice.TotalAmt))) {
+    throw new Error('QuickBooks invoice has no valid total to charge.');
+  }
+  if (paymentChargeWasDeclined(paymentChargeStatus) || paymentChargeStatus === 'NO_PAYMENT_METHOD') {
+    throw new QuickBooksPaymentDeclinedError('The previous payment attempt did not collect payment. Send the existing invoice.');
+  }
   if (!paymentChargeId) {
-    const chargeResult = await createQuickBooksPaymentCharge(
-      connection,
-      cleanOrderId,
-      invoice.id,
-      method,
-      invoice.amountCents,
-      description
-    );
+    if (currentInvoice.Balance == null || centsFromAmount(currentInvoice.Balance) !== amountCents) {
+      throw new Error('The QuickBooks invoice balance has changed. Review its existing payments before charging.');
+    }
+    const pendingAudit = await supabase.from('orders').update({
+      quickbooks_payment_status: 'CHARGE_PENDING',
+      quickbooks_payment_method_type: method.type,
+      quickbooks_payment_method_label: method.label,
+    }).eq('id', cleanOrderId);
+    if (pendingAudit.error) throw new Error(`Unable to save the payment attempt: ${pendingAudit.error.message}`);
+    let chargeResult;
+    try {
+      chargeResult = await createQuickBooksPaymentCharge(
+        connection, cleanOrderId, invoice.id, method, amountCents, description
+      );
+    } catch (error) {
+      if (error instanceof QuickBooksPaymentDeclinedError) {
+        const { error: auditError } = await supabase.from('orders').update({
+          quickbooks_payment_status: 'DECLINED',
+          quickbooks_payment_error: error.message,
+        }).eq('id', cleanOrderId);
+        if (auditError) throw new Error(`Unable to save the declined payment: ${auditError.message}`);
+      }
+      throw error;
+    }
     paymentChargeId = chargeResult.chargeId;
     paymentChargeStatus = chargeResult.chargeStatus;
     const chargeAuditUpdate = await supabase
@@ -2585,10 +2679,22 @@ export async function createQuickBooksPaidInvoiceForOrder(orderId: string): Prom
     if (chargeAuditUpdate.error) {
       throw new Error(`Unable to save QuickBooks payment charge details: ${chargeAuditUpdate.error.message}`);
     }
+  } else {
+    const resource = method.type === 'card' ? 'charges' : 'echecks';
+    const charge = await quickBooksPaymentsRequest(connection, `/${resource}/${encodeURIComponent(paymentChargeId)}`);
+    if (cleanText(charge?.id) !== paymentChargeId || charge?.amount == null
+      || centsFromAmount(charge.amount) !== amountCents) {
+      throw new Error('The recorded QuickBooks charge does not match the current invoice amount. Reconcile the payment in QuickBooks before retrying.');
+    }
+    paymentChargeStatus = cleanText(charge.status) || 'UNKNOWN';
+  }
+
+  if (!paymentChargeWasAccepted(paymentChargeStatus, method.type)) {
+    throw new Error(`QuickBooks payment status is ${paymentChargeStatus || 'unknown'}. Review the payment before retrying or sending an unpaid invoice.`);
   }
 
   const paymentPayload = buildQuickBooksInvoicePaymentPayload({
-    amountCents: invoice.amountCents,
+    amountCents,
     chargeId: paymentChargeId,
     chargeStatus: paymentChargeStatus,
     customerRef,
@@ -2596,21 +2702,102 @@ export async function createQuickBooksPaidInvoiceForOrder(orderId: string): Prom
     invoiceNumber: invoice.docNumber,
     paymentMethodLabel: method.label,
   });
-  const paymentResult = await quickBooksRequest(connection, '/payment', {
+  const paymentRequestId = `payment-${createHash('sha256').update(`${cleanOrderId}:${paymentChargeId}`).digest('hex').slice(0, 40)}`;
+  const paymentResult = await quickBooksRequest(connection, `/payment?requestid=${paymentRequestId}`, {
     body: JSON.stringify(paymentPayload),
     method: 'POST',
   });
   const paymentId = cleanText(paymentResult?.Payment?.Id);
   if (!paymentId) throw new Error('QuickBooks did not return a payment ID.');
+  const paymentAudit = await supabase.from('orders').update({
+    quickbooks_payment_id: paymentId,
+    quickbooks_payment_status: paymentChargeStatus,
+    quickbooks_payment_error: null,
+  }).eq('id', cleanOrderId);
+  if (paymentAudit.error) throw new Error(`Unable to save QuickBooks payment details: ${paymentAudit.error.message}`);
 
   return {
     ...invoice,
+    amountCents,
     paymentChargeId,
     paymentChargeStatus,
     paymentId,
     paymentMethodLabel: method.label,
     paymentMethodType: method.type,
   };
+}
+
+export type ShippedOrderBillingResult = {
+  status: 'paid' | 'invoiced' | 'skipped' | 'error';
+  error?: string | null;
+};
+
+/** Runs only after fulfillment is saved. The existing invoice queue is also the retry queue. */
+export async function fulfillShippedOrderBilling(orderId: string): Promise<ShippedOrderBillingResult> {
+  const supabase = getSupabaseAdmin();
+  const { data: order, error: claimError } = await supabase.from('orders')
+    .update({ invoice_status: 'invoicing', invoice_error: null })
+    .eq('id', orderId)
+    .eq('status', 'Shipped')
+    .neq('order_kind', 'prospecting_sample')
+    .is('archived_at', null)
+    .in('invoice_status', ['not_invoiced', 'invoice_error'])
+    .select('id,quickbooks_payment_id,quickbooks_payment_charge_id,quickbooks_payment_status,quickbooks_invoice_email_sent_at')
+    .maybeSingle();
+  if (claimError) return { status: 'error', error: `Unable to start automatic billing: ${claimError.message}` };
+  if (!order) return { status: 'skipped' };
+
+  const save = async (values: Database['public']['Tables']['orders']['Update']) => {
+    const { error } = await supabase.from('orders').update(values).eq('id', orderId);
+    if (error) throw new Error(`Unable to save automatic billing details: ${error.message}`);
+  };
+  try {
+    let paid = Boolean(order.quickbooks_payment_id);
+    let invoice: CreatedQuickBooksInvoice | undefined;
+    const previousStatus = cleanText(order.quickbooks_payment_status);
+    if (!paid && previousStatus !== 'NO_PAYMENT_METHOD' && !paymentChargeWasDeclined(previousStatus)) {
+      try {
+        invoice = await createQuickBooksPaidInvoiceForOrder(orderId);
+        paid = true;
+      } catch (error) {
+        if (order.quickbooks_payment_charge_id) throw error;
+        if (!(error instanceof QuickBooksNoSavedPaymentMethodError) && !(error instanceof QuickBooksPaymentDeclinedError)) throw error;
+        await save({
+          quickbooks_payment_status: error instanceof QuickBooksNoSavedPaymentMethodError ? 'NO_PAYMENT_METHOD' : 'DECLINED',
+          quickbooks_payment_error: error instanceof QuickBooksPaymentDeclinedError ? error.message : null,
+        });
+      }
+    }
+    invoice ??= await createQuickBooksInvoiceForOrder(orderId, { prepareEmailRecipients: true, sendQuickBooksEmail: false });
+    // Save the remote ID before delivery, so an email failure retries this invoice.
+    await save({
+      quickbooks_invoice_doc_number: invoice.docNumber,
+      quickbooks_invoice_id: invoice.id,
+      quickbooks_invoice_url: invoice.url,
+      quickbooks_invoice_email_to: invoice.emailRecipients ?? invoice.emailTo,
+    });
+    if (invoice.emailError) throw new Error(invoice.emailError);
+
+    let emailSentAt = order.quickbooks_invoice_email_sent_at;
+    if (!emailSentAt) {
+      const recipients = await getQuickBooksInvoiceEmailRecipientsForOrder(orderId);
+      const connection = await getAuthorizedConnection();
+      const currentInvoice = await readQuickBooksInvoice(connection, invoice.id);
+      await updateQuickBooksInvoiceEmailRecipients(connection, recipients, currentInvoice);
+      // Intuit replays this request on retry if delivery succeeded but our audit write failed.
+      const requestId = `ship-email-${createHash('sha256').update(`${orderId}:${invoice.id}`).digest('hex').slice(0, 36)}`;
+      emailSentAt = await sendQuickBooksInvoiceEmail(connection, invoice.id, recipients, requestId);
+      await save({ quickbooks_invoice_email_to: recipients.display, quickbooks_invoice_email_sent_at: emailSentAt });
+    }
+    await save({ invoice_status: 'invoiced', invoice_error: null, invoiced_at: new Date().toISOString() });
+    return { status: paid ? 'paid' : 'invoiced' };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Automatic QuickBooks billing failed.';
+    const { error: saveError } = await supabase.from('orders').update({
+      invoice_status: 'invoice_error', invoice_error: message,
+    }).eq('id', orderId);
+    return { status: 'error', error: saveError ? `${message} Unable to save the error: ${saveError.message}` : message };
+  }
 }
 
 export async function getQuickBooksConnectionStatus(): Promise<QuickBooksConnectionStatus> {
@@ -2784,10 +2971,16 @@ export async function linkPortalCenterToQuickBooksCustomer({
   if (!customer) throw new Error('That QuickBooks customer was not found.');
 
   const supabase = getSupabaseAdmin();
+  const { data: center, error: centerError } = await supabase
+    .from('centers')
+    .select('invoice_recipients_configured_at')
+    .eq('id', centerId)
+    .single();
+  if (centerError || !center) throw new Error(centerError?.message || 'Portal center not found.');
   const { error } = await supabase
     .from('centers')
     .update({
-      ...centerUpdateFromQuickBooksCustomer(customer),
+      ...centerUpdateFromQuickBooksCustomer(customer, hasConfiguredInvoiceRecipients(center)),
       quickbooks_mapping_note: cleanText(mappingNote) || null,
     })
     .eq('id', centerId);
@@ -2801,10 +2994,11 @@ export async function createQuickBooksCustomerFromPortalCenter(centerId: string)
     const connection = await getAuthorizedConnection();
     const { data: center, error: centerError } = await supabase
       .from('centers')
-      .select('id,name,is_active,legal_name,billing_email,billing_phone,billing_address1,billing_address2,billing_city,billing_state,billing_zip,quickbooks_customer_id,center_locations(name,address1,address2,city,state,zip,is_active)')
+      .select('id,name,is_active,legal_name,billing_email,invoice_recipients_configured_at,billing_phone,billing_address1,billing_address2,billing_city,billing_state,billing_zip,quickbooks_customer_id,center_locations(name,address1,address2,city,state,zip,is_active)')
       .eq('id', centerId)
       .single();
     if (centerError || !center) throw new Error(centerError?.message || 'Portal center not found.');
+    if (hasConfiguredInvoiceRecipients(center)) parseBillingEmail(center.billing_email);
     if ((center as QuickBooksPortalCenterWithLocations).quickbooks_customer_id) {
       const existing = await quickBooksRequest(connection, `/customer/${encodeURIComponent(center.quickbooks_customer_id!)}`);
       const customer = normalizeQuickBooksCustomer(existing?.Customer);
@@ -2813,7 +3007,7 @@ export async function createQuickBooksCustomerFromPortalCenter(centerId: string)
     }
 
     let contactEmails: string[] = [];
-    if (!splitEmailAddresses(center.billing_email).length) {
+    if (!hasConfiguredInvoiceRecipients(center) && !splitEmailAddresses(center.billing_email).length) {
       const { data: contacts, error: contactsError } = await supabase
         .from('profiles')
         .select('email')
@@ -2842,7 +3036,7 @@ export async function createQuickBooksCustomerFromPortalCenter(centerId: string)
     const { error: updateError } = await supabase
       .from('centers')
       .update({
-        ...centerUpdateFromQuickBooksCustomer(customer),
+        ...centerUpdateFromQuickBooksCustomer(customer, hasConfiguredInvoiceRecipients(center)),
         quickbooks_mapping_note: 'Created from portal center',
       })
       .eq('id', centerId);
@@ -2856,13 +3050,19 @@ export async function createQuickBooksCustomerFromPortalCenter(centerId: string)
 
 export async function clearPortalCenterQuickBooksCustomer(centerId: string) {
   const supabase = getSupabaseAdmin();
+  const { data: center, error: centerError } = await supabase
+    .from('centers')
+    .select('invoice_recipients_configured_at')
+    .eq('id', centerId)
+    .single();
+  if (centerError || !center) throw new Error(centerError?.message || 'Portal center not found.');
   const { error } = await supabase
     .from('centers')
     .update({
       billing_address1: null,
       billing_address2: null,
       billing_city: null,
-      billing_email: null,
+      ...(hasConfiguredInvoiceRecipients(center) ? {} : { billing_email: null }),
       billing_phone: null,
       billing_state: null,
       billing_zip: null,

@@ -1,7 +1,7 @@
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { requireAdminSectionEdit } from '@/lib/admin-permissions';
 import { recordAdminAuditLog } from '@/lib/admin-audit';
-import { parseBillingEmailCc } from '@/lib/billing-email';
+import { parseBillingEmail, parseBillingEmailCc } from '@/lib/billing-email';
 import { sendCustomerWelcomeEmail } from '@/lib/email';
 import { customerAddressError, normalizeCustomerAddress } from '@/lib/customer-address';
 import { createQuickBooksCustomerFromPortalCenter } from '@/lib/quickbooks';
@@ -40,6 +40,12 @@ export async function POST(request: Request) {
   if (customerAddressError(address)) {
     return NextResponse.redirect(new URL('/admin/users/new?error=address_required', request.url), 303);
   }
+  let billingEmail: string;
+  try {
+    billingEmail = parseBillingEmail(formData.get('billing_email'));
+  } catch {
+    return NextResponse.redirect(new URL('/admin/users/new?error=billing_email_invalid', request.url), 303);
+  }
   let billingEmailCc: string[];
   try {
     billingEmailCc = parseBillingEmailCc(formData.get('billing_email_cc'));
@@ -53,9 +59,10 @@ export async function POST(request: Request) {
       name: centerName,
       notes: centerNotes,
       is_active: true,
-      billing_email: email,
+      billing_email: billingEmail,
       billing_email_cc: billingEmailCc,
       billing_email_cc_reviewed_at: new Date().toISOString(),
+      invoice_recipients_configured_at: new Date().toISOString(),
       billing_address1: address.address1,
       billing_address2: address.address2 || null,
       billing_city: address.city,

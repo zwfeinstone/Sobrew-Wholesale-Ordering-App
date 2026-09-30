@@ -12,9 +12,11 @@ import {
   snapshotMissingCommissionOrdersForSalesProfileMonth,
   summarizeCommissionRows,
   type CommissionSnapshotRow,
-  type CommissionSummary,
 } from '@/lib/commissions';
 import { adminCanEdit, requireAdminSectionView } from '@/lib/admin-permissions';
+import { buildPayrollCommissionRow, requiresInvoiceEligibility, type PayrollCommissionPayout } from '@/lib/payroll-commissions';
+import { getCommissionInvoiceEligibility } from '@/lib/commission-invoice-eligibility';
+import { fetchAllPages } from '@/lib/supabase/pagination';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { formatAppDate, usd } from '@/lib/utils';
 
@@ -36,23 +38,6 @@ type CommissionSettingRow = {
   profile_id: string;
 };
 
-type PayoutRow = {
-  commission_cents: number | string | null;
-  commission_month: string;
-  donation_cogs_cents?: number | string | null;
-  gross_profit_cents: number | string | null;
-  id: string;
-  order_count: number | null;
-  paid_at: string | null;
-  processing_fee_cogs_cents?: number | string | null;
-  product_cogs_cents: number | string | null;
-  revenue_cents: number | string | null;
-  sales_profile_id: string;
-  shipping_cogs_cents: number | string | null;
-  status: string;
-  total_cogs_cents?: number | string | null;
-};
-
 function profileLabel(profile: AdminRow | undefined | null) {
   return profile?.full_name || profile?.email || 'Sales admin';
 }
@@ -69,24 +54,6 @@ function percent(value: number) {
 function percentChange(current: number, previous: number) {
   if (!previous) return current ? 100 : 0;
   return ((current - previous) / Math.abs(previous)) * 100;
-}
-
-function payoutSummary(payout: PayoutRow): CommissionSummary {
-  return {
-    commissionCents: numericCents(payout.commission_cents),
-    donationCogsCents: numericCents(payout.donation_cogs_cents),
-    grossProfitCents: numericCents(payout.gross_profit_cents),
-    orderCount: payout.order_count ?? 0,
-    processingFeeCogsCents: numericCents(payout.processing_fee_cogs_cents),
-    productCogsCents: numericCents(payout.product_cogs_cents),
-    revenueCents: numericCents(payout.revenue_cents),
-    shippingCogsCents: numericCents(payout.shipping_cogs_cents),
-    totalCogsCents: numericCents(payout.total_cogs_cents)
-      || numericCents(payout.product_cogs_cents)
-        + numericCents(payout.shipping_cogs_cents)
-        + numericCents(payout.processing_fee_cogs_cents)
-        + numericCents(payout.donation_cogs_cents),
-  };
 }
 
 function commissionHref(params: Record<string, string | undefined>) {
@@ -205,17 +172,17 @@ export default async function CommissionPage(
     : current.profile.id;
   const selectedAdmin = adminRows.find((admin) => admin.id === selectedProfileId);
 
-  const [{ data: snapshots }, { data: payouts }, { data: assignments }, { data: centers }] = await Promise.all([
-    supabaseAdmin
+  const [{ data: snapshots, error: snapshotsError }, { data: payouts, error: payoutsError }, { data: assignments }, { data: centers }] = await Promise.all([
+    fetchAllPages<CommissionSnapshotRow>((from, to) => supabaseAdmin
       .from('order_commission_snapshots')
       .select('id,order_id,center_id,sales_profile_id,shipped_at,commission_month,revenue_cents,product_cogs_cents,shipping_cogs_cents,processing_fee_cogs_cents,donation_cogs_cents,total_cogs_cents,gross_profit_cents,commission_percent,commission_cents,cogs_estimated')
       .eq('sales_profile_id', selectedProfileId)
-      .in('commission_month', historyMonths),
-    supabaseAdmin
+      .in('commission_month', historyMonths).order('id', { ascending: true }).range(from, to)),
+    fetchAllPages<PayrollCommissionPayout>((from, to) => supabaseAdmin
       .from('monthly_commission_payouts')
-      .select('id,sales_profile_id,commission_month,status,order_count,revenue_cents,product_cogs_cents,shipping_cogs_cents,processing_fee_cogs_cents,donation_cogs_cents,total_cogs_cents,gross_profit_cents,commission_cents,paid_at')
+      .select('*')
       .eq('sales_profile_id', selectedProfileId)
-      .in('commission_month', historyMonths),
+      .in('commission_month', historyMonths).order('id', { ascending: true }).range(from, to)),
     supabaseAdmin
       .from('center_sales_assignments')
       .select('center_id,sales_profile_id')
@@ -232,21 +199,34 @@ export default async function CommissionPage(
     rows.push(snapshot);
     snapshotsByMonth.set(snapshot.commission_month, rows);
   }
-  const payoutByMonth = new Map(((payouts ?? []) as PayoutRow[]).map((payout) => [payout.commission_month, payout]));
+  const payoutByMonth = new Map(((payouts ?? []) as PayrollCommissionPayout[]).map((payout) => [payout.commission_month, payout]));
 
-  function summaryForMonth(month: string) {
-    const payout = payoutByMonth.get(month);
-    return payout ? payoutSummary(payout) : summarizeCommissionRows(snapshotsByMonth.get(month) ?? []);
+  const eligibility = await getCommissionInvoiceEligibility(snapshots.filter((snapshot) => {
+    const payout = payoutByMonth.get(snapshot.commission_month) ?? null;
+    return requiresInvoiceEligibility(snapshot, payout);
+  }).map((snapshot) => snapshot.order_id));
+  const commissionError = snapshotsError || payoutsError || eligibility.error;
+  function rowForMonth(month: string) {
+    return buildPayrollCommissionRow({
+      salesProfileId: selectedProfileId,
+      snapshots: snapshotsByMonth.get(month) ?? [],
+      payout: payoutByMonth.get(month) ?? null,
+      paidInvoiceOrderIds: eligibility.paidOrderIds,
+    });
   }
+  function summaryForMonth(month: string) { return rowForMonth(month).summary; }
 
   const currentSummary = summaryForMonth(commissionMonth);
   const previousSummary = summaryForMonth(previousMonth);
   const priorYearSummary = summaryForMonth(priorYearMonth);
   const currentSnapshots = snapshotsByMonth.get(commissionMonth) ?? [];
+  const currentCommissionRow = rowForMonth(commissionMonth);
+  const creditedOrderIds = new Set([...(currentCommissionRow.paidOrderIds ?? currentSnapshots.map((snapshot) => snapshot.order_id)), ...currentCommissionRow.eligibleOrderIds]);
+  const creditedSnapshots = currentSnapshots.filter((snapshot) => creditedOrderIds.has(snapshot.order_id));
   const currentPayout = payoutByMonth.get(commissionMonth);
 
   const centerSummaries = Array.from(
-    currentSnapshots.reduce<Map<string, CommissionSnapshotRow[]>>((map, snapshot) => {
+    creditedSnapshots.reduce<Map<string, CommissionSnapshotRow[]>>((map, snapshot) => {
       const centerId = snapshot.center_id ?? 'unknown';
       const rows = map.get(centerId) ?? [];
       rows.push(snapshot);
@@ -264,6 +244,7 @@ export default async function CommissionPage(
 
   return (
     <div className="space-y-6">
+      {commissionError ? <StatusToast message="Invoice payment verification is unavailable. Commission totals may be incomplete; payouts are on hold." tone="error" /> : null}
       {toast === 'sync_saved' ? <StatusToast message="Commission snapshots synced." tone="success" /> : null}
       {toast === 'sync_none' ? <StatusToast message="No missing shipped orders found for this month." tone="success" /> : null}
       {toast === 'sync_locked' ? <StatusToast message="That commission month is locked or paid, so it was not changed." tone="error" /> : null}
@@ -272,7 +253,7 @@ export default async function CommissionPage(
       <section className="panel">
         <span className="eyebrow">Commission</span>
         <h1 className="page-title mt-4">Monthly commission</h1>
-        <p className="page-subtitle mt-3">Review shipped-order gross profit, monthly commission, and month-over-month performance.</p>
+        <p className="page-subtitle mt-3">Commissions earned from September 30, 2026 require a fully paid QuickBooks invoice. Earlier earnings keep their original payout rules.</p>
       </section>
 
       <form className="card grid gap-3 md:grid-cols-[minmax(0,1fr)_14rem_auto] md:items-end">
@@ -305,7 +286,7 @@ export default async function CommissionPage(
             <h2 className="mt-2 text-xl font-semibold tracking-tight text-slate-950">{profileLabel(selectedAdmin)} - {commissionMonthLabel(commissionMonth)}</h2>
           </div>
           <span className="w-fit rounded-full border border-teal-100 bg-teal-50 px-3 py-1 text-xs font-semibold uppercase tracking-[0.16em] text-teal-800">
-            {currentPayout?.status ?? 'Open'}
+            {currentCommissionRow.amountOwedCents > 0 && currentPayout?.paid_at ? 'Additional commission due' : currentPayout?.status ?? 'Open'}
           </span>
         </div>
         {!currentPayout ? (
@@ -321,8 +302,9 @@ export default async function CommissionPage(
         ) : null}
       </section>
 
+      <p className="text-sm text-slate-600">{money(currentCommissionRow.amountOwedCents)} payable · {money(currentCommissionRow.pendingInvoiceCents)} awaiting invoice payment. Later payments remain in the original shipment month.</p>
       <section className="grid gap-4 lg:grid-cols-4">
-        <StatTile label="Revenue" value={money(currentSummary.revenueCents)} detail={`${currentSummary.orderCount.toLocaleString()} shipped order(s).`} />
+        <StatTile label="Revenue" value={money(currentSummary.revenueCents)} detail={`${currentSummary.orderCount.toLocaleString()} eligible shipped order(s).`} />
         <StatTile label="Gross profit" value={money(currentSummary.grossProfitCents)} detail="Revenue less product, shipping, processing, and donation COGS." />
         <StatTile label="Commission" value={money(currentSummary.commissionCents)} detail={`MoM ${percent(percentChange(currentSummary.commissionCents, previousSummary.commissionCents))}.`} />
         <StatTile label="YoY commission" value={percent(percentChange(currentSummary.commissionCents, priorYearSummary.commissionCents))} detail={`Compared with ${commissionMonthLabel(priorYearMonth)}.`} />
@@ -332,7 +314,7 @@ export default async function CommissionPage(
         <div className="card space-y-4">
           <div>
             <h2 className="text-xl font-semibold text-slate-950">Assigned centers</h2>
-            <p className="mt-1 text-sm text-slate-500">Only orders from assigned centers are credited at shipment.</p>
+            <p className="mt-1 text-sm text-slate-500">Assignments and rates are recorded at shipment. Starting September 30, 2026, new commissions require a fully paid invoice.</p>
           </div>
           {!assignedCenters.length ? <div className="rounded-2xl border border-slate-200 bg-white/60 p-4 text-sm text-slate-600">No centers are currently assigned.</div> : null}
           <div className="space-y-2">
@@ -418,7 +400,8 @@ export default async function CommissionPage(
                     <p className="mt-1 text-sm text-slate-500">{formatAppDate(snapshot.shipped_at, 'Unknown ship date')}</p>
                   </div>
                   <div className="text-sm sm:text-right">
-                    <p className="font-semibold text-slate-950">{money(snapshot.commission_cents)} commission</p>
+                    <p className="font-semibold text-slate-950">{money(snapshot.commission_cents)} {creditedOrderIds.has(snapshot.order_id) ? 'commission' : 'on hold'}</p>
+                    {!creditedOrderIds.has(snapshot.order_id) ? <p className="mt-1 text-amber-800">Awaiting invoice payment</p> : null}
                     <p className="mt-1 text-slate-500">{money(snapshot.gross_profit_cents)} gross profit at {Number(snapshot.commission_percent ?? 0).toFixed(2)}%</p>
                   </div>
                 </div>

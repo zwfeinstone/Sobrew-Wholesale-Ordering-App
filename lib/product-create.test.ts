@@ -14,12 +14,15 @@ const savedProduct: QuickBooksPortalProduct = {
 
 function productForm(overrides: Record<string, string> = {}) {
   const form = new FormData();
-  const values = { name: '  Coffee  ', sku: '  COFFEE-12  ', description: '  12 oz bag  ', category: ' retail ', ...overrides };
+  const values = { name: '  Coffee  ', sku: '  COFFEE-12  ', description: '  12 oz bag  ', category: ' retail ', active: 'on', ...overrides };
   for (const [key, value] of Object.entries(values)) form.set(key, value);
   return form;
 }
 
-afterEach(() => vi.restoreAllMocks());
+const saveRecipe = vi.fn(async () => ({ error: null }));
+const removeProduct = vi.fn(async () => ({ error: null }));
+
+afterEach(() => { vi.restoreAllMocks(); saveRecipe.mockClear(); removeProduct.mockClear(); });
 
 describe('new product with automatic QuickBooks sync', () => {
   it('saves validated fields first, then syncs the returned database record and ID', async () => {
@@ -32,9 +35,11 @@ describe('new product with automatic QuickBooks sync', () => {
       events.push('synced');
       return { createdCount: 1, productErrorCount: 0 };
     });
-    const result = await createProductWithQuickBooks(productForm(), { insertProduct, syncProducts });
+    const result = await createProductWithQuickBooks(productForm(), { insertProduct, saveRecipe, removeProduct, syncProducts });
 
-    expect(insertProduct).toHaveBeenCalledWith({ name: 'Coffee', sku: 'COFFEE-12', description: '12 oz bag', category: 'retail' });
+    expect(insertProduct).toHaveBeenCalledWith({ name: 'Coffee', sku: 'COFFEE-12', description: '12 oz bag', category: 'retail', active: true, receivable_finished_good: false, shipping_box_count_required: false });
+    expect(saveRecipe).toHaveBeenCalledWith(PRODUCT_ID, expect.objectContaining({ recipe: expect.objectContaining({ output_qty: 1 }), components: [] }));
+    expect(removeProduct).not.toHaveBeenCalled();
     expect(syncProducts).toHaveBeenCalledWith([savedProduct]);
     expect(events).toEqual(['saved', 'synced']);
     expect(result).toEqual({ ok: true, productId: PRODUCT_ID, syncStatus: 'synced' });
@@ -47,7 +52,7 @@ describe('new product with automatic QuickBooks sync', () => {
   ])('rejects invalid fields before either persistence or QuickBooks work: %j', async (overrides, error) => {
     const insertProduct = vi.fn();
     const syncProducts = vi.fn();
-    expect(await createProductWithQuickBooks(productForm(overrides), { insertProduct, syncProducts })).toEqual({ ok: false, error });
+    expect(await createProductWithQuickBooks(productForm(overrides), { insertProduct, saveRecipe, removeProduct, syncProducts })).toEqual({ ok: false, error });
     expect(insertProduct).not.toHaveBeenCalled();
     expect(syncProducts).not.toHaveBeenCalled();
   });
@@ -59,7 +64,7 @@ describe('new product with automatic QuickBooks sync', () => {
   ])('never syncs without a successfully saved product: %j', async (error, expected) => {
     const insertProduct = vi.fn().mockResolvedValue({ data: null, error });
     const syncProducts = vi.fn();
-    expect(await createProductWithQuickBooks(productForm(), { insertProduct, syncProducts })).toEqual({ ok: false, error: expected });
+    expect(await createProductWithQuickBooks(productForm(), { insertProduct, saveRecipe, removeProduct, syncProducts })).toEqual({ ok: false, error: expected });
     expect(syncProducts).not.toHaveBeenCalled();
   });
 
@@ -68,7 +73,7 @@ describe('new product with automatic QuickBooks sync', () => {
     const syncProducts = vi.fn()
       .mockResolvedValueOnce({ createdCount: 0, productErrorCount: 1 })
       .mockResolvedValueOnce({ createdCount: 1, productErrorCount: 0 });
-    expect(await createProductWithQuickBooks(productForm(), { insertProduct, syncProducts }))
+    expect(await createProductWithQuickBooks(productForm(), { insertProduct, saveRecipe, removeProduct, syncProducts }))
       .toEqual({ ok: true, productId: PRODUCT_ID, syncStatus: 'needs_attention' });
 
     expect(await syncSavedProductToQuickBooks(savedProduct, syncProducts)).toBe('synced');
@@ -80,7 +85,7 @@ describe('new product with automatic QuickBooks sync', () => {
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
     const insertProduct = vi.fn().mockResolvedValue({ data: savedProduct, error: null });
     const syncProducts = vi.fn().mockRejectedValue(new Error('QuickBooks is not connected'));
-    expect(await createProductWithQuickBooks(productForm(), { insertProduct, syncProducts }))
+    expect(await createProductWithQuickBooks(productForm(), { insertProduct, saveRecipe, removeProduct, syncProducts }))
       .toEqual({ ok: true, productId: PRODUCT_ID, syncStatus: 'needs_attention' });
   });
 

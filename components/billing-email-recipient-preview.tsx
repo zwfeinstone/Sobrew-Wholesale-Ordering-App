@@ -61,7 +61,7 @@ export default function BillingEmailRecipientPreview({
             <p className="break-words"><span className="font-semibold">To:</span> {recipients.to.join(', ') || 'Missing billing email'}</p>
             <p className="break-words"><span className="font-semibold">CC:</span> {recipients.cc.join(', ') || 'None'}</p>
             <p className="break-words"><span className="font-semibold">Portal PDF audit copy:</span> zach@sobrew.com</p>
-            <p className="pt-1 text-slate-500">Primary contacts come from QuickBooks. Billing CC is optional and uses the saved portal list. <Link className="underline" href={billingCcHref} prefetch={false}>Edit billing CC</Link></p>
+            <p className="pt-1 text-slate-500">New customers use the invoice recipients saved during setup. Existing customers keep their QuickBooks contacts and CooperRiis billing exception. <Link className="underline" href={billingCcHref} prefetch={false}>Edit billing CC</Link></p>
           </div>
         ) : null}
       </div>

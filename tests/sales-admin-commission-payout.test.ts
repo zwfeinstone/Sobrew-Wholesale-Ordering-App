@@ -6,6 +6,7 @@ const state = vi.hoisted(() => ({
   client: null as unknown as { from: (table: string) => any },
   audit: vi.fn(),
   recordPaid: vi.fn(),
+  eligibility: vi.fn(),
   revalidate: vi.fn(),
   requireEdit: vi.fn(async () => ({ profile: { id: 'owner' } })),
 }));
@@ -15,7 +16,8 @@ vi.mock('@/lib/admin-permissions', () => ({
 }));
 vi.mock('@/lib/supabase/admin', () => ({ supabaseAdmin: { from: (table: string) => state.client.from(table) } }));
 vi.mock('@/lib/admin-audit', () => ({ recordAdminAuditLog: state.audit }));
-vi.mock('@/lib/payroll-commissions', () => ({ recordPayrollCommissionPaid: state.recordPaid }));
+vi.mock('@/lib/payroll-commissions', async (importOriginal) => ({ ...await importOriginal<typeof import('@/lib/payroll-commissions')>(), recordPayrollCommissionPaid: state.recordPaid }));
+vi.mock('@/lib/commission-invoice-eligibility', () => ({ getCommissionInvoiceEligibility: state.eligibility }));
 vi.mock('next/cache', () => ({ revalidatePath: state.revalidate }));
 vi.mock('next/navigation', () => ({ redirect: (href: string) => { throw new Error(`REDIRECT:${href}`); } }));
 
@@ -71,6 +73,7 @@ function mutationStub({
 }
 
 beforeEach(() => {
+  state.eligibility.mockReset().mockImplementation(async (ids: string[]) => ({ paidOrderIds: new Set(ids), unpaidOrderIds: new Set(), missingInvoiceOrderIds: new Set(), error: null }));
   state.audit.mockReset();
   state.recordPaid.mockReset();
   state.revalidate.mockReset();
@@ -105,8 +108,8 @@ describe('Sales Admin commission payout protection', () => {
   it('locks all pages of shipment snapshots once and audits the frozen total', async () => {
     const action = await payoutAction();
     const stub = mutationStub({ tables: { order_commission_snapshots: [
-      { id: 'first', commission_cents: 100.25, revenue_cents: 1000 },
-      { id: 'second', commission_cents: 200.5, revenue_cents: 2000 },
+      { id: 'first', order_id: 'order-first', commission_cents: 100.25, revenue_cents: 1000 },
+      { id: 'second', order_id: 'order-second', commission_cents: 200.5, revenue_cents: 2000 },
     ] } });
 
     await expect(action(form('locked'))).rejects.toThrow('toast=payout_locked');
@@ -128,10 +131,43 @@ describe('Sales Admin commission payout protection', () => {
     expect(state.revalidate.mock.calls).toEqual([['/admin/payroll'], ['/admin/sales-admin'], ['/admin/commission']]);
   });
 
+  it('locks only fully paid invoice commissions and excludes unpaid orders', async () => {
+    const action = await payoutAction();
+    const stub = mutationStub({ tables: { order_commission_snapshots: [
+      { id: 'first', order_id: 'paid-order', shipped_at: '2026-09-30T05:00:00Z', commission_cents: 100, revenue_cents: 1000 },
+      { id: 'second', order_id: 'unpaid-order', shipped_at: '2026-09-30T05:00:00Z', commission_cents: 900, revenue_cents: 9000 },
+    ] } });
+    state.eligibility.mockResolvedValue({ paidOrderIds: new Set(['paid-order']), error: null });
+    await expect(action(form('locked'))).rejects.toThrow('toast=payout_locked');
+    expect(stub.insert).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ commission_cents: 100, order_count: 1, revenue_cents: 1000 }));
+  });
+
+  it.each([null, 'QuickBooks unavailable'])('does not lock unverified invoice commissions (%s)', async (error) => {
+    const action = await payoutAction();
+    const stub = mutationStub({ tables: { order_commission_snapshots: [
+      { id: 'first', order_id: 'unpaid-order', shipped_at: '2026-09-30T05:00:00Z', commission_cents: 100 },
+    ] } });
+    state.eligibility.mockResolvedValue({ paidOrderIds: new Set(), error });
+    await expect(action(form('locked'))).rejects.toThrow('toast=payout_error');
+    expect(stub.insert).not.toHaveBeenCalled();
+    expect(state.audit).not.toHaveBeenCalled();
+  });
+
+  it('keeps earlier unpaid invoice commissions eligible without a QuickBooks check', async () => {
+    const action = await payoutAction();
+    const stub = mutationStub({ tables: { order_commission_snapshots: [
+      { id: 'historical', order_id: 'unpaid-old-order', shipped_at: '2026-09-30T04:59:59Z', commission_cents: 450, revenue_cents: 4500 },
+    ] } });
+    state.eligibility.mockClear().mockResolvedValue({ paidOrderIds: new Set(), error: 'QuickBooks unavailable' });
+    await expect(action(form('locked'))).rejects.toThrow('toast=payout_locked');
+    expect(state.eligibility).not.toHaveBeenCalled();
+    expect(stub.insert).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ commission_cents: 450, order_count: 1, revenue_cents: 4500 }));
+  });
+
   it('does not lock partial data when a later snapshot page fails', async () => {
     const action = await payoutAction();
     const stub = mutationStub({
-      tables: { order_commission_snapshots: [{ id: 'first', commission_cents: 100 }, { id: 'second', commission_cents: 200 }] },
+      tables: { order_commission_snapshots: [{ id: 'first', order_id: 'order-first', commission_cents: 100 }, { id: 'second', order_id: 'order-second', commission_cents: 200 }] },
       fail: (read) => read.table === 'order_commission_snapshots' && read.from > 0 ? 'Later page failed' : undefined,
     });
 
@@ -142,7 +178,7 @@ describe('Sales Admin commission payout protection', () => {
 
   it('fails safely when another screen creates the payout before the lock insert', async () => {
     const action = await payoutAction();
-    const stub = mutationStub({ insertError: { code: '23505', message: 'Duplicate payout' } });
+    const stub = mutationStub({ tables: { order_commission_snapshots: [{ id: 'first', order_id: 'order-first', commission_cents: 100 }] }, insertError: { code: '23505', message: 'Duplicate payout' } });
 
     await expect(action(form('locked'))).rejects.toThrow('toast=payout_error');
     expect(stub.insert).toHaveBeenCalledTimes(1);

@@ -25,7 +25,7 @@ createRoot(document.getElementById('fixture-root')!).render(
     <section className="panel">
       <span className="eyebrow">Center Admin</span>
       <h1 className="page-title mt-4">Create center wizard</h1>
-      <p className="page-subtitle mt-3">Add the customer’s address and first login, choose their order guide, and connect them to QuickBooks.</p>
+      <p className="page-subtitle mt-3">Add the customer’s address, first login, and invoice recipients, choose their order guide, and connect them to QuickBooks.</p>
     </section>
     <UserWizard products={[]} />
   </main>,

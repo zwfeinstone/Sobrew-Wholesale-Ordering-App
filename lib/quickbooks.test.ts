@@ -95,7 +95,7 @@ describe('quickbooks invoice payload', () => {
     expect(payload.ShipDate).toBe('2026-08-01');
     expect(payload.ShipMethodRef).toEqual({ value: 'UPS' });
     expect(payload.TrackingNum).toBe('See shipped order email');
-    expect(payload.BillEmail).toEqual({ Address: 'buyer@example.com' });
+    expect(payload.BillEmail).toBeUndefined();
     expect(payload.BillEmailCc).toBeUndefined();
     expect(payload.Line).toEqual([
       {
@@ -146,7 +146,7 @@ describe('quickbooks invoice payload', () => {
     expect(payload.Line[0].SalesItemLineDetail.TaxCodeRef).toEqual({ value: 'TAX' });
   });
 
-  it('uses QuickBooks primary email and explicitly saved portal CC on invoices', () => {
+  it('uses QuickBooks primary email and adds saved portal CC to QuickBooks CC on invoices', () => {
     const order = {
       centers: { billing_email: 'portal@example.com', billing_email_cc: ['ap@example.com', 'owner@example.com'], name: 'Lakeview Recovery' },
       created_at: '2026-08-01T15:00:00.000Z',
@@ -171,20 +171,20 @@ describe('quickbooks invoice payload', () => {
       shipping_zip: '60601',
     };
     const recipients = buildQuickBooksInvoiceEmailRecipients(order, {
-      BillEmailCc: { Address: 'ignored@example.com' },
+      BillEmailCc: { Address: 'bookkeeper@example.com' },
       PrimaryEmailAddr: { Address: 'primary@example.com' },
     });
 
     const payload = buildQuickBooksInvoicePayload(order, { name: 'Lakeview Recovery', value: '42' }, { emailRecipients: recipients });
 
     expect(recipients).toEqual({
-      all: ['primary@example.com', 'ap@example.com', 'owner@example.com'],
-      cc: ['ap@example.com', 'owner@example.com'],
-      display: 'primary@example.com, ap@example.com, owner@example.com',
+      all: ['primary@example.com', 'bookkeeper@example.com', 'ap@example.com', 'owner@example.com'],
+      cc: ['bookkeeper@example.com', 'ap@example.com', 'owner@example.com'],
+      display: 'primary@example.com, bookkeeper@example.com, ap@example.com, owner@example.com',
       to: ['primary@example.com'],
     });
     expect(payload.BillEmail).toEqual({ Address: 'primary@example.com' });
-    expect(payload.BillEmailCc).toEqual({ Address: 'ap@example.com, owner@example.com' });
+    expect(payload.BillEmailCc).toEqual({ Address: 'bookkeeper@example.com, ap@example.com, owner@example.com' });
   });
 
   it('treats extra QuickBooks primary email addresses as cc recipients', () => {
@@ -215,10 +215,10 @@ describe('quickbooks invoice payload', () => {
   });
 
   it.each([
-    { configuredCc: ['owner@example.com', 'AP@example.com', 'PRIMARY@example.com'], expectedCc: ['ap@example.com', 'owner@example.com'] },
-    { configuredCc: [], expectedCc: ['ap@example.com'] },
-    { configuredCc: undefined, expectedCc: ['ap@example.com'] },
-  ])('uses only saved portal CC without restoring old QuickBooks CC: $configuredCc', ({ configuredCc, expectedCc }) => {
+    { configuredCc: ['owner@example.com', 'AP@example.com', 'PRIMARY@example.com'], expectedCc: ['ap@example.com', 'customer-cc@example.com', 'invoice-cc@example.com', 'owner@example.com'] },
+    { configuredCc: [], expectedCc: ['ap@example.com', 'customer-cc@example.com', 'invoice-cc@example.com'] },
+    { configuredCc: undefined, expectedCc: ['ap@example.com', 'customer-cc@example.com', 'invoice-cc@example.com'] },
+  ])('combines QuickBooks and app CC, excluding duplicate To addresses: $configuredCc', ({ configuredCc, expectedCc }) => {
     const recipients = buildQuickBooksInvoiceEmailRecipients(
       {
         centers: {
@@ -230,10 +230,9 @@ describe('quickbooks invoice payload', () => {
       },
       {
         PrimaryEmailAddr: { Address: 'primary@example.com; ap@example.com' },
-        BillEmailCc: { Address: 'removed-customer@example.com' },
-        OtherContactInfo: [{ Type: 'CC', EmailAddress: { Address: 'removed-contact@example.com' } }],
+        BillEmailCc: { Address: 'customer-cc@example.com; PRIMARY@example.com' },
       },
-      { Id: 'invoice-1', BillEmailCc: { Address: 'removed-invoice@example.com' } }
+      { Id: 'invoice-1', BillEmailCc: { Address: 'invoice-cc@example.com; AP@example.com' } }
     );
 
     expect(recipients.to).toEqual(['primary@example.com']);
@@ -339,6 +338,94 @@ describe('quickbooks invoice payload', () => {
       },
       { name: 'Unmapped Center', value: '42' }
     )).toThrow('Map Cold Brew Case to QuickBooks before invoicing.');
+  });
+});
+
+describe('QuickBooks invoice customer recipient exceptions', () => {
+  const order = {
+    centers: { name: 'CooperRiis', billing_email: 'portal@example.com', billing_email_cc: ['app-cc@example.com'] },
+    created_at: null, id: 'order-recipient', notes: null,
+    profiles: { email: 'ordering-login@example.com', full_name: 'Order Creator' },
+    shipping_address1: null, shipping_address2: null, shipping_city: null,
+    shipping_name: null, shipping_state: null, shipping_zip: null,
+  };
+  const customer = {
+    PrimaryEmailAddr: { Address: 'billing@example.com, accounting@example.com' },
+    BillEmailCc: { Address: 'qbo-cc@example.com' },
+  };
+
+  it.each(['CooperRiis', 'Cooper Riis', ' COOPERRIIS '])('sends %s invoices to the ordering login and keeps configured CC', (name) => {
+    const recipients = buildQuickBooksInvoiceEmailRecipients({ ...order, centers: { ...order.centers, name } }, customer);
+
+    expect(recipients.to).toEqual(['ordering-login@example.com']);
+    expect(recipients.cc).toEqual(['accounting@example.com', 'qbo-cc@example.com', 'app-cc@example.com']);
+    expect(recipients.all).not.toContain('billing@example.com');
+    expect(recipients.all).not.toContain('portal@example.com');
+  });
+
+  it('recognizes the exact QuickBooks customer name when the app uses a different label', () => {
+    const recipients = buildQuickBooksInvoiceEmailRecipients({ ...order, centers: { ...order.centers, name: 'Asheville Center' } }, {
+      ...customer, DisplayName: 'CooperRiis',
+    });
+
+    expect(recipients.to).toEqual(['ordering-login@example.com']);
+  });
+
+  it.each(['Other Center', 'Not CooperRiis', 'CooperRiis Neighbor'])('uses QuickBooks rather than the ordering login for %s', (name) => {
+    const recipients = buildQuickBooksInvoiceEmailRecipients({ ...order, centers: { ...order.centers, name } }, customer);
+
+    expect(recipients.to).toEqual(['billing@example.com']);
+    expect(recipients.all).not.toContain('ordering-login@example.com');
+    expect(recipients.all).not.toContain('portal@example.com');
+  });
+
+  it('does not replace a missing CooperRiis ordering login with a different billing recipient', () => {
+    const recipients = buildQuickBooksInvoiceEmailRecipients({ ...order, profiles: null }, customer, {
+      BillEmail: { Address: 'previous-login@example.com' },
+    });
+
+    expect(recipients.to).toEqual([]);
+  });
+
+  it('does not fall back to app billing or login email when QuickBooks has no recipient', () => {
+    const recipients = buildQuickBooksInvoiceEmailRecipients({ ...order, centers: { ...order.centers, name: 'Other Center' } }, {});
+
+    expect(recipients.to).toEqual([]);
+    expect(recipients.all).toEqual(['app-cc@example.com']);
+  });
+
+  it.each(['CooperRiis', 'Other Center'])('uses new %s customer invoice choices without inheriting QuickBooks or login recipients', (name) => {
+    const recipients = buildQuickBooksInvoiceEmailRecipients({
+      ...order,
+      centers: {
+        ...order.centers, name,
+        invoice_recipients_configured_at: '2026-09-30T12:00:00Z',
+        billing_email: 'Invoices@Example.com',
+        billing_email_cc: ['accounts@example.com', 'INVOICES@example.com'],
+      },
+    }, customer, { BillEmail: { Address: 'old@example.com' }, BillEmailCc: { Address: 'old-cc@example.com' } });
+
+    expect(recipients).toEqual({
+      to: ['invoices@example.com'], cc: ['accounts@example.com'],
+      all: ['invoices@example.com', 'accounts@example.com'], display: 'invoices@example.com, accounts@example.com',
+    });
+  });
+
+  it('treats an empty explicit CC choice as no CC even when QuickBooks has saved CC', () => {
+    const recipients = buildQuickBooksInvoiceEmailRecipients({
+      ...order,
+      centers: { ...order.centers, invoice_recipients_configured_at: '2026-09-30T12:00:00Z', billing_email_cc: [] },
+    }, customer, { BillEmailCc: { Address: 'old-cc@example.com' } });
+
+    expect(recipients.to).toEqual(['portal@example.com']);
+    expect(recipients.cc).toEqual([]);
+  });
+
+  it.each([null, '', 'invalid', 'first@example.com, second@example.com'])('rejects invalid explicit To %s without falling back to other recipients', (billingEmail) => {
+    expect(() => buildQuickBooksInvoiceEmailRecipients({
+      ...order,
+      centers: { ...order.centers, invoice_recipients_configured_at: '2026-09-30T12:00:00Z', billing_email: billingEmail },
+    }, customer)).toThrow();
   });
 });
 
@@ -729,5 +816,12 @@ describe('quickbooks customer matching', () => {
     }, ['buyer@example.com']);
 
     expect(payload.PrimaryEmailAddr).toEqual({ Address: 'billing@example.com, ap@example.com' });
+  });
+
+  it('rejects a missing explicit invoice email instead of using login contacts', () => {
+    expect(() => buildQuickBooksCustomerPayloadFromCenter({
+      id: 'center-1', is_active: true, name: 'Center', billing_email: null,
+      invoice_recipients_configured_at: '2026-09-30T12:00:00Z',
+    }, ['buyer@example.com'])).toThrow();
   });
 });

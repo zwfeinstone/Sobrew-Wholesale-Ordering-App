@@ -6,6 +6,12 @@ const state = vi.hoisted(() => ({
   canEdit: true,
   client: null as unknown as ReturnType<typeof supabaseReadStub>['client'],
   requireView: vi.fn(async () => ({ access: {}, profile: { id: 'reviewer' } })),
+  invoiceEligibility: vi.fn(async (orderIds: string[]) => ({
+    error: null,
+    paidOrderIds: new Set(orderIds),
+    unpaidOrderIds: new Set<string>(),
+    missingInvoiceOrderIds: new Set<string>(),
+  })),
 }));
 vi.mock('@/lib/admin-permissions', () => ({
   requireAdminSectionView: state.requireView,
@@ -13,6 +19,7 @@ vi.mock('@/lib/admin-permissions', () => ({
   adminCanEdit: () => state.canEdit,
 }));
 vi.mock('@/lib/supabase/admin', () => ({ supabaseAdmin: { from: (table: string) => state.client.from(table) } }));
+vi.mock('@/lib/commission-invoice-eligibility', () => ({ getCommissionInvoiceEligibility: state.invoiceEligibility }));
 vi.mock('next/link', () => ({ default: 'a' }));
 vi.mock('@/components/status-toast', () => ({ default: () => null }));
 
@@ -61,7 +68,7 @@ function fixture() {
       { id: 'casey-spiff', profile_id: casey.id, amount_cents: 10000, week_start_date: '2026-09-21', week_end_date: '2026-09-25', paid_at: null, notes: 'Weekly sales incentive' },
       { id: 'former-spiff', profile_id: null, amount_cents: 2500, week_start_date: '2026-09-21', week_end_date: '2026-09-25', paid_at: null, notes: null },
       { id: 'paid-spiff', profile_id: casey.id, amount_cents: 1000, week_start_date: '2026-09-21', week_end_date: '2026-09-25', paid_at: '2026-09-24T16:00:00.000Z', notes: 'Already paid incentive' },
-    ],
+    ].map((row) => ({ ...row, first_order_id: null as string | null })),
     production_runs: [],
   };
 }
@@ -95,6 +102,7 @@ function overtimeFixture({ earlierPaid = false, earlierSales = false } = {}) {
 function commissionFixture(commissionMonth = '2026-08-01') {
   const snapshot = (id: string, salesProfileId: string, commissionCents: number) => ({
     id, order_id: `order-${id}`, sales_profile_id: salesProfileId, commission_month: commissionMonth,
+    shipped_at: `${commissionMonth.slice(0, 8)}15T16:00:00.000Z`,
     commission_cents: commissionCents, commission_percent: 5, gross_profit_cents: commissionCents * 20,
     revenue_cents: commissionCents * 25, product_cogs_cents: commissionCents * 5,
     shipping_cogs_cents: 0, processing_fee_cogs_cents: 0, donation_cogs_cents: 0,
@@ -107,6 +115,7 @@ function commissionFixture(commissionMonth = '2026-08-01') {
     total_cogs_cents: cents * 5, order_count: 1, status,
     locked_at: '2026-09-01T12:00:00.000Z', locked_by: 'reviewer',
     paid_at: status === 'paid' ? '2026-09-01T12:00:00.000Z' : null,
+    paid_order_ids: null as string[] | null,
     paid_by: status === 'paid' ? 'reviewer' : null, updated_at: '2026-09-01T12:00:00.000Z', notes: null,
   });
   return {
@@ -168,6 +177,12 @@ beforeEach(() => {
   vi.setSystemTime(NOW);
   state.canEdit = true;
   state.requireView.mockClear();
+  state.invoiceEligibility.mockReset().mockImplementation(async (orderIds: string[]) => ({
+    error: null,
+    paidOrderIds: new Set(orderIds),
+    unpaidOrderIds: new Set<string>(),
+    missingInvoiceOrderIds: new Set<string>(),
+  }));
   state.client = supabaseReadStub({ tables: fixture() }).client;
 });
 afterEach(() => { vi.useRealTimers(); });
@@ -262,6 +277,102 @@ describe('payroll period and historical amounts', () => {
     expect(formerRow).toContain('$30.00');
     expect(formerRow).toContain('$25.00');
     expect(markup).toContain('$225.00');
+  });
+
+  it('keeps an unpaid first-order SPIFF visible on hold while excluding it from the amount owed', async () => {
+    vi.setSystemTime(new Date('2026-10-09T16:00:00.000Z'));
+    const tables = fixture();
+    tables.admin_time_entries = tables.admin_time_entries.filter((entry) => entry.profile_id === 'casey').map((entry) => ({
+      ...entry, clock_in_at: '2026-10-05T14:00:00.000Z', clock_out_at: '2026-10-05T16:00:00.000Z',
+    }));
+    tables.admin_weekly_sales_spiffs = [{
+      ...tables.admin_weekly_sales_spiffs[0],
+      profile_id: 'casey',
+      first_order_id: 'unpaid-first-order',
+      week_start_date: '2026-09-28', week_end_date: '2026-10-04',
+      notes: 'Automatic first-order SPIFF: unpaid customer',
+    }];
+    state.client = supabaseReadStub({ tables }).client;
+    state.invoiceEligibility.mockImplementation(async (orderIds: string[]) => ({
+      error: null,
+      paidOrderIds: new Set<string>(),
+      unpaidOrderIds: new Set(orderIds),
+      missingInvoiceOrderIds: new Set<string>(),
+    }));
+    const filters = { from: '2026-10-05', to: '2026-10-09', admin: 'casey' };
+    const summary = await page({ ...filters, tab: 'payroll-day' });
+    const caseyRow = [...summary.matchAll(/<tr\b[^>]*>[\s\S]*?<\/tr>/g)].map(([html]) => html)
+      .find((html) => html.includes('Casey Diaz') && html.includes('data-label="Amount owed"')) ?? '';
+    expect(plainText(caseyRow)).toContain('$30.00');
+    expect(plainText(caseyRow)).not.toContain('$130.00');
+    expect(plainText(caseyRow)).not.toContain('$100.00');
+
+    const payments = await page({ ...filters, tab: 'payments' });
+    const spiffRow = [...payments.matchAll(/<tr\b[^>]*>[\s\S]*?<\/tr>/g)].map(([html]) => html)
+      .find((html) => html.includes('Automatic first-order SPIFF: unpaid customer')) ?? '';
+    expect(plainText(spiffRow)).toContain('$100.00');
+    expect(plainText(spiffRow)).toContain('Awaiting invoice payment');
+    expect(plainText(spiffRow)).toContain('Check invoice');
+    expect(spiffRow).toContain('/admin/invoicing?view=accounts-receivable');
+    expect(enabledMutationButtons(spiffRow)).toEqual([]);
+    expect(plainText(payments)).toContain('$0.00 due and $0.00 paid.');
+    expect(state.invoiceEligibility).toHaveBeenCalledWith(['unpaid-first-order']);
+  });
+
+  it('loads every SPIFF page and releases a prior-week first order only after its invoice is paid', async () => {
+    vi.setSystemTime(new Date('2026-10-09T16:00:00.000Z'));
+    const tables = fixture();
+    tables.profiles = [tables.profiles[1]];
+    tables.admin_time_entries = [];
+    tables.admin_weekly_sales_spiffs = [
+      { ...tables.admin_weekly_sales_spiffs[0], profile_id: 'casey', id: 'old-paid-invoice-spiff', first_order_id: 'settled-first-order',
+        week_start_date: '2026-09-28', week_end_date: '2026-10-04', notes: 'Prior-week first order' },
+      { ...tables.admin_weekly_sales_spiffs[0], profile_id: 'casey', id: 'waiting-spiff', first_order_id: 'waiting-first-order',
+        week_start_date: '2026-10-05', week_end_date: '2026-10-11', amount_cents: 20000, notes: 'Current unpaid invoice' },
+    ];
+    state.invoiceEligibility.mockImplementation(async (orderIds: string[]) => ({
+      error: null,
+      paidOrderIds: new Set(orderIds.filter((id) => id === 'settled-first-order')),
+      unpaidOrderIds: new Set(orderIds.filter((id) => id !== 'settled-first-order')),
+      missingInvoiceOrderIds: new Set<string>(),
+    }));
+    const stub = supabaseReadStub({ maxRows: 1, tables });
+    state.client = stub.client;
+    const markup = await page({ tab: 'payments', admin: 'casey', from: '2026-10-05', to: '2026-10-09' });
+    expect(plainText(markup)).toContain('$100.00 due and $0.00 paid.');
+    const rows = [...markup.matchAll(/<tr\b[^>]*>[\s\S]*?<\/tr>/g)].map(([html]) => html);
+    const released = rows.find((html) => html.includes('Prior-week first order')) ?? '';
+    const held = rows.find((html) => html.includes('Current unpaid invoice')) ?? '';
+    expect(enabledMutationButtons(released)).toEqual(['Mark Paid']);
+    expect(hiddenValue(released, 'spiff_id')).toBe('old-paid-invoice-spiff');
+    expect(plainText(held)).toContain('Awaiting invoice payment');
+    expect(enabledMutationButtons(held)).toEqual([]);
+    const reads = stub.reads.filter((read) => read.table === 'admin_weekly_sales_spiffs');
+    expect(reads).toHaveLength(3);
+    expect(reads.every((read) => read.orders.at(-1)?.column === 'id')).toBe(true);
+    expect(state.invoiceEligibility).toHaveBeenCalledWith(['settled-first-order', 'waiting-first-order']);
+  });
+
+  it('keeps an existing unpaid first-order SPIFF payable without retroactive invoice verification', async () => {
+    vi.setSystemTime(new Date('2026-10-02T16:00:00.000Z'));
+    const tables = fixture();
+    tables.admin_weekly_sales_spiffs = [{
+      ...tables.admin_weekly_sales_spiffs[0], profile_id: 'casey', first_order_id: null,
+      notes: 'Automatic first-order SPIFF: historical unpaid customer. Order legacy-order.',
+    }];
+    state.client = supabaseReadStub({ tables }).client;
+    state.invoiceEligibility.mockImplementation(async (orderIds: string[]) => ({
+      error: null, paidOrderIds: new Set<string>(), unpaidOrderIds: new Set(orderIds), missingInvoiceOrderIds: new Set<string>(),
+    }));
+
+    const markup = await page({ tab: 'payments', admin: 'casey', from: '2026-09-21', to: '2026-09-27' });
+    const legacyRow = [...markup.matchAll(/<tr\b[^>]*>[\s\S]*?<\/tr>/g)].map(([html]) => html)
+      .find((html) => html.includes('historical unpaid customer')) ?? '';
+
+    expect(plainText(markup)).toContain('$100.00 due and $0.00 paid.');
+    expect(enabledMutationButtons(legacyRow)).toEqual(['Mark Paid']);
+    expect(plainText(legacyRow)).not.toContain('Awaiting invoice payment');
+    expect(state.invoiceEligibility.mock.calls.flatMap(([ids]) => ids)).toEqual([]);
   });
 
   it('shows both years for a reporting period that crosses New Year', async () => {
@@ -366,7 +477,6 @@ describe('monthly commissions in payroll', () => {
     expect(text).toContain('Morgan Lee');
     expect(text).toContain('$90.00');
     expect(text).not.toContain('$990.00');
-    expect(text).toContain('Amount locked');
     expect(text).toContain('Payment recorded');
     expect(enabledMutationButtons(section)).toEqual(['Mark commission paid', 'Mark commission paid']);
     expect(hiddenValue(section, 'commission_month')).toBe('2026-08-01');
@@ -426,6 +536,72 @@ describe('monthly commissions in payroll', () => {
     expect(plainText(section)).toContain('$75.00 already paid');
     expect(stub.reads.filter((read) => read.table === 'order_commission_snapshots')).toHaveLength(5);
     expect(stub.reads.filter((read) => read.table === 'monthly_commission_payouts')).toHaveLength(3);
+  });
+
+  it('preserves historical GP commissions and locked amounts without consulting QuickBooks', async () => {
+    vi.setSystemTime(new Date('2026-10-02T16:00:00.000Z'));
+    state.client = supabaseReadStub({ tables: commissionFixture() }).client;
+    state.invoiceEligibility.mockImplementation(async (orderIds: string[]) => {
+      if (orderIds.length) throw new Error('QuickBooks is unavailable for historical invoices');
+      return { error: null, paidOrderIds: new Set<string>(), unpaidOrderIds: new Set<string>(), missingInvoiceOrderIds: new Set<string>() };
+    });
+
+    const section = monthlyCommissionSection(await page({ tab: 'payments', commission_month: '2026-08' }));
+
+    expect(plainText(section)).toContain('Commissions owed $215.00');
+    expect(plainText(section)).toContain('$75.00 already paid');
+    expect(plainText(section)).not.toContain('could not be loaded');
+    expect(plainText(section)).not.toContain('on hold');
+    expect(enabledMutationButtons(section)).toEqual(['Mark commission paid', 'Mark commission paid']);
+    expect(state.invoiceEligibility.mock.calls.flatMap(([ids]) => ids)).toEqual([]);
+  });
+
+  it('holds only GP commission earned on or after September 30 in Chicago when invoices are unpaid', async () => {
+    vi.setSystemTime(new Date('2026-10-02T16:00:00.000Z'));
+    const tables = commissionFixture('2026-09-01');
+    tables.order_commission_snapshots = tables.order_commission_snapshots
+      .filter((row) => row.sales_profile_id === 'casey')
+      .map((row, index) => ({ ...row, shipped_at: index === 0 ? '2026-09-30T04:59:59.999Z' : '2026-09-30T05:00:00.000Z' }));
+    tables.monthly_commission_payouts = [];
+    state.client = supabaseReadStub({ tables }).client;
+    state.invoiceEligibility.mockImplementation(async (orderIds: string[]) => ({
+      error: null, paidOrderIds: new Set<string>(), unpaidOrderIds: new Set(orderIds), missingInvoiceOrderIds: new Set<string>(),
+    }));
+
+    const section = monthlyCommissionSection(await page({ tab: 'payments', admin: 'casey', commission_month: '2026-09' }));
+    const text = plainText(section);
+
+    expect(text).toContain('Commissions owed $50.00');
+    expect(text).toContain('$75.00 on hold');
+    expect(hiddenValue(section, 'payment_amount_cents')).toBe('5000');
+    expect(enabledMutationButtons(section)).toEqual(['Mark commission paid']);
+    expect(state.invoiceEligibility.mock.calls.flatMap(([ids]) => ids)).toEqual(['order-casey-second']);
+  });
+
+  it('offers payment for a later-settled invoice while preserving the amount already paid for the month', async () => {
+    vi.setSystemTime(new Date('2026-11-25T16:00:00.000Z'));
+    const tables = commissionFixture('2026-10-01');
+    tables.order_commission_snapshots = tables.order_commission_snapshots.filter((row) => row.sales_profile_id === 'casey');
+    tables.monthly_commission_payouts = [{
+      ...tables.monthly_commission_payouts[1],
+      id: 'casey-partially-paid', sales_profile_id: 'casey', commission_cents: 5000,
+      revenue_cents: 125000, gross_profit_cents: 100000,
+      product_cogs_cents: 25000, total_cogs_cents: 25000,
+      paid_order_ids: ['order-casey-first'],
+    }];
+    state.client = supabaseReadStub({ tables }).client;
+    const section = monthlyCommissionSection(await page({ tab: 'payments', admin: 'casey' }));
+    const text = plainText(section);
+    expect(text).toContain('Commissions owed $75.00');
+    expect(text).toContain('$50.00 already paid');
+    expect(text).toContain('$125.00');
+    expect(text).toContain('Additional commission due');
+    expect(text).toContain('$75.00 payable');
+    expect(enabledMutationButtons(section)).toEqual(['Mark commission paid']);
+    expect(hiddenValue(section, 'payment_amount_cents')).toBe('7500');
+    expect(hiddenValue(section, 'commission_month')).toBe('2026-10-01');
+    expect(state.invoiceEligibility.mock.calls.some(([ids]) => ids.length === 1 && ids[0] === 'order-casey-second')).toBe(true);
+    expect(state.invoiceEligibility.mock.calls.flatMap(([ids]) => ids)).not.toContain('order-casey-first');
   });
 
   it.each(['order_commission_snapshots', 'monthly_commission_payouts'])('shows an unavailable state instead of a partial balance when %s pagination fails', async (table) => {

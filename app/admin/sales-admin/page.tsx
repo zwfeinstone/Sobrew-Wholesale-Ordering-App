@@ -11,6 +11,7 @@ import { requireAdminSectionEdit, requireAdminSectionView } from '@/lib/admin-pe
 import {
   addCommissionMonths,
   commissionMonthLabel,
+  commissionMonthForDate,
   emptyCommissionSummary,
   monthInputValue,
   normalizeCommissionMonth,
@@ -22,7 +23,9 @@ import {
 } from '@/lib/commissions';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { fetchAllPages } from '@/lib/supabase/pagination';
-import { recordPayrollCommissionPaid } from '@/lib/payroll-commissions';
+import { buildPayrollCommissionRow, requiresInvoiceEligibility, recordPayrollCommissionPaid, type PayrollCommissionPayout } from '@/lib/payroll-commissions';
+import { commissionRequiresPaidInvoice } from '@/lib/commission-payment-policy';
+import { getCommissionInvoiceEligibility } from '@/lib/commission-invoice-eligibility';
 import { usd } from '@/lib/utils';
 import { revalidatePath } from 'next/cache';
 import { redirect } from 'next/navigation';
@@ -60,23 +63,6 @@ type CommissionSettingRow = {
 type LaborTagAssignmentRow = {
   profile_id: string;
   work_type: string | null;
-};
-
-type PayoutRow = {
-  commission_cents: number | string | null;
-  commission_month: string;
-  donation_cogs_cents?: number | string | null;
-  gross_profit_cents: number | string | null;
-  id: string;
-  order_count: number | null;
-  paid_at: string | null;
-  processing_fee_cogs_cents?: number | string | null;
-  product_cogs_cents: number | string | null;
-  revenue_cents: number | string | null;
-  sales_profile_id: string;
-  shipping_cogs_cents: number | string | null;
-  status: string;
-  total_cogs_cents?: number | string | null;
 };
 
 function salesAdminHref(toast: string, month?: string, extras: Record<string, string | undefined> = {}) {
@@ -125,24 +111,6 @@ function percentChange(current: number, previous: number) {
   if (!previous) return current ? '+100%' : '0%';
   const change = ((current - previous) / Math.abs(previous)) * 100;
   return `${change >= 0 ? '+' : ''}${change.toFixed(0)}%`;
-}
-
-function payoutSummary(payout: PayoutRow): CommissionSummary {
-  return {
-    commissionCents: numericCents(payout.commission_cents),
-    donationCogsCents: numericCents(payout.donation_cogs_cents),
-    grossProfitCents: numericCents(payout.gross_profit_cents),
-    orderCount: payout.order_count ?? 0,
-    processingFeeCogsCents: numericCents(payout.processing_fee_cogs_cents),
-    productCogsCents: numericCents(payout.product_cogs_cents),
-    revenueCents: numericCents(payout.revenue_cents),
-    shippingCogsCents: numericCents(payout.shipping_cogs_cents),
-    totalCogsCents: numericCents(payout.total_cogs_cents)
-      || numericCents(payout.product_cogs_cents)
-        + numericCents(payout.shipping_cogs_cents)
-        + numericCents(payout.processing_fee_cogs_cents)
-        + numericCents(payout.donation_cogs_cents),
-  };
 }
 
 async function assignCenterSalesAdmin(formData: FormData) {
@@ -333,6 +301,7 @@ async function updateMonthlyPayout(formData: FormData) {
   if (action === 'paid') {
     const result = await recordPayrollCommissionPaid({
       actorProfileId: current.profile.id,
+      expectedPaymentCents: formData.has('payment_amount_cents') ? Number(formData.get('payment_amount_cents')) : undefined,
       commissionMonth,
       salesProfileId,
       supabase: supabaseAdmin,
@@ -377,7 +346,11 @@ async function updateMonthlyPayout(formData: FormData) {
 
   if (snapshotsError) redirect(salesAdminHref('payout_error', commissionMonth));
 
-  const summary = summarizeCommissionRows(snapshots);
+  const invoiceOrderIds = snapshots.filter(commissionRequiresPaidInvoice).map((snapshot) => snapshot.order_id);
+  const eligibility = invoiceOrderIds.length ? await getCommissionInvoiceEligibility(invoiceOrderIds) : { error: null, paidOrderIds: new Set<string>() };
+  if (eligibility.error) redirect(salesAdminHref('payout_error', commissionMonth));
+  const summary = summarizeCommissionRows(snapshots.filter((snapshot) => !commissionRequiresPaidInvoice(snapshot) || eligibility.paidOrderIds.has(snapshot.order_id)));
+  if (Math.round(summary.commissionCents) <= 0) redirect(salesAdminHref('payout_error', commissionMonth));
   const now = new Date().toISOString();
   const payload = {
     commission_cents: summary.commissionCents,
@@ -448,7 +421,7 @@ export default async function SalesAdminPage(
   const requestedCenterStatus = stringParam(searchParams?.center_status);
   const centerSearch = stringParam(searchParams?.q).trim();
 
-  const [{ data: admins }, { data: centers }, { data: assignments }, { data: accessAssignments }, { data: commissionSettings }, { data: salesLaborTags }, { data: snapshots }, { data: payouts }] = await Promise.all([
+  const [{ data: admins }, { data: centers }, { data: assignments }, { data: accessAssignments }, { data: commissionSettings }, { data: salesLaborTags }, { data: snapshots, error: snapshotsError }, { data: payouts, error: payoutsError }] = await Promise.all([
     supabaseAdmin
       .from('profiles')
       .select('id,email,full_name,is_active,is_superadmin')
@@ -471,14 +444,14 @@ export default async function SalesAdminPage(
       .from('admin_labor_tag_assignments')
       .select('profile_id,work_type')
       .eq('work_type', 'sales'),
-    supabaseAdmin
+    fetchAllPages<CommissionSnapshotRow>((from, to) => supabaseAdmin
       .from('order_commission_snapshots')
       .select('id,order_id,center_id,sales_profile_id,shipped_at,commission_month,revenue_cents,product_cogs_cents,shipping_cogs_cents,processing_fee_cogs_cents,donation_cogs_cents,total_cogs_cents,gross_profit_cents,commission_percent,commission_cents,cogs_estimated')
-      .in('commission_month', [commissionMonth, previousMonth, priorYearMonth]),
-    supabaseAdmin
+      .in('commission_month', [commissionMonth, previousMonth, priorYearMonth]).order('id', { ascending: true }).range(from, to)),
+    fetchAllPages<PayrollCommissionPayout>((from, to) => supabaseAdmin
       .from('monthly_commission_payouts')
-      .select('id,sales_profile_id,commission_month,status,order_count,revenue_cents,product_cogs_cents,shipping_cogs_cents,processing_fee_cogs_cents,donation_cogs_cents,total_cogs_cents,gross_profit_cents,commission_cents,paid_at')
-      .eq('commission_month', commissionMonth),
+      .select('*')
+      .in('commission_month', [commissionMonth, previousMonth, priorYearMonth]).order('id', { ascending: true }).range(from, to)),
   ]);
 
   const adminRows = ((admins ?? []) as AdminRow[]).sort((a, b) => profileLabel(a).localeCompare(profileLabel(b)));
@@ -515,21 +488,31 @@ export default async function SalesAdminPage(
     snapshotsByAdminAndMonth.set(key, rows);
   }
 
-  const payoutByAdmin = new Map(((payouts ?? []) as PayoutRow[]).map((payout) => [payout.sales_profile_id, payout]));
-  const reportRows = reportAdminRows
-    .map((admin) => {
-      const liveCurrent = summarizeCommissionRows(snapshotsByAdminAndMonth.get(`${admin.id}:${commissionMonth}`) ?? []);
-      const payout = payoutByAdmin.get(admin.id);
-      const current = payout ? payoutSummary(payout) : liveCurrent;
-      return {
-        admin,
-        assignedCenters: assignedCenterCountByAdmin.get(admin.id) ?? 0,
-        current,
-        payout,
-        previous: summarizeCommissionRows(snapshotsByAdminAndMonth.get(`${admin.id}:${previousMonth}`) ?? []),
-        priorYear: summarizeCommissionRows(snapshotsByAdminAndMonth.get(`${admin.id}:${priorYearMonth}`) ?? []),
-      };
-    });
+  const payoutByAdminAndMonth = new Map(((payouts ?? []) as PayrollCommissionPayout[]).map((payout) => [`${payout.sales_profile_id}:${payout.commission_month}`, payout]));
+  const eligibility = await getCommissionInvoiceEligibility(snapshots.filter((snapshot) => {
+    const payout = payoutByAdminAndMonth.get(`${snapshot.sales_profile_id}:${snapshot.commission_month}`) ?? null;
+    return requiresInvoiceEligibility(snapshot, payout);
+  }).map((snapshot) => snapshot.order_id));
+  const commissionError = snapshotsError || payoutsError || eligibility.error;
+  const commissionRow = (profileId: string, month: string) => buildPayrollCommissionRow({
+    salesProfileId: profileId,
+    snapshots: snapshotsByAdminAndMonth.get(`${profileId}:${month}`) ?? [],
+    payout: payoutByAdminAndMonth.get(`${profileId}:${month}`) ?? null,
+    paidInvoiceOrderIds: eligibility.paidOrderIds,
+  });
+  const reportRows = reportAdminRows.map((admin) => {
+    const row = commissionRow(admin.id, commissionMonth);
+    return {
+      admin,
+      assignedCenters: assignedCenterCountByAdmin.get(admin.id) ?? 0,
+      current: row.summary,
+      payout: row.payout,
+      amountOwedCents: row.amountOwedCents,
+      pendingInvoiceCents: row.pendingInvoiceCents,
+      previous: commissionRow(admin.id, previousMonth).summary,
+      priorYear: commissionRow(admin.id, priorYearMonth).summary,
+    };
+  });
 
   const teamCurrent = reportRows.reduce<CommissionSummary>((summary, row) => {
     summary.orderCount += row.current.orderCount;
@@ -579,13 +562,14 @@ export default async function SalesAdminPage(
       {toast === 'bulk_assignment_error' ? <StatusToast message="Unable to save that bulk center assignment." tone="error" /> : null}
       {toast === 'payout_locked' ? <StatusToast message="Monthly commission locked." tone="success" /> : null}
       {toast === 'payout_paid' ? <StatusToast message="Monthly commission marked paid." tone="success" /> : null}
+      {commissionError ? <StatusToast message="Invoice payment verification is unavailable. Commission totals may be incomplete; payouts are on hold." tone="error" /> : null}
       {toast === 'payout_error' ? <StatusToast message="Unable to update that monthly commission payout." tone="error" /> : null}
       {toast === 'write_denied' ? <StatusToast message="You do not have edit access to Sales Admin." tone="error" /> : null}
 
       <section className="panel">
         <span className="eyebrow">Sales Admin</span>
         <h1 className="page-title mt-4">Sales assignments and commission totals</h1>
-        <p className="page-subtitle mt-3">Assign each center to a sales admin and review monthly team commission before payout.</p>
+        <p className="page-subtitle mt-3">Assign each center to a sales admin and review monthly team commission. For commissions earned from September 30, 2026, the QuickBooks invoice must be fully paid. Earlier commissions keep their original payout rules.</p>
       </section>
 
       <form className="card grid gap-3 md:grid-cols-[14rem_1fr_auto] md:items-end">
@@ -608,7 +592,7 @@ export default async function SalesAdminPage(
       <section className="grid gap-4 lg:grid-cols-4">
         <StatTile label="Team revenue" value={money(teamCurrent.revenueCents)} detail={commissionMonthLabel(commissionMonth)} />
         <StatTile label="Team gross profit" value={money(teamCurrent.grossProfitCents)} detail="After product, shipping, processing, and donation COGS." />
-        <StatTile label="Team commission" value={money(teamCurrent.commissionCents)} detail={`${teamCurrent.orderCount.toLocaleString()} shipped order(s).`} />
+        <StatTile label="Team commission" value={money(teamCurrent.commissionCents)} detail={`${teamCurrent.orderCount.toLocaleString()} eligible shipped order(s).`} />
         <StatTile label="Assigned centers" value={assignedCentersInReport.toLocaleString()} detail={selectedSalesRepId ? 'Assigned to the selected sales rep.' : 'Assigned to shown sales reps.'} />
       </section>
 
@@ -650,22 +634,24 @@ export default async function SalesAdminPage(
                   <td className="px-4 py-3 text-right text-slate-700">{percentChange(row.current.commissionCents, row.priorYear.commissionCents)}</td>
                   <td className="rounded-r-xl px-4 py-3">
                     {row.payout ? (
-                      <p className="mb-2 text-xs font-semibold uppercase tracking-[0.16em] text-teal-800">{row.payout.status}</p>
+                      <p className="mb-2 text-xs font-semibold uppercase tracking-[0.16em] text-teal-800">{row.amountOwedCents > 0 && row.payout.paid_at ? 'Additional commission due' : row.payout.status}</p>
                     ) : (
                       <p className="mb-2 text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">Open</p>
                     )}
+                    <p className="mb-2 text-xs text-slate-500">{money(row.amountOwedCents)} payable · {money(row.pendingInvoiceCents)} awaiting invoice payment</p>
                     <div className="flex flex-col gap-2">
                       <form action={updateMonthlyPayout}>
                         <input type="hidden" name="sales_profile_id" value={row.admin.id} />
                         <input type="hidden" name="commission_month" value={commissionMonth} />
                         <input type="hidden" name="payout_action" value="locked" />
-                        <PendingSubmitButton className="btn-secondary w-full" label="Lock" pendingLabel="Locking..." />
+                        <PendingSubmitButton className="btn-secondary w-full" label="Lock" pendingLabel="Locking..." disabled={Boolean(commissionError) || Boolean(row.payout) || row.amountOwedCents <= 0} />
                       </form>
                       <form action={updateMonthlyPayout}>
                         <input type="hidden" name="sales_profile_id" value={row.admin.id} />
                         <input type="hidden" name="commission_month" value={commissionMonth} />
                         <input type="hidden" name="payout_action" value="paid" />
-                        <PendingSubmitButton className="btn-primary w-full" label="Mark paid" pendingLabel="Marking paid..." />
+                        <input type="hidden" name="payment_amount_cents" value={row.amountOwedCents} />
+                        <PendingSubmitButton className="btn-primary w-full" label="Mark paid" pendingLabel="Marking paid..." disabled={Boolean(commissionError) || row.amountOwedCents <= 0 || commissionMonth >= commissionMonthForDate()} />
                       </form>
                     </div>
                   </td>

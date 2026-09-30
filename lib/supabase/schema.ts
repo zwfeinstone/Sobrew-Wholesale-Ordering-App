@@ -31,6 +31,21 @@ type OrderTrashRow = {
 export type Database = Omit<GeneratedDatabase, 'public'> & {
   public: Omit<PublicSchema, 'Tables' | 'Functions'> & {
     Tables: PublicSchema['Tables'] & {
+      centers: PublicSchema['Tables']['centers'] & {
+        Row: PublicSchema['Tables']['centers']['Row'] & { invoice_recipients_configured_at: string | null };
+        Insert: PublicSchema['Tables']['centers']['Insert'] & { invoice_recipients_configured_at?: string | null };
+        Update: PublicSchema['Tables']['centers']['Update'] & { invoice_recipients_configured_at?: string | null };
+      };
+      admin_weekly_sales_spiffs: PublicSchema['Tables']['admin_weekly_sales_spiffs'] & {
+        Row: PublicSchema['Tables']['admin_weekly_sales_spiffs']['Row'] & { first_order_id: string | null };
+        Insert: PublicSchema['Tables']['admin_weekly_sales_spiffs']['Insert'] & { first_order_id?: string | null };
+        Update: PublicSchema['Tables']['admin_weekly_sales_spiffs']['Update'] & { first_order_id?: string | null };
+      };
+      monthly_commission_payouts: PublicSchema['Tables']['monthly_commission_payouts'] & {
+        Row: PublicSchema['Tables']['monthly_commission_payouts']['Row'] & { paid_order_ids: string[] | null };
+        Insert: PublicSchema['Tables']['monthly_commission_payouts']['Insert'] & { paid_order_ids?: string[] | null };
+        Update: PublicSchema['Tables']['monthly_commission_payouts']['Update'] & { paid_order_ids?: string[] | null };
+      };
       prospecting_sample_requests: {
         Row: { id: string; lead_id: string; requested_by: string | null; contact_id: string | null; status: 'pending' | 'order_created' | 'legacy_review'; order_id: string | null; details: Json; created_at: string; updated_at: string; closed_at: string | null };
         Insert: never; Update: never;

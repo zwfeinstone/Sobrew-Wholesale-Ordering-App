@@ -28,7 +28,7 @@ export default function PayrollMonthlyCommissions({
   const isDue = commissionMonth < currentMonth;
   const rowsByProfile = new Map(rows.map((row) => [row.salesProfileId, row]));
   for (const profileId of salesProfileIds) {
-    if (!rowsByProfile.has(profileId)) rowsByProfile.set(profileId, { salesProfileId: profileId, summary: emptyCommissionSummary(), payout: null, amountOwedCents: 0, cogsEstimated: false });
+    if (!rowsByProfile.has(profileId)) rowsByProfile.set(profileId, { salesProfileId: profileId, summary: emptyCommissionSummary(), payout: null, amountOwedCents: 0, cogsEstimated: false, pendingInvoiceCount: 0, pendingInvoiceCents: 0, eligibleOrderIds: [], paidOrderIds: [], pendingInvoiceOrderIds: [] });
   }
   const label = (profileId: string | null) => {
     const profile = profiles.get(profileId ?? '');
@@ -38,7 +38,7 @@ export default function PayrollMonthlyCommissions({
     .filter((row) => !selectedAdmin || row.salesProfileId === selectedAdmin)
     .sort((a, b) => label(a.salesProfileId).localeCompare(label(b.salesProfileId)));
   const unpaidCents = visibleRows.reduce((sum, row) => sum + row.amountOwedCents, 0);
-  const paidCents = visibleRows.reduce((sum, row) => sum + (row.payout?.status === 'paid' || row.payout?.paid_at ? Math.round(row.summary.commissionCents) : 0), 0);
+  const paidCents = visibleRows.reduce((sum, row) => sum + (row.payout?.status === 'paid' || row.payout?.paid_at ? Math.round(Number(row.payout.commission_cents)) : 0), 0);
   const monthHref = (month: string) => `/admin/payroll?${new URLSearchParams({ ...currentParams, tab: activeTab, commission_month: month.slice(0, 7) })}#monthly-commissions`;
 
   return (
@@ -47,7 +47,7 @@ export default function PayrollMonthlyCommissions({
         <div className="min-w-0 flex-1 basis-80">
           <h2 id="monthly-commissions-heading" className="text-xl font-semibold text-slate-950">Monthly commissions</h2>
           <p className="mt-1 text-sm text-slate-600">{commissionMonthLabel(commissionMonth)} sales · Pay on {dueDateLabel}</p>
-          <p className="mt-1 text-sm text-slate-500">Commissions are due on the first of the following month, separate from weekly hourly pay and SPIFFs.</p>
+          <p className="mt-1 text-sm text-slate-500">Commissions earned from September 30, 2026 require a fully paid QuickBooks invoice and are payable from the first of the following month. Earlier earnings keep their original rules. Later invoice payments stay in the original shipment month.</p>
         </div>
         {!error ? <div className="sm:text-right">
           <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">{isDue ? 'Commissions owed' : 'Accrued commissions'}</p>
@@ -77,13 +77,13 @@ export default function PayrollMonthlyCommissions({
             <tbody>{visibleRows.map((row) => {
               const profile = profiles.get(row.salesProfileId ?? '');
               const isPaid = row.payout?.status === 'paid' || Boolean(row.payout?.paid_at);
-              const payable = !isPaid && isDue && row.amountOwedCents > 0 && Boolean(row.salesProfileId);
-              const status = isPaid ? 'Paid' : !row.amountOwedCents ? 'No commission due' : !isDue ? 'Accruing' : 'Due';
+              const payable = isDue && row.amountOwedCents > 0 && Boolean(row.salesProfileId);
+              const status = row.amountOwedCents > 0 ? !isDue ? 'Accruing' : isPaid ? 'Additional commission due' : 'Due' : row.pendingInvoiceCount > 0 ? 'Awaiting invoice payment' : isPaid ? 'Paid' : 'No commission due';
               return <tr key={row.salesProfileId ?? 'former'} className="bg-white/70 align-top">
                 <td data-label="Salesperson" className="rounded-l-xl px-4 py-3"><p className="font-semibold text-slate-950">{label(row.salesProfileId)}</p><p className="mt-1 break-all text-xs text-slate-500">{profile?.email}</p>{profile?.is_active === false ? <p className="mt-1 text-xs text-slate-500">Inactive employee</p> : null}</td>
-                <td data-label="Commission" className="px-4 py-3 text-right"><p className="font-semibold tabular-nums text-slate-950">{usd(Math.round(row.summary.commissionCents))}</p><p className="mt-1 text-xs text-slate-500">{row.summary.orderCount} shipped order{row.summary.orderCount === 1 ? '' : 's'}</p><details className="mt-2 text-xs text-slate-600"><summary className="cursor-pointer text-teal-800">Calculation details</summary><p className="mt-2">Sales: {usd(Math.round(row.summary.revenueCents))}</p><p>Gross profit: {usd(Math.round(row.summary.grossProfitCents))}</p><p className="mt-1">{row.payout ? 'Saved monthly payout amount.' : 'Uses the commission rate recorded for each shipped order.'}</p>{row.cogsEstimated && !row.payout ? <p className="mt-1 text-amber-800">Some order costs are estimated. Review before paying.</p> : null}</details></td>
-                <td data-label="Status" className="px-4 py-3"><span className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ${isPaid ? 'bg-emerald-50 text-emerald-800' : payable ? 'bg-amber-50 text-amber-800' : 'bg-slate-100 text-slate-600'}`}>{status}</span>{isPaid && row.payout?.paid_at ? <p className="mt-2 text-xs text-slate-500">{formatCentralDateTime(row.payout.paid_at)}</p> : null}{!isPaid && row.payout ? <p className="mt-2 text-xs text-slate-500">Amount locked</p> : null}</td>
-                <td data-label="Payment" className="rounded-r-xl px-4 py-3">{payable && canEdit ? <form action={action}><input type="hidden" name="return_to" value={returnTo} /><input type="hidden" name="sales_profile_id" value={row.salesProfileId ?? ''} /><input type="hidden" name="commission_month" value={commissionMonth} /><PendingSubmitButton className="btn-primary w-full" label="Mark commission paid" pendingLabel="Saving..." /></form> : <span className="text-sm text-slate-500">{isPaid ? 'Payment recorded' : !row.salesProfileId ? 'Historical record' : !isDue && row.amountOwedCents > 0 ? `Pay on ${dueDateLabel}` : !canEdit ? 'View only' : 'Nothing to pay'}</span>}</td>
+                <td data-label="Commission" className="px-4 py-3 text-right"><p className="font-semibold tabular-nums text-slate-950">{usd(Math.round(row.summary.commissionCents))}</p><p className="mt-1 text-xs text-slate-500">{row.summary.orderCount} eligible order{row.summary.orderCount === 1 ? '' : 's'}</p><details className="mt-2 text-xs text-slate-600"><summary className="cursor-pointer text-teal-800">Calculation details</summary><p className="mt-2">Sales: {usd(Math.round(row.summary.revenueCents))}</p><p>Gross profit: {usd(Math.round(row.summary.grossProfitCents))}</p><p className="mt-1">Uses the commission rate recorded for each shipped order. The paid-invoice requirement applies to earnings from September 30, 2026.</p>{row.cogsEstimated ? <p className="mt-1 text-amber-800">Some order costs are estimated. Review before paying.</p> : null}</details></td>
+                <td data-label="Status" className="px-4 py-3"><span className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ${isPaid ? 'bg-emerald-50 text-emerald-800' : payable ? 'bg-amber-50 text-amber-800' : 'bg-slate-100 text-slate-600'}`}>{status}</span>{isPaid && row.payout?.paid_at ? <p className="mt-2 text-xs text-slate-500">{formatCentralDateTime(row.payout.paid_at)}</p> : null}{row.amountOwedCents > 0 ? <p className="mt-2 text-xs text-slate-500">{usd(row.amountOwedCents)} payable</p> : null}{row.pendingInvoiceCount > 0 ? <p className="mt-2 text-xs text-amber-800">{usd(Math.round(row.pendingInvoiceCents))} on hold · {row.pendingInvoiceCount} invoice{row.pendingInvoiceCount === 1 ? '' : 's'}</p> : null}</td>
+                <td data-label="Payment" className="rounded-r-xl px-4 py-3">{payable && canEdit ? <form action={action}><input type="hidden" name="return_to" value={returnTo} /><input type="hidden" name="sales_profile_id" value={row.salesProfileId ?? ''} /><input type="hidden" name="commission_month" value={commissionMonth} /><input type="hidden" name="payment_amount_cents" value={row.amountOwedCents} /><PendingSubmitButton className="btn-primary w-full" label="Mark commission paid" pendingLabel="Saving..." /></form> : <span className="text-sm text-slate-500">{isPaid ? 'Payment recorded' : !row.salesProfileId ? 'Historical record' : !isDue && row.amountOwedCents > 0 ? `Pay on ${dueDateLabel}` : !canEdit ? 'View only' : 'Nothing to pay'}</span>}</td>
               </tr>;
             })}</tbody>
           </table>

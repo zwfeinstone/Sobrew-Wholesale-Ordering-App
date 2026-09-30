@@ -25,6 +25,10 @@ async function fillLogin(page: Page) {
   await page.getByLabel('Temporary password', { exact: true }).fill('test-password-123');
 }
 
+async function fillInvoiceEmail(page: Page) {
+  await page.getByRole('textbox', { name: 'Invoice email', exact: true }).fill('billing@example.test');
+}
+
 async function fillAddress(page: Page) {
   await page.getByRole('textbox', { name: /^Street address/ }).fill('105 Johnson Dr');
   await page.getByRole('textbox', { name: /^Apartment, suite, or building/ }).fill('Suite 2');
@@ -45,6 +49,7 @@ async function advanceToReview(page: Page) {
 test('requires a complete address, preserves input, and shows billing/delivery details on review', async ({ page }, testInfo) => {
   await openFixture(page);
   await fillLogin(page);
+  await fillInvoiceEmail(page);
   await page.getByRole('button', { name: 'Next', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Step 1: Create center + first login', exact: true })).toBeVisible();
   expect(await page.getByRole('textbox', { name: /^Street address/ }).evaluate((element) => (element as HTMLInputElement).validity.valueMissing)).toBe(true);
@@ -68,7 +73,9 @@ test('requires a complete address, preserves input, and shows billing/delivery d
   await expect(page.locator('address')).toContainText('Suite 2');
   await expect(page.locator('address')).toContainText('Somerville, TN 38068');
   await expect(page.getByText('Blank order guide. Products can be added later.', { exact: true })).toBeVisible();
-  await expect(page.getByText('QuickBooks invoices will use this address and buyer@example.test.', { exact: true })).toBeVisible();
+  await expect(page.getByText('QuickBooks invoices will use this address.', { exact: true })).toBeVisible();
+  await expect(page.getByText('billing@example.test', { exact: true })).toBeVisible();
+  await expect(page.getByText('buyer@example.test', { exact: true })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await page.screenshot({ path: testInfo.outputPath('customer-review.png'), fullPage: true });
 });
@@ -77,6 +84,7 @@ test('locks customer creation immediately and posts the complete address only on
   await openFixture(page);
   await fillLogin(page);
   await fillAddress(page);
+  await fillInvoiceEmail(page);
   await advanceToReview(page);
   await page.getByRole('button', { name: 'Create customer & send welcome', exact: true }).dblclick();
   await expect(page.getByRole('button', { name: 'Creating & linking customer…', exact: true })).toBeDisabled();
@@ -87,7 +95,7 @@ test('locks customer creation immediately and posts the complete address only on
   });
   const submissions = await page.evaluate(() => window.customerWizardFixture.submissions);
   expect(submissions).toHaveLength(1);
-  expect(submissions[0]).toMatchObject({ center_name: 'New Customer', login_email: 'buyer@example.test', address1: '105 Johnson Dr', address2: 'Suite 2', city: 'Somerville', state: 'TN', zip: '38068', selected_json: '[]' });
+  expect(submissions[0]).toMatchObject({ center_name: 'New Customer', login_email: 'buyer@example.test', billing_email: 'billing@example.test', billing_email_cc: '', address1: '105 Johnson Dr', address2: 'Suite 2', city: 'Somerville', state: 'TN', zip: '38068', selected_json: '[]' });
   // Simulate restoring a native POST form from the browser's back/forward cache.
   await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true })));
   await expect(page.getByRole('button', { name: 'Create customer & send welcome', exact: true })).toBeEnabled();
@@ -100,6 +108,7 @@ test('validates optional invoice CC emails and keeps them through review and sub
   await openFixture(page);
   await fillLogin(page);
   await fillAddress(page);
+  await fillInvoiceEmail(page);
   const cc = page.getByRole('textbox', { name: 'Invoice CC emails (optional)', exact: true });
   await cc.fill('accounting@example.test, invalid-email');
   await page.getByRole('button', { name: 'Next', exact: true }).click();
@@ -124,5 +133,39 @@ test('validates optional invoice CC emails and keeps them through review and sub
   await page.getByRole('button', { name: 'Create customer & send welcome', exact: true }).click();
   const submissions = await page.evaluate(() => window.customerWizardFixture.submissions);
   expect(submissions).toHaveLength(1);
-  expect(submissions[0]).toMatchObject({ billing_email_cc: enteredCc, login_email: 'buyer@example.test' });
+  expect(submissions[0]).toMatchObject({ billing_email: 'billing@example.test', billing_email_cc: enteredCc, login_email: 'buyer@example.test' });
+});
+
+test('requires an explicit invoice email independently of the login and preserves it through review', async ({ page }) => {
+  await openFixture(page);
+  await fillLogin(page);
+  await fillAddress(page);
+  const invoiceEmail = page.getByRole('textbox', { name: 'Invoice email', exact: true });
+  await expect(invoiceEmail).toHaveValue('');
+  await page.getByRole('button', { name: 'Next', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Step 1: Create center + first login', exact: true })).toBeVisible();
+  expect(await invoiceEmail.evaluate((element) => (element as HTMLInputElement).validity.valueMissing)).toBe(true);
+
+  await invoiceEmail.fill('invalid-email');
+  await page.getByRole('button', { name: 'Next', exact: true }).click();
+  expect(await invoiceEmail.evaluate((element) => (element as HTMLInputElement).validity.typeMismatch)).toBe(true);
+  await invoiceEmail.fill('billing@local');
+  await page.getByRole('button', { name: 'Next', exact: true }).click();
+  await expect(page.getByRole('alert')).toBeVisible();
+  expect(await page.evaluate(() => window.customerWizardFixture.submissions)).toEqual([]);
+
+  await invoiceEmail.fill('Billing@Example.test');
+  await page.getByRole('textbox', { name: 'First login email', exact: true }).fill('other-buyer@example.test');
+  await expect(invoiceEmail).toHaveValue('Billing@Example.test');
+  await advanceToReview(page);
+  await expect(page.getByText('billing@example.test', { exact: true })).toBeVisible();
+  await expect(page.getByText('other-buyer@example.test', { exact: true })).toBeVisible();
+  await expect(page.getByText('No CC recipients.', { exact: true })).toBeVisible();
+  for (let step = 0; step < 3; step += 1) await page.getByRole('button', { name: 'Back', exact: true }).click();
+  await expect(invoiceEmail).toHaveValue('Billing@Example.test');
+  await advanceToReview(page);
+  await page.getByRole('button', { name: 'Create customer & send welcome', exact: true }).click();
+  expect(await page.evaluate(() => window.customerWizardFixture.submissions)).toEqual([
+    expect.objectContaining({ billing_email: 'Billing@Example.test', login_email: 'other-buyer@example.test', billing_email_cc: '' }),
+  ]);
 });

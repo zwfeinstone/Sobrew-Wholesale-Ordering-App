@@ -1,5 +1,17 @@
 import { describe, expect, it } from 'vitest';
-import { parseBillingEmailCc } from './billing-email';
+import { parseBillingEmail, parseBillingEmailCc } from './billing-email';
+
+describe('primary invoice recipient parsing', () => {
+  it('normalizes a deliberately entered single address', () => {
+    expect(parseBillingEmail('  Accounting+Invoices@Example.com  ')).toBe('accounting+invoices@example.com');
+  });
+
+  it.each([null, undefined, '', '   ', 'invalid', 'a@example.com, b@example.com',
+    'a@example.com;b@example.com', 'Accounts <a@example.com>', 'a@example.com\r\nBcc: b@example.com',
+    ['a@example.com'], `${'a'.repeat(65)}@example.com`])('rejects a missing or invalid primary recipient: %j', (value) => {
+    expect(() => parseBillingEmail(value)).toThrow('Enter one valid invoice email address');
+  });
+});
 
 describe('billing CC recipient parsing', () => {
   it('normalizes common separators and deduplicates addresses without changing their order', () => {

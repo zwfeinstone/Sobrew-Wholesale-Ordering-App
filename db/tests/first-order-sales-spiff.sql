@@ -1,4 +1,4 @@
--- Run after the first_order_sales_spiff migration. All fixtures roll back.
+-- Run after the paid_invoice_sales_compensation migration. All fixtures roll back.
 begin;
 do $test$
 declare
@@ -9,6 +9,7 @@ declare
   v_unknown_center uuid := gen_random_uuid();
   v_non_sales_center uuid := gen_random_uuid();
   v_late_center uuid := gen_random_uuid();
+  v_historical_late_center uuid := gen_random_uuid();
   v_historical_center uuid := gen_random_uuid();
   v_failed_center uuid := gen_random_uuid();
   v_portal_center uuid := gen_random_uuid();
@@ -36,6 +37,7 @@ begin
     (v_unknown_center, 'SPIFF regression: unknown creator'),
     (v_non_sales_center, 'SPIFF regression: non-sales creator'),
     (v_late_center, 'SPIFF regression: delayed attribution'),
+    (v_historical_late_center, 'SPIFF regression: historical delayed attribution'),
     (v_historical_center, 'SPIFF regression: historical customer'),
     (v_failed_center, 'SPIFF regression: rolled-back order'),
     (v_portal_center, 'SPIFF regression: portal checkout');
@@ -60,14 +62,15 @@ begin
 
   -- 00:30 UTC Monday is still Sunday in Chicago: payroll belongs to the prior week.
   insert into public.orders(id, center_id, user_id, submission_id, subtotal_cents, created_at)
-    values (v_order, v_center, v_other_rep, v_submission, 2500, '2026-09-21 00:30:00+00');
+    values (v_order, v_center, v_other_rep, v_submission, 2500, '2026-10-05 00:30:00+00');
   select spiff_id into v_spiff from private.customer_first_order_spiffs where center_id = v_center;
   if v_spiff is null or not exists (
     select 1 from public.admin_weekly_sales_spiffs where id = v_spiff
       and profile_id = v_creator and amount_cents = 10000 and paid_at is null and paid_by is null
-      and week_start_date = '2026-09-14' and week_end_date = '2026-09-20'
+      and first_order_id = v_order
+      and week_start_date = '2026-09-28' and week_end_date = '2026-10-04'
       and notes like '%' || v_order::text || '%'
-  ) then raise exception 'First-order amount, creator, unpaid status, notes, or Chicago week is wrong'; end if;
+  ) then raise exception 'First-order amount, creator, unpaid status, provenance, notes, or Chicago week is wrong'; end if;
   if not exists(select 1 from public.admin_audit_log
     where action = 'first_order_sales_spiff_awarded' and after_value->>'payment_id' = v_spiff::text
   ) then raise exception 'Automatic SPIFF audit is missing'; end if;
@@ -83,7 +86,7 @@ begin
 
   -- A separate customer earns a separate award in the same payroll week.
   insert into public.orders(id, center_id, user_id, created_at)
-    values (v_other_order, v_second_center, v_creator, '2026-09-21 00:30:00+00');
+    values (v_other_order, v_second_center, v_creator, '2026-10-05 00:30:00+00');
   if not exists(select 1 from private.customer_first_order_spiffs
     where center_id = v_second_center and sales_profile_id = v_creator and spiff_id is not null
   ) or (select count(*) from public.admin_weekly_sales_spiffs) <> v_first_count + 2 then
@@ -93,6 +96,9 @@ begin
   -- Deletion/restoration and a paid payroll record preserve the single award.
   update public.admin_weekly_sales_spiffs set paid_at = now(), paid_by = v_creator where id = v_spiff;
   perform public.move_order_to_trash(v_order, 'SPIFF regression');
+  if not exists (select 1 from public.admin_weekly_sales_spiffs
+    where id = v_spiff and first_order_id = v_order and paid_at is not null
+  ) then raise exception 'Order deletion erased SPIFF provenance or paid history'; end if;
   select id into v_trash from public.order_trash where order_id = v_order and restored_at is null;
   perform public.restore_order_from_trash(v_trash);
   if (select spiff_id from private.customer_first_order_spiffs where center_id = v_center) <> v_spiff
@@ -111,14 +117,20 @@ begin
     where center_id in (v_unknown_center, v_non_sales_center) and spiff_id is not null
   ) then raise exception 'Current assignee or non-sales creator incorrectly earned a SPIFF'; end if;
 
-  -- Account creation can finish its audit just after the first order arrives.
-  insert into public.orders(center_id, user_id) values (v_late_center, v_creator);
+  -- Account creation can finish its audit after the first order. The policy
+  -- starts inclusively at September 30 midnight in America/Chicago.
+  insert into public.orders(center_id, user_id, created_at)
+    values (v_late_center, v_creator, '2026-09-30 05:00:00+00');
   insert into public.admin_audit_log(action, actor_profile_id, after_value)
     values ('center_created', v_creator,
       jsonb_build_object('center_id', v_late_center, 'sales_assigned_to_creator', true));
   if not exists(select 1 from private.customer_first_order_spiffs
     where center_id = v_late_center and spiff_id is not null
   ) then raise exception 'Delayed account attribution lost the first-order SPIFF'; end if;
+  if not exists(select 1 from private.customer_first_order_spiffs r
+    join public.admin_weekly_sales_spiffs s on s.id = r.spiff_id
+    where r.center_id = v_late_center and s.first_order_id = r.first_order_id
+  ) then raise exception 'Delayed account attribution lost SPIFF provenance'; end if;
 
   -- Prior customers are seeded as ineligible by the migration, including trash.
   insert into private.customer_first_order_spiffs(center_id, first_order_id, first_order_at, eligible)
@@ -161,6 +173,18 @@ begin
     raise exception 'Portal checkout retry duplicated the SPIFF';
   end if;
 
+  -- A late creator audit must not bring an older first order under the new rule.
+  insert into public.orders(center_id, user_id, created_at)
+    values (v_historical_late_center, v_creator, '2026-09-30 04:59:59.999999+00');
+  insert into public.admin_audit_log(action, actor_profile_id, after_value)
+    values ('center_created', v_creator,
+      jsonb_build_object('center_id', v_historical_late_center, 'sales_assigned_to_creator', true));
+  if not exists(select 1 from private.customer_first_order_spiffs r
+    join public.admin_weekly_sales_spiffs s on s.id = r.spiff_id
+    where r.center_id = v_historical_late_center and s.first_order_id is null
+      and s.amount_cents = 10000 and s.paid_at is null
+  ) then raise exception 'Historical delayed award was retroactively invoice-gated'; end if;
+
   -- Neither customers, sales reps nor API service clients can mint/reset receipts.
   if has_table_privilege('authenticated', 'private.customer_first_order_spiffs', 'INSERT,UPDATE,DELETE')
     or has_table_privilege('anon', 'private.customer_first_order_spiffs', 'INSERT,UPDATE,DELETE')
@@ -170,5 +194,5 @@ begin
   then raise exception 'SPIFF internals are exposed to API callers'; end if;
 end;
 $test$;
-select 'PASS: first-order SPIFF amount, attribution, payroll week, samples, retries, repeat orders, recovery, delayed attribution, historical customers, rollback and access controls' as result;
+select 'PASS: first-order SPIFF amount, attribution, prospective payment cutoff, provenance, payroll week, samples, retries, repeat orders, recovery, delayed attribution, historical customers, rollback and access controls' as result;
 rollback;

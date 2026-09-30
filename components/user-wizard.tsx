@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { parseBillingEmailCc } from '@/lib/billing-email';
+import { parseBillingEmail, parseBillingEmailCc } from '@/lib/billing-email';
 import { customerAddressError, US_ADDRESS_STATES, type CustomerAddress } from '@/lib/customer-address';
 import { productCategoryLabel, groupProductsByCategory } from '@/lib/product-categories';
 
@@ -11,6 +11,7 @@ type WizardState = CustomerAddress & {
   center_name: string;
   center_notes: string;
   login_email: string;
+  billing_email: string;
   billing_email_cc: string;
   login_name: string;
   password: string;
@@ -34,6 +35,7 @@ export function UserWizard({ products }: { products: Product[] }) {
     center_name: '',
     center_notes: '',
     login_email: '',
+    billing_email: '',
     billing_email_cc: '',
     login_name: '',
     password: '',
@@ -45,6 +47,13 @@ export function UserWizard({ products }: { products: Product[] }) {
   });
   const selectedProducts = useMemo(() => products.filter((product) => selected[product.id]), [products, selected]);
   const groupedProducts = useMemo(() => groupProductsByCategory(products), [products]);
+  const billingEmail = useMemo(() => {
+    try {
+      return { recipient: parseBillingEmail(state.billing_email), error: '' };
+    } catch (error) {
+      return { recipient: '', error: error instanceof Error ? error.message : 'Enter a valid invoice email address.' };
+    }
+  }, [state.billing_email]);
   const billingCc = useMemo(() => {
     try {
       return { recipients: parseBillingEmailCc(state.billing_email_cc), error: '' };
@@ -70,8 +79,8 @@ export function UserWizard({ products }: { products: Product[] }) {
     if (!formRef.current?.reportValidity()) return;
     if (step === 1) {
       const addressError = customerAddressError(state);
-      if (addressError || billingCc.error || !state.center_name.trim() || state.password.trim().length < 8) {
-        setError(addressError || billingCc.error || 'Enter a center name and a temporary password of at least 8 characters.');
+      if (addressError || billingEmail.error || billingCc.error || !state.center_name.trim() || state.password.trim().length < 8) {
+        setError(addressError || billingEmail.error || billingCc.error || 'Enter a center name and a temporary password of at least 8 characters.');
         return;
       }
     }
@@ -91,9 +100,9 @@ export function UserWizard({ products }: { products: Product[] }) {
         return;
       }
       const addressError = customerAddressError(state);
-      if (addressError || billingCc.error) {
+      if (addressError || billingEmail.error || billingCc.error) {
         event.preventDefault();
-        setError(addressError || billingCc.error);
+        setError(addressError || billingEmail.error || billingCc.error);
         setStep(1);
         return;
       }
@@ -103,6 +112,7 @@ export function UserWizard({ products }: { products: Product[] }) {
       <input type="hidden" name="center_name" value={state.center_name} />
       <input type="hidden" name="center_notes" value={state.center_notes} />
       <input type="hidden" name="login_email" value={state.login_email} />
+      <input type="hidden" name="billing_email" value={state.billing_email} />
       <input type="hidden" name="billing_email_cc" value={state.billing_email_cc} />
       <input type="hidden" name="login_name" value={state.login_name} />
       <input type="hidden" name="password" value={state.password} />
@@ -128,7 +138,7 @@ export function UserWizard({ products }: { products: Product[] }) {
         <div className="space-y-4">
           <div>
             <h2 className="text-xl font-semibold">Step 1: Create center + first login</h2>
-            <p className="mt-1 text-sm text-slate-500">Add the customer’s address and first login. We’ll save the address for billing and delivery, link the customer to QuickBooks, and send their welcome email.</p>
+            <p className="mt-1 text-sm text-slate-500">Add the customer’s address, first login, and invoice recipients. We’ll save the billing details in QuickBooks and send the welcome email to the first login.</p>
           </div>
           <input
             className="input"
@@ -194,7 +204,24 @@ export function UserWizard({ products }: { products: Product[] }) {
             value={state.login_email}
             onChange={(event) => setState({ ...state, login_email: event.target.value })}
           />
-          <div className="rounded-2xl border border-slate-200 bg-slate-50/60 p-4 sm:p-5">
+          <fieldset className="space-y-4 rounded-2xl border border-slate-200 bg-slate-50/60 p-4 sm:p-5">
+            <legend className="px-2 text-sm font-semibold text-slate-900">Who should receive invoices?</legend>
+            <p id="invoice-email-help" className="text-sm text-slate-600">Choose the billing contact for invoices sent when orders ship. We’ll save this email in QuickBooks. The welcome email goes to the first login email above.</p>
+            <label className="block space-y-2 text-sm font-medium text-slate-700">
+              <span>Invoice email <span aria-hidden="true">*</span></span>
+              <input
+                className="input"
+                type="email"
+                required
+                placeholder="billing@example.com"
+                aria-describedby="invoice-email-help"
+                autoComplete="off"
+                autoCapitalize="none"
+                spellCheck={false}
+                value={state.billing_email}
+                onChange={(event) => setState({ ...state, billing_email: event.target.value })}
+              />
+            </label>
             <label className="block space-y-2 text-sm font-medium text-slate-700">
               <span>Invoice CC emails <span className="font-normal text-slate-500">(optional)</span></span>
               <textarea
@@ -207,8 +234,8 @@ export function UserWizard({ products }: { products: Product[] }) {
                 onChange={(event) => setState({ ...state, billing_email_cc: event.target.value })}
               />
             </label>
-            <p id="invoice-cc-help" className="mt-2 text-sm text-slate-500">Add up to 20 addresses, separated by commas, semicolons, or new lines. They’ll receive invoice copies. The welcome email goes only to the first login email.</p>
-          </div>
+            <p id="invoice-cc-help" className="text-sm text-slate-500">Add up to 20 addresses, separated by commas, semicolons, or new lines. They’ll receive invoice copies through QuickBooks.</p>
+          </fieldset>
           <input
             className="input"
             name="password"
@@ -281,7 +308,7 @@ export function UserWizard({ products }: { products: Product[] }) {
         <div className="space-y-4">
           <div>
             <h2 className="text-xl font-semibold">Step 4: Review & Create</h2>
-            <p className="mt-1 text-sm text-slate-500">Double-check the center details, first login, and shared catalog before creating the center.</p>
+            <p className="mt-1 text-sm text-slate-500">Double-check the center details, first login, invoice recipients, and shared catalog before creating the center.</p>
           </div>
           <div className="grid gap-3 md:grid-cols-2">
             <div className="rounded-2xl border border-slate-200 bg-white/70 p-4">
@@ -301,11 +328,21 @@ export function UserWizard({ products }: { products: Product[] }) {
                 {state.address2 ? <>{state.address2}<br /></> : null}
                 {state.city}, {state.state} {state.zip}
               </address>
-              <p className="mt-3 text-sm text-slate-500">QuickBooks invoices will use this address and {state.login_email}.</p>
-              <div className="mt-4 border-t border-slate-200 pt-3">
-                <p className="text-xs uppercase tracking-[0.18em] text-slate-500">Invoice CC emails</p>
-                <p className="mt-2 break-words text-sm text-slate-700">{billingCc.recipients.join(', ') || 'No CC recipients.'}</p>
-              </div>
+              <p className="mt-3 text-sm text-slate-500">QuickBooks invoices will use this address.</p>
+            </div>
+            <div className="rounded-2xl border border-slate-200 bg-white/70 p-4 md:col-span-2">
+              <p className="text-xs uppercase tracking-[0.18em] text-slate-500">Invoice recipients</p>
+              <dl className="mt-3 space-y-3 text-sm">
+                <div>
+                  <dt className="font-medium text-slate-900">To</dt>
+                  <dd className="mt-1 break-words text-slate-700">{billingEmail.recipient}</dd>
+                </div>
+                <div>
+                  <dt className="font-medium text-slate-900">CC</dt>
+                  <dd className="mt-1 break-words text-slate-700">{billingCc.recipients.join(', ') || 'No CC recipients.'}</dd>
+                </div>
+              </dl>
+              <p className="mt-3 text-sm text-slate-500">These recipients will receive invoices through QuickBooks when orders ship.</p>
             </div>
             <div className="rounded-2xl border border-slate-200 bg-white/70 p-4 md:col-span-2">
               <p className="text-xs uppercase tracking-[0.18em] text-slate-500">Assigned products</p>

@@ -25,7 +25,7 @@ let failTable: string | null;
 function request(changes: Record<string, string> = {}) {
   const form = new FormData();
   for (const [key, value] of Object.entries({
-    center_name: '  New Customer  ', login_email: '  Buyer@Example.com  ', login_name: 'Buyer', password: 'test-password-123',
+    center_name: '  New Customer  ', login_email: '  Buyer@Example.com  ', billing_email: '  Accounting@Example.com  ', login_name: 'Buyer', password: 'test-password-123',
     center_notes: 'Test note', address1: '  105 Johnson Dr  ', address2: '', city: ' Somerville ', state: 'tn', zip: '38068', selected_json: '[]', ...changes,
   })) form.set(key, value);
   return new Request('https://portal.example.test/api/admin/users/new', { method: 'POST', body: form });
@@ -93,7 +93,7 @@ describe('new customer creation', () => {
     expect(response.status).toBe(303);
     expect(response.headers.get('location')).toBe('https://portal.example.test/admin/users/center-1?success=center_created');
     const center = operations.find((row) => row.table === 'centers' && row.operation === 'insert');
-    expect(center?.values).toMatchObject({ name: 'New Customer', billing_email: 'buyer@example.com', billing_email_cc: [], billing_email_cc_reviewed_at: expect.any(String), billing_address1: '105 Johnson Dr', billing_address2: null, billing_city: 'Somerville', billing_state: 'TN', billing_zip: '38068' });
+    expect(center?.values).toMatchObject({ name: 'New Customer', billing_email: 'accounting@example.com', billing_email_cc: [], billing_email_cc_reviewed_at: expect.any(String), invoice_recipients_configured_at: expect.any(String), billing_address1: '105 Johnson Dr', billing_address2: null, billing_city: 'Somerville', billing_state: 'TN', billing_zip: '38068' });
     expect(operations.find((row) => row.table === 'center_locations')?.values).toMatchObject({ center_id: 'center-1', name: 'New Customer', address1: '105 Johnson Dr', address2: null, city: 'Somerville', state: 'TN', zip: '38068', is_active: true });
     expect(events.indexOf('center_locations:insert')).toBeLessThan(events.indexOf('auth'));
     expect(events.indexOf('profiles:upsert')).toBeLessThan(events.indexOf('quickbooks'));
@@ -110,6 +110,31 @@ describe('new customer creation', () => {
     const response = await POST(request({ address2: ' Suite 2 ', zip: '38068-1234' }));
     expect(response.headers.get('location')).toContain('success=center_created');
     expect(operations.find((row) => row.table === 'center_locations')?.values).toMatchObject({ address2: 'Suite 2', zip: '38068-1234' });
+  });
+
+  it.each(['', '  ', 'invalid', 'one@example.com, two@example.com', 'one@example.com\nCC: two@example.com'])('requires an independent valid invoice email before side effects: %j', async (billing_email) => {
+    const response = await POST(request({ billing_email }));
+    expect(response.headers.get('location')).toContain('error=billing_email_invalid');
+    expect(mocks.from).not.toHaveBeenCalled();
+    expect(mocks.createUser).not.toHaveBeenCalled();
+    expect(mocks.sync).not.toHaveBeenCalled();
+    expect(mocks.welcome).not.toHaveBeenCalled();
+  });
+
+  it('does not use a login email when an older wizard omits the invoice field', async () => {
+    const original = request();
+    const form = await original.formData();
+    form.delete('billing_email');
+    const response = await POST(new Request(original.url, { method: 'POST', body: form }));
+    expect(response.headers.get('location')).toContain('error=billing_email_invalid');
+    expect(mocks.from).not.toHaveBeenCalled();
+  });
+
+  it('allows deliberately choosing the login email without changing any older customers', async () => {
+    await POST(request({ billing_email: 'buyer@example.com' }));
+    expect(operations.find((row) => row.table === 'centers' && row.operation === 'insert')?.values)
+      .toMatchObject({ billing_email: 'buyer@example.com', invoice_recipients_configured_at: expect.any(String) });
+    expect(operations.filter((row) => row.table === 'centers').map((row) => row.operation)).toEqual(['insert']);
   });
 
   it.each(['', '  , ; \n '])('allows empty optional invoice CC: %j', async (billing_email_cc) => {

@@ -45,7 +45,7 @@ vi.mock('@/lib/supabase/admin', () => ({ getSupabaseAdmin: () => ({
   },
 }) }));
 
-import { createMissingQuickBooksProductsFromPortal, createQuickBooksCustomerFromPortalCenter, type QuickBooksPortalProduct } from './quickbooks';
+import { clearPortalCenterQuickBooksCustomer, createMissingQuickBooksProductsFromPortal, createQuickBooksCustomerFromPortalCenter, linkPortalCenterToQuickBooksCustomer, type QuickBooksPortalProduct } from './quickbooks';
 
 const centerId = '11111111-1111-4111-8111-111111111111';
 const productId = '22222222-2222-4222-8222-222222222222';
@@ -59,6 +59,11 @@ function provider({ loseFirstResponse = false, archivedItem = false, inactiveCus
     const body = init.body ? JSON.parse(String(init.body)) : null;
     const method = init.method || 'GET';
     requests.push({ url, body, method });
+    if (method === 'GET' && url.pathname.endsWith('/query')) {
+      return Response.json({ QueryResponse: { Customer: [{
+        Id: 'qbo-customer', DisplayName: 'Existing customer', PrimaryEmailAddr: { Address: 'quickbooks@example.test' }, Active: true,
+      }] } });
+    }
     if (method === 'GET' && url.pathname.endsWith('/customer/qbo-customer')) {
       const created = [...responses.values()].find((response) => response.Customer)?.Customer as Record<string, unknown> | undefined;
       return Response.json({ Customer: { Id: 'qbo-customer', DisplayName: 'Existing customer', ...created, Active: !inactiveCustomer } });
@@ -116,12 +121,65 @@ describe('QuickBooks creation and mapping', () => {
     expect(fixture.center).toMatchObject({ quickbooks_customer_id: 'qbo-customer', quickbooks_sync_error: null });
   });
 
+  it('preserves updated explicit invoice recipients when a creation retry returns an older customer email', async () => {
+    fixture.center.invoice_recipients_configured_at = '2026-09-30T12:00:00Z';
+    fixture.center.billing_email_cc = ['cc@example.test'];
+    fixture.failMappingOnce = true;
+    const qbo = provider();
+    await expect(createQuickBooksCustomerFromPortalCenter(centerId)).rejects.toThrow('mapping');
+    fixture.center.billing_email = 'updated-invoices@example.test';
+
+    await createQuickBooksCustomerFromPortalCenter(centerId);
+
+    expect(qbo.createdCount()).toBe(1);
+    expect(fixture.center).toMatchObject({
+      billing_email: 'updated-invoices@example.test', billing_email_cc: ['cc@example.test'],
+      invoice_recipients_configured_at: '2026-09-30T12:00:00Z', quickbooks_customer_id: 'qbo-customer',
+    });
+  });
+
+  it.each([false, true])('links a customer while preserving explicit recipients only when configured=%s', async (configured) => {
+    if (configured) fixture.center.invoice_recipients_configured_at = '2026-09-30T12:00:00Z';
+    fixture.center.billing_email_cc = ['cc@example.test'];
+    provider();
+
+    await linkPortalCenterToQuickBooksCustomer({ centerId, customerId: 'qbo-customer' });
+
+    expect(fixture.center.billing_email).toBe(configured ? 'buyer@example.test' : 'quickbooks@example.test');
+    expect(fixture.center.billing_email_cc).toEqual(['cc@example.test']);
+    expect(fixture.center.quickbooks_customer_id).toBe('qbo-customer');
+  });
+
+  it.each([false, true])('clears a customer mapping while preserving explicit recipients only when configured=%s', async (configured) => {
+    if (configured) fixture.center.invoice_recipients_configured_at = '2026-09-30T12:00:00Z';
+    fixture.center.billing_email_cc = ['cc@example.test'];
+    fixture.center.quickbooks_customer_id = 'qbo-customer';
+
+    await clearPortalCenterQuickBooksCustomer(centerId);
+
+    expect(fixture.center.billing_email).toBe(configured ? 'buyer@example.test' : null);
+    expect(fixture.center.billing_email_cc).toEqual(['cc@example.test']);
+    expect(fixture.center.quickbooks_customer_id).toBeNull();
+  });
+
   it('does not create another customer when the customer is already linked', async () => {
     fixture.center.quickbooks_customer_id = 'qbo-customer';
     const qbo = provider();
     expect((await createQuickBooksCustomerFromPortalCenter(centerId)).id).toBe('qbo-customer');
     expect(qbo.createdCount()).toBe(0);
     expect(qbo.requests.every(({ method }) => method === 'GET')).toBe(true);
+  });
+
+  it('does not report an already-linked new customer as ready if its explicit invoice email is missing', async () => {
+    fixture.center.quickbooks_customer_id = 'qbo-customer';
+    fixture.center.invoice_recipients_configured_at = '2026-09-30T12:00:00Z';
+    fixture.center.billing_email = null;
+    const qbo = provider();
+
+    await expect(createQuickBooksCustomerFromPortalCenter(centerId)).rejects.toThrow();
+
+    expect(qbo.requests).toHaveLength(0);
+    expect(fixture.center.quickbooks_customer_id).toBe('qbo-customer');
   });
 
   it('does not link an inactive customer from a historical creation response', async () => {

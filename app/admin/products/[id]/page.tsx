@@ -1,77 +1,51 @@
 import { notFound, redirect } from 'next/navigation';
 import { revalidatePath } from 'next/cache';
 import PendingSubmitButton from '@/components/pending-submit-button';
+import ProductRecipeFields, {
+  type ProductRecipeComponent,
+  type ProductRecipeDefaults,
+  type ProductRecipeInventoryItem,
+} from '@/components/product-recipe-fields';
 import StatusToast from '@/components/status-toast';
 import { requireAdminSectionView } from '@/lib/admin-permissions';
 import { requireAdminWriteAccess } from '@/lib/admin-write-access';
 import {
   INVENTORY_UNITS,
   centsFromDollars,
-  convertInventoryQuantity,
-  dollarsInputValueFromCents,
-  fixedRecipeCostCents,
-  formatInventoryQuantity,
-  isWholeCountPackagingComponentRole,
   isWholeCountQuantity,
+  type InventoryUnit,
+  convertInventoryQuantity,
+  fixedRecipeCostCents,
+  isWholeCountPackagingComponentRole,
   laborCostCents,
   normalizeInventoryNumber,
-  numericInputValue,
   roundWholeCountQuantity,
-  type InventoryUnit,
 } from '@/lib/inventory';
 import { PRODUCT_CATEGORY_OPTIONS, isProductCategory } from '@/lib/product-categories';
 import { syncSavedProductToQuickBooks } from '@/lib/product-create';
+import { EXTRA_COMPONENT_ROWS, RAW_COFFEE_ROWS, RAW_COFFEE_UNITS } from '@/lib/product-recipe';
 import { createMissingQuickBooksProductsFromPortal } from '@/lib/quickbooks';
 import { IMAGE_UPLOAD_ACCEPT, ImageUploadError, prepareImageUpload } from '@/lib/image-upload';
 import { createClient } from '@/lib/supabase/server';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { usd } from '@/lib/utils';
 
-const RAW_COFFEE_ROWS = 4;
-const EXTRA_COMPONENT_ROWS = 4;
-const RAW_COFFEE_UNITS: InventoryUnit[] = ['oz', 'lb'];
+type InventoryItemRow = ProductRecipeInventoryItem;
 
-type InventoryItemRow = {
+type RecipeComponentRow = ProductRecipeComponent & {
   id: string;
-  name: string;
-  sku: string | null;
-  item_type: string;
-  base_unit: InventoryUnit;
-  active: boolean;
-};
-
-type RecipeComponentRow = {
-  id: string;
-  inventory_item_id: string;
-  quantity: number | string;
-  unit: InventoryUnit;
-  component_role: string | null;
-  sort_order: number | null;
-  notes: string | null;
   inventory_items?: InventoryItemRow | InventoryItemRow[] | null;
 };
 
-type RecipeRow = {
+type RecipeRow = ProductRecipeDefaults & {
   id: string;
   product_id: string;
-  output_qty: number | string;
-  waste_percent: number | string;
-  labor_minutes: number | string;
-  labor_rate_cents: number | string;
-  shipping_label_qty: number | string;
-  branding_label_qty: number | string;
-  notes: string | null;
   product_recipe_components?: RecipeComponentRow[] | null;
 };
 
 function relatedOne<T>(value: T | T[] | null | undefined): T | null {
   if (Array.isArray(value)) return value[0] ?? null;
   return value ?? null;
-}
-
-function itemDisplayName(item: InventoryItemRow | undefined | null) {
-  if (!item) return 'Unknown item';
-  return item.sku ? `${item.name} (${item.sku})` : item.name;
 }
 
 function isBoxSku(value: string | null | undefined) {
@@ -289,16 +263,12 @@ export default async function ProductPage(
     supabase.from('inventory_lots').select('inventory_item_id,quantity_remaining,unit_cost_cents').limit(50000),
   ]);
   const inventoryItems = (items ?? []) as InventoryItemRow[];
-  const rawCoffeeItems = inventoryItems.filter((item) => item.item_type === 'raw_coffee');
-  const materialItems = inventoryItems.filter((item) => item.item_type === 'material_supply');
   const recipe = recipeData as RecipeRow | null;
   const recipeComponents = (recipe?.product_recipe_components ?? []).sort((a, b) => {
     const sortOrderA = Number.isFinite(Number(a.sort_order)) ? Number(a.sort_order) : Number.MAX_SAFE_INTEGER;
     const sortOrderB = Number.isFinite(Number(b.sort_order)) ? Number(b.sort_order) : Number.MAX_SAFE_INTEGER;
     return sortOrderA - sortOrderB || (a.component_role ?? '').localeCompare(b.component_role ?? '') || (a.notes ?? '').localeCompare(b.notes ?? '');
   });
-  const rawCoffeeComponents = recipeComponents.filter((component) => component.component_role === 'raw_coffee');
-  const componentByRole = new Map(recipeComponents.map((component) => [component.component_role ?? '', component]));
   const lotSummaryByItem = new Map<string, { remaining: number; avgCostCents: number }>();
   for (const item of inventoryItems) {
     const itemLots = (lots ?? []).filter((lot: any) => lot.inventory_item_id === item.id);
@@ -418,113 +388,12 @@ export default async function ProductPage(
 
         <form action={saveRecipe} className="space-y-5">
           <input type="hidden" name="product_id" value={product.id} />
-          <div className="grid gap-3 md:grid-cols-4">
-            <label className="space-y-2 text-sm font-medium text-slate-700">
-              Finished units this recipe makes
-              <input className="input" name="output_qty" min="0.0001" step="0.0001" type="number" defaultValue={numericInputValue(recipe?.output_qty) || '1'} />
-            </label>
-            <label className="space-y-2 text-sm font-medium text-slate-700">
-              Planned waste or shrink %
-              <input className="input" name="waste_percent" min="0" step="0.01" type="number" defaultValue={numericInputValue(recipe?.waste_percent) || '0'} />
-            </label>
-            <label className="space-y-2 text-sm font-medium text-slate-700">
-              Labor minutes
-              <input className="input" name="labor_minutes" min="0" step="0.01" type="number" defaultValue={numericInputValue(recipe?.labor_minutes)} />
-            </label>
-            <label className="space-y-2 text-sm font-medium text-slate-700">
-              Labor rate/hour
-              <input className="input" name="labor_rate" min="0" step="0.01" type="number" defaultValue={dollarsInputValueFromCents(recipe?.labor_rate_cents)} />
-            </label>
-          </div>
-
-          <div className="rounded-2xl border border-slate-200 bg-white/60 p-4">
-            <p className="text-sm font-semibold text-slate-950">Raw coffee used for this recipe output</p>
-            <div className="mt-3 space-y-3">
-              {Array.from({ length: RAW_COFFEE_ROWS }).map((_, index) => {
-                const existing = rawCoffeeComponents[index];
-                return (
-                  <div key={index} className="grid gap-3 md:grid-cols-[minmax(0,1fr)_10rem_8rem]">
-                    <select className="input" name={`raw_coffee_item_id_${index}`} defaultValue={existing?.inventory_item_id ?? ''}>
-                      <option value="">{index === 0 ? 'Select raw coffee' : 'Add another raw coffee'}</option>
-                      {rawCoffeeItems.map((item) => <option key={item.id} value={item.id}>{itemDisplayName(item)} - {formatInventoryQuantity(lotSummaryByItem.get(item.id)?.remaining ?? 0, item.base_unit)}</option>)}
-                    </select>
-                    <input className="input" name={`raw_coffee_qty_${index}`} min="0" step="0.0001" type="number" placeholder="Amount" defaultValue={numericInputValue(existing?.quantity)} />
-                    <select className="input" name={`raw_coffee_unit_${index}`} defaultValue={RAW_COFFEE_UNITS.includes(existing?.unit as InventoryUnit) ? existing?.unit : 'oz'}>
-                      {RAW_COFFEE_UNITS.map((unit) => <option key={unit} value={unit}>{unit}</option>)}
-                    </select>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-
-          <div className="rounded-2xl border border-slate-200 bg-white/60 p-4">
-            <p className="text-sm font-semibold text-slate-950">Tracked materials and supplies</p>
-            <div className="mt-3 grid gap-3 md:grid-cols-2">
-              {[
-                ['fraction_bag', 'Fraction bag'],
-                ['box', 'Box'],
-                ['filter_pack', 'Filter packs'],
-                ['bag', 'Bag'],
-              ].map(([role, label]) => {
-                const existing = componentByRole.get(role);
-                return (
-                  <div key={role} className="grid gap-3 rounded-2xl border border-slate-200 bg-white/70 p-3 sm:grid-cols-[minmax(0,1fr)_8rem]">
-                    <label className="space-y-2 text-sm font-medium text-slate-700">
-                      {label}
-                      <select className="input" name={`${role}_item_id`} defaultValue={existing?.inventory_item_id ?? ''}>
-                        <option value="">Select item</option>
-                        {materialItems.map((item) => <option key={item.id} value={item.id}>{itemDisplayName(item)}</option>)}
-                      </select>
-                    </label>
-                    <label className="space-y-2 text-sm font-medium text-slate-700">
-                      Qty
-                      <input className="input" name={`${role}_qty`} min="0" step="1" type="number" defaultValue={numericInputValue(existing?.quantity)} />
-                    </label>
-                  </div>
-                );
-              })}
-            </div>
-            <p className="mt-3 text-sm text-slate-500">Tape COGS is fixed at $0.05 per box quantity and does not create tape inventory.</p>
-          </div>
-
-          <div className="rounded-2xl border border-slate-200 bg-white/60 p-4">
-            <p className="text-sm font-semibold text-slate-950">Fixed non-stock labels</p>
-            <div className="mt-3 grid gap-3 md:grid-cols-2">
-              <label className="space-y-2 text-sm font-medium text-slate-700">
-                Shipping label quantity at $0.02 each
-                <input className="input" name="shipping_label_qty" min="0" step="0.0001" type="number" defaultValue={numericInputValue(recipe?.shipping_label_qty)} />
-              </label>
-              <label className="space-y-2 text-sm font-medium text-slate-700">
-                Branding label quantity at $0.04 each
-                <input className="input" name="branding_label_qty" min="0" step="0.0001" type="number" defaultValue={numericInputValue(recipe?.branding_label_qty)} />
-              </label>
-            </div>
-          </div>
-
-          <div className="rounded-2xl border border-slate-200 bg-white/60 p-4">
-            <p className="text-sm font-semibold text-slate-950">Additional tracked components</p>
-            <div className="mt-3 space-y-3">
-              {Array.from({ length: EXTRA_COMPONENT_ROWS }).map((_, index) => {
-                const extra = recipeComponents.filter((component) => component.component_role === 'material_supply')[index];
-                return (
-                  <div key={index} className="grid gap-3 md:grid-cols-[minmax(0,1fr)_8rem_7rem_minmax(0,1fr)]">
-                    <select className="input" name={`extra_item_id_${index}`} defaultValue={extra?.inventory_item_id ?? ''}>
-                      <option value="">Add another item</option>
-                      {materialItems.map((item) => <option key={item.id} value={item.id}>{itemDisplayName(item)}</option>)}
-                    </select>
-                    <input className="input" name={`extra_qty_${index}`} min="0" step="0.0001" type="number" placeholder="Qty" defaultValue={numericInputValue(extra?.quantity)} />
-                    <select className="input" name={`extra_unit_${index}`} defaultValue={extra?.unit ?? 'each'}>
-                      {INVENTORY_UNITS.map((unit) => <option key={unit.value} value={unit.value}>{unit.label}</option>)}
-                    </select>
-                    <input className="input" name={`extra_note_${index}`} placeholder="Note" defaultValue={extra?.notes ?? ''} />
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-
-          <textarea className="input min-h-20" name="recipe_notes" defaultValue={recipe?.notes ?? ''} placeholder="Recipe notes" />
+          <ProductRecipeFields
+            inventoryItems={inventoryItems}
+            recipe={recipe}
+            components={recipeComponents}
+            inventoryRemainingByItem={lotSummaryByItem}
+          />
           <PendingSubmitButton className="btn-primary w-full sm:w-auto" label="Save product recipe" pendingLabel="Saving..." />
         </form>
       </section>

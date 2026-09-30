@@ -19,9 +19,12 @@ import { snapshotOrderCogsForShipment } from '@/lib/order-cogs';
 import { donationCogsCentsForRevenue, processingFeeCentsForRevenue } from '@/lib/order-fees';
 import { getOrderItemSummaries } from '@/lib/order-items';
 import { orderAddressLabel, orderActivityLabel } from '@/lib/order-workflow';
+import { fulfillShippedOrderBilling } from '@/lib/quickbooks';
 import { shipmentTrackingLinesFromFormData } from '@/lib/shipment-tracking';
 import { createClient } from '@/lib/supabase/server';
 import { formatAppDateTime, usd } from '@/lib/utils';
+
+export const maxDuration = 300;
 
 const ORDER_STATUSES = ['New', 'Processing', 'Shipped'] as const;
 
@@ -136,7 +139,7 @@ async function shipOrder(formData: FormData) {
     .eq('id', id)
     .single();
   if (!order || order.archived_at) redirect(`/admin/orders/${id}?toast=ship_error`);
-  if (order.status === 'Shipped') redirect(`/admin/orders/${id}?toast=order_shipped`);
+  if (order.status === 'Shipped') redirect(`/admin/orders/${id}?toast=order_already_shipped`);
   if (fulfillmentMethod === 'carrier' && !manualTrackingRows.length) {
     redirect(`/admin/orders/${id}?toast=tracking_required`);
   }
@@ -288,26 +291,56 @@ async function shipOrder(formData: FormData) {
   }
 
   const claimedShipment = Boolean(orderUpdateResult.data?.length);
-  if (claimedShipment) {
-    const items = await getOrderItemSummaries(supabase, id);
-    const centerEmails = await getCenterLoginEmails(supabase, (order as any).center_id);
-    const orderProfile = relatedOne((order as any).profiles);
-    const orderCenter = relatedOne((order as any).centers);
-    const emailResult = await sendShippedEmail(
-      centerEmails.length ? centerEmails : orderProfile?.email,
-      items,
-      manualTrackingRows,
-      {
-        customerName: orderCenter?.name ?? orderProfile?.full_name,
-        orderId: id,
-        shippedAt,
-        notes: order.notes,
-      },
-    );
-    if (!emailResult.ok) redirect(`/admin/orders/${id}?toast=order_shipped_email_failed`);
-  }
+  if (!claimedShipment) redirect(`/admin/orders/${id}?toast=order_already_shipped`);
 
-  redirect(`/admin/orders/${id}?toast=order_shipped`);
+  const billing = (async () => {
+    try {
+      const billingResult = await fulfillShippedOrderBilling(id);
+      if (billingResult.status === 'error') {
+        console.error('[orders] shipment billing failed', { orderId: id, error: billingResult.error });
+      }
+      return billingResult.status;
+    } catch (error) {
+      console.error('[orders] shipment billing failed', { orderId: id, error });
+      return 'error' as const;
+    }
+  })();
+
+  const shippingEmail = (async () => {
+    try {
+      const items = await getOrderItemSummaries(supabase, id);
+      const centerEmails = await getCenterLoginEmails(supabase, (order as any).center_id);
+      const orderProfile = relatedOne((order as any).profiles);
+      const orderCenter = relatedOne((order as any).centers);
+      const emailResult = await sendShippedEmail(
+        centerEmails.length ? centerEmails : orderProfile?.email,
+        items,
+        manualTrackingRows,
+        {
+          customerName: orderCenter?.name ?? orderProfile?.full_name,
+          orderId: id,
+          shippedAt,
+          notes: order.notes,
+        },
+      );
+      return emailResult.ok;
+    } catch (error) {
+      console.error('[orders] shipment email failed', { orderId: id, error });
+      return false;
+    }
+  })();
+  const [billingStatus, shippingEmailSent] = await Promise.all([billing, shippingEmail]);
+
+  const toast = billingStatus === 'error'
+    ? shippingEmailSent ? 'order_shipped_billing_failed' : 'order_shipped_billing_and_email_failed'
+    : !shippingEmailSent
+      ? 'order_shipped_email_failed'
+      : billingStatus === 'paid'
+        ? 'order_shipped_paid'
+        : billingStatus === 'invoiced'
+          ? 'order_shipped_invoiced'
+          : 'order_shipped';
+  redirect(`/admin/orders/${id}?toast=${toast}`);
 }
 
 async function archiveOrder(formData: FormData) {
@@ -457,7 +490,12 @@ export default async function AdminOrderDetail(
     order_restored: ['Order restored. Linked recurring schedules remain paused.', 'success'],
     delivery_updated: ['Delivery address updated.', 'success'], delivery_error: ['Delivery address was not saved. Check the location and order status.', 'error'],
     notes_updated: ['Delivery notes saved.', 'success'], notes_error: ['Delivery notes were not saved.', 'error'],
-    order_shipped_email_failed: ['Order shipped, but the customer email failed. Do not ship it again; contact the customer directly.', 'error'],
+    order_already_shipped: ['This order is already shipped. No additional billing or shipping email was triggered.', 'success'],
+    order_shipped_paid: ['Order shipped, payment recorded through QuickBooks, and shipping email sent.', 'success'],
+    order_shipped_invoiced: ['Order shipped, QuickBooks PDF invoice sent, and shipping email sent.', 'success'],
+    order_shipped_email_failed: ['Order shipped, but the shipping email failed. Do not ship it again; contact the customer directly.', 'error'],
+    order_shipped_billing_failed: ['Order shipped and shipping email sent, but QuickBooks billing needs attention. Review Invoicing before retrying billing. Do not ship it again.', 'error'],
+    order_shipped_billing_and_email_failed: ['Order shipped, but QuickBooks billing needs attention and the shipping email failed. Review Invoicing and contact the customer. Do not ship it again.', 'error'],
   };
 
   return <div className="order-detail-workspace space-y-6">
