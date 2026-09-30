@@ -1,17 +1,25 @@
 'use client';
 
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { type FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 import {
   CartCatalogSync,
   CheckoutCartField,
   CheckoutCartSummary,
+  readCartItems,
   useCart,
   type CartProductSnapshot,
 } from '@/components/cart-client';
 import CheckoutSubmitButton from '@/components/checkout-submit-button';
 import { trackProductEvent } from '@/lib/analytics';
 import { checkoutSubmitState } from '@/lib/checkout-submit-state';
+import {
+  checkoutCartFingerprint,
+  readCheckoutSubmission,
+  resolveCheckoutSubmission,
+  submitCheckoutSubmission,
+} from '@/lib/checkout-submission';
 import {
   RECURRING_FREQUENCY_OPTIONS,
   formatNextRecurringOrderDate,
@@ -48,19 +56,22 @@ function locationAddressLines(location: CheckoutLocationOption) {
 
 function checkoutErrorMessage(initialToast: CheckoutFormProps['initialToast']) {
   if (initialToast === 'invalid_cart') return 'Your order changed. Review the items and try placing it again.';
-  if (initialToast === 'checkout_error') return 'We couldn’t place your order. Your draft is still here, so you can try again.';
+  if (initialToast === 'checkout_error') return 'We couldn’t confirm your order yet. Your draft is saved. Try again to check its status without placing a second order.';
   if (initialToast === 'location_required') return 'Choose a delivery location before placing your order.';
   return '';
 }
 
 export default function CheckoutForm({ actionUrl, cartStorageKey, initialToast, locations, products }: CheckoutFormProps) {
+  const router = useRouter();
   const [submissionId, setSubmissionId] = useState('');
+  const [clientError, setClientError] = useState('');
   const [isRecurring, setIsRecurring] = useState(false);
   const [frequency, setFrequency] = useState<RecurringFrequency>('2_weeks');
   const [selectedLocationId, setSelectedLocationId] = useState(locations.length === 1 ? locations[0].id : '');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const submittingRef = useRef(false);
-  const { itemCount, subtotalCents } = useCart(cartStorageKey);
+  const { itemCount, items, subtotalCents } = useCart(cartStorageKey);
+  const cartFingerprint = checkoutCartFingerprint(items);
   const selectedLocation = locations.find((location) => location.id === selectedLocationId) ?? null;
   const { disabled: checkoutDisabled, disabledLabel } = checkoutSubmitState({
     hasSelectedLocation: Boolean(selectedLocation),
@@ -68,15 +79,40 @@ export default function CheckoutForm({ actionUrl, cartStorageKey, initialToast, 
     locationCount: locations.length,
     submissionId,
   });
-  const errorMessage = checkoutErrorMessage(initialToast);
+  const errorMessage = clientError || checkoutErrorMessage(initialToast);
   const nextRecurringDate = useMemo(
     () => isRecurring ? formatNextRecurringOrderDate(frequency, new Date()) : '',
     [frequency, isRecurring]
   );
 
   useEffect(() => {
-    setSubmissionId(crypto.randomUUID());
-  }, []);
+    try {
+      const submission = resolveCheckoutSubmission(localStorage, cartStorageKey, readCartItems(cartStorageKey));
+      setSubmissionId(submission?.submissionId ?? '');
+      setClientError('');
+    } catch {
+      setSubmissionId('');
+      setClientError('Your browser couldn’t prepare checkout. Please reload this page before placing your order.');
+    }
+  }, [cartFingerprint, cartStorageKey]);
+
+  useEffect(() => {
+    const restoreCheckout = (event: PageTransitionEvent) => {
+      if (!event.persisted) return;
+      submittingRef.current = false;
+      setIsSubmitting(false);
+      try {
+        const submission = readCheckoutSubmission(localStorage, cartStorageKey);
+        if (submission?.status === 'completed') {
+          router.replace(`/portal/orders/${submission.orderId}?toast=order_placed`);
+        }
+      } catch {
+        // The regular preparation/submit path presents storage errors to the customer.
+      }
+    };
+    window.addEventListener('pageshow', restoreCheckout);
+    return () => window.removeEventListener('pageshow', restoreCheckout);
+  }, [cartStorageKey, router]);
 
   useEffect(() => {
     trackProductEvent('portal_checkout_started', { available_locations: locations.length });
@@ -85,6 +121,37 @@ export default function CheckoutForm({ actionUrl, cartStorageKey, initialToast, 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     if (checkoutDisabled || submittingRef.current) {
       event.preventDefault();
+      return;
+    }
+    try {
+      const currentItems = readCartItems(cartStorageKey);
+      if (!currentItems.length) {
+        event.preventDefault();
+        const previous = readCheckoutSubmission(localStorage, cartStorageKey);
+        router.replace(previous?.status === 'completed'
+          ? `/portal/orders/${previous.orderId}?toast=order_placed`
+          : '/portal/cart');
+        return;
+      }
+      if (checkoutCartFingerprint(currentItems) !== cartFingerprint) {
+        event.preventDefault();
+        setClientError('Your cart changed in another tab. Review your updated cart before placing this order.');
+        router.refresh();
+        return;
+      }
+      const submission = submitCheckoutSubmission(localStorage, cartStorageKey, currentItems);
+      if (!submission || submission.status === 'completed') {
+        event.preventDefault();
+        if (submission?.orderId) router.replace(`/portal/orders/${submission.orderId}?toast=order_placed`);
+        return;
+      }
+      // Native form posting reads the DOM immediately, before React flushes state updates.
+      const field = event.currentTarget.elements.namedItem('submission_id') as HTMLInputElement;
+      field.value = submission.submissionId;
+      setSubmissionId(submission.submissionId);
+    } catch {
+      event.preventDefault();
+      setClientError('Your browser couldn’t prepare checkout. Please reload this page before placing your order.');
       return;
     }
     submittingRef.current = true;
@@ -207,6 +274,11 @@ export default function CheckoutForm({ actionUrl, cartStorageKey, initialToast, 
         </div>
         <p>No payment is collected here. An invoice is sent when your order is processed.</p>
         <CheckoutSubmitButton disabled={checkoutDisabled} disabledLabel={disabledLabel} pending={isSubmitting} />
+        {isSubmitting ? (
+          <p className="checkout-pending-notice" role="status">
+            Sending your order… Please keep this page open. We’ll show your confirmation next.
+          </p>
+        ) : null}
       </section>
     </form>
   );

@@ -1,7 +1,7 @@
 import { notFound } from 'next/navigation';
 import { ClearCart, ReorderButton } from '@/components/cart-client';
 import { OrderStatusBadge, OrderStatusTimeline } from '@/components/order-status';
-import StatusToast from '@/components/status-toast';
+import OrderConfirmation from '@/components/order-confirmation';
 import { OrderNotes } from '@/components/order-notes';
 import { requireUser } from '@/lib/auth';
 import { cartStorageKeyForUser } from '@/lib/cart';
@@ -25,7 +25,7 @@ export default async function OrderDetail(
   const centerId = profile?.center_id ?? user.id;
   const cartStorageKey = cartStorageKeyForUser(user.id);
   const toast = typeof searchParams?.toast === 'string' ? searchParams.toast : '';
-  const shouldClearCart =
+  const isOrderConfirmation =
     toast === 'order_placed' ||
     toast === 'order_placed_recurring_created' ||
     toast === 'order_placed_recurring_error';
@@ -55,21 +55,26 @@ export default async function OrderDetail(
 
   return (
     <div className="space-y-6">
-      {shouldClearCart ? <ClearCart storageKey={cartStorageKey} /> : null}
-      {toast === 'order_placed' ? <StatusToast message="Order placed successfully." tone="success" /> : null}
-      {toast === 'order_placed_recurring_created' ? <StatusToast message="Order placed and recurring shipment created." tone="success" /> : null}
-      {toast === 'order_placed_recurring_error' ? (
-        <div className="checkout-critical-alert" role="alert">
-          Your order was placed, but the recurring shipment could not be created. This message will remain here while you review the order.
-        </div>
+      {isOrderConfirmation ? <ClearCart storageKey={cartStorageKey} submissionId={order.submission_id} orderId={order.id} /> : null}
+      {isOrderConfirmation ? (
+        <OrderConfirmation
+          orderId={order.id}
+          createdAt={order.created_at}
+          subtotalCents={order.subtotal_cents}
+          itemCount={(items ?? []).reduce((count, item) => count + item.qty, 0)}
+          shipping={order}
+          recurringStatus={toast === 'order_placed_recurring_created' ? 'created' : toast === 'order_placed_recurring_error' ? 'error' : 'none'}
+        />
       ) : null}
-      <section className="panel">
+      <section className={isOrderConfirmation ? 'card' : 'panel'}>
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <span className="eyebrow">Order Details</span>
+          {isOrderConfirmation ? <h2 className="text-xl font-semibold text-slate-950">Order summary</h2> : <span className="eyebrow">Order Details</span>}
           <OrderStatusBadge status={order.status} />
         </div>
-        <h1 className="page-title mt-4">Order from {formatOrderTimestamp(order.created_at)}</h1>
-        <p className="page-subtitle mt-3">Review the items and reorder the products that are still available to your center.</p>
+        {!isOrderConfirmation ? <>
+          <h1 className="page-title mt-4">Order from {formatOrderTimestamp(order.created_at)}</h1>
+          <p className="page-subtitle mt-3">Review the items and reorder the products that are still available to your center.</p>
+        </> : null}
         <div className="mt-6">
           <OrderStatusTimeline status={order.status} />
         </div>
@@ -84,7 +89,7 @@ export default async function OrderDetail(
           </div>
         ))}
       </div>
-      <div className="sticky-action-bar flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+      {!isOrderConfirmation ? <div className="sticky-action-bar flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <p className="text-sm uppercase tracking-[0.18em] text-slate-500">Subtotal</p>
           <p className="mt-2 text-3xl font-semibold text-slate-950">{usd(order.subtotal_cents)}</p>
@@ -95,7 +100,7 @@ export default async function OrderDetail(
           label="Reorder & review"
           className="btn-primary inline-flex w-full sm:w-auto"
         />
-      </div>
+      </div> : null}
     </div>
   );
 }

@@ -15,6 +15,11 @@ import {
   type ReorderMode,
 } from '@/lib/cart';
 import { createCartStore, EMPTY_CART_SNAPSHOT } from '@/lib/cart-store';
+import {
+  acknowledgeCheckoutSubmission,
+  checkoutCartFingerprint,
+  resetCheckoutSubmission,
+} from '@/lib/checkout-submission';
 
 export type Item = CartItem;
 export type { CartProductSnapshot, ReorderMode } from '@/lib/cart';
@@ -45,14 +50,17 @@ export function readCartItems(storageKey: string): Item[] {
 
 export function saveCartItems(storageKey: string, next: Item[]) {
   const normalized = normalizeCartItems(next);
+  const changed = checkoutCartFingerprint(readCartItems(storageKey)) !== checkoutCartFingerprint(normalized);
   localStorage.removeItem(LEGACY_CART_STORAGE_KEY);
   localStorage.setItem(storageKey, JSON.stringify(normalized));
+  if (changed) resetCheckoutSubmission(localStorage, storageKey);
   dispatchCartUpdate(storageKey);
 }
 
-export function clearCartItems(storageKey: string) {
+export function clearCartItems(storageKey: string, preserveSubmission = false) {
   localStorage.removeItem(storageKey);
   localStorage.removeItem(LEGACY_CART_STORAGE_KEY);
+  if (!preserveSubmission) resetCheckoutSubmission(localStorage, storageKey);
   dispatchCartUpdate(storageKey);
 }
 
@@ -84,9 +92,11 @@ function connectCartStore(storageKey: string, refresh: () => void) {
 
   window.addEventListener(CART_UPDATED_EVENT, syncItems);
   window.addEventListener('storage', syncItems);
+  window.addEventListener('pageshow', syncItems);
   return () => {
     window.removeEventListener(CART_UPDATED_EVENT, syncItems);
     window.removeEventListener('storage', syncItems);
+    window.removeEventListener('pageshow', syncItems);
   };
 }
 
@@ -113,6 +123,8 @@ export function useCart(storageKey: string) {
   const setQuantity = useSetCartQuantity(storageKey);
 
   const addReorderItems = useCallback((incoming: Item[], mode: ReorderMode) => {
+    // Reorder is an explicit new order intent, even when its quantities match the old cart.
+    resetCheckoutSubmission(localStorage, storageKey);
     saveCartItems(storageKey, applyReorderItems(readCartItems(storageKey), incoming, mode));
   }, [storageKey]);
 
@@ -562,9 +574,18 @@ export function CheckoutCartField({ storageKey }: { storageKey: string }) {
   return <input type="hidden" name="cart_json" value={JSON.stringify(items)} />;
 }
 
-export function ClearCart({ storageKey }: { storageKey: string }) {
+export function ClearCart({ storageKey, submissionId, orderId }: { storageKey: string; submissionId: string | null; orderId: string }) {
   useEffect(() => {
-    clearCartItems(storageKey);
-  }, [storageKey]);
+    try {
+      const shouldClear = acknowledgeCheckoutSubmission(localStorage, storageKey, {
+        submissionId,
+        orderId,
+        items: readCartItems(storageKey),
+      });
+      if (shouldClear) clearCartItems(storageKey, true);
+    } catch {
+      // A receipt must never erase an unrelated draft or break the confirmed order page.
+    }
+  }, [orderId, storageKey, submissionId]);
   return null;
 }

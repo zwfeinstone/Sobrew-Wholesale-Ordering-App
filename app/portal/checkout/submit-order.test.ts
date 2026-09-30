@@ -1,5 +1,12 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { submitPortalOrderWithContext } from '@/app/portal/checkout/submit-order';
+import { sendOrderEmails } from '@/lib/email';
+
+vi.mock('@/lib/email', () => ({ sendOrderEmails: vi.fn().mockResolvedValue(undefined) }));
+vi.mock('@/lib/analytics-server', () => ({ trackServerProductEvent: vi.fn() }));
+vi.mock('@vercel/functions', () => ({ waitUntil: vi.fn() }));
+
+beforeEach(() => vi.clearAllMocks());
 
 const USER_ID = '11111111-1111-4111-8111-111111111111';
 const PRODUCT_ID = '22222222-2222-4222-8222-222222222222';
@@ -57,5 +64,54 @@ describe('atomic portal checkout', () => {
       type: 'redirect',
       location: `/portal/orders/${ORDER_ID}?toast=order_placed`,
     });
+  });
+
+  it('returns the original order on repeat submissions without duplicating email or recurring schedules', async () => {
+    const placedOrder = {
+      order_id: ORDER_ID,
+      subtotal_cents: 16000,
+      placed_items: [{ product_id: PRODUCT_ID, name: 'Coffee', qty: 4, price_cents: 4000, line_total_cents: 16000 }],
+    };
+    const single = vi.fn()
+      .mockResolvedValueOnce({ data: { ...placedOrder, was_created: true }, error: null })
+      .mockResolvedValue({ data: { ...placedOrder, was_created: false }, error: null });
+    const rpc = vi.fn().mockReturnValue({ single });
+    const recurringInsert = vi.fn().mockReturnValue({
+      select: vi.fn().mockReturnValue({
+        single: vi.fn().mockResolvedValue({ data: { id: 'recurring-id' }, error: null }),
+      }),
+    });
+    const recurringItemsInsert = vi.fn().mockResolvedValue({ error: null });
+    const from = vi.fn((table: string) => {
+      if (table === 'recurring_orders') return { insert: recurringInsert };
+      if (table === 'recurring_order_items') return { insert: recurringItemsInsert };
+      throw new Error(`Unexpected table: ${table}`);
+    });
+    const formData = checkoutForm([{ product_id: PRODUCT_ID, qty: 4 }]);
+    formData.set('is_recurring', 'on');
+    formData.set('recurring_frequency', '2_weeks');
+    const context = {
+      formData,
+      user: { id: USER_ID, email: 'buyer@example.com' },
+      profile: { center_id: USER_ID },
+      supabase: { rpc, from },
+    };
+
+    expect(await submitPortalOrderWithContext(context)).toEqual({
+      type: 'redirect',
+      location: `/portal/orders/${ORDER_ID}?toast=order_placed_recurring_created`,
+    });
+    for (let retry = 0; retry < 2; retry += 1) {
+      expect(await submitPortalOrderWithContext(context)).toEqual({
+        type: 'redirect',
+        location: `/portal/orders/${ORDER_ID}?toast=order_placed`,
+      });
+    }
+
+    expect(rpc).toHaveBeenCalledTimes(3);
+    for (const [, payload] of rpc.mock.calls) expect(payload.submission_id).toBe(SUBMISSION_ID);
+    expect(recurringInsert).toHaveBeenCalledTimes(1);
+    expect(recurringItemsInsert).toHaveBeenCalledTimes(1);
+    expect(sendOrderEmails).toHaveBeenCalledTimes(1);
   });
 });
