@@ -9,6 +9,7 @@ if (!modulePath) throw new Error('Set SAMPLE_QUOTES_PGLITE_MODULE to an installe
 const { PGlite } = await import(pathToFileURL(modulePath).href);
 const db = new PGlite();
 const migration = await readFile(new URL('../db/migrations/20260930192343_prospecting_sample_quote_emails.sql', import.meta.url), 'utf8');
+const greetingMigration = await readFile(new URL('../db/migrations/20260930210128_prospecting_sample_quote_greeting.sql', import.meta.url), 'utf8');
 const firstOrder = '10000000-0000-0000-0000-000000000001';
 const secondOrder = '10000000-0000-0000-0000-000000000002';
 const lead = '20000000-0000-0000-0000-000000000001';
@@ -66,7 +67,7 @@ try {
   assert.equal((await db.query("select relrowsecurity from pg_class where oid = 'public.prospecting_sample_quotes'::regclass")).rows[0].relrowsecurity, true);
 
   await db.exec('set role service_role');
-  const saved = (await insertQuote()).rows[0];
+  let saved = (await insertQuote()).rows[0];
   assert.match(saved.id, /^[0-9a-f-]{36}$/);
   assert.ok(saved.created_at instanceof Date);
   assert.equal(saved.sent_at, null);
@@ -75,6 +76,21 @@ try {
   assert.equal((await db.query('select count(*)::int as count from public.prospecting_sample_quotes')).rows[0].count, 1);
   await rejectSql(insertQuote(), '23505', 'prospecting_sample_quotes_order_id_key');
   console.log('PASS one pending email snapshot per order, generated ID/time, exact JSON snapshot, and service-role read/insert');
+
+  await db.exec('reset role');
+  await db.exec(greetingMigration);
+  await db.exec('set role service_role');
+  const legacy = (await db.query('select * from public.prospecting_sample_quotes where id = $1', [saved.id])).rows[0];
+  assert.deepEqual(legacy, { ...saved, greeting_name: null });
+  saved = legacy;
+  for (const greeting_name of ['', '   ', ' Ron ', 'Ron\nTeam', 'Ron\tTeam', 'A'.repeat(121)]) {
+    await rejectSql(insertQuote({ order_id: secondOrder, greeting_name }), '23514', 'prospecting_sample_quotes_greeting_name_check');
+  }
+  const custom = (await insertQuote({ order_id: missing, greeting_name: 'Ron and team' })).rows[0];
+  assert.equal(custom.greeting_name, 'Ron and team');
+  assert.equal(custom.recipient_name, base.recipient_name);
+  await rejectSql(db.query("update public.prospecting_sample_quotes set greeting_name = 'Someone else' where id = $1", [custom.id]), '42501');
+  console.log('PASS greeting migration preserves old snapshots, stores custom names separately, rejects invalid names, and prevents greeting edits');
 
   for (const tracking_number of ['', ' ', '\t\n', 'A'.repeat(121)]) {
     await rejectSql(insertQuote({ order_id: secondOrder, tracking_number }), '23514', 'prospecting_sample_quotes_tracking_check');

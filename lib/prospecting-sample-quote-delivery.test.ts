@@ -88,7 +88,7 @@ function savedQuote(overrides: Partial<SampleQuoteRow> = {}): SampleQuoteRow {
   return {
     id: QUOTE_ID, order_id: ORDER_ID, lead_id: LEAD_ID, contact_id: CONTACT_ID,
     sender_profile_id: REP_ID, created_by: REP_ID, sender_name: 'Haskins', sender_email: 'haskins@sobrew.com',
-    recipient_name: 'Ron Buyer', recipient_email: 'ron@example.com', tracking_number: TRACKING,
+    recipient_name: 'Ron Buyer', recipient_email: 'ron@example.com', greeting_name: null, tracking_number: TRACKING,
     lines: structuredClone(LINES), subject: content.subject, body_text: content.text, body_html: content.html,
     created_at: NOW.toISOString(), sent_at: null, resend_email_id: null, ...overrides,
   };
@@ -183,6 +183,68 @@ describe('sample quote authorized context', () => {
 });
 
 describe('sample quote delivery and immutable retries', () => {
+  it('persists a trimmed multiword greeting without changing the original recipient identity', async () => {
+    const { options, db, send } = setup();
+    expect(await sendSampleQuote({ ...options, greetingName: '  Ron and the team  ' })).toMatchObject({ sentAt: NOW.toISOString() });
+    expect(db.tables.prospecting_sample_quotes[0]).toMatchObject({
+      greeting_name: 'Ron and the team', recipient_name: 'Ron Buyer', recipient_email: 'ron@example.com',
+    });
+    const payload = send.mock.calls[0][0];
+    expect(payload.text).toContain('Hi Ron and the team!');
+    expect(payload.html).toContain('Hi Ron and the team!');
+    expect(payload.to).toEqual(['ron@example.com']);
+    expect(payload.bcc).toEqual(['haskins@sobrew.com']);
+  });
+
+  it('defaults an omitted greeting to the contact first name for older clients', async () => {
+    const { options, db, send } = setup();
+    expect(await sendSampleQuote(options)).toMatchObject({ sentAt: NOW.toISOString() });
+    expect(db.tables.prospecting_sample_quotes[0]).toMatchObject({ greeting_name: 'Ron', recipient_name: 'Ron Buyer' });
+    expect(send.mock.calls[0][0].text).toContain('Hi Ron!');
+  });
+
+  it.each(['', '   ', 'X'.repeat(121), 'Ron\nTeam', 'Ron\rTeam', 'Ron\tTeam', 'Ron\u0000Team'])('rejects invalid greeting %j before saving or sending', async greetingName => {
+    const { options, db, send, listDomains } = setup();
+    expect(await sendSampleQuote({ ...options, greetingName })).toMatchObject({ error: expect.any(String), locked: false });
+    expect(db.tables.prospecting_sample_quotes).toEqual([]);
+    expect(send).not.toHaveBeenCalled();
+    expect(listDomains).not.toHaveBeenCalled();
+  });
+
+  it('blocks changes to the greeting of a saved send attempt', async () => {
+    const { db, options, send } = setup();
+    db.tables.prospecting_sample_quotes.push(savedQuote({ greeting_name: 'Ron and the team' }));
+    expect(await sendSampleQuote({ ...options, greetingName: 'Ron' })).toMatchObject({ error: expect.stringContaining('different details'), locked: true });
+    expect(send).not.toHaveBeenCalled();
+    expect(db.calls.filter(call => call.operation === 'update')).toEqual([]);
+  });
+
+  it('retries the same canonical greeting with the frozen body and provider key', async () => {
+    const { db, options, send } = setup();
+    db.tables.prospecting_sample_quotes.push(savedQuote({ greeting_name: 'Ron and the team', body_text: 'Original custom greeting text', body_html: '<p>Original custom greeting HTML</p>' }));
+    send.mockRejectedValueOnce(new Error('Lost acknowledgement'));
+    expect(await sendSampleQuote({ ...options, greetingName: ' Ron and the team ' })).toMatchObject({ error: expect.any(String), locked: true });
+    expect(await sendSampleQuote({ ...options, greetingName: 'Ron and the team' })).toMatchObject({ sentAt: NOW.toISOString() });
+    expect(send.mock.calls[0]).toEqual(send.mock.calls[1]);
+    expect(send.mock.calls[0]).toEqual([expect.objectContaining({ text: 'Original custom greeting text', html: '<p>Original custom greeting HTML</p>', bcc: ['haskins@sobrew.com'] }), { idempotencyKey: `sample-quote/${QUOTE_ID}` }]);
+    expect(db.tables.prospecting_sample_quotes[0].greeting_name).toBe('Ron and the team');
+  });
+
+  it('keeps a legacy null-greeting snapshot body unchanged when retrying with its default first name', async () => {
+    const { db, options, send } = setup();
+    db.tables.prospecting_sample_quotes.push(savedQuote({ greeting_name: null, body_text: 'Pre-update email text', body_html: '<p>Pre-update email HTML</p>' }));
+    expect(await sendSampleQuote({ ...options, greetingName: ' Ron ' })).toMatchObject({ sentAt: NOW.toISOString() });
+    expect(send.mock.calls[0][0]).toMatchObject({ text: 'Pre-update email text', html: '<p>Pre-update email HTML</p>' });
+    expect(db.tables.prospecting_sample_quotes[0].greeting_name).toBeNull();
+  });
+
+  it('does not send a competing immutable quote with a different greeting', async () => {
+    const { db, options, send } = setup();
+    db.insertRace = savedQuote({ greeting_name: 'Ron and the team' });
+    expect(await sendSampleQuote({ ...options, greetingName: 'Ron' })).toMatchObject({ error: expect.stringContaining('different details'), locked: true });
+    expect(send).not.toHaveBeenCalled();
+  });
+
   it('delivers and stores only checked items using the edited price and expected email subject', async () => {
     const { options, db, send } = setup();
     expect(await sendSampleQuote(options)).toMatchObject({ sentAt: NOW.toISOString() });

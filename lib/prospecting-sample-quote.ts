@@ -68,22 +68,42 @@ export function formatSampleQuotePrice(item: SampleQuoteItem, priceCents: number
     : `${item.packLabel} — ${money(priceCents)}`;
 }
 
-// Repeat typography on text-bearing elements: email clients and portal CSS reset inheritance differently.
-const EMAIL_TEXT_STYLE = 'font-family:Arial,Helvetica,sans-serif;font-size:15px;line-height:24px;color:#202124;';
-const EMAIL_CELL_STYLE = `${EMAIL_TEXT_STYLE}font-weight:400;margin:0;padding:0;border:0;text-align:left;vertical-align:top;`;
-const EMAIL_PARAGRAPH_STYLE = `${EMAIL_TEXT_STYLE}font-weight:400;margin:0;padding:0;`;
+export function getSampleQuoteGreetingName(contactName: string): string {
+  return contactName.trim().split(/\s+/)[0] || '';
+}
 
-function emailStrong(value: string) {
-  return `<strong style="${EMAIL_TEXT_STYLE}font-weight:700;margin:0;padding:0;">${escapeHtml(value)}</strong>`;
+export function validateSampleQuoteGreetingName(value: unknown): { ok: true; greetingName: string } | { ok: false; error: string } {
+  if (typeof value !== 'string' || /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/.test(value)) {
+    return { ok: false, error: 'Enter a greeting name without control characters or line breaks.' };
+  }
+  const greetingName = value.trim();
+  if (!greetingName || greetingName.length > 120) {
+    return { ok: false, error: 'Enter a greeting name between 1 and 120 characters.' };
+  }
+  return { ok: true, greetingName };
+}
+
+const EMAIL_COLORS = { ink: '#202925', muted: '#66716b', paper: '#ffffff', line: '#dce3de', soft: '#f3f6f3', green: '#254f3e', warm: '#f8f5ed', forest: '#234435' };
+
+// Repeat typography on text-bearing elements so email clients and portal CSS cannot change it.
+function emailTextStyle(size = 15, lineHeight = 24, color = EMAIL_COLORS.ink, weight = 400) {
+  return `font-family:Arial,Helvetica,sans-serif;font-size:${size}px;line-height:${lineHeight}px;font-weight:${weight};color:${color};margin:0;padding:0;overflow-wrap:anywhere;word-break:break-word;`;
+}
+
+const EMAIL_CELL_STYLE = `${emailTextStyle()}border:0;text-align:left;vertical-align:top;`;
+const EMAIL_TABLE_STYLE = 'width:100%;border:0;border-collapse:collapse;table-layout:fixed;margin:0;padding:0;';
+
+function emailStrong(value: string, size = 15, lineHeight = 24, color = EMAIL_COLORS.ink, extraStyle = '') {
+  return `<strong style="${emailTextStyle(size, lineHeight, color, 700)}${extraStyle}">${escapeHtml(value)}</strong>`;
 }
 
 /** contentHtml is composed only from escaped text and the helpers in this module. */
-function emailRow(contentHtml: string, bottom = 18, top = 0) {
-  return `<tr><td style="${EMAIL_CELL_STYLE}padding-top:${top}px;padding-bottom:${bottom}px;"><p style="${EMAIL_PARAGRAPH_STYLE}">${contentHtml}</p></td></tr>`;
+function emailRow(contentHtml: string, bottom = 18, textStyle = emailTextStyle(), paragraphAttributes = '') {
+  return `<tr><td style="${EMAIL_CELL_STYLE}padding-bottom:${bottom}px;"><p${paragraphAttributes} style="${textStyle}">${contentHtml}</p></td></tr>`;
 }
 
 function emailTable(rows: string[]) {
-  return `<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="width:100%;border:0;border-collapse:collapse;table-layout:fixed;margin:0;padding:0;"><tbody>${rows.join('\n')}</tbody></table>`;
+  return `<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="${EMAIL_TABLE_STYLE}"><tbody>${rows.join('\n')}</tbody></table>`;
 }
 
 export function buildSampleQuoteEmail(input: {
@@ -91,11 +111,14 @@ export function buildSampleQuoteEmail(input: {
   senderName: string;
   trackingNumber: string;
   lines: SampleQuoteLine[];
+  greetingName?: string;
 }): { subject: string; text: string; html: string } {
   const validated = validateSampleQuoteInput(input.trackingNumber, input.lines);
   if (!validated.ok) throw new Error(validated.error);
-  const firstName = input.contactName.trim().split(/\s+/)[0];
-  const greeting = firstName ? `Hi ${firstName}!` : 'Hi!';
+  const providedGreeting = input.greetingName === undefined ? null : validateSampleQuoteGreetingName(input.greetingName);
+  if (providedGreeting && !providedGreeting.ok) throw new Error(providedGreeting.error);
+  const greetingName = providedGreeting?.ok ? providedGreeting.greetingName : getSampleQuoteGreetingName(input.contactName);
+  const greeting = greetingName ? `Hi ${greetingName}!` : 'Hi!';
   const senderName = input.senderName.trim() || 'The Sobrew Coffee Team';
   const introduction = 'Thanks for your interest in Sobrew Coffee! Looking forward to y’all trying the coffee.';
   const pricingIntroduction = 'Please find your coffee pricing below.';
@@ -112,30 +135,27 @@ export function buildSampleQuoteEmail(input: {
   const convenience = 'No more last-minute orders or back-and-forth; just consistent delivery on your terms.';
   const closing = 'I’d love to hear your thoughts once you’ve had a chance to try everything!';
   const priceText: string[] = [];
-  const priceHtml: string[] = [];
   const selected = validated.lines.map(line => ({ item: SAMPLE_QUOTE_ITEMS.find(candidate => candidate.id === line.id)!, priceCents: line.priceCents }));
+  const categories: Array<{ title: string; groups: Array<{ description: string; selections: typeof selected }> }> = [];
   let lastCategory = '';
   let lastDescription = '';
-  for (const [index, { item, priceCents }] of selected.entries()) {
+  for (const { item, priceCents } of selected) {
     if (item.category !== lastCategory) {
       if (lastCategory) priceText.push('');
       priceText.push(item.category);
-      priceHtml.push(emailRow(emailStrong(item.category), 6, lastCategory ? 6 : 0));
+      categories.push({ title: item.category, groups: [] });
       lastCategory = item.category;
       lastDescription = '';
     }
     if (item.description !== lastDescription) {
       if (lastDescription) priceText.push('');
       priceText.push(item.description);
-      priceHtml.push(emailRow(escapeHtml(item.description), 3));
+      categories[categories.length - 1].groups.push({ description: item.description, selections: [] });
       lastDescription = item.description;
     }
-    const price = formatSampleQuotePrice(item, priceCents);
-    priceText.push(`- ${price}`);
-    const nextItem = selected[index + 1]?.item;
-    const endsGroup = !nextItem || nextItem.category !== item.category || nextItem.description !== item.description;
-    const formattedPrice = item.pounds ? emailStrong(price) : `${escapeHtml(item.packLabel)} — ${emailStrong(money(priceCents))}`;
-    priceHtml.push(emailRow(formattedPrice, endsGroup ? 18 : 3));
+    priceText.push(`- ${formatSampleQuotePrice(item, priceCents)}`);
+    const groups = categories[categories.length - 1].groups;
+    groups[groups.length - 1].selections.push({ item, priceCents });
   }
   const text = [
     greeting,
@@ -152,21 +172,54 @@ export function buildSampleQuoteEmail(input: {
     closing,
     `Best,\n${senderName}`,
   ].join('\n\n');
-  const benefitRows = benefits.map(benefit => `<tr><td width="18" style="${EMAIL_CELL_STYLE}width:18px;padding-bottom:5px;">•</td><td style="${EMAIL_CELL_STYLE}padding-bottom:5px;">${escapeHtml(benefit.before)}${emailStrong(benefit.emphasis)}${escapeHtml(benefit.after)}</td></tr>`);
-  const html = `<div style="${EMAIL_TEXT_STYLE}font-weight:400;max-width:600px;margin:0;padding:0;">${emailTable([
-    emailRow(escapeHtml(greeting)),
+  const categoryCards = categories.map((category, categoryIndex) => {
+    const cardRows = [
+      `<tr><td colspan="2" style="${EMAIL_CELL_STYLE}padding-bottom:12px;"><h2 data-email-category-title style="${emailTextStyle(16, 23, EMAIL_COLORS.green, 700)}padding-bottom:10px;border-bottom:1px solid ${EMAIL_COLORS.line};">${escapeHtml(category.title)}</h2></td></tr>`,
+      ...category.groups.flatMap((group, groupIndex) => [
+        `<tr><td colspan="2" style="${EMAIL_CELL_STYLE}padding-top:${groupIndex ? 13 : 0}px;padding-bottom:4px;"><p style="${emailTextStyle(14, 21, EMAIL_COLORS.muted)}">${escapeHtml(group.description)}</p></td></tr>`,
+        ...group.selections.map(({ item, priceCents }) => item.pounds
+          ? `<tr data-email-quote-item="${escapeHtml(item.id)}"><td colspan="2" style="${EMAIL_CELL_STYLE}padding:5px 0;">${emailStrong(formatSampleQuotePrice(item, priceCents), 14, 22)}</td></tr>`
+          : `<tr data-email-quote-item="${escapeHtml(item.id)}"><td style="${emailTextStyle(14, 22)}border:0;text-align:left;vertical-align:top;padding:5px 8px 5px 0;">${escapeHtml(item.packLabel)}</td><td width="84" style="${emailTextStyle(14, 22)}width:84px;border:0;text-align:right;vertical-align:top;padding:5px 0;">${emailStrong(money(priceCents), 14, 22, EMAIL_COLORS.ink, 'font-variant-numeric:tabular-nums;')}</td></tr>`),
+      ]),
+    ];
+    return `<tr><td style="${EMAIL_CELL_STYLE}padding-bottom:${categoryIndex === categories.length - 1 ? 22 : 12}px;">${emailTable([
+      `<tr><td data-email-section="category" bgcolor="${EMAIL_COLORS.paper}" style="${EMAIL_CELL_STYLE}padding:19px 20px;background-color:${EMAIL_COLORS.paper};border-radius:8px;">${emailTable(cardRows)}</td></tr>`,
+    ])}</td></tr>`;
+  });
+
+  // Fluid hybrid columns wrap without media-query support. Outlook desktop gets equivalent table columns.
+  const benefitColumns = benefits.map((benefit, index) => `${index % 2 === 0 ? `<!--[if mso]><table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="${EMAIL_TABLE_STYLE}"><tr><![endif]-->` : ''}<!--[if mso]><td width="318" valign="top" style="${EMAIL_CELL_STYLE}width:318px;"><![endif]--><div data-email-benefit class="sobrew-email-benefit" style="display:inline-block;vertical-align:top;width:100%;max-width:318px;">${emailTable([
+    `<tr><td style="${EMAIL_CELL_STYLE}padding-right:20px;">${emailTable([
+      `<tr><td style="${emailTextStyle(14, 22)}text-align:left;vertical-align:top;border-top:1px solid ${EMAIL_COLORS.line};padding:11px 0 8px;">${escapeHtml(benefit.before)}${emailStrong(benefit.emphasis, 14, 22, EMAIL_COLORS.green, 'display:block;')}${escapeHtml(benefit.after)}</td></tr>`,
+    ])}</td></tr>`,
+  ])}</div><!--[if mso]></td><![endif]-->${index % 2 === 1 ? '<!--[if mso]></tr></table><![endif]-->' : ''}`).join('');
+
+  const header = emailTable([
+    `<tr><td class="sobrew-email-masthead-cell" style="${EMAIL_CELL_STYLE}padding-bottom:24px;"><p style="${emailTextStyle(19, 24, '#ffffff', 700)}letter-spacing:3px;">SOBREW<br /><span style="${emailTextStyle(10, 16, '#ffffff')}letter-spacing:2.7px;">COFFEE</span></p></td><td class="sobrew-email-masthead-cell" style="${EMAIL_CELL_STYLE}padding-bottom:24px;text-align:right;vertical-align:middle;"><p style="${emailTextStyle(11, 17, '#ffffff', 600)}text-transform:uppercase;letter-spacing:1.8px;">Your coffee quote</p></td></tr>`,
+    `<tr><td colspan="2" style="${EMAIL_CELL_STYLE}"><h1 data-email-title style="font-family:Georgia,'Times New Roman',serif;font-size:31px;line-height:37px;font-weight:400;letter-spacing:-0.5px;color:#ffffff;max-width:340px;margin:0;padding:0;">Samples, pricing &amp; simple ordering.</h1></td></tr>`,
+  ]);
+  const body = emailTable([
+    emailRow(escapeHtml(greeting), 18, emailTextStyle(15, 24, EMAIL_COLORS.ink, 600), ' data-email-greeting'),
     emailRow(escapeHtml(introduction)),
-    emailRow(`${emailStrong('Samples Tracking:')}<br /><span style="${EMAIL_TEXT_STYLE}font-weight:400;overflow-wrap:anywhere;word-break:break-word;">${escapeHtml(validated.trackingNumber)}</span>`),
+    `<tr><td style="${EMAIL_CELL_STYLE}padding-top:5px;padding-bottom:23px;">${emailTable([
+      `<tr><td data-email-section="tracking" bgcolor="${EMAIL_COLORS.paper}" style="${EMAIL_CELL_STYLE}padding:15px 18px;background-color:${EMAIL_COLORS.paper};border-radius:7px;"><p style="${emailTextStyle(12, 24, EMAIL_COLORS.muted, 600)}padding-bottom:2px;">Samples Tracking:</p><p style="${emailTextStyle(16, 24, EMAIL_COLORS.green, 600)}letter-spacing:0.3px;overflow-wrap:anywhere;word-break:break-word;">${escapeHtml(validated.trackingNumber)}</p></td></tr>`,
+    ])}</td></tr>`,
     emailRow(escapeHtml(pricingIntroduction)),
-    ...priceHtml,
-    emailRow(emailStrong(mission)),
-    emailRow(emailStrong('Ordering is simple'), 6),
+    ...categoryCards,
+    `<tr><td style="${EMAIL_CELL_STYLE}padding-bottom:28px;">${emailTable([
+      `<tr><td data-email-section="mission" bgcolor="${EMAIL_COLORS.soft}" style="${EMAIL_CELL_STYLE}padding:18px 20px;background-color:${EMAIL_COLORS.soft};border-radius:7px;"><p style="${emailTextStyle(14, 22, EMAIL_COLORS.green, 600)}">${escapeHtml(mission)}</p></td></tr>`,
+    ])}</td></tr>`,
+    `<tr><td style="${EMAIL_CELL_STYLE}padding-bottom:12px;"><h2 style="${emailTextStyle(18, 26, EMAIL_COLORS.ink, 700)}">Ordering is simple</h2></td></tr>`,
     emailRow(escapeHtml(login)),
     emailRow(`${escapeHtml(portalIntroduction)}${emailStrong(portalEmphasis)}`),
-    `<tr><td style="${EMAIL_CELL_STYLE}padding-bottom:18px;">${emailTable(benefitRows)}</td></tr>`,
-    emailRow(escapeHtml(convenience)),
+    `<tr><td style="${EMAIL_CELL_STYLE}padding-bottom:18px;font-size:0;line-height:0;">${benefitColumns}</td></tr>`,
+    emailRow(escapeHtml(convenience), 23),
     emailRow(escapeHtml(closing)),
-    emailRow(`Best,<br />${escapeHtml(senderName)}`, 0),
+    emailRow(`Best,<br />${emailStrong(senderName, 15, 24, EMAIL_COLORS.green)}`, 0, emailTextStyle(15, 24, EMAIL_COLORS.green)),
+  ]);
+  const html = `<div data-sample-quote-email="brand" class="sobrew-sample-email" style="${emailTextStyle()}width:100%;max-width:700px;background-color:${EMAIL_COLORS.warm};"><style>@media only screen and (max-width:480px){.sobrew-sample-email .sobrew-email-inset{padding-left:21px!important;padding-right:21px!important;}.sobrew-sample-email .sobrew-email-benefit{max-width:100%!important;}.sobrew-sample-email .sobrew-email-masthead-cell{display:block!important;width:100%!important;text-align:left!important;padding-bottom:14px!important;}}</style>${emailTable([
+    `<tr><td data-email-section="header" class="sobrew-email-inset" bgcolor="${EMAIL_COLORS.forest}" style="${EMAIL_CELL_STYLE}padding:26px 32px 27px;background-color:${EMAIL_COLORS.forest};">${header}</td></tr>`,
+    `<tr><td class="sobrew-email-inset" bgcolor="${EMAIL_COLORS.warm}" style="${EMAIL_CELL_STYLE}padding:26px 32px 30px;background-color:${EMAIL_COLORS.warm};">${body}</td></tr>`,
   ])}</div>`;
   return { subject: 'Sobrew Coffee Samples, Pricing, and Ordering Process', text, html };
 }

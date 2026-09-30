@@ -39,6 +39,7 @@ export type SampleQuoteRow = {
   sender_email: string;
   recipient_name: string;
   recipient_email: string;
+  greeting_name: string | null;
   tracking_number: string;
   lines: Json;
   subject: string;
@@ -78,7 +79,7 @@ export type Database = Omit<GeneratedDatabase, 'public'> & {
       };
       prospecting_sample_quotes: {
         Row: SampleQuoteRow;
-        Insert: Omit<SampleQuoteRow, 'id' | 'created_at' | 'sent_at' | 'resend_email_id'> & Partial<Pick<SampleQuoteRow, 'id' | 'created_at' | 'sent_at' | 'resend_email_id'>>;
+        Insert: Omit<SampleQuoteRow, 'id' | 'created_at' | 'sent_at' | 'resend_email_id' | 'greeting_name'> & Partial<Pick<SampleQuoteRow, 'id' | 'created_at' | 'sent_at' | 'resend_email_id' | 'greeting_name'>>;
         Update: Partial<Pick<SampleQuoteRow, 'sent_at' | 'resend_email_id'>>;
         Relationships: [
           { foreignKeyName: 'prospecting_sample_quotes_lead_id_fkey'; columns: ['lead_id']; isOneToOne: false; referencedRelation: 'prospecting_leads'; referencedColumns: ['id'] },

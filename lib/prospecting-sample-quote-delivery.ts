@@ -4,7 +4,7 @@ import { getResend, resendEmailAcceptanceError } from '@/lib/email';
 import { getSupabaseAdmin, type SupabaseAdminClient } from '@/lib/supabase/admin';
 import type { SampleQuoteRow } from '@/lib/supabase/schema';
 import { hasSampleRequestContact } from '@/lib/prospecting-sample-contact';
-import { buildSampleQuoteEmail, validateSampleQuoteInput } from '@/lib/prospecting-sample-quote';
+import { buildSampleQuoteEmail, getSampleQuoteGreetingName, validateSampleQuoteGreetingName, validateSampleQuoteInput } from '@/lib/prospecting-sample-quote';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 // Resend keeps idempotency keys for 24 hours. Stop earlier on uncertain sends.
@@ -86,10 +86,11 @@ export async function loadSampleQuoteContext({ orderId, actorId, isOwner, worksp
   } };
 }
 
-export async function sendSampleQuote({ orderId, trackingNumber, lines, expectedRecipientEmail, expectedSenderEmail, actorId, isOwner, workspaceEnabled, supabase = getSupabaseAdmin(), resend = getResend(), now = new Date() }: Access & {
+export async function sendSampleQuote({ orderId, trackingNumber, lines, greetingName, expectedRecipientEmail, expectedSenderEmail, actorId, isOwner, workspaceEnabled, supabase = getSupabaseAdmin(), resend = getResend(), now = new Date() }: Access & {
   orderId: string;
   trackingNumber: string;
   lines: unknown;
+  greetingName?: string;
   expectedRecipientEmail: string;
   expectedSenderEmail: string;
   supabase?: SupabaseAdminClient;
@@ -106,6 +107,8 @@ export async function sendSampleQuote({ orderId, trackingNumber, lines, expected
   }
   const input = validateSampleQuoteInput(trackingNumber, lines);
   if (!input.ok) return { error: input.error, locked: Boolean(context.quote) };
+  const greeting = validateSampleQuoteGreetingName(greetingName === undefined ? getSampleQuoteGreetingName(context.contactName) : greetingName);
+  if (!greeting.ok) return { error: greeting.error, locked: Boolean(context.quote) };
   if (!resend) return { error: 'Email sending is not configured. Your sample order is saved; try this email again after Resend is configured.', locked: Boolean(context.quote) };
   let quote = context.quote;
   if (!quote) {
@@ -120,12 +123,13 @@ export async function sendSampleQuote({ orderId, trackingNumber, lines, expected
     } catch {
       return { error: 'The email sender could not be checked. Your draft is still editable; please try again.' };
     }
-    const content = buildSampleQuoteEmail({ contactName: context.contactName, senderName: context.senderName, trackingNumber: input.trackingNumber, lines: input.lines });
+    const content = buildSampleQuoteEmail({ contactName: context.contactName, greetingName: greeting.greetingName, senderName: context.senderName, trackingNumber: input.trackingNumber, lines: input.lines });
     const inserted = await supabase.from('prospecting_sample_quotes').insert({
       order_id: orderId, lead_id: context.leadId, contact_id: context.contactId,
       sender_profile_id: context.senderProfileId, created_by: actorId,
       sender_name: context.senderName, sender_email: context.senderEmail,
       recipient_name: context.contactName, recipient_email: context.contactEmail,
+      greeting_name: greeting.greetingName,
       tracking_number: input.trackingNumber, lines: input.lines,
       subject: content.subject, body_text: content.text, body_html: content.html,
     }).select('*').single();
@@ -140,8 +144,9 @@ export async function sendSampleQuote({ orderId, trackingNumber, lines, expected
   if (!quote) return { error: 'The email could not be saved, so nothing was sent.' };
   if (quote.sent_at) return { sentAt: quote.sent_at, locked: true };
   const savedInput = validateSampleQuoteInput(quote.tracking_number, quote.lines);
+  const savedGreetingName = quote.greeting_name ?? getSampleQuoteGreetingName(quote.recipient_name);
   if (!savedInput.ok || quote.tracking_number !== input.trackingNumber || JSON.stringify(savedInput.lines) !== JSON.stringify(input.lines)
-    || quote.recipient_email !== context.contactEmail || quote.sender_email !== context.senderEmail) {
+    || quote.recipient_email !== context.contactEmail || quote.sender_email !== context.senderEmail || savedGreetingName !== greeting.greetingName) {
     return { error: 'An email was already prepared for this order with different details. Reload to review and retry that original email.', locked: true };
   }
   const age = now.getTime() - new Date(quote.created_at).getTime();

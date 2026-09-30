@@ -4,18 +4,20 @@ import ProspectingSampleQuoteForm, { type SampleQuoteFormState } from '@/compone
 import { adminCanEdit, requireAdminSectionEdit, requireAdminSectionView } from '@/lib/admin-permissions';
 import { isProspectingWorkspaceEnabled } from '@/lib/prospecting-rollout';
 import { loadSampleQuoteContext, sendSampleQuote } from '@/lib/prospecting-sample-quote-delivery';
-import { validateSampleQuoteInput } from '@/lib/prospecting-sample-quote';
+import { getSampleQuoteGreetingName, validateSampleQuoteInput } from '@/lib/prospecting-sample-quote';
 import { safeProspectingReturnPath } from '@/lib/prospecting';
 
 async function submitQuote(orderId: string, expectedRecipientEmail: string, expectedSenderEmail: string, _previous: SampleQuoteFormState, data: FormData): Promise<SampleQuoteFormState> {
   'use server';
   const current = await requireAdminSectionEdit('prospecting');
   if (data.get('order_id') !== orderId) return { error: 'The sample order changed. Reload before sending.' };
+  const greetingName = data.get('greeting_name');
+  if (greetingName !== null && typeof greetingName !== 'string') return { error: 'Enter a valid greeting name before sending.' };
   let lines: unknown;
   try { lines = JSON.parse(String(data.get('lines') ?? '')); }
   catch { return { error: 'The selected quote items could not be read. Please review the quote and try again.' }; }
   const result = await sendSampleQuote({ orderId, expectedRecipientEmail, expectedSenderEmail,
-    trackingNumber: String(data.get('tracking_number') ?? ''), lines,
+    trackingNumber: String(data.get('tracking_number') ?? ''), lines, greetingName: greetingName ?? undefined,
     actorId: current.profile.id, isOwner: current.isOwner, workspaceEnabled: isProspectingWorkspaceEnabled(),
   });
   if (result.sentAt) {
@@ -47,6 +49,7 @@ export default async function SampleQuotePage({ params, searchParams }: { params
     {context.sendBlockedReason ? <p className="rounded-lg bg-amber-50 p-4 text-amber-900" role="alert">{context.sendBlockedReason}</p> : null}
     <ProspectingSampleQuoteForm orderId={orderId} action={submitQuote.bind(null, orderId, context.contactEmail, context.senderEmail)}
       contactName={context.contactName} contactEmail={context.contactEmail} senderName={context.senderName} senderEmail={context.senderEmail}
+      initialGreetingName={context.quote?.greeting_name ?? getSampleQuoteGreetingName(context.contactName)}
       initialTrackingNumber={initial?.ok ? initial.trackingNumber : undefined} initialLines={initial?.ok ? initial.lines : undefined}
       savedEmail={context.quote ? { subject: context.quote.subject, html: context.quote.body_html } : undefined}
       canEdit={(current.isOwner || adminCanEdit(current.access, 'prospecting')) && !context.sendBlockedReason}

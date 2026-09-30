@@ -4,7 +4,7 @@ import type { SampleQuoteLine } from '@/lib/prospecting-sample-quote';
 import '@/app/globals.css';
 
 type FixtureMode = 'success' | 'connection' | 'validation' | 'deferred';
-type SubmittedQuote = { orderId: string; trackingNumber: string; lines: SampleQuoteLine[] };
+type SubmittedQuote = { orderId: string; greetingName: string; trackingNumber: string; lines: SampleQuoteLine[] };
 declare global {
   interface Window {
     sampleQuoteFixture: { mode: FixtureMode; calls: SubmittedQuote[]; complete?: () => void };
@@ -16,7 +16,7 @@ window.sampleQuoteFixture = { mode: (query.get('mode') || 'success') as FixtureM
 Object.assign(window, { prospectingFixture: { navigation: '', navigationCalls: [], refreshCount: 0, refreshRecord: () => undefined } });
 
 async function action(_previous: SampleQuoteFormState, formData: FormData): Promise<SampleQuoteFormState> {
-  window.sampleQuoteFixture.calls.push({ orderId: String(formData.get('order_id')), trackingNumber: String(formData.get('tracking_number')), lines: JSON.parse(String(formData.get('lines'))) });
+  window.sampleQuoteFixture.calls.push({ orderId: String(formData.get('order_id')), greetingName: String(formData.get('greeting_name')), trackingNumber: String(formData.get('tracking_number')), lines: JSON.parse(String(formData.get('lines'))) });
   if (window.sampleQuoteFixture.mode === 'deferred') await new Promise<void>(resolve => { window.sampleQuoteFixture.complete = resolve; });
   if (window.sampleQuoteFixture.mode === 'connection') throw new Error('Isolated email response interrupted');
   if (window.sampleQuoteFixture.mode === 'validation') return { error: 'Review the tracking number before sending.', locked: false };

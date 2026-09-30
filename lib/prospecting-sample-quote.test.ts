@@ -1,9 +1,27 @@
 import { describe, expect, it } from 'vitest';
-import { buildSampleQuoteEmail, SAMPLE_QUOTE_ITEMS, validateSampleQuoteInput } from './prospecting-sample-quote';
+import { buildSampleQuoteEmail, formatSampleQuotePrice, getSampleQuoteGreetingName, SAMPLE_QUOTE_ITEMS, validateSampleQuoteGreetingName, validateSampleQuoteInput } from './prospecting-sample-quote';
 
 const tracking = '1Z0751H30305695303';
 const bulkLine = { id: 'bulk-regular', priceCents: 3500 };
-const visibleHtmlText = (html: string) => html.replace(/<[^>]*>/g, '').replaceAll('&amp;', '&').replaceAll('&#39;', "'");
+const visibleHtmlText = (html: string) => html.replace(/<style\b[^>]*>[\s\S]*?<\/style>/g, '').replace(/<!--[\s\S]*?-->/g, '').replace(/<\/td>/g, ' ').replace(/<[^>]*>/g, '').replaceAll('&amp;', '&').replaceAll('&#39;', "'").replace(/\s+/g, ' ');
+
+describe('sample quote greeting name', () => {
+  it('defaults to the contact’s first whitespace-delimited name and handles empty contacts', () => {
+    expect(getSampleQuoteGreetingName('  Ron Buyer  ')).toBe('Ron');
+    expect(getSampleQuoteGreetingName('Ron\tBuyer')).toBe('Ron');
+    expect(getSampleQuoteGreetingName('')).toBe('');
+    expect(getSampleQuoteGreetingName('   ')).toBe('');
+  });
+
+  it('accepts trimmed multiword and Unicode greetings without shortening them', () => {
+    expect(validateSampleQuoteGreetingName('  Ron and María  ')).toEqual({ ok: true, greetingName: 'Ron and María' });
+    expect(validateSampleQuoteGreetingName('A'.repeat(120))).toEqual({ ok: true, greetingName: 'A'.repeat(120) });
+  });
+
+  it.each([undefined, null, 123, {}, '', '   ', 'A'.repeat(121), 'Ron\nBuyer', '\nRon', 'Ron\r', 'Ron\tBuyer', 'Ron\u0000Buyer', 'Ron\u007fBuyer', 'Ron\u0085Buyer', 'Ron\u2028Buyer', 'Ron\u2029Buyer'])('rejects invalid greeting names %j', value => {
+    expect(validateSampleQuoteGreetingName(value).ok).toBe(false);
+  });
+});
 
 describe('sample quote validation', () => {
   it('keeps the requested default prices and all eleven independently selectable items', () => {
@@ -61,19 +79,16 @@ describe('sample pricing and tracking email', () => {
     });
     for (const body of [email.text, visibleHtmlText(email.html)]) {
       expect(body).toContain('$48.00 per bag ($9.60/lb)');
-      expect(body).toContain('100 x 1.5oz — $90.00');
-      expect(body).toContain('100 x 2oz — $115.00');
-      expect(body).toContain('100 x 2.5oz — $140.00');
-      expect(body).toContain('100 x 3oz — $170.00');
-      expect(body).toContain('100 x 1.5oz — $115.00');
-      expect(body).toContain('40 x 1.5oz — $49.00');
-      expect(body).toContain('40 x 2oz — $55.00');
-      expect(body).toContain('50ct — $40.00');
       expect(body).toContain('Specialty Fourth Dimension Medium Roast');
-      expect(body).toContain('50ct — $50.00');
       expect(body).toContain('Haskins');
     }
-    expect(email.html).toMatch(/100 x 1\.5oz — <strong[^>]*>\$90\.00<\/strong>/);
+    expect(email.html.match(/data-email-quote-item=/g)).toHaveLength(11);
+    for (const item of SAMPLE_QUOTE_ITEMS) {
+      expect(email.text).toContain(formatSampleQuotePrice(item, item.defaultPriceCents));
+      const priceRow = email.html.match(new RegExp(`<tr data-email-quote-item="${item.id}">[\\s\\S]*?<\\/tr>`))?.[0] ?? '';
+      expect(visibleHtmlText(priceRow)).toContain(item.packLabel);
+      expect(priceRow).toMatch(new RegExp(`<strong[^>]*>\\$${(item.defaultPriceCents / 100).toFixed(2).replace('.', '\\.')}.*?<\\/strong>`));
+    }
   });
 
   it('uses the approved personal copy and tracking line break in both email formats', () => {
@@ -93,19 +108,19 @@ describe('sample pricing and tracking email', () => {
       for (const paragraph of approvedCopy) expect(body).toContain(paragraph);
     }
     expect(email.text).toContain(`Samples Tracking:\n${tracking}`);
-    expect(email.html).toMatch(/Samples Tracking:<\/strong><br \/><span[^>]*>1Z0751H30305695303<\/span>/);
+    expect(email.html).toMatch(/Samples Tracking:<\/p><p[^>]*>1Z0751H30305695303<\/p>/);
     expect(email.text).toMatch(/Best,\nHaskins$/);
-    expect(email.html).toContain('Best,<br />Haskins');
+    expect(email.html).toMatch(/Best,<br \/><strong[^>]*>Haskins<\/strong>/);
   });
 
-  it('sets consistent readable typography and resets spacing without relying on email-client defaults', () => {
+  it('renders the approved branded hierarchy with email-safe typography and presentation tables', () => {
     const email = buildSampleQuoteEmail({ contactName: 'Ron', senderName: 'Zach', trackingNumber: tracking, lines: [bulkLine] });
     const elements = email.html.match(/<(?:td|p|strong)\b[^>]*>/g) ?? [];
     expect(elements.length).toBeGreaterThan(0);
     for (const element of elements) {
       expect(element).toContain('font-family:Arial,Helvetica,sans-serif;');
-      expect(element).toContain('font-size:15px;');
-      expect(element).toContain('line-height:24px;');
+      expect(element).toMatch(/font-size:\d+px;/);
+      expect(element).toMatch(/line-height:\d+px;/);
       expect(element).toContain('margin:0;');
       expect(element).toContain('padding:0;');
     }
@@ -115,10 +130,25 @@ describe('sample pricing and tracking email', () => {
       expect(table).toContain('cellspacing="0"');
       expect(table).toContain('border-collapse:collapse;');
     }
-    expect(email.html).toMatch(/<strong[^>]*font-weight:700;[^>]*>Bulk Coffee \(5lb bags\)<\/strong>/);
-    expect(email.html).toMatch(/<td[^>]*width:18px;[^>]*>•<\/td>/);
-    expect(email.html).not.toMatch(/<(?:h[1-6]|ul|li|select|script)\b/);
+    expect(email.html).toContain('data-sample-quote-email="brand"');
+    expect(email.html).toMatch(/data-email-section="header"[^>]*background-color:#234435;/);
+    expect(email.html).toContain('background-color:#f8f5ed;');
+    expect(email.html).toMatch(/<h1 data-email-title[^>]*font-family:Georgia[^>]*font-size:31px;line-height:37px;[^>]*>Samples, pricing &amp; simple ordering\.<\/h1>/);
+    expect(email.html).toMatch(/<p data-email-greeting[^>]*font-size:15px;line-height:24px;[^>]*>Hi Ron!<\/p>/);
+    expect(email.html).toMatch(/<h2 data-email-category-title[^>]*font-size:16px;line-height:23px;[^>]*>Bulk Coffee \(5lb bags\)<\/h2>/);
+    expect(email.html).toMatch(/data-email-section="category"[^>]*background-color:#ffffff;[^>]*border-radius:8px;/);
+    expect(email.html).not.toMatch(/<(?:ul|li|select|script)\b/);
     expect(email.html).not.toContain(email.subject);
+  });
+
+  it('provides wrapping mobile layouts, readable long names, and four complete benefit blocks', () => {
+    const email = buildSampleQuoteEmail({ contactName: 'Ron', greetingName: 'A'.repeat(120), senderName: 'Zach', trackingNumber: '1'.repeat(120), lines: [bulkLine] });
+    expect(email.html.match(/data-email-benefit\b/g)).toHaveLength(4);
+    expect(email.html).toMatch(/data-email-benefit[^>]*display:inline-block;[^>]*width:100%;max-width:318px;/);
+    expect(email.html).toContain('<!--[if mso]>');
+    expect(email.html).toContain('@media only screen and (max-width:480px)');
+    expect(email.html).toMatch(/data-email-greeting[^>]*overflow-wrap:anywhere;word-break:break-word;/);
+    expect(email.html).toMatch(/<p[^>]*overflow-wrap:anywhere;word-break:break-word;[^>]*>1{120}<\/p>/);
   });
 
   it('keeps selected descriptions grouped with their prices and omits unselected categories', () => {
@@ -126,9 +156,10 @@ describe('sample pricing and tracking email', () => {
       { id: 'fraction-3oz', priceCents: 16200 },
       { id: 'fraction-1-5oz', priceCents: 8700 },
     ] });
-    expect(email.html).toMatch(/<td[^>]*padding-bottom:3px;[^>]*><p[^>]*>Medium, Dark, Espresso, or French Roast \(Ground\)<\/p>/);
-    expect(email.html).toMatch(/<td[^>]*padding-bottom:3px;[^>]*><p[^>]*>100 x 1\.5oz — <strong[^>]*>\$87\.00/);
-    expect(email.html).toMatch(/<td[^>]*padding-bottom:18px;[^>]*><p[^>]*>100 x 3oz — <strong[^>]*>\$162\.00/);
+    expect(email.html.match(/data-email-section="category"/g)).toHaveLength(1);
+    expect(email.html).toMatch(/<td[^>]*padding-bottom:4px;[^>]*><p[^>]*>Medium, Dark, Espresso, or French Roast \(Ground\)<\/p>/);
+    expect(email.html).toMatch(/data-email-quote-item="fraction-1-5oz"[\s\S]*?<strong[^>]*>\$87\.00<\/strong>/);
+    expect(email.html).toMatch(/data-email-quote-item="fraction-3oz"[\s\S]*?<strong[^>]*>\$162\.00<\/strong>/);
     for (const body of [email.text, visibleHtmlText(email.html)]) {
       expect(body.indexOf('100 x 1.5oz')).toBeLessThan(body.indexOf('100 x 3oz'));
       expect(body.match(/Medium, Dark, Espresso, or French Roast \(Ground\)/g)).toHaveLength(1);
@@ -145,6 +176,17 @@ describe('sample pricing and tracking email', () => {
     expect(email.html).toContain('Zach &lt;script&gt; &amp; &quot;team&quot;');
     expect(email.html).not.toContain('<script>');
     expect(email.text).toContain('Hi <Ron>!');
+  });
+
+  it('uses an explicit greeting in full, escapes it, and otherwise retains legacy first-name and empty fallbacks', () => {
+    const input = { contactName: 'Ron Buyer', senderName: 'Zach', trackingNumber: tracking, lines: [bulkLine] };
+    const personalized = buildSampleQuoteEmail({ ...input, greetingName: '  Ron and <María> & team  ' });
+    expect(personalized.text).toMatch(/^Hi Ron and <María> & team!/);
+    expect(personalized.html).toContain('Hi Ron and &lt;María&gt; &amp; team!');
+    expect(buildSampleQuoteEmail(input).text).toMatch(/^Hi Ron!/);
+    expect(buildSampleQuoteEmail({ ...input, contactName: ' ' }).text).toMatch(/^Hi!/);
+    expect(() => buildSampleQuoteEmail({ ...input, greetingName: ' ' })).toThrow('greeting name');
+    expect(() => buildSampleQuoteEmail({ ...input, greetingName: 'Ron\nSomeone else' })).toThrow('line breaks');
   });
 
   it('rejects malformed input instead of producing an incomplete email', () => {

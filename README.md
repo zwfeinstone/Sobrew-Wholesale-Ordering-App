@@ -136,20 +136,25 @@ Visit `/bootstrap` and submit email/password/token. If token matches `ADMIN_BOOT
 ### Sample tracking and pricing emails
 
 Creating a linked sample order automatically opens **Tracking & pricing**. Enter
-the tracking number, select products to include, and edit the selected quote prices.
+the tracking number, confirm or edit the greeting name, select products to include,
+and edit the selected quote prices. The greeting starts with the contact's first
+name and accepts a custom greeting such as “Ron and team.”
 New quotes start with every item unchecked; saved drafts keep their selections.
-The live preview shows the recipient, lead owner, and complete email before
+The live preview uses the Sobrew signature design and shows the recipient, lead
+owner, custom greeting, and complete email before
 **Send samples & pricing email** submits it. Prices apply only to this quote;
 they do not change the product catalog or customer ordering prices. The step can
 also be reopened from the lead's sample history or the manager's created-order list.
 
-Apply `db/migrations/20260930192343_prospecting_sample_quote_emails.sql` before
+Apply `db/migrations/20260930192343_prospecting_sample_quote_emails.sql` and
+`db/migrations/20260930210128_prospecting_sample_quote_greeting.sql` before
 deploying the feature. The Resend account used by `RESEND_API_KEY` must have the
 exact `sobrew.com` domain verified to send from the assigned owner's active
 `@sobrew.com` profile address. Both From and Reply-To use that address. The
 existing `orders.sobrew.com` verification covers only its own sender addresses.
 
-One immutable email snapshot is saved per order before delivery. The server
+One immutable email snapshot, including the greeting name, is saved per order
+before delivery. Existing receipts retain their original design. The server
 checks permissions, lead ownership, the request contact, and do-not-contact
 status. Uncertain retries reuse the same Resend idempotency key and payload;
 after 23 hours, an administrator must reconcile delivery in Resend before any

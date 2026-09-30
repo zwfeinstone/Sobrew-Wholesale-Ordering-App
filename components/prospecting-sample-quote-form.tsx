@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { useActionState, useEffect, useRef, useState } from 'react';
 import ProspectingDialog from '@/components/prospecting-dialog';
 import { useProspectingDraftNavigation } from '@/components/use-prospecting-draft-navigation';
-import { SAMPLE_QUOTE_ITEMS, buildSampleQuoteEmail, validateSampleQuoteInput, type SampleQuoteLine } from '@/lib/prospecting-sample-quote';
+import { SAMPLE_QUOTE_ITEMS, buildSampleQuoteEmail, getSampleQuoteGreetingName, validateSampleQuoteGreetingName, validateSampleQuoteInput, type SampleQuoteLine } from '@/lib/prospecting-sample-quote';
 
 export type SampleQuoteFormState = { error?: string; sentAt?: string; locked?: boolean };
 
@@ -15,6 +15,7 @@ type Props = {
   contactEmail: string;
   senderName: string;
   senderEmail: string;
+  initialGreetingName?: string;
   initialTrackingNumber?: string;
   initialLines?: SampleQuoteLine[];
   canEdit: boolean;
@@ -24,11 +25,12 @@ type Props = {
   backHref: string;
 };
 
-type QuoteDraft = { version: 1; trackingNumber: string; included: string[]; prices: Record<string, string>; uncertain: boolean };
+type QuoteDraft = { version: 1; greetingName: string; trackingNumber: string; included: string[]; prices: Record<string, string>; uncertain: boolean };
 
 function initialDraft(props: Props): QuoteDraft {
   return {
     version: 1,
+    greetingName: props.initialGreetingName ?? getSampleQuoteGreetingName(props.contactName),
     trackingNumber: props.initialTrackingNumber || '',
     included: props.initialLines?.map(line => line.id) ?? [],
     prices: Object.fromEntries(SAMPLE_QUOTE_ITEMS.map(item => [item.id, ((props.initialLines?.find(line => line.id === item.id)?.priceCents ?? item.defaultPriceCents) / 100).toFixed(2)])),
@@ -36,13 +38,14 @@ function initialDraft(props: Props): QuoteDraft {
   };
 }
 
-function restoreDraft(raw: string | null): QuoteDraft | null {
+function restoreDraft(raw: string | null, greetingNameFallback: string): QuoteDraft | null {
   if (!raw) return null;
   try {
     const draft = JSON.parse(raw) as Partial<QuoteDraft>;
+    if (draft.greetingName !== undefined && (typeof draft.greetingName !== 'string' || draft.greetingName.length > 120)) return null;
     if (draft.version !== 1 || typeof draft.trackingNumber !== 'string' || draft.trackingNumber.length > 120 || !Array.isArray(draft.included) || !draft.prices || typeof draft.prices !== 'object' || typeof draft.uncertain !== 'boolean') return null;
     if (!draft.included.every(id => SAMPLE_QUOTE_ITEMS.some(item => item.id === id)) || !SAMPLE_QUOTE_ITEMS.every(item => typeof draft.prices?.[item.id] === 'string' && draft.prices[item.id].length <= 12)) return null;
-    return draft as QuoteDraft;
+    return { ...draft, greetingName: draft.greetingName ?? greetingNameFallback } as QuoteDraft;
   } catch { return null; }
 }
 
@@ -67,6 +70,7 @@ export default function ProspectingSampleQuoteForm(props: Props) {
     try { sessionStorage.setItem(storageKey, JSON.stringify(submitted)); } catch { /* The current form retains the exact send attempt. */ }
     const formData = new FormData();
     formData.set('order_id', props.orderId);
+    formData.set('greeting_name', submitted.greetingName.trim());
     formData.set('tracking_number', submitted.trackingNumber);
     formData.set('lines', JSON.stringify(submitted.included.map(id => ({ id, priceCents: Math.round(Number(submitted.prices[id]) * 100) }))));
     let response: SampleQuoteFormState;
@@ -90,19 +94,20 @@ export default function ProspectingSampleQuoteForm(props: Props) {
   const navigation = useProspectingDraftNavigation(dirty && !sentAt, pending);
   const lines = draft.included.map(id => ({ id, priceCents: Math.round(Number(draft.prices[id]) * 100) }));
   const pricesValid = draft.included.every(id => /^\d+(?:\.\d{1,2})?$/.test(draft.prices[id]) && Number(draft.prices[id]) > 0 && Number(draft.prices[id]) <= 99999.99);
+  const greetingInput = validateSampleQuoteGreetingName(draft.greetingName);
   const previewInput = validateSampleQuoteInput(draft.trackingNumber.trim() || 'Tracking number pending', lines);
-  const preview = props.locked && props.savedEmail ? props.savedEmail : pricesValid && previewInput.ok ? buildSampleQuoteEmail({ contactName: props.contactName, senderName: props.senderName, trackingNumber: previewInput.trackingNumber, lines: previewInput.lines }) : null;
+  const preview = props.locked && props.savedEmail ? props.savedEmail : greetingInput.ok && pricesValid && previewInput.ok ? buildSampleQuoteEmail({ contactName: props.contactName, greetingName: greetingInput.greetingName, senderName: props.senderName, trackingNumber: previewInput.trackingNumber, lines: previewInput.lines }) : null;
 
   useEffect(() => {
     try {
       if (props.sentAt) sessionStorage.removeItem(storageKey);
       else if (!props.locked) {
-        const saved = restoreDraft(sessionStorage.getItem(storageKey));
+        const saved = restoreDraft(sessionStorage.getItem(storageKey), props.initialGreetingName ?? getSampleQuoteGreetingName(props.contactName));
         if (saved) { setDraft(saved); setDirty(true); setRestored(true); }
       }
     } catch { /* Browser storage is optional. */ }
     setReady(true);
-  }, [storageKey, props.sentAt, props.locked]);
+  }, [storageKey, props.sentAt, props.locked, props.initialGreetingName, props.contactName]);
   useEffect(() => {
     if (!ready || !dirty || sentAt) return;
     try { sessionStorage.setItem(storageKey, JSON.stringify(draft)); } catch { /* The open form still retains the draft. */ }
@@ -112,15 +117,21 @@ export default function ProspectingSampleQuoteForm(props: Props) {
 
   function updateDraft(next: QuoteDraft) { setDraft(next); setDirty(true); }
 
-  return <form action={action} onSubmit={event => { if (submitPendingRef.current || pending || !ready || !props.canEdit || sentAtRef.current) event.preventDefault(); else submitPendingRef.current = true; }} className="space-y-6" data-prospecting-record="true">
+  return <form action={action} onSubmit={event => { if (submitPendingRef.current || pending || !ready || !props.canEdit || sentAtRef.current || !greetingInput.ok || !preview || !draft.trackingNumber.trim()) event.preventDefault(); else submitPendingRef.current = true; }} className="space-y-6" data-prospecting-record="true">
     <input type="hidden" name="order_id" value={props.orderId} />
     <input type="hidden" name="lines" value={JSON.stringify(lines)} />
     {sentAt ? <section ref={successRef} tabIndex={-1} role="status" className="card border-emerald-200 bg-emerald-50 text-emerald-950"><h2 className="text-lg font-semibold">Samples and pricing email sent</h2><p className="mt-2 text-sm">Sent from {props.senderEmail} to {props.contactEmail}. This order’s email is complete.</p><div className="mt-4 flex flex-wrap gap-3"><Link className="btn-primary" href={props.backHref}>Back to prospecting</Link><Link className="btn-secondary" href={`/admin/orders/${props.orderId}`}>View sample order</Link></div></section> : null}
     {restored && !sentAt ? <p role="status" className="rounded-lg bg-teal-50 p-3 text-sm text-teal-900">Your tracking and pricing draft was restored.</p> : null}
     {result.error ? <div ref={errorRef} tabIndex={-1} role="alert" className="rounded-lg border border-rose-200 bg-rose-50 p-4 text-rose-900">{result.error}</div> : null}
-    {locked && !sentAt ? <p role="status" className="rounded-lg bg-amber-50 p-3 text-sm text-amber-900">This email send has already started. Its tracking number and prices are kept unchanged so checking or retrying cannot send a different quote.</p> : null}
+    {locked && !sentAt ? <p role="status" className="rounded-lg bg-amber-50 p-3 text-sm text-amber-900">This email send has already started. Its greeting, tracking number, and prices are kept unchanged so checking or retrying cannot send a different quote.</p> : null}
     <section className="card space-y-4">
       <div><h2 className="text-xl font-semibold">Sample tracking</h2><p className="mt-2 text-sm text-slate-600">Add the sample box tracking number, then choose the pricing to include in the customer’s email.</p></div>
+      <div className="min-w-0 max-w-xl space-y-2">
+        <label className="block text-sm font-semibold" htmlFor="sample-greeting-name">Greeting name</label>
+        <input id="sample-greeting-name" className="input" name="greeting_name" value={draft.greetingName} onChange={event => updateDraft({ ...draft, greetingName: event.target.value })} maxLength={120} required disabled={disabled} autoComplete="off" aria-invalid={!greetingInput.ok} aria-describedby={`sample-greeting-help${greetingInput.ok ? '' : ' sample-greeting-error'}`} />
+        <p id="sample-greeting-help" className="text-sm text-slate-500 [overflow-wrap:anywhere]">Shown in the email as Hi {draft.greetingName.trim() || '[name]'}!</p>
+        {!greetingInput.ok ? <p id="sample-greeting-error" className="text-sm text-rose-800">{greetingInput.error}</p> : null}
+      </div>
       <label className="block text-sm font-semibold" htmlFor="sample-tracking-number">Tracking number</label>
       <input id="sample-tracking-number" className="input max-w-xl" name="tracking_number" value={draft.trackingNumber} onChange={event => updateDraft({ ...draft, trackingNumber: event.target.value })} maxLength={120} pattern={'[A-Za-z0-9][A-Za-z0-9 \\-]*'} title="Use letters, numbers, spaces, or hyphens." required disabled={disabled} autoComplete="off" spellCheck={false} placeholder="Enter the sample box tracking number" />
       {!sentAt ? <p className="text-sm text-slate-500">Waiting on tracking? Return through the lead’s sample history or the Created orders list. Draft changes are kept in this browser tab.</p> : null}
@@ -143,9 +154,9 @@ export default function ProspectingSampleQuoteForm(props: Props) {
     <section className="card space-y-4" aria-labelledby="sample-quote-preview">
       <h2 id="sample-quote-preview" className="text-xl font-semibold">Email preview</h2>
       <dl className="grid gap-2 text-sm sm:grid-cols-[5rem_minmax(0,1fr)]"><dt className="font-semibold">From</dt><dd className="break-words">{props.senderName} &lt;{props.senderEmail}&gt;</dd><dt className="font-semibold">To</dt><dd className="break-words">{props.contactName} &lt;{props.contactEmail}&gt;</dd><dt className="font-semibold">Subject</dt><dd>{preview?.subject || 'Sobrew Coffee Samples, Pricing, and Ordering Process'}</dd></dl>
-      {preview ? <div data-testid="sample-quote-email-preview" className="rounded-xl border border-slate-200 bg-white p-4 sm:p-6" dangerouslySetInnerHTML={{ __html: preview.html }} /> : <p className="rounded-lg bg-slate-50 p-4 text-sm text-slate-600">{!lines.length ? 'Select the items to include, then adjust their prices to preview your email.' : 'Enter valid tracking details and at least one item price to preview your email.'}</p>}
+      {preview ? <div data-testid="sample-quote-email-preview" className={`overflow-hidden rounded-xl border border-slate-200 ${preview.html.includes('data-sample-quote-email="brand"') ? 'mx-auto max-w-[702px] bg-[#f8f5ed]' : 'bg-white p-4 sm:p-6'}`} dangerouslySetInnerHTML={{ __html: preview.html }} /> : <p className="rounded-lg bg-slate-50 p-4 text-sm text-slate-600">{!greetingInput.ok ? 'Enter a greeting name to preview your email.' : !lines.length ? 'Select the items to include, then adjust their prices to preview your email.' : 'Enter valid tracking details and at least one item price to preview your email.'}</p>}
     </section>
-    {!sentAt ? <div className="flex flex-wrap items-center gap-3"><button className="btn-primary" type="submit" disabled={!ready || !props.canEdit || pending || !preview || !draft.trackingNumber.trim()} aria-busy={pending}>{pending ? 'Sending email…' : !props.canEdit ? 'Read-only access' : locked ? 'Check / retry email send' : 'Send samples & pricing email'}</button><Link className="btn-secondary" href={props.backHref}>Finish later</Link><p className="w-full text-sm text-slate-500">Sending emails the selected quote and tracking details directly to {props.contactEmail} from the lead owner’s email.</p></div> : null}
+    {!sentAt ? <div className="flex flex-wrap items-center gap-3"><button className="btn-primary" type="submit" disabled={!ready || !props.canEdit || pending || !greetingInput.ok || !preview || !draft.trackingNumber.trim()} aria-busy={pending}>{pending ? 'Sending email…' : !props.canEdit ? 'Read-only access' : locked ? 'Check / retry email send' : 'Send samples & pricing email'}</button><Link className="btn-secondary" href={props.backHref}>Finish later</Link><p className="w-full text-sm text-slate-500">Sending emails the selected quote and tracking details directly to {props.contactEmail} from the lead owner’s email.</p></div> : null}
     <ProspectingDialog open={Boolean(navigation.destination)} title="Keep this email draft for later?" onClose={navigation.stay}>
       <p className="text-sm text-slate-600">Your tracking and pricing changes are saved in this browser tab. Return through the lead’s sample history or the Created orders list.</p>
       <div className="mt-5 flex flex-wrap gap-2"><button type="button" className="btn-primary" onClick={() => navigation.destination && navigation.navigate(navigation.destination)}>Keep draft and leave</button><button type="button" className="btn-secondary" onClick={navigation.stay}>Stay here</button>{!locked ? <button type="button" className="btn-secondary" onClick={() => { if (navigation.destination) { try { sessionStorage.removeItem(storageKey); } catch { /* Best-effort cleanup. */ } setDirty(false); navigation.navigate(navigation.destination); } }}>Discard draft and leave</button> : null}</div>
