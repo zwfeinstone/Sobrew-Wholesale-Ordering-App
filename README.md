@@ -133,6 +133,28 @@ Visit `/bootstrap` and submit email/password/token. If token matches `ADMIN_BOOT
   - customer confirmation to ordering customer
 - Optional shipped email is sent when order status becomes `Shipped`.
 
+### Sample tracking and pricing emails
+
+After creating a linked sample order, continue to **Tracking & pricing**. Enter
+the tracking number, uncheck products to omit, and edit the selected quote prices.
+The live preview shows the recipient, lead owner, and complete email before
+**Send samples & pricing email** submits it. Prices apply only to this quote;
+they do not change the product catalog or customer ordering prices. The step can
+also be reopened from the sample order or the manager's created-order list.
+
+Apply `db/migrations/20260930192343_prospecting_sample_quote_emails.sql` before
+deploying the feature. The Resend account used by `RESEND_API_KEY` must have the
+exact `sobrew.com` domain verified to send from the assigned owner's active
+`@sobrew.com` profile address. Both From and Reply-To use that address. The
+existing `orders.sobrew.com` verification covers only its own sender addresses.
+
+One immutable email snapshot is saved per order before delivery. The server
+checks permissions, lead ownership, the request contact, and do-not-contact
+status. Uncertain retries reuse the same Resend idempotency key and payload;
+after 23 hours, an administrator must reconcile delivery in Resend before any
+further attempt. Receipts survive moving an order to trash and restoring it.
+An accepted email remains viewable and cannot be sent again from this step.
+
 ## Seed data
 
 `db/migrations/002_seed.sql` adds two example products and includes assignment snippets for a sample user.

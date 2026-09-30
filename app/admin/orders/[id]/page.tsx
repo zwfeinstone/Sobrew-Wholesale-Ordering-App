@@ -9,7 +9,7 @@ import PrintOrderButton from '@/components/print-order-button';
 import PendingSubmitButton from '@/components/pending-submit-button';
 import { ProductBoxUsageFields, type ProductBoxInventoryOption, type ProductBoxRequiredLine } from '@/components/product-box-usage-fields';
 import StatusToast from '@/components/status-toast';
-import { requireAdminSectionEdit, requireAdminSectionView } from '@/lib/admin-permissions';
+import { adminCanView, requireAdminSectionEdit, requireAdminSectionView } from '@/lib/admin-permissions';
 import { requireAdminWriteAccess } from '@/lib/admin-write-access';
 import { getCenterLoginEmails } from '@/lib/center-logins';
 import { snapshotOrderCommissionForShipment } from '@/lib/commissions';
@@ -526,6 +526,7 @@ export default async function AdminOrderDetail(
       <div className="workspace-heading-actions"><OrderStatusBadge status={order.status} /><PrintOrderButton /></div>
     </header>
     <OrderNotes notes={orderNotes} />
+    {order.order_kind === 'prospecting_sample' && order.prospecting_lead_id && (current.isOwner || adminCanView(current.access, 'prospecting')) ? <div className="workspace-notice"><Link className="font-semibold text-teal-800 underline" href={`/admin/sales/prospecting/sample-order/${order.id}/quote`}>Samples tracking &amp; pricing email</Link><p className="mt-1 text-sm">Add tracking and send the lead owner’s quote, or review an email already sent.</p></div> : null}
     {order.order_kind !== 'prospecting_sample' && items.some(item => item.unit_price_cents === 0) ? <p className="workspace-notice warning">This standard order includes $0 items. Verify that complimentary pricing is intentional before fulfillment.</p> : null}
     {order.archived_at ? <p className="workspace-notice">Archived {formatOrderTimestamp(order.archived_at)}</p> : null}
     <div className="order-detail-columns">

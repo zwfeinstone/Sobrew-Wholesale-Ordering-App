@@ -210,13 +210,14 @@ async function submitSampleOrder(formData: FormData) {
   }
 
   if (leadId) {
-    redirect(await sampleOrderCompletionHref({
+    const backHref = await sampleOrderCompletionHref({
       currentProfileId: current.profile.id,
       isOwner: current.isOwner,
       nextRecordId,
       previousRecordId,
       queueContext,
-    }));
+    });
+    redirect(`/admin/sales/prospecting/sample-order/${result.orderId}/quote?back=${encodeURIComponent(backHref)}`);
   }
 
   redirect(`/admin/orders/${result.orderId}?toast=sample_order_created`);

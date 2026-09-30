@@ -16,6 +16,7 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
 const cleanId = (value: unknown) => typeof value === 'string' && UUID_PATTERN.test(value) ? value : '';
 
 async function submitSampleOrder(_previous: SampleOrderFormState, formData: FormData): Promise<SampleOrderFormState> {
+  'use server';
   const current = await requireAdminSectionEdit('prospecting');
   if (!isProspectingWorkspaceEnabled()) return { code: 'setup_required', error: 'The prospecting workspace changed while this form was open. Reload before submitting.' };
   const input = prospectingSampleOrderInputFromFormData(formData);

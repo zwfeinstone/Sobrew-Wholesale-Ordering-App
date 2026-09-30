@@ -81,7 +81,8 @@ export default function ProspectingSampleOrderForm(props: Props) {
       <h2 className="text-xl font-semibold">Sample order created</h2>
       <p className="text-slate-600">{props.linked ? 'The shipment is ready for production. The request and its order were saved together.' : 'The standalone sample shipment is ready for production.'}</p>
       <div className="flex flex-wrap gap-3">
-        <Link className="btn-primary" href={`/admin/orders/${result.orderId}`}>View sample order</Link>
+        {props.linked ? <Link className="btn-primary" href={`/admin/sales/prospecting/sample-order/${result.orderId}/quote?back=${encodeURIComponent(result.successHref || props.backHref)}`}>Continue to tracking &amp; pricing</Link> : null}
+        <Link className={props.linked ? 'btn-secondary' : 'btn-primary'} href={`/admin/orders/${result.orderId}`}>View sample order</Link>
         <Link className="btn-secondary" href={result.successHref || props.backHref}>{props.linked ? 'Continue prospecting' : 'Back to prospecting'}</Link>
       </div>
     </section>

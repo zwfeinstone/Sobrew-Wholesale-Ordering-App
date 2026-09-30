@@ -28,6 +28,27 @@ type OrderTrashRow = {
   restored_by: string | null;
 };
 
+export type SampleQuoteRow = {
+  id: string;
+  order_id: string;
+  lead_id: string;
+  contact_id: string | null;
+  sender_profile_id: string;
+  created_by: string;
+  sender_name: string;
+  sender_email: string;
+  recipient_name: string;
+  recipient_email: string;
+  tracking_number: string;
+  lines: Json;
+  subject: string;
+  body_text: string;
+  body_html: string;
+  created_at: string;
+  sent_at: string | null;
+  resend_email_id: string | null;
+};
+
 export type Database = Omit<GeneratedDatabase, 'public'> & {
   public: Omit<PublicSchema, 'Tables' | 'Functions'> & {
     Tables: PublicSchema['Tables'] & {
@@ -53,6 +74,17 @@ export type Database = Omit<GeneratedDatabase, 'public'> & {
           { foreignKeyName: 'prospecting_sample_requests_lead_id_fkey'; columns: ['lead_id']; isOneToOne: false; referencedRelation: 'prospecting_leads'; referencedColumns: ['id'] },
           { foreignKeyName: 'prospecting_sample_requests_contact_id_fkey'; columns: ['contact_id']; isOneToOne: false; referencedRelation: 'prospecting_contacts'; referencedColumns: ['id'] },
           { foreignKeyName: 'prospecting_sample_requests_order_id_fkey'; columns: ['order_id']; isOneToOne: false; referencedRelation: 'orders'; referencedColumns: ['id'] },
+        ];
+      };
+      prospecting_sample_quotes: {
+        Row: SampleQuoteRow;
+        Insert: Omit<SampleQuoteRow, 'id' | 'created_at' | 'sent_at' | 'resend_email_id'> & Partial<Pick<SampleQuoteRow, 'id' | 'created_at' | 'sent_at' | 'resend_email_id'>>;
+        Update: Partial<Pick<SampleQuoteRow, 'sent_at' | 'resend_email_id'>>;
+        Relationships: [
+          { foreignKeyName: 'prospecting_sample_quotes_lead_id_fkey'; columns: ['lead_id']; isOneToOne: false; referencedRelation: 'prospecting_leads'; referencedColumns: ['id'] },
+          { foreignKeyName: 'prospecting_sample_quotes_contact_id_fkey'; columns: ['contact_id']; isOneToOne: false; referencedRelation: 'prospecting_contacts'; referencedColumns: ['id'] },
+          { foreignKeyName: 'prospecting_sample_quotes_sender_profile_id_fkey'; columns: ['sender_profile_id']; isOneToOne: false; referencedRelation: 'profiles'; referencedColumns: ['id'] },
+          { foreignKeyName: 'prospecting_sample_quotes_created_by_fkey'; columns: ['created_by']; isOneToOne: false; referencedRelation: 'profiles'; referencedColumns: ['id'] },
         ];
       };
       prospecting_submission_receipts: { Row: { submission_id: string; actor_id: string; submission_signature: string | null; payload: Json; receipt: Json; created_at: string }; Insert: never; Update: never; Relationships: [] };

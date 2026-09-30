@@ -40,6 +40,8 @@ describe('manager sample request handling', () => {
     const html = await render(true);
     expect(state.filters).toContainEqual(['eq', 'status', 'order_created']);
     expect(html).toContain('/admin/orders/order-1');
+    expect(html).toContain('/admin/sales/prospecting/sample-order/order-1/quote?back=');
+    expect(html).toContain('Continue to tracking &amp; pricing');
     expect(html).not.toContain('sample-order?');
   });
   it('retains read access without exposing fulfillment to a manager lacking edit permission', async () => {
