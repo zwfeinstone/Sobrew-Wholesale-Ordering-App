@@ -151,7 +151,7 @@ export async function sendSampleQuote({ orderId, trackingNumber, lines, expected
   try {
     const response = await resend.emails.send({
       from: `${quote.sender_name.replace(/[<>"\r\n]/g, '')} <${quote.sender_email}>`,
-      replyTo: quote.sender_email, to: [quote.recipient_email], subject: quote.subject,
+      replyTo: quote.sender_email, to: [quote.recipient_email], bcc: [quote.sender_email], subject: quote.subject,
       text: quote.body_text, html: quote.body_html,
     }, { idempotencyKey: `sample-quote/${quote.id}` });
     const deliveryError = resendEmailAcceptanceError(response, 'Samples and pricing email');

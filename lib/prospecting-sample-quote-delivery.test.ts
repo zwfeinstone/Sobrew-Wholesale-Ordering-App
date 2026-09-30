@@ -118,7 +118,7 @@ describe('sample quote authorized context', () => {
   it('allows an owner to handle another rep’s lead while sending from that assigned rep', async () => {
     const { options, db, send } = setup();
     expect(await sendSampleQuote({ ...options, actorId: OWNER_ID, isOwner: true })).toEqual({ sentAt: NOW.toISOString(), locked: true });
-    expect(send).toHaveBeenCalledWith(expect.objectContaining({ from: 'Haskins <haskins@sobrew.com>', replyTo: 'haskins@sobrew.com', to: ['ron@example.com'] }), { idempotencyKey: `sample-quote/${QUOTE_ID}` });
+    expect(send).toHaveBeenCalledWith(expect.objectContaining({ from: 'Haskins <haskins@sobrew.com>', replyTo: 'haskins@sobrew.com', to: ['ron@example.com'], bcc: ['haskins@sobrew.com'] }), { idempotencyKey: `sample-quote/${QUOTE_ID}` });
     expect(db.tables.prospecting_sample_quotes[0]).toMatchObject({ sender_profile_id: REP_ID, created_by: OWNER_ID, sent_at: NOW.toISOString(), resend_email_id: 'resend-email-1' });
   });
 
@@ -187,6 +187,7 @@ describe('sample quote delivery and immutable retries', () => {
     const { options, db, send } = setup();
     expect(await sendSampleQuote(options)).toMatchObject({ sentAt: NOW.toISOString() });
     const payload = send.mock.calls[0][0];
+    expect(payload.bcc).toEqual(['haskins@sobrew.com']);
     expect(payload.subject).toBe('Sobrew Coffee Samples, Pricing, and Ordering Process');
     for (const body of [payload.text, payload.html]) {
       expect(body).toContain('$35.00 per bag ($7.00/lb)');
@@ -206,7 +207,7 @@ describe('sample quote delivery and immutable retries', () => {
     expect(await sendSampleQuote(options)).toMatchObject({ sentAt: NOW.toISOString() });
     expect(send).toHaveBeenCalledTimes(2);
     expect(send.mock.calls[0]).toEqual(send.mock.calls[1]);
-    expect(send.mock.calls[1]).toEqual([expect.objectContaining({ text: 'Immutable saved text', html: '<p>Immutable saved HTML</p>' }), { idempotencyKey: `sample-quote/${QUOTE_ID}` }]);
+    expect(send.mock.calls[1]).toEqual([expect.objectContaining({ text: 'Immutable saved text', html: '<p>Immutable saved HTML</p>', bcc: ['haskins@sobrew.com'] }), { idempotencyKey: `sample-quote/${QUOTE_ID}` }]);
     expect(db.calls.filter(call => call.operation === 'insert')).toEqual([]);
     expect(listDomains).not.toHaveBeenCalled();
   });
