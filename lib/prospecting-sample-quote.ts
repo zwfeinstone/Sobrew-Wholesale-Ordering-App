@@ -65,7 +65,25 @@ function money(cents: number) {
 export function formatSampleQuotePrice(item: SampleQuoteItem, priceCents: number) {
   return item.pounds
     ? `${money(priceCents)} ${item.packLabel} (${money(priceCents / item.pounds)}/lb)`
-    : `${item.packLabel} - ${money(priceCents)}`;
+    : `${item.packLabel} — ${money(priceCents)}`;
+}
+
+// Repeat typography on text-bearing elements: email clients and portal CSS reset inheritance differently.
+const EMAIL_TEXT_STYLE = 'font-family:Arial,Helvetica,sans-serif;font-size:15px;line-height:24px;color:#202124;';
+const EMAIL_CELL_STYLE = `${EMAIL_TEXT_STYLE}font-weight:400;margin:0;padding:0;border:0;text-align:left;vertical-align:top;`;
+const EMAIL_PARAGRAPH_STYLE = `${EMAIL_TEXT_STYLE}font-weight:400;margin:0;padding:0;`;
+
+function emailStrong(value: string) {
+  return `<strong style="${EMAIL_TEXT_STYLE}font-weight:700;margin:0;padding:0;">${escapeHtml(value)}</strong>`;
+}
+
+/** contentHtml is composed only from escaped text and the helpers in this module. */
+function emailRow(contentHtml: string, bottom = 18, top = 0) {
+  return `<tr><td style="${EMAIL_CELL_STYLE}padding-top:${top}px;padding-bottom:${bottom}px;"><p style="${EMAIL_PARAGRAPH_STYLE}">${contentHtml}</p></td></tr>`;
+}
+
+function emailTable(rows: string[]) {
+  return `<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="width:100%;border:0;border-collapse:collapse;table-layout:fixed;margin:0;padding:0;"><tbody>${rows.join('\n')}</tbody></table>`;
 }
 
 export function buildSampleQuoteEmail(input: {
@@ -79,70 +97,76 @@ export function buildSampleQuoteEmail(input: {
   const firstName = input.contactName.trim().split(/\s+/)[0];
   const greeting = firstName ? `Hi ${firstName}!` : 'Hi!';
   const senderName = input.senderName.trim() || 'The Sobrew Coffee Team';
-  const introduction = "Thanks for your interest in Sobrew Coffee! We're looking forward to you trying the coffee.";
-  const pricingIntroduction = 'Please find our coffee pricing below.';
+  const introduction = 'Thanks for your interest in Sobrew Coffee! Looking forward to y’all trying the coffee.';
+  const pricingIntroduction = 'Please find your coffee pricing below.';
   const mission = 'A portion of every order goes back to helping recovery and mental health-focused organizations!';
-  const login = 'To place an order, we will create a login for you on our online ordering portal.';
-  const portal = 'We built this to make ordering as simple and hands-off as possible. Most of our partners love the ability to set it and forget it:';
+  const login = 'To place an order, we’ll create a login for you on our online ordering portal.';
+  const portalIntroduction = 'We built this to make ordering as simple and hands-off as possible. Most of our partners love the ability to ';
+  const portalEmphasis = 'set it and forget it:';
   const benefits = [
-    'Set up recurring orders so you never run out',
-    'Adjust frequency or quantities anytime as your needs change',
-    'Reorder in seconds from past purchases',
-    'Access your full catalog of products in one place',
+    { before: '', emphasis: 'Set up recurring orders', after: ' so you never run out' },
+    { before: '', emphasis: 'Adjust frequency or quantities anytime', after: ' as your needs change' },
+    { before: '', emphasis: 'Reorder in seconds', after: ' from past purchases' },
+    { before: 'Access your ', emphasis: 'full catalog of products', after: ' in one place' },
   ];
   const convenience = 'No more last-minute orders or back-and-forth; just consistent delivery on your terms.';
-  const closing = "I'd love to hear your thoughts on everything when you are ready.";
+  const closing = 'I’d love to hear your thoughts once you’ve had a chance to try everything!';
   const priceText: string[] = [];
   const priceHtml: string[] = [];
+  const selected = validated.lines.map(line => ({ item: SAMPLE_QUOTE_ITEMS.find(candidate => candidate.id === line.id)!, priceCents: line.priceCents }));
   let lastCategory = '';
   let lastDescription = '';
-  for (const line of validated.lines) {
-    const item = SAMPLE_QUOTE_ITEMS.find(candidate => candidate.id === line.id)!;
+  for (const [index, { item, priceCents }] of selected.entries()) {
     if (item.category !== lastCategory) {
+      if (lastCategory) priceText.push('');
       priceText.push(item.category);
-      priceHtml.push(`<h2 style="font-size:18px;margin:24px 0 8px">${escapeHtml(item.category)}</h2>`);
+      priceHtml.push(emailRow(emailStrong(item.category), 6, lastCategory ? 6 : 0));
       lastCategory = item.category;
       lastDescription = '';
     }
     if (item.description !== lastDescription) {
+      if (lastDescription) priceText.push('');
       priceText.push(item.description);
-      priceHtml.push(`<p style="margin:12px 0 4px">${escapeHtml(item.description)}</p>`);
+      priceHtml.push(emailRow(escapeHtml(item.description), 3));
       lastDescription = item.description;
     }
-    const price = formatSampleQuotePrice(item, line.priceCents);
+    const price = formatSampleQuotePrice(item, priceCents);
     priceText.push(`- ${price}`);
-    priceHtml.push(`<p style="margin:4px 0 4px 16px"><strong>${escapeHtml(price)}</strong></p>`);
+    const nextItem = selected[index + 1]?.item;
+    const endsGroup = !nextItem || nextItem.category !== item.category || nextItem.description !== item.description;
+    const formattedPrice = item.pounds ? emailStrong(price) : `${escapeHtml(item.packLabel)} — ${emailStrong(money(priceCents))}`;
+    priceHtml.push(emailRow(formattedPrice, endsGroup ? 18 : 3));
   }
   const text = [
     greeting,
     introduction,
-    `Samples Tracking: ${validated.trackingNumber}`,
+    `Samples Tracking:\n${validated.trackingNumber}`,
     pricingIntroduction,
     priceText.join('\n'),
     mission,
-    'Ordering is simple:',
+    'Ordering is simple',
     login,
-    portal,
-    benefits.map(benefit => `- ${benefit}`).join('\n'),
+    `${portalIntroduction}${portalEmphasis}`,
+    benefits.map(benefit => `- ${benefit.before}${benefit.emphasis}${benefit.after}`).join('\n'),
     convenience,
     closing,
     `Best,\n${senderName}`,
   ].join('\n\n');
-  const paragraph = (value: string) => `<p>${escapeHtml(value)}</p>`;
-  const html = `<div style="font-family:Arial,sans-serif;font-size:15px;line-height:1.6;color:#1f2937;max-width:640px">${[
-    paragraph(greeting),
-    paragraph(introduction),
-    `<p><strong>Samples Tracking:</strong> ${escapeHtml(validated.trackingNumber)}</p>`,
-    paragraph(pricingIntroduction),
+  const benefitRows = benefits.map(benefit => `<tr><td width="18" style="${EMAIL_CELL_STYLE}width:18px;padding-bottom:5px;">•</td><td style="${EMAIL_CELL_STYLE}padding-bottom:5px;">${escapeHtml(benefit.before)}${emailStrong(benefit.emphasis)}${escapeHtml(benefit.after)}</td></tr>`);
+  const html = `<div style="${EMAIL_TEXT_STYLE}font-weight:400;max-width:600px;margin:0;padding:0;">${emailTable([
+    emailRow(escapeHtml(greeting)),
+    emailRow(escapeHtml(introduction)),
+    emailRow(`${emailStrong('Samples Tracking:')}<br /><span style="${EMAIL_TEXT_STYLE}font-weight:400;overflow-wrap:anywhere;word-break:break-word;">${escapeHtml(validated.trackingNumber)}</span>`),
+    emailRow(escapeHtml(pricingIntroduction)),
     ...priceHtml,
-    `<p><strong>${escapeHtml(mission)}</strong></p>`,
-    paragraph('Ordering is simple:'),
-    paragraph(login),
-    paragraph(portal),
-    `<ul>${benefits.map(benefit => `<li>${escapeHtml(benefit)}</li>`).join('')}</ul>`,
-    paragraph(convenience),
-    paragraph(closing),
-    `<p>Best,<br />${escapeHtml(senderName)}</p>`,
-  ].join('\n')}</div>`;
+    emailRow(emailStrong(mission)),
+    emailRow(emailStrong('Ordering is simple'), 6),
+    emailRow(escapeHtml(login)),
+    emailRow(`${escapeHtml(portalIntroduction)}${emailStrong(portalEmphasis)}`),
+    `<tr><td style="${EMAIL_CELL_STYLE}padding-bottom:18px;">${emailTable(benefitRows)}</td></tr>`,
+    emailRow(escapeHtml(convenience)),
+    emailRow(escapeHtml(closing)),
+    emailRow(`Best,<br />${escapeHtml(senderName)}`, 0),
+  ])}</div>`;
   return { subject: 'Sobrew Coffee Samples, Pricing, and Ordering Process', text, html };
 }

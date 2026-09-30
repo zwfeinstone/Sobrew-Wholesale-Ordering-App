@@ -136,11 +136,12 @@ Visit `/bootstrap` and submit email/password/token. If token matches `ADMIN_BOOT
 ### Sample tracking and pricing emails
 
 Creating a linked sample order automatically opens **Tracking & pricing**. Enter
-the tracking number, uncheck products to omit, and edit the selected quote prices.
+the tracking number, select products to include, and edit the selected quote prices.
+New quotes start with every item unchecked; saved drafts keep their selections.
 The live preview shows the recipient, lead owner, and complete email before
 **Send samples & pricing email** submits it. Prices apply only to this quote;
 they do not change the product catalog or customer ordering prices. The step can
-also be reopened from the sample order or the manager's created-order list.
+also be reopened from the lead's sample history or the manager's created-order list.
 
 Apply `db/migrations/20260930192343_prospecting_sample_quote_emails.sql` before
 deploying the feature. The Resend account used by `RESEND_API_KEY` must have the

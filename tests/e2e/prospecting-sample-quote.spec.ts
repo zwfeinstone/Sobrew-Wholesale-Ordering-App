@@ -14,16 +14,36 @@ async function openFixture(page: Page, query = '') {
 async function bulkQuote(page: Page) {
   await page.getByLabel('Tracking number', { exact: true }).fill('1Z0751H30305695303');
   const boxes = page.getByRole('checkbox');
+  await boxes.first().check();
   for (let index = 1; index < await boxes.count(); index++) await boxes.nth(index).uncheck();
   await page.getByRole('spinbutton').first().fill('35.00');
 }
 
 async function calls(page: Page) { return page.evaluate(() => window.sampleQuoteFixture.calls); }
 
+async function expectEmailTypography(page: Page) {
+  const typography = await page.getByTestId('sample-quote-email-preview').evaluate(container => {
+    const body = container.firstElementChild!;
+    return [body, ...body.querySelectorAll('div, p, h2, li, td, strong')].map(element => {
+      const style = getComputedStyle(element);
+      return { fontFamily: style.fontFamily, fontSize: style.fontSize, lineHeight: style.lineHeight };
+    });
+  });
+  expect(typography.length).toBeGreaterThan(1);
+  for (const style of typography) {
+    expect(style.fontFamily).toContain('Arial');
+    expect(style.fontSize).toBe('15px');
+    expect(style.lineHeight).toBe('24px');
+  }
+}
+
 test('requires tracking, previews only the selected custom quote, and fits the screen', async ({ page }) => {
   await openFixture(page);
   await expect(page.getByRole('button', { name: 'Send samples & pricing email', exact: true })).toBeDisabled();
-  expect(await page.getByRole('checkbox', { checked: true }).count()).toBe(11);
+  expect(await page.getByRole('checkbox', { checked: true }).count()).toBe(0);
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  await page.getByLabel('Tracking number', { exact: true }).fill('1Z0751H30305695303');
+  await expect(page.getByRole('button', { name: 'Send samples & pricing email', exact: true })).toBeDisabled();
   await bulkQuote(page);
   const preview = page.getByRole('region', { name: 'Email preview', exact: true });
   await expect(preview).toContainText('$35.00 per bag ($7.00/lb)');
@@ -33,8 +53,21 @@ test('requires tracking, previews only the selected custom quote, and fits the s
   await expect(preview).not.toContainText('Fraction Pack');
   await expect(preview).not.toContainText('Decaf Dark Roast');
   await expect(preview).not.toContainText('K Cups');
+  await expectEmailTypography(page);
   await expect(page.getByRole('button', { name: 'Send samples & pricing email', exact: true })).toBeEnabled();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await test.info().attach('bulk-only-email-preview', { body: await preview.screenshot(), contentType: 'image/png' });
+
+  const boxes = page.getByRole('checkbox');
+  for (let index = 0; index < await boxes.count(); index++) await boxes.nth(index).check();
+  expect(await page.getByRole('checkbox', { checked: true }).count()).toBe(11);
+  for (const category of ['Bulk Coffee (5lb bags)', 'Fraction Pack', 'Filter Pack', 'K Cups']) await expect(preview).toContainText(category);
+  await expect(preview).toContainText('Specialty Fourth Dimension Medium Roast');
+  await expect(preview).toContainText('50ct — $50.00');
+  await expectEmailTypography(page);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  expect(await preview.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+  await test.info().attach('full-catalog-email-preview', { body: await preview.screenshot(), contentType: 'image/png' });
   expect(await calls(page)).toHaveLength(0);
 });
 

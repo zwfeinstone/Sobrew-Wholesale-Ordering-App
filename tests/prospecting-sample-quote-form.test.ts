@@ -14,16 +14,18 @@ const props = {
 };
 
 describe('sample quote review form', () => {
-  it('renders all catalog items selected and previews the lead owner as sender', () => {
+  it('starts with every catalog item unchecked and a neutral prompt to select items', () => {
     const html = renderToStaticMarkup(createElement(ProspectingSampleQuoteForm, props));
-    expect((html.match(/type="checkbox" checked=""/g) || []).length).toBe(11);
+    expect((html.match(/type="checkbox"/g) || []).length).toBe(11);
+    expect((html.match(/type="checkbox" checked=""/g) || []).length).toBe(0);
     expect(html).toContain('value="40.00"');
     expect(html).toContain('value="48.00"');
-    expect(html).toContain('$8.00/lb');
     expect(html).toContain('Haskins &lt;haskins@sobrew.com&gt;');
     expect(html).toContain('Ron Smith &lt;ron@example.test&gt;');
     expect(html).toContain('Sobrew Coffee Samples, Pricing, and Ordering Process');
-    expect(html).toContain('Tracking number pending');
+    expect(html).toContain('Select the items to include');
+    expect(html).not.toContain('role="alert"');
+    expect(html).not.toContain('data-testid="sample-quote-email-preview"');
   });
 
   it('previews a bulk-only custom quote while preserving the complete selection catalog', () => {
@@ -40,7 +42,8 @@ describe('sample quote review form', () => {
   it('renders an empty or invalid draft without throwing from the email renderer', () => {
     const empty = renderToStaticMarkup(createElement(ProspectingSampleQuoteForm, { ...props, initialLines: [] }));
     expect(empty).toContain('Select at least one item');
-    const invalid = renderToStaticMarkup(createElement(ProspectingSampleQuoteForm, { ...props, initialTrackingNumber: '<invalid>' }));
+    expect(empty).not.toContain('role="alert"');
+    const invalid = renderToStaticMarkup(createElement(ProspectingSampleQuoteForm, { ...props, initialTrackingNumber: '<invalid>', initialLines: [{ id: 'bulk-regular', priceCents: 3500 }] }));
     expect(invalid).toContain('Enter valid tracking details');
   });
 

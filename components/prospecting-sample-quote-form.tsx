@@ -30,7 +30,7 @@ function initialDraft(props: Props): QuoteDraft {
   return {
     version: 1,
     trackingNumber: props.initialTrackingNumber || '',
-    included: props.initialLines?.map(line => line.id) ?? SAMPLE_QUOTE_ITEMS.map(item => item.id),
+    included: props.initialLines?.map(line => line.id) ?? [],
     prices: Object.fromEntries(SAMPLE_QUOTE_ITEMS.map(item => [item.id, ((props.initialLines?.find(line => line.id === item.id)?.priceCents ?? item.defaultPriceCents) / 100).toFixed(2)])),
     uncertain: Boolean(props.locked),
   };
@@ -123,10 +123,10 @@ export default function ProspectingSampleQuoteForm(props: Props) {
       <div><h2 className="text-xl font-semibold">Sample tracking</h2><p className="mt-2 text-sm text-slate-600">Add the sample box tracking number, then choose the pricing to include in the customer’s email.</p></div>
       <label className="block text-sm font-semibold" htmlFor="sample-tracking-number">Tracking number</label>
       <input id="sample-tracking-number" className="input max-w-xl" name="tracking_number" value={draft.trackingNumber} onChange={event => updateDraft({ ...draft, trackingNumber: event.target.value })} maxLength={120} pattern={'[A-Za-z0-9][A-Za-z0-9 \\-]*'} title="Use letters, numbers, spaces, or hyphens." required disabled={disabled} autoComplete="off" spellCheck={false} placeholder="Enter the sample box tracking number" />
-      {!sentAt ? <p className="text-sm text-slate-500">Waiting on tracking? You can return to this sample order’s tracking and pricing step later. Draft changes are kept in this browser tab.</p> : null}
+      {!sentAt ? <p className="text-sm text-slate-500">Waiting on tracking? Return through the lead’s sample history or the Created orders list. Draft changes are kept in this browser tab.</p> : null}
     </section>
     <section className="card space-y-6">
-      <div><h2 className="text-xl font-semibold">Customer pricing</h2><p className="mt-2 text-sm text-slate-600">Uncheck items to leave them out of the email. Edit any selected price for this customer’s quote.</p></div>
+      <div><h2 className="text-xl font-semibold">Customer pricing</h2><p className="mt-2 text-sm text-slate-600">Select the items to include in the email. Edit any selected price for this customer’s quote.</p></div>
       {categories.map(category => <fieldset key={category} className="min-w-0 space-y-3" disabled={disabled}>
         <legend className="mb-3 text-lg font-semibold text-slate-950">{category}</legend>
         {SAMPLE_QUOTE_ITEMS.filter(item => item.category === category).map(item => {
@@ -138,16 +138,16 @@ export default function ProspectingSampleQuoteForm(props: Props) {
           </div>;
         })}
       </fieldset>)}
-      {!lines.length ? <p role="alert" className="text-sm text-rose-800">Select at least one item to include in the quote.</p> : null}
+      {!lines.length ? <p className="text-sm text-slate-600">Select at least one item to include in the quote.</p> : null}
     </section>
     <section className="card space-y-4" aria-labelledby="sample-quote-preview">
       <h2 id="sample-quote-preview" className="text-xl font-semibold">Email preview</h2>
       <dl className="grid gap-2 text-sm sm:grid-cols-[5rem_minmax(0,1fr)]"><dt className="font-semibold">From</dt><dd className="break-words">{props.senderName} &lt;{props.senderEmail}&gt;</dd><dt className="font-semibold">To</dt><dd className="break-words">{props.contactName} &lt;{props.contactEmail}&gt;</dd><dt className="font-semibold">Subject</dt><dd>{preview?.subject || 'Sobrew Coffee Samples, Pricing, and Ordering Process'}</dd></dl>
-      {preview ? <div className="rounded-xl border border-slate-200 bg-white p-4 sm:p-6" dangerouslySetInnerHTML={{ __html: preview.html }} /> : <p className="rounded-lg bg-slate-50 p-4 text-sm text-slate-600">Enter valid tracking details and at least one item price to preview your email.</p>}
+      {preview ? <div data-testid="sample-quote-email-preview" className="rounded-xl border border-slate-200 bg-white p-4 sm:p-6" dangerouslySetInnerHTML={{ __html: preview.html }} /> : <p className="rounded-lg bg-slate-50 p-4 text-sm text-slate-600">{!lines.length ? 'Select the items to include, then adjust their prices to preview your email.' : 'Enter valid tracking details and at least one item price to preview your email.'}</p>}
     </section>
     {!sentAt ? <div className="flex flex-wrap items-center gap-3"><button className="btn-primary" type="submit" disabled={!ready || !props.canEdit || pending || !preview || !draft.trackingNumber.trim()} aria-busy={pending}>{pending ? 'Sending email…' : !props.canEdit ? 'Read-only access' : locked ? 'Check / retry email send' : 'Send samples & pricing email'}</button><Link className="btn-secondary" href={props.backHref}>Finish later</Link><p className="w-full text-sm text-slate-500">Sending emails the selected quote and tracking details directly to {props.contactEmail} from the lead owner’s email.</p></div> : null}
     <ProspectingDialog open={Boolean(navigation.destination)} title="Keep this email draft for later?" onClose={navigation.stay}>
-      <p className="text-sm text-slate-600">Your tracking and pricing changes are saved in this browser tab. You can return through the sample order’s tracking and pricing link.</p>
+      <p className="text-sm text-slate-600">Your tracking and pricing changes are saved in this browser tab. Return through the lead’s sample history or the Created orders list.</p>
       <div className="mt-5 flex flex-wrap gap-2"><button type="button" className="btn-primary" onClick={() => navigation.destination && navigation.navigate(navigation.destination)}>Keep draft and leave</button><button type="button" className="btn-secondary" onClick={navigation.stay}>Stay here</button>{!locked ? <button type="button" className="btn-secondary" onClick={() => { if (navigation.destination) { try { sessionStorage.removeItem(storageKey); } catch { /* Best-effort cleanup. */ } setDirty(false); navigation.navigate(navigation.destination); } }}>Discard draft and leave</button> : null}</div>
     </ProspectingDialog>
   </form>;
