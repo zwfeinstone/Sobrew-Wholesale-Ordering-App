@@ -146,9 +146,9 @@ describe('quickbooks invoice payload', () => {
     expect(payload.Line[0].SalesItemLineDetail.TaxCodeRef).toEqual({ value: 'TAX' });
   });
 
-  it('uses QuickBooks customer primary and cc recipients on invoices', () => {
+  it('uses QuickBooks primary email and explicitly saved portal CC on invoices', () => {
     const order = {
-      centers: { billing_email: 'portal@example.com', name: 'Lakeview Recovery' },
+      centers: { billing_email: 'portal@example.com', billing_email_cc: ['ap@example.com', 'owner@example.com'], name: 'Lakeview Recovery' },
       created_at: '2026-08-01T15:00:00.000Z',
       id: 'order-qbo-email',
       notes: null,
@@ -171,7 +171,7 @@ describe('quickbooks invoice payload', () => {
       shipping_zip: '60601',
     };
     const recipients = buildQuickBooksInvoiceEmailRecipients(order, {
-      BillEmailCc: { Address: 'ap@example.com, owner@example.com' },
+      BillEmailCc: { Address: 'ignored@example.com' },
       PrimaryEmailAddr: { Address: 'primary@example.com' },
     });
 
@@ -212,6 +212,33 @@ describe('quickbooks invoice payload', () => {
     expect(recipients.to).toEqual(['primary@example.com']);
     expect(recipients.cc).toEqual(['ap@example.com', 'owner@example.com']);
     expect(recipients.display).toBe('primary@example.com, ap@example.com, owner@example.com');
+  });
+
+  it.each([
+    { configuredCc: ['owner@example.com', 'AP@example.com', 'PRIMARY@example.com'], expectedCc: ['ap@example.com', 'owner@example.com'] },
+    { configuredCc: [], expectedCc: ['ap@example.com'] },
+    { configuredCc: undefined, expectedCc: ['ap@example.com'] },
+  ])('uses only saved portal CC without restoring old QuickBooks CC: $configuredCc', ({ configuredCc, expectedCc }) => {
+    const recipients = buildQuickBooksInvoiceEmailRecipients(
+      {
+        centers: {
+          name: 'Center', billing_email: 'portal@example.com', billing_email_cc: configuredCc,
+        },
+        created_at: '2026-09-29T15:00:00Z', id: 'order-reviewed-cc', notes: null, order_items: [], profiles: null,
+        shipping_address1: null, shipping_address2: null, shipping_city: null, shipping_company: null,
+        shipping_name: null, shipping_state: null, shipping_zip: null,
+      },
+      {
+        PrimaryEmailAddr: { Address: 'primary@example.com; ap@example.com' },
+        BillEmailCc: { Address: 'removed-customer@example.com' },
+        OtherContactInfo: [{ Type: 'CC', EmailAddress: { Address: 'removed-contact@example.com' } }],
+      },
+      { Id: 'invoice-1', BillEmailCc: { Address: 'removed-invoice@example.com' } }
+    );
+
+    expect(recipients.to).toEqual(['primary@example.com']);
+    expect(recipients.cc).toEqual(expectedCc);
+    expect(recipients.all).toEqual(['primary@example.com', ...expectedCc]);
   });
 
   it('uses mapped product item refs on invoice lines', () => {

@@ -1343,6 +1343,8 @@ export type Database = {
           billing_address2: string | null
           billing_city: string | null
           billing_email: string | null
+          billing_email_cc: string[]
+          billing_email_cc_reviewed_at: string | null
           billing_phone: string | null
           billing_state: string | null
           billing_zip: string | null
@@ -1376,6 +1378,8 @@ export type Database = {
           billing_address2?: string | null
           billing_city?: string | null
           billing_email?: string | null
+          billing_email_cc?: string[]
+          billing_email_cc_reviewed_at?: string | null
           billing_phone?: string | null
           billing_state?: string | null
           billing_zip?: string | null
@@ -1409,6 +1413,8 @@ export type Database = {
           billing_address2?: string | null
           billing_city?: string | null
           billing_email?: string | null
+          billing_email_cc?: string[]
+          billing_email_cc_reviewed_at?: string | null
           billing_phone?: string | null
           billing_state?: string | null
           billing_zip?: string | null

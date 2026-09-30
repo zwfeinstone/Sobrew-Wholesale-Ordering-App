@@ -88,6 +88,17 @@ describe('email delivery acceptance', () => {
     expect(send.mock.calls[0][0].attachments).toHaveLength(3);
   });
 
+  it('passes QuickBooks invoice CC recipients to the PDF email provider', async () => {
+    expect(await sendInvoicePdfEmail({
+      ...invoice,
+      cc: 'ap@example.com; accountant@example.com, AP@example.com; orders@example.com',
+    })).toEqual({ ok: true });
+    expect(send).toHaveBeenCalledWith(expect.objectContaining({
+      to: ['orders@example.com'],
+      cc: ['ap@example.com', 'accountant@example.com', 'zach@sobrew.com'],
+    }));
+  });
+
   it('rejects empty recipients without invoking the provider', async () => {
     expect((await sendOrderEmail({ ...order, customerEmail: ' ; ' })).ok).toBe(false);
     expect(send).not.toHaveBeenCalled();
