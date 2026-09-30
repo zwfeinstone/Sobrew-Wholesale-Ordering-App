@@ -64,7 +64,7 @@ vi.mock('@/lib/supabase/admin', () => ({ getSupabaseAdmin: () => ({
 
 import { fulfillShippedOrderBilling } from './quickbooks';
 
-type RequestRecord = { url: URL; body: Record<string, any> | null; method: string; headers: Headers };
+type RequestRecord = { url: URL; body: Record<string, any> | null; method: string; headers: Headers; emailedInvoice?: Record<string, any> };
 type FixtureOptions = {
   chargeStatus?: string;
   chargeTransportError?: boolean;
@@ -87,7 +87,8 @@ function quickBooksFixture(options: FixtureOptions = {}) {
     const url = new URL(input);
     const body = init.body ? JSON.parse(String(init.body)) : null;
     const method = init.method ?? 'GET';
-    requests.push({ url, body, method, headers: new Headers(init.headers) });
+    const request: RequestRecord = { url, body, method, headers: new Headers(init.headers) };
+    requests.push(request);
     if (url.pathname.endsWith('/customers/customer-1/cards')) {
       if (options.failMethodLookup) return failure('Saved payment lookup unavailable');
       return Response.json(options.liveCard ? [{ id: 'live-card', cardType: 'Visa', last4: '4242', status: 'ACTIVE' }] : []);
@@ -100,6 +101,7 @@ function quickBooksFixture(options: FixtureOptions = {}) {
       Id: 'customer-1', PrimaryEmailAddr: { Address: 'billing@example.com' }, BillEmailCc: { Address: 'qb-cc@example.com' },
     } });
     if (url.pathname.endsWith('/invoice/invoice-1/send')) {
+      request.emailedInvoice = structuredClone(invoice);
       if (options.failSend) return failure('Invoice email unavailable');
       invoice.EmailStatus = 'EmailSent';
       return Response.json({ Invoice: invoice });
@@ -168,6 +170,32 @@ beforeEach(() => {
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 describe('automatic billing for shipped orders', () => {
+  it.each([
+    { name: 'Recovery Center', payment: 'saved-payment', to: 'billing@example.com' },
+    { name: 'Recovery Center', payment: 'declined-payment', to: 'billing@example.com' },
+    { name: 'Recovery Center', payment: 'no-payment', to: 'billing@example.com' },
+    { name: 'CooperRiis', payment: 'saved-payment', to: 'buyer@example.com' },
+    { name: 'CooperRiis', payment: 'declined-payment', to: 'buyer@example.com' },
+    { name: 'CooperRiis', payment: 'no-payment', to: 'buyer@example.com' },
+  ])('copies Zach on $name automatic $payment delivery while preserving customer recipients', async ({ name, payment, to }) => {
+    database.center.name = name;
+    database.order.centers = structuredClone(database.center);
+    if (payment === 'no-payment') removeSavedMethod();
+    const qbo = quickBooksFixture(payment === 'declined-payment' ? { chargeStatus: 'DECLINED' } : {});
+
+    expect(await fulfillShippedOrderBilling('order-1')).toMatchObject({
+      status: payment === 'saved-payment' ? 'paid' : 'invoiced',
+    });
+
+    expect(qbo.sends()).toHaveLength(1);
+    expect(qbo.sends()[0].emailedInvoice).toMatchObject({
+      Balance: payment === 'saved-payment' ? 0 : 26.4,
+      BillEmail: { Address: to },
+      BillEmailCc: { Address: 'qb-cc@example.com, app-cc@example.com, zach@sobrew.com' },
+    });
+    expect(database.order.quickbooks_invoice_email_to).toBe(`${to}, qb-cc@example.com, app-cc@example.com, zach@sobrew.com`);
+  });
+
   it.each(['saved-payment', 'declined-payment', 'no-payment'] as const)('uses new customer invoice choices at shipping with %s', async (payment) => {
     database.center.invoice_recipients_configured_at = '2026-09-30T12:00:00Z';
     database.center.name = 'CooperRiis';
@@ -181,10 +209,15 @@ describe('automatic billing for shipped orders', () => {
 
     expect(result.status).toBe(payment === 'saved-payment' ? 'paid' : 'invoiced');
     expect(qbo.invoice().BillEmail).toEqual({ Address: 'invoices@example.com' });
-    expect(qbo.invoice().BillEmailCc).toEqual({ Address: 'finance@example.com' });
+    expect(qbo.invoice().BillEmailCc).toEqual({ Address: 'finance@example.com, zach@sobrew.com' });
     expect(qbo.sends()).toHaveLength(1);
     expect(qbo.charges()).toHaveLength(payment === 'no-payment' ? 0 : 1);
-    expect(database.order.quickbooks_invoice_email_to).toBe('invoices@example.com, finance@example.com');
+    expect(database.order.quickbooks_invoice_email_to).toBe('invoices@example.com, finance@example.com, zach@sobrew.com');
+    expect(qbo.sends()[0].emailedInvoice).toMatchObject({
+      Balance: payment === 'saved-payment' ? 0 : 26.4,
+      BillEmail: { Address: 'invoices@example.com' },
+      BillEmailCc: { Address: 'finance@example.com, zach@sobrew.com' },
+    });
   });
 
   it('charges the cached payment method for the QuickBooks total including tax and records payment', async () => {
@@ -310,7 +343,7 @@ describe('automatic billing for shipped orders', () => {
     expect(qbo.payments()).toHaveLength(0);
     expect(qbo.sends()).toHaveLength(1);
     expect(qbo.invoice()).toMatchObject({
-      BillEmail: { Address: 'billing@example.com' }, BillEmailCc: { Address: 'qb-cc@example.com, app-cc@example.com' },
+      BillEmail: { Address: 'billing@example.com' }, BillEmailCc: { Address: 'qb-cc@example.com, app-cc@example.com, zach@sobrew.com' },
     });
     expect(database.order.quickbooks_invoice_email_sent_at).toBeTruthy();
     expect(database.order.quickbooks_invoice_email_to).toContain('billing@example.com');
@@ -423,6 +456,12 @@ describe('automatic billing for shipped orders', () => {
     expect(qbo.payments()).toHaveLength(1);
     expect(qbo.creates()).toHaveLength(1);
     expect(qbo.sends()).toHaveLength(2);
+    for (const send of qbo.sends()) {
+      expect(send.emailedInvoice).toMatchObject({
+        Balance: 0,
+        BillEmailCc: { Address: 'qb-cc@example.com, app-cc@example.com, zach@sobrew.com' },
+      });
+    }
   });
 
   it('does not resend a delivered invoice when only the completion audit needs retrying', async () => {

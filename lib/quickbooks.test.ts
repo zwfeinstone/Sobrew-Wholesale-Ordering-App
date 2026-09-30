@@ -96,7 +96,7 @@ describe('quickbooks invoice payload', () => {
     expect(payload.ShipMethodRef).toEqual({ value: 'UPS' });
     expect(payload.TrackingNum).toBe('See shipped order email');
     expect(payload.BillEmail).toBeUndefined();
-    expect(payload.BillEmailCc).toBeUndefined();
+    expect(payload.BillEmailCc).toEqual({ Address: 'zach@sobrew.com' });
     expect(payload.Line).toEqual([
       {
         Amount: 72,
@@ -178,13 +178,13 @@ describe('quickbooks invoice payload', () => {
     const payload = buildQuickBooksInvoicePayload(order, { name: 'Lakeview Recovery', value: '42' }, { emailRecipients: recipients });
 
     expect(recipients).toEqual({
-      all: ['primary@example.com', 'bookkeeper@example.com', 'ap@example.com', 'owner@example.com'],
-      cc: ['bookkeeper@example.com', 'ap@example.com', 'owner@example.com'],
-      display: 'primary@example.com, bookkeeper@example.com, ap@example.com, owner@example.com',
+      all: ['primary@example.com', 'bookkeeper@example.com', 'ap@example.com', 'owner@example.com', 'zach@sobrew.com'],
+      cc: ['bookkeeper@example.com', 'ap@example.com', 'owner@example.com', 'zach@sobrew.com'],
+      display: 'primary@example.com, bookkeeper@example.com, ap@example.com, owner@example.com, zach@sobrew.com',
       to: ['primary@example.com'],
     });
     expect(payload.BillEmail).toEqual({ Address: 'primary@example.com' });
-    expect(payload.BillEmailCc).toEqual({ Address: 'bookkeeper@example.com, ap@example.com, owner@example.com' });
+    expect(payload.BillEmailCc).toEqual({ Address: 'bookkeeper@example.com, ap@example.com, owner@example.com, zach@sobrew.com' });
   });
 
   it('treats extra QuickBooks primary email addresses as cc recipients', () => {
@@ -210,8 +210,8 @@ describe('quickbooks invoice payload', () => {
     );
 
     expect(recipients.to).toEqual(['primary@example.com']);
-    expect(recipients.cc).toEqual(['ap@example.com', 'owner@example.com']);
-    expect(recipients.display).toBe('primary@example.com, ap@example.com, owner@example.com');
+    expect(recipients.cc).toEqual(['ap@example.com', 'owner@example.com', 'zach@sobrew.com']);
+    expect(recipients.display).toBe('primary@example.com, ap@example.com, owner@example.com, zach@sobrew.com');
   });
 
   it.each([
@@ -236,8 +236,8 @@ describe('quickbooks invoice payload', () => {
     );
 
     expect(recipients.to).toEqual(['primary@example.com']);
-    expect(recipients.cc).toEqual(expectedCc);
-    expect(recipients.all).toEqual(['primary@example.com', ...expectedCc]);
+    expect(recipients.cc).toEqual([...expectedCc, 'zach@sobrew.com']);
+    expect(recipients.all).toEqual(['primary@example.com', ...expectedCc, 'zach@sobrew.com']);
   });
 
   it('uses mapped product item refs on invoice lines', () => {
@@ -358,7 +358,7 @@ describe('QuickBooks invoice customer recipient exceptions', () => {
     const recipients = buildQuickBooksInvoiceEmailRecipients({ ...order, centers: { ...order.centers, name } }, customer);
 
     expect(recipients.to).toEqual(['ordering-login@example.com']);
-    expect(recipients.cc).toEqual(['accounting@example.com', 'qbo-cc@example.com', 'app-cc@example.com']);
+    expect(recipients.cc).toEqual(['accounting@example.com', 'qbo-cc@example.com', 'app-cc@example.com', 'zach@sobrew.com']);
     expect(recipients.all).not.toContain('billing@example.com');
     expect(recipients.all).not.toContain('portal@example.com');
   });
@@ -391,7 +391,7 @@ describe('QuickBooks invoice customer recipient exceptions', () => {
     const recipients = buildQuickBooksInvoiceEmailRecipients({ ...order, centers: { ...order.centers, name: 'Other Center' } }, {});
 
     expect(recipients.to).toEqual([]);
-    expect(recipients.all).toEqual(['app-cc@example.com']);
+    expect(recipients.all).toEqual(['app-cc@example.com', 'zach@sobrew.com']);
   });
 
   it.each(['CooperRiis', 'Other Center'])('uses new %s customer invoice choices without inheriting QuickBooks or login recipients', (name) => {
@@ -406,19 +406,54 @@ describe('QuickBooks invoice customer recipient exceptions', () => {
     }, customer, { BillEmail: { Address: 'old@example.com' }, BillEmailCc: { Address: 'old-cc@example.com' } });
 
     expect(recipients).toEqual({
-      to: ['invoices@example.com'], cc: ['accounts@example.com'],
-      all: ['invoices@example.com', 'accounts@example.com'], display: 'invoices@example.com, accounts@example.com',
+      to: ['invoices@example.com'], cc: ['accounts@example.com', 'zach@sobrew.com'],
+      all: ['invoices@example.com', 'accounts@example.com', 'zach@sobrew.com'], display: 'invoices@example.com, accounts@example.com, zach@sobrew.com',
     });
   });
 
-  it('treats an empty explicit CC choice as no CC even when QuickBooks has saved CC', () => {
+  it('keeps only Zach in CC when the explicit CC choice is empty despite saved QuickBooks CC', () => {
     const recipients = buildQuickBooksInvoiceEmailRecipients({
       ...order,
       centers: { ...order.centers, invoice_recipients_configured_at: '2026-09-30T12:00:00Z', billing_email_cc: [] },
     }, customer, { BillEmailCc: { Address: 'old-cc@example.com' } });
 
     expect(recipients.to).toEqual(['portal@example.com']);
-    expect(recipients.cc).toEqual([]);
+    expect(recipients.cc).toEqual(['zach@sobrew.com']);
+  });
+
+  it.each(['legacy', 'configured'] as const)('deduplicates Zach from saved CC case-insensitively for %s customers', (policy) => {
+    const recipients = buildQuickBooksInvoiceEmailRecipients({
+      ...order,
+      centers: {
+        ...order.centers, name: 'Other Center',
+        ...(policy === 'configured' ? { invoice_recipients_configured_at: '2026-09-30T12:00:00Z' } : {}),
+        billing_email_cc: ['ZACH@SOBREW.COM', 'accounts@example.com'],
+      },
+    }, {
+      PrimaryEmailAddr: { Address: 'billing@example.com' },
+      BillEmailCc: { Address: 'Zach@Sobrew.com' },
+    }, { BillEmailCc: { Address: 'zach@sobrew.com' } });
+
+    expect(recipients.cc).toEqual([policy === 'legacy' ? 'Zach@Sobrew.com' : 'zach@sobrew.com', 'accounts@example.com']);
+    expect(recipients.all.filter((email) => email.toLowerCase() === 'zach@sobrew.com')).toHaveLength(1);
+  });
+
+  it.each(['legacy', 'configured', 'CooperRiis'] as const)('does not duplicate Zach in CC when he is the primary recipient for %s', (policy) => {
+    const recipients = buildQuickBooksInvoiceEmailRecipients({
+      ...order,
+      profiles: { email: 'ZACH@SOBREW.COM', full_name: 'Zach' },
+      centers: {
+        ...order.centers, name: policy === 'CooperRiis' ? 'CooperRiis' : 'Other Center',
+        ...(policy === 'configured' ? { invoice_recipients_configured_at: '2026-09-30T12:00:00Z' } : {}),
+        billing_email: 'ZACH@SOBREW.COM', billing_email_cc: ['ZACH@SOBREW.COM', 'accounts@example.com'],
+      },
+    }, { PrimaryEmailAddr: { Address: 'Zach@Sobrew.com' }, BillEmailCc: { Address: 'zach@sobrew.com' } });
+
+    const expectedTo = policy === 'legacy' ? 'Zach@Sobrew.com' : policy === 'CooperRiis' ? 'ZACH@SOBREW.COM' : 'zach@sobrew.com';
+    expect(recipients).toEqual({
+      to: [expectedTo], cc: ['accounts@example.com'],
+      all: [expectedTo, 'accounts@example.com'], display: `${expectedTo}, accounts@example.com`,
+    });
   });
 
   it.each([null, '', 'invalid', 'first@example.com, second@example.com'])('rejects invalid explicit To %s without falling back to other recipients', (billingEmail) => {

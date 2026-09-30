@@ -99,6 +99,43 @@ describe('email delivery acceptance', () => {
     }));
   });
 
+  it.each([
+    { cc: undefined, expectedCc: ['zach@sobrew.com'] },
+    { cc: 'ap@example.com; accountant@example.com', expectedCc: ['ap@example.com', 'accountant@example.com', 'zach@sobrew.com'] },
+    { cc: ['ap@example.com', 'ZACH@SOBREW.COM', 'zach@sobrew.com', 'orders@example.com'], expectedCc: ['ap@example.com', 'ZACH@SOBREW.COM'] },
+  ])('copies Zach on the saved-payment receipt while preserving and deduping customer CCs: $cc', async ({ cc, expectedCc }) => {
+    expect(await sendPaymentReceiptEmail({
+      ...invoice,
+      amountCents: 1200,
+      paymentMethodLabel: 'Visa 1234',
+      paymentMethodType: 'card',
+      paymentStatus: 'CAPTURED',
+      cc,
+    })).toEqual({ ok: true });
+    expect(send).toHaveBeenCalledWith(expect.objectContaining({
+      to: ['orders@example.com'],
+      cc: expectedCc,
+      subject: 'Sobrew Receipt SO-1001',
+      attachments: expect.arrayContaining([expect.objectContaining({ filename: 'Sobrew-Receipt-SO-1001.pdf', content: invoice.pdf })]),
+    }));
+  });
+
+  it('delivers a receipt to Zach once when he is the primary recipient', async () => {
+    expect(await sendPaymentReceiptEmail({
+      ...invoice,
+      to: 'ZACH@SOBREW.COM',
+      cc: ['zach@sobrew.com', 'ap@example.com'],
+      amountCents: 1200,
+      paymentMethodLabel: 'Visa 1234',
+      paymentMethodType: 'card',
+      paymentStatus: 'CAPTURED',
+    })).toEqual({ ok: true });
+    expect(send).toHaveBeenCalledWith(expect.objectContaining({
+      to: ['ZACH@SOBREW.COM'],
+      cc: ['ap@example.com'],
+    }));
+  });
+
   it('rejects empty recipients without invoking the provider', async () => {
     expect((await sendOrderEmail({ ...order, customerEmail: ' ; ' })).ok).toBe(false);
     expect(send).not.toHaveBeenCalled();

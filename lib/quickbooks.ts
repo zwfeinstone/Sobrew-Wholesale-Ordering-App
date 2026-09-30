@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { env } from '@/lib/env';
 import { mapWithConcurrency } from '@/lib/async-work';
 import { parseBillingEmail, parseBillingEmailCc } from '@/lib/billing-email';
+import { INVOICE_AUDIT_CC } from '@/lib/invoice-email-recipients';
 import {
   performQuickBooksRequest,
   QuickBooksRequestTimeoutError,
@@ -1810,8 +1811,10 @@ export function buildQuickBooksInvoiceEmailRecipients(
     // New customers choose their invoice recipients explicitly. Keep that
     // choice independent of login emails and historical QuickBooks contacts.
     const to = [parseBillingEmail(center?.billing_email)];
-    const cc = parseBillingEmailCc(center?.billing_email_cc ?? [])
-      .filter((address) => !to.some((toAddress) => toAddress.toLowerCase() === address.toLowerCase()));
+    const cc = uniqueEmailAddresses([
+      ...parseBillingEmailCc(center?.billing_email_cc ?? []),
+      INVOICE_AUDIT_CC,
+    ]).filter((address) => !to.some((toAddress) => toAddress.toLowerCase() === address.toLowerCase()));
     const all = uniqueEmailAddresses([...to, ...cc]);
     return { all, cc, display: all.length ? emailAddressString(all) : null, to };
   }
@@ -1841,6 +1844,7 @@ export function buildQuickBooksInvoiceEmailRecipients(
     ...emailAddressesFromValue(quickBooksCustomerRecord.BillEmailCc),
     ...emailAddressesFromValue(invoice?.BillEmailCc),
     ...billingCc,
+    INVOICE_AUDIT_CC,
   ]
     .filter((address) => !to.some((toAddress) => toAddress.toLowerCase() === address.toLowerCase())));
   const all = uniqueEmailAddresses([...to, ...cc]);

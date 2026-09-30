@@ -1,6 +1,7 @@
 import 'server-only';
 
 import { Resend, type Attachment } from 'resend';
+import { INVOICE_AUDIT_CC } from '@/lib/invoice-email-recipients';
 import { normalizeShipmentTrackingLines, type ShipmentTrackingLine } from '@/lib/shipment-tracking';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { usd } from '@/lib/utils';
@@ -9,7 +10,6 @@ const RESEND_FROM = 'Sobrew Wholesale <orders@orders.sobrew.com>';
 const REPLY_TO_EMAIL = 'hello@sobrew.com';
 const ADMIN_EMAIL = 'hello@sobrew.com';
 const ORDER_EMAIL_CC_REPS = new Set(['haskins@sobrew.com', 'rob@sobrew.com']);
-const INVOICE_PDF_AUDIT_CC = 'zach@sobrew.com';
 const PORTAL_URL = 'https://app.sobrew.com';
 const WEBSITE_URL = 'https://sobrew.com';
 const INSTAGRAM_URL = 'https://www.instagram.com/sobrew_official';
@@ -137,7 +137,7 @@ export function invoicePdfEmailRecipients(
   to: string | string[] | null | undefined,
   cc?: string | string[] | null,
 ) {
-  return outgoingEmailRecipients(to, [...splitEmailAddresses(cc), INVOICE_PDF_AUDIT_CC]);
+  return outgoingEmailRecipients(to, [...splitEmailAddresses(cc), INVOICE_AUDIT_CC]);
 }
 
 type ResendSendResponseLike = {
@@ -1159,11 +1159,11 @@ export async function sendInvoicePdfEmail(payload: InvoicePdfEmailPayload): Prom
 }
 
 export async function sendPaymentReceiptEmail(payload: PaymentReceiptEmailPayload): Promise<SendEmailResult> {
+  const recipients = invoicePdfEmailRecipients(payload.to, payload.cc);
   return deliverEmail('Payment receipt email', {
     ...buildPaymentReceiptEmailContent(payload),
     attachments: invoiceAttachments(payload.pdf, payload.invoiceNumber, payload.orderId, 'Receipt'),
-    to: payload.to,
-    cc: payload.cc,
+    ...recipients,
     subject: `Sobrew Receipt ${payload.invoiceNumber}`,
   });
 }

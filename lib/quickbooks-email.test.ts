@@ -142,7 +142,7 @@ afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 describe('QuickBooks invoice email delivery', () => {
   it.each([
     ['new', true], ['existing', true], ['new', false], ['existing', false],
-  ] as const)('persists only explicit To/CC on a %s invoice when QuickBooks email delivery is %s', async (kind, sendQuickBooksEmail) => {
+  ] as const)('persists explicit To and Zach CC on a %s invoice when QuickBooks email delivery is %s', async (kind, sendQuickBooksEmail) => {
     database.order.centers = {
       ...(database.order.centers as Record<string, unknown>), name: 'CooperRiis',
       invoice_recipients_configured_at: '2026-09-30T12:00:00Z',
@@ -153,9 +153,9 @@ describe('QuickBooks invoice email delivery', () => {
 
     const result = await createQuickBooksInvoiceForOrder('order-1', { sendQuickBooksEmail, prepareEmailRecipients: true });
 
-    expect(result).toMatchObject({ emailTo: 'invoices@example.com', emailCc: null, emailError: null });
+    expect(result).toMatchObject({ emailTo: 'invoices@example.com', emailCc: 'zach@sobrew.com', emailError: null });
     expect(qbo.invoice().BillEmail).toEqual({ Address: 'invoices@example.com' });
-    expect(qbo.invoice().BillEmailCc).toBeNull();
+    expect(qbo.invoice().BillEmailCc).toEqual({ Address: 'zach@sobrew.com' });
     expect(qbo.sends()).toHaveLength(sendQuickBooksEmail ? 1 : 0);
   });
 
@@ -171,17 +171,17 @@ describe('QuickBooks invoice email delivery', () => {
     const result = await createQuickBooksPaidInvoiceForOrder('order-1');
 
     expect(result).toMatchObject({
-      emailTo: 'invoices@example.com', emailCc: 'finance@example.com', emailError: null,
+      emailTo: 'invoices@example.com', emailCc: 'finance@example.com, zach@sobrew.com', emailError: null,
       paymentChargeId: 'charge-1', paymentId: 'payment-1',
     });
     expect(qbo.invoice().BillEmail).toEqual({ Address: 'invoices@example.com' });
-    expect(qbo.invoice().BillEmailCc).toEqual({ Address: 'finance@example.com' });
+    expect(qbo.invoice().BillEmailCc).toEqual({ Address: 'finance@example.com, zach@sobrew.com' });
     expect(qbo.sends()).toHaveLength(0);
   });
 
   it.each([
     ['new', true], ['existing', true], ['new', false], ['existing', false],
-  ] as const)('prepares a %s invoice with no CC and no review timestamp when QuickBooks delivery is %s', async (kind, sendQuickBooksEmail) => {
+  ] as const)('prepares a %s invoice with Zach CC and no review timestamp when QuickBooks delivery is %s', async (kind, sendQuickBooksEmail) => {
     database.order.centers = {
       name: 'Recovery Center', quickbooks_customer_id: 'customer-1', billing_email: 'portal@example.com',
       billing_email_cc: [], billing_email_cc_reviewed_at: null,
@@ -195,19 +195,20 @@ describe('QuickBooks invoice email delivery', () => {
       sendQuickBooksEmail, ...(sendQuickBooksEmail ? {} : { prepareEmailRecipients: true }),
     });
 
-    expect(result).toMatchObject({ id: 'invoice-1', emailTo: 'billing@example.com', emailCc: null, emailError: null });
+    expect(result).toMatchObject({ id: 'invoice-1', emailTo: 'billing@example.com', emailCc: 'zach@sobrew.com', emailError: null });
     expect(qbo.sends()).toHaveLength(sendQuickBooksEmail ? 1 : 0);
     if (sendQuickBooksEmail) expect(result.emailSentAt).toBeTruthy();
     else expect(result.emailSentAt).toBeNull();
   });
 
-  it('sends with no CC when both optional CC fields are absent', async () => {
+  it('sends with Zach CC when both optional CC fields are absent', async () => {
     database.order.centers = { name: 'Center', quickbooks_customer_id: 'customer-1' };
     const qbo = quickBooksFixture({ customer: { Id: 'customer-1', PrimaryEmailAddr: { Address: 'billing@example.com' } } });
 
     const result = await createQuickBooksInvoiceForOrder('order-1');
 
-    expect(result).toMatchObject({ emailTo: 'billing@example.com', emailCc: null, emailError: null });
+    expect(result).toMatchObject({ emailTo: 'billing@example.com', emailCc: 'zach@sobrew.com', emailError: null });
+    expect(qbo.invoice().BillEmailCc).toEqual({ Address: 'zach@sobrew.com' });
     expect(qbo.sends()).toHaveLength(1);
   });
 
@@ -224,7 +225,7 @@ describe('QuickBooks invoice email delivery', () => {
     expect(qbo.sends()).toHaveLength(0);
   });
 
-  it('charges and prepares a receipt with no CC or review timestamp', async () => {
+  it('charges and prepares a receipt with Zach CC when optional CC and review timestamp are absent', async () => {
     database.order.centers = {
       name: 'Center', quickbooks_customer_id: 'customer-1', billing_email_cc: [], billing_email_cc_reviewed_at: null,
       quickbooks_payment_method_id: 'saved-card', quickbooks_payment_method_type: 'card',
@@ -234,7 +235,7 @@ describe('QuickBooks invoice email delivery', () => {
     const result = await createQuickBooksPaidInvoiceForOrder('order-1');
 
     expect(result).toMatchObject({
-      emailTo: 'billing@example.com', emailCc: null, emailError: null,
+      emailTo: 'billing@example.com', emailCc: 'zach@sobrew.com', emailError: null,
       paymentChargeId: 'charge-1', paymentId: 'payment-1',
     });
     expect(qbo.requests.filter(({ url }) => url.pathname.endsWith('/charges'))).toHaveLength(1);
@@ -253,6 +254,21 @@ describe('QuickBooks invoice email delivery', () => {
 
     expect(database.updates).toContainEqual({ table: 'orders', values: expect.objectContaining({ quickbooks_invoice_id: 'invoice-1' }) });
     expect(qbo.requests.filter(({ method }) => method === 'POST').every(({ url }) => url.pathname.endsWith('/invoice'))).toBe(true);
+    expect(qbo.sends()).toHaveLength(0);
+  });
+
+  it('does not charge a saved card when Zach CC is the only available invoice recipient', async () => {
+    database.order.centers = {
+      name: 'Center', quickbooks_customer_id: 'customer-1', billing_email_cc: [],
+      quickbooks_payment_method_id: 'saved-card', quickbooks_payment_method_type: 'card',
+    };
+    database.order.profiles = null;
+    const qbo = quickBooksFixture({ customer: { Id: 'customer-1' }, invoice: { BillEmail: null } });
+
+    await expect(createQuickBooksPaidInvoiceForOrder('order-1')).rejects.toThrow(/primary billing email/i);
+
+    expect(qbo.requests.some(({ url }) => url.pathname.endsWith('/charges'))).toBe(false);
+    expect(qbo.requests.some(({ url }) => url.pathname.endsWith('/payment'))).toBe(false);
     expect(qbo.sends()).toHaveLength(0);
   });
 
@@ -301,11 +317,11 @@ describe('QuickBooks invoice email delivery', () => {
     const qbo = quickBooksFixture();
     const result = await createQuickBooksInvoiceForOrder('order-1');
     expect(qbo.invoice().BillEmail).toEqual({ Address: 'billing@example.com' });
-    expect(qbo.invoice().BillEmailCc).toEqual({ Address: 'ap@example.com' });
+    expect(qbo.invoice().BillEmailCc).toEqual({ Address: 'ap@example.com, zach@sobrew.com' });
     expect(qbo.sends()).toHaveLength(1);
     expect(qbo.sends()[0].url.searchParams.has('sendTo')).toBe(false);
-    expect(result).toMatchObject({ emailTo: 'billing@example.com', emailCc: 'ap@example.com',
-      emailRecipients: 'billing@example.com, ap@example.com', emailError: null });
+    expect(result).toMatchObject({ emailTo: 'billing@example.com', emailCc: 'ap@example.com, zach@sobrew.com',
+      emailRecipients: 'billing@example.com, ap@example.com, zach@sobrew.com', emailError: null });
     expect(result.emailSentAt).toBeTruthy();
   });
 
@@ -325,8 +341,8 @@ describe('QuickBooks invoice email delivery', () => {
 
     expect(result.emailTo).toBe('buyer@example.com');
     expect(result.emailCc).toBe(kind === 'existing'
-      ? 'qbo-cc@example.com, invoice-cc@example.com, app-cc@example.com'
-      : 'qbo-cc@example.com, app-cc@example.com');
+      ? 'qbo-cc@example.com, invoice-cc@example.com, app-cc@example.com, zach@sobrew.com'
+      : 'qbo-cc@example.com, app-cc@example.com, zach@sobrew.com');
     expect(qbo.invoice().BillEmail).toEqual({ Address: 'buyer@example.com' });
     expect(qbo.sends()).toHaveLength(1);
     expect(result.emailRecipients).not.toContain('billing@example.com');
@@ -360,8 +376,8 @@ describe('QuickBooks invoice email delivery', () => {
       customer: { Id: 'customer-1', PrimaryEmailAddr: { Address: 'billing@example.com' } },
     });
     const result = await createQuickBooksInvoiceForOrder('order-1');
-    expect(result.emailCc).toBe('accountant@example.com');
-    expect(qbo.invoice().BillEmailCc).toEqual({ Address: 'accountant@example.com' });
+    expect(result.emailCc).toBe('accountant@example.com, zach@sobrew.com');
+    expect(qbo.invoice().BillEmailCc).toEqual({ Address: 'accountant@example.com, zach@sobrew.com' });
     expect(qbo.sends()).toHaveLength(1);
   });
 
@@ -376,8 +392,8 @@ describe('QuickBooks invoice email delivery', () => {
 
     const creation = qbo.requests.find(({ body, method }) => method === 'POST' && body && !body.Id);
     expect(creation?.body).not.toHaveProperty('BillEmailCc');
-    expect(result.emailCc).toBe('qbo-default@example.com, app-cc@example.com');
-    expect(qbo.invoice().BillEmailCc).toEqual({ Address: 'qbo-default@example.com, app-cc@example.com' });
+    expect(result.emailCc).toBe('qbo-default@example.com, app-cc@example.com, zach@sobrew.com');
+    expect(qbo.invoice().BillEmailCc).toEqual({ Address: 'qbo-default@example.com, app-cc@example.com, zach@sobrew.com' });
     expect(qbo.sends()).toHaveLength(1);
   });
 
@@ -391,11 +407,11 @@ describe('QuickBooks invoice email delivery', () => {
     const result = await createQuickBooksInvoiceForOrder('order-1');
     const emailUpdate = qbo.requests.find(({ body }) => body?.Id && body?.BillEmail);
     expect(emailUpdate?.body).toMatchObject({ SyncToken: '1', sparse: true,
-      BillEmail: { Address: 'billing@example.com' }, BillEmailCc: { Address: 'ap@example.com, qbo-cc@example.com, accountant@example.com' } });
+      BillEmail: { Address: 'billing@example.com' }, BillEmailCc: { Address: 'ap@example.com, qbo-cc@example.com, accountant@example.com, zach@sobrew.com' } });
     expect(emailUpdate?.body).not.toHaveProperty('BillEmailBcc');
     expect(qbo.invoice().BillEmailBcc).toEqual({ Address: 'private@example.com' });
     expect(qbo.sends()).toHaveLength(1);
-    expect(result.emailRecipients).toBe('billing@example.com, ap@example.com, qbo-cc@example.com, accountant@example.com');
+    expect(result.emailRecipients).toBe('billing@example.com, ap@example.com, qbo-cc@example.com, accountant@example.com, zach@sobrew.com');
   });
 
   it('keeps QuickBooks CC when the portal CC list is empty', async () => {
@@ -410,9 +426,9 @@ describe('QuickBooks invoice email delivery', () => {
 
     const result = await createQuickBooksInvoiceForOrder('order-1');
 
-    expect(result.emailCc).toBe('customer-cc@example.com, invoice-cc@example.com');
-    expect(result.emailRecipients).toBe('billing@example.com, customer-cc@example.com, invoice-cc@example.com');
-    expect(qbo.invoice().BillEmailCc).toEqual({ Address: 'customer-cc@example.com, invoice-cc@example.com' });
+    expect(result.emailCc).toBe('customer-cc@example.com, invoice-cc@example.com, zach@sobrew.com');
+    expect(result.emailRecipients).toBe('billing@example.com, customer-cc@example.com, invoice-cc@example.com, zach@sobrew.com');
+    expect(qbo.invoice().BillEmailCc).toEqual({ Address: 'customer-cc@example.com, invoice-cc@example.com, zach@sobrew.com' });
     expect(qbo.sends()).toHaveLength(1);
   });
 
@@ -423,7 +439,7 @@ describe('QuickBooks invoice email delivery', () => {
     } });
     const result = await createQuickBooksInvoiceForOrder('order-1');
     expect(result.emailTo).toBe('invoice@example.com');
-    expect(result.emailCc).toBe('ap@example.com');
+    expect(result.emailCc).toBe('ap@example.com, zach@sobrew.com');
     expect(qbo.sends()).toHaveLength(1);
   });
 
@@ -474,8 +490,8 @@ describe('QuickBooks invoice email delivery', () => {
     });
 
     expect(result).toMatchObject({
-      id: 'invoice-1', emailTo: 'billing@example.com', emailCc: 'qbo-cc@example.com, accountant@example.com',
-      emailRecipients: 'billing@example.com, qbo-cc@example.com, accountant@example.com', emailError: null, emailSentAt: null,
+      id: 'invoice-1', emailTo: 'billing@example.com', emailCc: 'qbo-cc@example.com, accountant@example.com, zach@sobrew.com',
+      emailRecipients: 'billing@example.com, qbo-cc@example.com, accountant@example.com, zach@sobrew.com', emailError: null, emailSentAt: null,
     });
     expect(qbo.requests.some(({ url, method }) => method === 'GET' && url.pathname.endsWith('/invoice/invoice-1'))).toBe(true);
     expect(qbo.sends()).toHaveLength(0);
@@ -521,7 +537,7 @@ describe('QuickBooks invoice email delivery', () => {
 describe('QuickBooks recipients for an existing invoice PDF', () => {
   beforeEach(() => { database.order.quickbooks_invoice_id = 'invoice-1'; });
 
-  it('loads recipients for resending with no CC and no review timestamp', async () => {
+  it('loads recipients for resending with Zach CC when optional CC and review timestamp are absent', async () => {
     database.order.centers = {
       name: 'Center', quickbooks_customer_id: 'customer-1', billing_email_cc: [], billing_email_cc_reviewed_at: null,
     };
@@ -529,7 +545,7 @@ describe('QuickBooks recipients for an existing invoice PDF', () => {
 
     const recipients = await getQuickBooksInvoiceEmailRecipientsForOrder('order-1');
 
-    expect(recipients).toMatchObject({ to: ['billing@example.com'], cc: [] });
+    expect(recipients).toMatchObject({ to: ['billing@example.com'], cc: ['zach@sobrew.com'] });
     expect(qbo.requests.every(({ method }) => method === 'GET')).toBe(true);
     expect(database.rpcs).toHaveLength(0);
     expect(database.updates).toHaveLength(0);
@@ -545,9 +561,9 @@ describe('QuickBooks recipients for an existing invoice PDF', () => {
     const recipients = await getQuickBooksInvoiceEmailRecipientsForOrder('order-1');
 
     expect(recipients).toEqual({
-      to: ['billing@example.com'], cc: ['ap@example.com', 'qbo-cc@example.com', 'accountant@example.com'],
-      all: ['billing@example.com', 'ap@example.com', 'qbo-cc@example.com', 'accountant@example.com'],
-      display: 'billing@example.com, ap@example.com, qbo-cc@example.com, accountant@example.com',
+      to: ['billing@example.com'], cc: ['ap@example.com', 'qbo-cc@example.com', 'accountant@example.com', 'zach@sobrew.com'],
+      all: ['billing@example.com', 'ap@example.com', 'qbo-cc@example.com', 'accountant@example.com', 'zach@sobrew.com'],
+      display: 'billing@example.com, ap@example.com, qbo-cc@example.com, accountant@example.com, zach@sobrew.com',
     });
     expect(qbo.requests.every(({ method }) => method === 'GET')).toBe(true);
     expect(qbo.requests.some(({ url }) => url.pathname.endsWith('/invoice/invoice-1'))).toBe(true);
@@ -622,8 +638,8 @@ describe('QuickBooks invoice email preview', () => {
       : getQuickBooksInvoiceEmailRecipientsForOrder('order-1'));
 
     expect(recipients).toEqual({
-      to: ['invoices@example.com'], cc: ['finance@example.com'],
-      all: ['invoices@example.com', 'finance@example.com'], display: 'invoices@example.com, finance@example.com',
+      to: ['invoices@example.com'], cc: ['finance@example.com', 'zach@sobrew.com'],
+      all: ['invoices@example.com', 'finance@example.com', 'zach@sobrew.com'], display: 'invoices@example.com, finance@example.com, zach@sobrew.com',
     });
     expect(qbo.requests.every(({ method }) => method === 'GET')).toBe(true);
     expect(database.updates).toHaveLength(0);
@@ -637,7 +653,7 @@ describe('QuickBooks invoice email preview', () => {
     const recipients = await getQuickBooksInvoiceEmailPreviewForOrder('order-1');
 
     expect(recipients.to).toEqual(['buyer@example.com']);
-    expect(recipients.cc).toEqual(['ap@example.com', 'app-cc@example.com']);
+    expect(recipients.cc).toEqual(['ap@example.com', 'app-cc@example.com', 'zach@sobrew.com']);
     expect(qbo.requests.every(({ method }) => method === 'GET')).toBe(true);
     expect(database.rpcs).toHaveLength(0);
     expect(database.updates).toHaveLength(0);
@@ -664,9 +680,9 @@ describe('QuickBooks invoice email preview', () => {
     const recipients = await getQuickBooksInvoiceEmailPreviewForOrder('order-1');
 
     expect(recipients).toEqual({
-      to: ['billing@example.com'], cc: ['ap@example.com', 'saved@example.com'],
-      all: ['billing@example.com', 'ap@example.com', 'saved@example.com'],
-      display: 'billing@example.com, ap@example.com, saved@example.com',
+      to: ['billing@example.com'], cc: ['ap@example.com', 'saved@example.com', 'zach@sobrew.com'],
+      all: ['billing@example.com', 'ap@example.com', 'saved@example.com', 'zach@sobrew.com'],
+      display: 'billing@example.com, ap@example.com, saved@example.com, zach@sobrew.com',
     });
     expect(qbo.requests.every(({ method }) => method === 'GET')).toBe(true);
     expect(qbo.requests.some(({ url }) => url.pathname.includes('/invoice'))).toBe(false);
@@ -686,7 +702,7 @@ describe('QuickBooks invoice email preview', () => {
     const recipients = await getQuickBooksInvoiceEmailPreviewForOrder('order-1');
 
     expect(recipients.to).toEqual(['current@example.com']);
-    expect(recipients.cc).toEqual(['qbo-cc@example.com', 'saved@example.com']);
+    expect(recipients.cc).toEqual(['qbo-cc@example.com', 'saved@example.com', 'zach@sobrew.com']);
     expect(qbo.requests.some(({ url }) => url.pathname.endsWith('/invoice/invoice-1'))).toBe(true);
     expect(qbo.requests.some(({ url }) => url.pathname.endsWith('/customer/invoice-customer'))).toBe(true);
     expect(qbo.requests.every(({ method }) => method === 'GET')).toBe(true);
@@ -694,7 +710,7 @@ describe('QuickBooks invoice email preview', () => {
     expect(database.updates).toHaveLength(0);
   });
 
-  it.each(['new', 'existing'] as const)('previews a %s invoice with no CC and no review timestamp', async (kind) => {
+  it.each(['new', 'existing'] as const)('previews a %s invoice with Zach CC when optional CC and review timestamp are absent', async (kind) => {
     if (kind === 'existing') database.order.quickbooks_invoice_id = 'invoice-1';
     database.order.centers = {
       name: 'Center', quickbooks_customer_id: 'customer-1', billing_email_cc: [], billing_email_cc_reviewed_at: null,
@@ -703,7 +719,7 @@ describe('QuickBooks invoice email preview', () => {
 
     const recipients = await getQuickBooksInvoiceEmailPreviewForOrder('order-1');
 
-    expect(recipients).toMatchObject({ to: ['billing@example.com'], cc: [] });
+    expect(recipients).toMatchObject({ to: ['billing@example.com'], cc: ['zach@sobrew.com'] });
     expect(qbo.requests.every(({ method }) => method === 'GET')).toBe(true);
     expect(database.rpcs).toHaveLength(0);
     expect(database.updates).toHaveLength(0);
