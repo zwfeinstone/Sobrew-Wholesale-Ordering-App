@@ -32,6 +32,7 @@ export default function ProspectingSampleOrderForm(props: Props) {
   const [restored, setRestored] = useState(false);
   const [dirty, setDirty] = useState(false);
   const leaveAfterSave = useRef<string | null>(null);
+  const completedNavigation = useRef(false);
   const formRef = useRef<HTMLFormElement>(null);
   const [result, action, pending] = useActionState(async (previous: SampleOrderFormState) => {
     const submitted = { ...draft, uncertain: true };
@@ -69,7 +70,20 @@ export default function ProspectingSampleOrderForm(props: Props) {
     try { sessionStorage.setItem(storageKey, JSON.stringify(draft)); } catch { /* Keep the open draft available. */ }
   }, [draft, dirty, recoveryReady, result.orderId, storageKey]);
   useEffect(() => { if (result.error) errorRef.current?.focus(); }, [result]);
-  useEffect(() => { if (result.orderId && leaveAfterSave.current) { const destination = leaveAfterSave.current; leaveAfterSave.current = null; navigation.navigate(destination); } }, [result.orderId, navigation]);
+  useEffect(() => {
+    if (!result.orderId || completedNavigation.current) return;
+    if (props.linked) {
+      completedNavigation.current = true;
+      const backHref = leaveAfterSave.current || result.successHref || props.backHref;
+      leaveAfterSave.current = null;
+      navigation.navigate(`/admin/sales/prospecting/sample-order/${result.orderId}/quote?back=${encodeURIComponent(backHref)}`);
+    } else if (leaveAfterSave.current) {
+      completedNavigation.current = true;
+      const destination = leaveAfterSave.current;
+      leaveAfterSave.current = null;
+      navigation.navigate(destination);
+    }
+  }, [result.orderId, result.successHref, props.linked, props.backHref, navigation]);
 
   function change(name: keyof SampleOrderFields, value: string) {
     setDraft(previous => ({ ...previous, values: { ...previous.values, [name]: value }, ...(result.error && !uncertain ? { submissionId: crypto.randomUUID() } : {}) }));
@@ -126,7 +140,7 @@ export default function ProspectingSampleOrderForm(props: Props) {
       </section>
       <label className="block text-sm font-semibold">Delivery notes and preferences<textarea className="input mt-2 min-h-24" name="notes" maxLength={5000} value={values.notes} disabled={disabled} onChange={event => change('notes', event.target.value)} /></label>
       <div className="rounded-lg bg-slate-50 p-4 text-sm"><p className="font-semibold">{quantityTotal} sample {quantityTotal === 1 ? 'box' : 'boxes'} · $0.00</p><p className="mt-1 text-slate-600">Submitting creates a production order for the address above.</p></div>
-      <button className="btn-primary w-full sm:w-auto" type="submit" disabled={cannotSubmit} aria-busy={pending}>{pending ? 'Creating order…' : !props.canEdit ? 'Read-only access' : uncertain ? 'Retry this submission' : 'Create sample order'}</button>
+      <button className="btn-primary w-full sm:w-auto" type="submit" disabled={cannotSubmit} aria-busy={pending}>{pending ? 'Creating order…' : !props.canEdit ? 'Read-only access' : uncertain ? 'Retry this submission' : props.linked ? 'Save order & continue' : 'Create sample order'}</button>
       <ProspectingDialog open={Boolean(navigation.destination)} title="Leave this sample draft?" onClose={navigation.stay}>
         <p className="text-sm text-slate-600">{uncertain ? 'The last response was interrupted. Retry this submission before starting another sample order to avoid creating a second request.' : 'The shipping details and quantities you entered have not been submitted.'}</p>
         <div className="mt-5 flex flex-wrap gap-2">

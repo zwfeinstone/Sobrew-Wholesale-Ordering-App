@@ -135,7 +135,7 @@ Visit `/bootstrap` and submit email/password/token. If token matches `ADMIN_BOOT
 
 ### Sample tracking and pricing emails
 
-After creating a linked sample order, continue to **Tracking & pricing**. Enter
+Creating a linked sample order automatically opens **Tracking & pricing**. Enter
 the tracking number, uncheck products to omit, and edit the selected quote prices.
 The live preview shows the recipient, lead owner, and complete email before
 **Send samples & pricing email** submits it. Prices apply only to this quote;

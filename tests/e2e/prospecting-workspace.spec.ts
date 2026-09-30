@@ -106,17 +106,48 @@ test('preserves alternate shipping when stepping back and submits corrected samp
   await dialog.getByRole('button', { name: 'Continue', exact: true }).click();
   await expect(dialog.getByRole('textbox', { name: 'Shipping address 1', exact: true })).toHaveValue('99 Alternate Avenue');
   await dialog.getByRole('button', { name: 'Continue', exact: true }).click();
-  await dialog.getByRole('button', { name: 'Submit sample order', exact: true }).click();
+  await dialog.getByRole('button', { name: 'Save order & continue', exact: true }).click();
   await expect(dialog.getByRole('alert')).toContainText('shipment notes');
   await dialog.getByRole('button', { name: 'Back', exact: true }).click();
   await dialog.getByRole('textbox', { name: 'Fulfillment notes', exact: true }).fill('Corrected shipment notes');
   await dialog.getByRole('button', { name: 'Continue', exact: true }).click();
-  await dialog.getByRole('button', { name: 'Submit sample order', exact: true }).click();
+  await dialog.getByRole('button', { name: 'Save order & continue', exact: true }).click();
   await expect.poll(async () => (await calls(page)).length).toBe(2);
   const inputs = await calls(page);
   expect(inputs[1].sample?.notes).toBe('Corrected shipment notes');
   expect(inputs[1].submissionId).not.toBe(inputs[0].submissionId);
-  await expect(page.getByRole('dialog', { name: 'Sample order created' })).toBeVisible();
+  await expect.poll(() => page.evaluate(() => window.prospectingFixture.navigation)).toBe('/admin/sales/prospecting/sample-order/sample-order-1/quote?back=%2Fadmin%2Fsales%2Fprospecting%2Fnext-lead%3Fview%3Dtoday');
+  await expect(page.getByRole('dialog', { name: 'Sample order created' })).not.toBeVisible();
+});
+
+test('moving a lead to Sample Requested continues from contact and shipment confirmation to tracking and pricing', async ({ page }) => {
+  await openFixture(page);
+  await page.getByRole('combobox', { name: 'Stage after saving', exact: true }).selectOption('sample_requested');
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Sample handoff' });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByRole('textbox', { name: 'Contact email', exact: true })).toHaveValue('taylor@example.test');
+  await dialog.getByRole('button', { name: 'Continue', exact: true }).click();
+  await expect(dialog.getByRole('textbox', { name: 'Shipping address 1', exact: true })).toHaveValue('10 Lake Street');
+  await dialog.getByRole('spinbutton', { name: 'Coffee sample box', exact: true }).fill('1');
+  await dialog.getByRole('button', { name: 'Continue', exact: true }).click();
+  await dialog.getByRole('button', { name: 'Save order & continue', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => window.prospectingFixture.navigation)).toContain('/sample-order/sample-order-1/quote?back=');
+  expect(await calls(page)).toHaveLength(1);
+  expect((await calls(page))[0].sample).toMatchObject({ mode: 'order', contactId: 'contact-1', address1: '10 Lake Street', items: [{ productId: 'product-1', quantity: '1' }] });
+  await expect(page.getByRole('dialog', { name: 'Sample order created' })).not.toBeVisible();
+});
+
+test('requesting manager fulfillment retains the request handoff without opening an order quote', async ({ page }) => {
+  await openFixture(page);
+  const dialog = await beginSample(page);
+  await dialog.getByRole('radio', { name: /Request manager fulfillment/ }).check();
+  await dialog.getByRole('button', { name: 'Continue', exact: true }).click();
+  await dialog.getByRole('button', { name: 'Submit fulfillment request', exact: true }).click();
+  await expect(page.getByRole('dialog', { name: 'Request handed to management' })).toBeVisible();
+  expect(await calls(page)).toHaveLength(1);
+  expect((await calls(page))[0].sample?.mode).toBe('request_only');
+  expect(await page.evaluate(() => window.prospectingFixture.navigation)).toBe('');
 });
 
 test('canceling sample handoff makes no request and sample-only drafts persist', async ({ page }) => {
