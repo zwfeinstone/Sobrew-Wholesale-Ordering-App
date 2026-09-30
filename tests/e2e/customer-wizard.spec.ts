@@ -95,3 +95,34 @@ test('locks customer creation immediately and posts the complete address only on
   await page.getByRole('button', { name: 'Create customer & send welcome', exact: true }).click();
   expect(await page.evaluate(() => window.customerWizardFixture.submissions.length)).toBe(2);
 });
+
+test('validates optional invoice CC emails and keeps them through review and submission', async ({ page }, testInfo) => {
+  await openFixture(page);
+  await fillLogin(page);
+  await fillAddress(page);
+  const cc = page.getByRole('textbox', { name: 'Invoice CC emails (optional)', exact: true });
+  await cc.fill('accounting@example.test, invalid-email');
+  await page.getByRole('button', { name: 'Next', exact: true }).click();
+  await expect(page.getByRole('alert')).toContainText('Invalid billing CC email address');
+  await expect(cc).toHaveValue('accounting@example.test, invalid-email');
+  expect(await page.evaluate(() => window.customerWizardFixture.submissions)).toEqual([]);
+
+  const enteredCc = ' Accounting@Example.test; manager@example.test\nACCOUNTING@example.test ';
+  await cc.fill(enteredCc);
+  await advanceToReview(page);
+  await expect(page.getByText('accounting@example.test, manager@example.test', { exact: true })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath('customer-cc-review.png'), fullPage: true });
+  await page.getByRole('button', { name: 'Back', exact: true }).click();
+  await page.getByRole('button', { name: 'Back', exact: true }).click();
+  await page.getByRole('button', { name: 'Back', exact: true }).click();
+  await expect(cc).toHaveValue(enteredCc);
+  const audit = await new AxeBuilder({ page }).include('main').withTags(['wcag2a', 'wcag2aa']).analyze();
+  expect(audit.violations.filter((issue) => issue.impact === 'serious' || issue.impact === 'critical')).toEqual([]);
+  await page.screenshot({ path: testInfo.outputPath('customer-cc-input.png'), fullPage: true });
+  await advanceToReview(page);
+  await page.getByRole('button', { name: 'Create customer & send welcome', exact: true }).click();
+  const submissions = await page.evaluate(() => window.customerWizardFixture.submissions);
+  expect(submissions).toHaveLength(1);
+  expect(submissions[0]).toMatchObject({ billing_email_cc: enteredCc, login_email: 'buyer@example.test' });
+});

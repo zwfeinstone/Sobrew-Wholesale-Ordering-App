@@ -112,6 +112,43 @@ describe('new customer creation', () => {
     expect(operations.find((row) => row.table === 'center_locations')?.values).toMatchObject({ address2: 'Suite 2', zip: '38068-1234' });
   });
 
+  it.each(['', '  , ; \n '])('allows empty optional invoice CC: %j', async (billing_email_cc) => {
+    const response = await POST(request({ billing_email_cc }));
+    expect(response.headers.get('location')).toContain('success=center_created');
+    expect(operations.find((row) => row.table === 'centers' && row.operation === 'insert')?.values).toMatchObject({ billing_email_cc: [], billing_email_cc_reviewed_at: expect.any(String) });
+  });
+
+  it('saves normalized, deduplicated invoice CC without adding recipients to the welcome email', async () => {
+    await POST(request({ billing_email_cc: ' AP@Example.com; finance@example.org\nAP@example.com, bookkeeper@example.net ' }));
+    expect(operations.find((row) => row.table === 'centers' && row.operation === 'insert')?.values).toMatchObject({ billing_email_cc: ['ap@example.com', 'finance@example.org', 'bookkeeper@example.net'], billing_email_cc_reviewed_at: expect.any(String) });
+    expect(mocks.sync).toHaveBeenCalledExactlyOnceWith('center-1');
+    expect(mocks.welcome).toHaveBeenCalledExactlyOnceWith({ centerName: 'New Customer', email: 'buyer@example.com', fullName: 'Buyer', password: 'test-password-123' });
+  });
+
+  it.each([
+    'valid@example.com; invalid',
+    'Accounts Payable <ap@example.com>',
+    Array.from({ length: 21 }, (_, index) => `ap${index}@example.com`).join(','),
+  ])('rejects invalid or too many invoice CC recipients before side effects: %j', async (billing_email_cc) => {
+    const response = await POST(request({ billing_email_cc }));
+    expect(response.status).toBe(303);
+    expect(response.headers.get('location')).toContain('error=billing_cc_invalid');
+    expect(mocks.from).not.toHaveBeenCalled();
+    expect(mocks.createUser).not.toHaveBeenCalled();
+    expect(mocks.audit).not.toHaveBeenCalled();
+    expect(mocks.sync).not.toHaveBeenCalled();
+    expect(mocks.welcome).not.toHaveBeenCalled();
+  });
+
+  it('retains saved invoice CC when QuickBooks needs a retry', async () => {
+    mocks.sync.mockRejectedValue(new Error('QuickBooks unavailable'));
+    const response = await POST(request({ billing_email_cc: ' AP@example.com; finance@example.org ' }));
+    expect(response.headers.get('location')).toContain('/admin/users/center-1?success=center_created&quickbooks=pending');
+    expect(operations.find((row) => row.table === 'centers' && row.operation === 'insert')?.values).toMatchObject({ billing_email_cc: ['ap@example.com', 'finance@example.org'] });
+    expect(operations.some((row) => row.operation === 'delete')).toBe(false);
+    expect(mocks.welcome).toHaveBeenCalledExactlyOnceWith({ centerName: 'New Customer', email: 'buyer@example.com', fullName: 'Buyer', password: 'test-password-123' });
+  });
+
   it('never creates a login or sends email if the delivery address cannot be persisted', async () => {
     failTable = 'center_locations';
     const response = await POST(request());

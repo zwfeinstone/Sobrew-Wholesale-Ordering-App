@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { parseBillingEmailCc } from '@/lib/billing-email';
 import { customerAddressError, US_ADDRESS_STATES, type CustomerAddress } from '@/lib/customer-address';
 import { productCategoryLabel, groupProductsByCategory } from '@/lib/product-categories';
 
@@ -10,6 +11,7 @@ type WizardState = CustomerAddress & {
   center_name: string;
   center_notes: string;
   login_email: string;
+  billing_email_cc: string;
   login_name: string;
   password: string;
 };
@@ -32,6 +34,7 @@ export function UserWizard({ products }: { products: Product[] }) {
     center_name: '',
     center_notes: '',
     login_email: '',
+    billing_email_cc: '',
     login_name: '',
     password: '',
     address1: '',
@@ -42,6 +45,13 @@ export function UserWizard({ products }: { products: Product[] }) {
   });
   const selectedProducts = useMemo(() => products.filter((product) => selected[product.id]), [products, selected]);
   const groupedProducts = useMemo(() => groupProductsByCategory(products), [products]);
+  const billingCc = useMemo(() => {
+    try {
+      return { recipients: parseBillingEmailCc(state.billing_email_cc), error: '' };
+    } catch (error) {
+      return { recipients: [], error: error instanceof Error ? error.message : 'Check the invoice CC email addresses.' };
+    }
+  }, [state.billing_email_cc]);
   const stepLabels = ['Center details', 'Assign products', 'Set prices', 'Review'];
 
   useEffect(() => {
@@ -60,8 +70,8 @@ export function UserWizard({ products }: { products: Product[] }) {
     if (!formRef.current?.reportValidity()) return;
     if (step === 1) {
       const addressError = customerAddressError(state);
-      if (addressError || !state.center_name.trim() || state.password.trim().length < 8) {
-        setError(addressError || 'Enter a center name and a temporary password of at least 8 characters.');
+      if (addressError || billingCc.error || !state.center_name.trim() || state.password.trim().length < 8) {
+        setError(addressError || billingCc.error || 'Enter a center name and a temporary password of at least 8 characters.');
         return;
       }
     }
@@ -81,9 +91,9 @@ export function UserWizard({ products }: { products: Product[] }) {
         return;
       }
       const addressError = customerAddressError(state);
-      if (addressError) {
+      if (addressError || billingCc.error) {
         event.preventDefault();
-        setError(addressError);
+        setError(addressError || billingCc.error);
         setStep(1);
         return;
       }
@@ -93,6 +103,7 @@ export function UserWizard({ products }: { products: Product[] }) {
       <input type="hidden" name="center_name" value={state.center_name} />
       <input type="hidden" name="center_notes" value={state.center_notes} />
       <input type="hidden" name="login_email" value={state.login_email} />
+      <input type="hidden" name="billing_email_cc" value={state.billing_email_cc} />
       <input type="hidden" name="login_name" value={state.login_name} />
       <input type="hidden" name="password" value={state.password} />
       {(['address1', 'address2', 'city', 'state', 'zip'] as const).map((field) => (
@@ -183,6 +194,21 @@ export function UserWizard({ products }: { products: Product[] }) {
             value={state.login_email}
             onChange={(event) => setState({ ...state, login_email: event.target.value })}
           />
+          <div className="rounded-2xl border border-slate-200 bg-slate-50/60 p-4 sm:p-5">
+            <label className="block space-y-2 text-sm font-medium text-slate-700">
+              <span>Invoice CC emails <span className="font-normal text-slate-500">(optional)</span></span>
+              <textarea
+                className="input min-h-24"
+                placeholder="accounting@example.com, manager@example.com"
+                aria-describedby="invoice-cc-help"
+                autoCapitalize="none"
+                spellCheck={false}
+                value={state.billing_email_cc}
+                onChange={(event) => setState({ ...state, billing_email_cc: event.target.value })}
+              />
+            </label>
+            <p id="invoice-cc-help" className="mt-2 text-sm text-slate-500">Add up to 20 addresses, separated by commas, semicolons, or new lines. They’ll receive invoice copies. The welcome email goes only to the first login email.</p>
+          </div>
           <input
             className="input"
             name="password"
@@ -276,6 +302,10 @@ export function UserWizard({ products }: { products: Product[] }) {
                 {state.city}, {state.state} {state.zip}
               </address>
               <p className="mt-3 text-sm text-slate-500">QuickBooks invoices will use this address and {state.login_email}.</p>
+              <div className="mt-4 border-t border-slate-200 pt-3">
+                <p className="text-xs uppercase tracking-[0.18em] text-slate-500">Invoice CC emails</p>
+                <p className="mt-2 break-words text-sm text-slate-700">{billingCc.recipients.join(', ') || 'No CC recipients.'}</p>
+              </div>
             </div>
             <div className="rounded-2xl border border-slate-200 bg-white/70 p-4 md:col-span-2">
               <p className="text-xs uppercase tracking-[0.18em] text-slate-500">Assigned products</p>

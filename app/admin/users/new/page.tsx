@@ -32,6 +32,8 @@ export default async function NewUserWizardPage(
               ? 'Enter a customer name, valid login email, and temporary password of at least 8 characters.'
             : error === 'catalog_invalid'
               ? 'The selected order guide could not be read. Please review the selected products and try again.'
+            : error === 'billing_cc_invalid'
+              ? 'Enter up to 20 valid invoice CC email addresses, separated by commas, semicolons, or new lines. No customer or login was created, and no welcome email was sent.'
             : 'Could not create the center right now. Check the login email and try again.'}
         </div>
       ) : null}
