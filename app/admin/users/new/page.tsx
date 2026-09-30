@@ -18,12 +18,20 @@ export default async function NewUserWizardPage(
       <section className="panel">
         <span className="eyebrow">Center Admin</span>
         <h1 className="page-title mt-4">Create center wizard</h1>
-        <p className="page-subtitle mt-3">Set up a new center, create its first login, and assign shared products and pricing in one guided flow.</p>
+        <p className="page-subtitle mt-3">Add the customer’s address and first login, choose their order guide, and connect them to QuickBooks.</p>
       </section>
       {error ? (
         <div className="card text-sm text-red-700">
           {error === 'admin_write_denied'
-            ? 'Only superadmins can change admin data.'
+            ? 'You do not have permission to create customers.'
+            : error === 'address_required'
+              ? 'A complete US street address, city, state, and valid ZIP code are required. No customer or login was created, and no welcome email was sent.'
+            : error === 'address_save_failed'
+              ? 'The address could not be saved. No login was created or welcome email sent. Please try again.'
+            : error === 'missing'
+              ? 'Enter a customer name, valid login email, and temporary password of at least 8 characters.'
+            : error === 'catalog_invalid'
+              ? 'The selected order guide could not be read. Please review the selected products and try again.'
             : 'Could not create the center right now. Check the login email and try again.'}
         </div>
       ) : null}

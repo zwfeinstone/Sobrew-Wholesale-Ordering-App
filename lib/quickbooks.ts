@@ -1617,18 +1617,41 @@ async function archiveQuickBooksItem(connection: QuickBooksConnection, item: Qui
   if (!updated?.Item?.Id) throw new Error(`QuickBooks did not archive ${item.name}.`);
 }
 
-async function createQuickBooksProductItem(connection: QuickBooksConnection, product: QuickBooksPortalProduct, incomeAccountRef: QuickBooksRef) {
-  const created = await quickBooksRequest(connection, '/item', {
+async function createQuickBooksProductItem(connection: QuickBooksConnection, product: QuickBooksPortalProduct, incomeAccountRef: QuickBooksRef, requestId?: string) {
+  const path = requestId ? `/item?requestid=${encodeURIComponent(requestId)}` : '/item';
+  const created = await quickBooksRequest(connection, path, {
     body: JSON.stringify(buildQuickBooksProductPayload(product, incomeAccountRef)),
     method: 'POST',
   });
-  const item = created?.Item;
+  let item = created?.Item;
   if (!item?.Id) throw new Error(`QuickBooks did not return an item ID for ${product.name ?? product.id}.`);
+  if (requestId) {
+    // Idempotent responses are historical: a catalog reset may have archived
+    // this item since creation. Check its current state before linking it.
+    const current = await quickBooksRequest(connection, `/item/${encodeURIComponent(String(item.Id))}`);
+    if (!current?.Item?.Id || current.Item.Active === false) {
+      throw new Error('The previous QuickBooks item is archived or unavailable. Link an active item in QuickBooks settings or reset the product catalog before retrying.');
+    }
+    item = current.Item;
+  }
   return {
     id: String(item.Id),
     name: cleanText(item.Name) || quickBooksItemName(product.name),
     type: cleanText(item.Type) || quickBooksItemType(),
   };
+}
+
+async function recordQuickBooksCreationFailure(table: 'centers' | 'products', id: string, error: unknown) {
+  const { error: saveError } = await getSupabaseAdmin()
+    .from(table)
+    .update({
+      quickbooks_sync_error: error instanceof Error ? error.message : 'Unable to sync with QuickBooks. Please retry.',
+      quickbooks_sync_status: 'sync_error',
+      quickbooks_synced_at: new Date().toISOString(),
+    })
+    .eq('id', id)
+    .is(table === 'centers' ? 'quickbooks_customer_id' : 'quickbooks_item_id', null);
+  if (saveError) console.error('[quickbooks] unable to record sync failure', { table, id, message: saveError.message });
 }
 
 export async function createMissingQuickBooksProductsFromPortal(products: QuickBooksPortalProduct[]): Promise<QuickBooksProductCreateResult> {
@@ -1643,16 +1666,31 @@ export async function createMissingQuickBooksProductsFromPortal(products: QuickB
     return { createdCount: 0, productErrorCount: 0 };
   }
 
-  const connection = await getAuthorizedConnection();
-  const incomeAccountRef = await resolveProductIncomeAccount(connection);
   const supabase = getSupabaseAdmin();
+  let connection: QuickBooksConnection;
+  let incomeAccountRef: QuickBooksRef;
+  try {
+    connection = await getAuthorizedConnection();
+    incomeAccountRef = await resolveProductIncomeAccount(connection);
+  } catch (error) {
+    await Promise.all(activeUnmappedProducts.map((product) => recordQuickBooksCreationFailure('products', product.id, error)));
+    throw error;
+  }
   const syncedAt = new Date().toISOString();
   let createdCount = 0;
   let productErrorCount = 0;
 
   for (const product of activeUnmappedProducts) {
     try {
-      const item = await createQuickBooksProductItem(connection, product, incomeAccountRef);
+      // Another creation/retry may already have saved the mapping since the form loaded.
+      const { data: current, error: readError } = await supabase.from('products')
+        .select('id,name,sku,description,active,quickbooks_item_id').eq('id', product.id).single();
+      if (readError || !current) throw new Error(readError?.message || 'Portal product not found.');
+      if (current.quickbooks_item_id) { createdCount += 1; continue; }
+      if (current.active === false) continue;
+      // QuickBooks replays a successful request with the same requestid if the
+      // response or local mapping was lost. A catalog reset intentionally uses no key.
+      const item = await createQuickBooksProductItem(connection, current, incomeAccountRef, `product-${product.id}`);
       const { error } = await supabase
         .from('products')
         .update({
@@ -1668,17 +1706,7 @@ export async function createMissingQuickBooksProductsFromPortal(products: QuickB
       createdCount += 1;
     } catch (error) {
       productErrorCount += 1;
-      await supabase
-        .from('products')
-        .update({
-          quickbooks_item_id: null,
-          quickbooks_item_name: null,
-          quickbooks_item_type: null,
-          quickbooks_sync_error: error instanceof Error ? error.message : 'Unable to create QuickBooks item.',
-          quickbooks_sync_status: 'sync_error',
-          quickbooks_synced_at: syncedAt,
-        })
-        .eq('id', product.id);
+      await recordQuickBooksCreationFailure('products', product.id, error);
     }
   }
 
@@ -2768,51 +2796,62 @@ export async function linkPortalCenterToQuickBooksCustomer({
 }
 
 export async function createQuickBooksCustomerFromPortalCenter(centerId: string) {
-  const connection = await getAuthorizedConnection();
   const supabase = getSupabaseAdmin();
-  const { data: center, error: centerError } = await supabase
-    .from('centers')
-    .select('id,name,is_active,legal_name,billing_email,billing_phone,billing_address1,billing_address2,billing_city,billing_state,billing_zip,quickbooks_customer_id,center_locations(name,address1,address2,city,state,zip,is_active)')
-    .eq('id', centerId)
-    .single();
-  if (centerError || !center) throw new Error(centerError?.message || 'Portal center not found.');
-  if ((center as QuickBooksPortalCenterWithLocations).quickbooks_customer_id) {
-    throw new Error('This center is already mapped to QuickBooks.');
-  }
+  try {
+    const connection = await getAuthorizedConnection();
+    const { data: center, error: centerError } = await supabase
+      .from('centers')
+      .select('id,name,is_active,legal_name,billing_email,billing_phone,billing_address1,billing_address2,billing_city,billing_state,billing_zip,quickbooks_customer_id,center_locations(name,address1,address2,city,state,zip,is_active)')
+      .eq('id', centerId)
+      .single();
+    if (centerError || !center) throw new Error(centerError?.message || 'Portal center not found.');
+    if ((center as QuickBooksPortalCenterWithLocations).quickbooks_customer_id) {
+      const existing = await quickBooksRequest(connection, `/customer/${encodeURIComponent(center.quickbooks_customer_id!)}`);
+      const customer = normalizeQuickBooksCustomer(existing?.Customer);
+      if (!customer || !customer.active) throw new Error('The linked QuickBooks customer is inactive or unavailable. Review its mapping before retrying.');
+      return customer;
+    }
 
-  let contactEmails: string[] = [];
-  if (!splitEmailAddresses(center.billing_email).length) {
-    const { data: contacts, error: contactsError } = await supabase
-      .from('profiles')
-      .select('email')
-      .eq('center_id', centerId)
-      .eq('is_admin', false)
-      .eq('is_active', true)
-      .order('created_at', { ascending: true })
-      .order('id', { ascending: true });
-    if (contactsError) throw new Error(`Unable to read customer contact emails: ${contactsError.message}`);
-    contactEmails = (contacts ?? []).map((contact) => cleanText(contact.email)).filter(Boolean);
-  }
-  const payload = buildQuickBooksCustomerPayloadFromCenter(center as QuickBooksPortalCenterWithLocations, contactEmails);
-  if (!payload.PrimaryEmailAddr) {
-    throw new Error('Add a billing email or an active customer login email before pushing this customer to QuickBooks.');
-  }
-  const created = await quickBooksRequest(connection, '/customer', {
-    body: JSON.stringify(payload),
-    method: 'POST',
-  });
-  const customer = normalizeQuickBooksCustomer(created?.Customer);
-  if (!customer) throw new Error('QuickBooks did not return a customer ID.');
+    let contactEmails: string[] = [];
+    if (!splitEmailAddresses(center.billing_email).length) {
+      const { data: contacts, error: contactsError } = await supabase
+        .from('profiles')
+        .select('email')
+        .eq('center_id', centerId)
+        .eq('is_admin', false)
+        .eq('is_active', true)
+        .order('created_at', { ascending: true })
+        .order('id', { ascending: true });
+      if (contactsError) throw new Error(`Unable to read customer contact emails: ${contactsError.message}`);
+      contactEmails = (contacts ?? []).map((contact) => cleanText(contact.email)).filter(Boolean);
+    }
+    const payload = buildQuickBooksCustomerPayloadFromCenter(center as QuickBooksPortalCenterWithLocations, contactEmails);
+    if (!payload.PrimaryEmailAddr) {
+      throw new Error('Add a billing email or an active customer login email before pushing this customer to QuickBooks.');
+    }
+    const created = await quickBooksRequest(connection, `/customer?requestid=${encodeURIComponent(`center-${centerId}`)}`, {
+      body: JSON.stringify(payload),
+      method: 'POST',
+    });
+    if (!created?.Customer?.Id) throw new Error('QuickBooks did not return a customer ID.');
+    // A replayed creation response may predate a deactivation or contact edit.
+    const current = await quickBooksRequest(connection, `/customer/${encodeURIComponent(String(created.Customer.Id))}`);
+    const customer = normalizeQuickBooksCustomer(current?.Customer);
+    if (!customer || !customer.active) throw new Error('The QuickBooks customer is inactive or unavailable. Reactivate it or link an active customer in QuickBooks settings.');
 
-  const { error: updateError } = await supabase
-    .from('centers')
-    .update({
-      ...centerUpdateFromQuickBooksCustomer(customer),
-      quickbooks_mapping_note: 'Created from portal center',
-    })
-    .eq('id', centerId);
-  if (updateError) throw new Error(`QuickBooks customer was created, but the portal mapping could not be saved: ${updateError.message}`);
-  return customer;
+    const { error: updateError } = await supabase
+      .from('centers')
+      .update({
+        ...centerUpdateFromQuickBooksCustomer(customer),
+        quickbooks_mapping_note: 'Created from portal center',
+      })
+      .eq('id', centerId);
+    if (updateError) throw new Error(`QuickBooks customer was created, but the portal mapping could not be saved: ${updateError.message}`);
+    return customer;
+  } catch (error) {
+    await recordQuickBooksCreationFailure('centers', centerId, error);
+    throw error;
+  }
 }
 
 export async function clearPortalCenterQuickBooksCustomer(centerId: string) {

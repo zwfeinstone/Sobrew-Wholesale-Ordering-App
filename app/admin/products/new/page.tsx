@@ -1,8 +1,11 @@
 import { redirect } from 'next/navigation';
+import { revalidatePath } from 'next/cache';
 import PendingSubmitButton from '@/components/pending-submit-button';
 import { requireAdminSectionView } from '@/lib/admin-permissions';
 import { requireAdminWriteAccess } from '@/lib/admin-write-access';
-import { PRODUCT_CATEGORY_OPTIONS, isProductCategory } from '@/lib/product-categories';
+import { PRODUCT_CATEGORY_OPTIONS } from '@/lib/product-categories';
+import { createProductWithQuickBooks } from '@/lib/product-create';
+import { createMissingQuickBooksProductsFromPortal } from '@/lib/quickbooks';
 import { createClient } from '@/lib/supabase/server';
 
 async function createProduct(formData: FormData) {
@@ -10,16 +13,15 @@ async function createProduct(formData: FormData) {
   await requireAdminWriteAccess('/admin/products/new?error=admin_write_denied', 'products');
 
   const supabase = await createClient();
-  const category = String(formData.get('category') ?? '');
-  if (!isProductCategory(category)) redirect('/admin/products/new?error=invalid_category');
-
-  await supabase.from('products').insert({
-    name: String(formData.get('name') ?? ''),
-    description: String(formData.get('description') ?? ''),
-    sku: String(formData.get('sku') ?? ''),
-    category
+  const result = await createProductWithQuickBooks(formData, {
+    insertProduct: async (input) => supabase.from('products').insert(input)
+      .select('id,name,sku,description,active,quickbooks_item_id').single(),
+    syncProducts: createMissingQuickBooksProductsFromPortal,
   });
-  redirect('/admin/products');
+  if (!result.ok) redirect(`/admin/products/new?error=${result.error}`);
+  revalidatePath('/admin/products');
+  revalidatePath('/admin/invoicing');
+  redirect(`/admin/products/${result.productId}?toast=${result.syncStatus === 'synced' ? 'created_quickbooks_synced' : 'created_quickbooks_attention'}`);
 }
 
 export default async function NewProductPage(
@@ -30,17 +32,25 @@ export default async function NewProductPage(
   const searchParams = await props.searchParams;
   await requireAdminSectionView('products');
   const error = typeof searchParams?.error === 'string' ? searchParams.error : '';
+  const errorMessage = {
+    admin_write_denied: 'You do not have permission to create products.',
+    invalid_name: 'Enter a product name before saving.',
+    invalid_sku: 'Enter a SKU before saving.',
+    invalid_category: 'Choose a product category before saving.',
+    duplicate_sku: 'A product with this SKU already exists. Open the existing product to review it.',
+    create_failed: 'The product could not be saved. Review the catalog before trying again.',
+  }[error] ?? '';
 
   return (
     <form action={createProduct} className="space-y-6">
       <section className="panel">
         <span className="eyebrow">Catalog Admin</span>
         <h1 className="page-title mt-4">Create a new product</h1>
-        <p className="page-subtitle mt-3">Add a new item to the wholesale catalog with a clear name, SKU, and description.</p>
+        <p className="page-subtitle mt-3">Add a new catalog item. We’ll also create its matching product in QuickBooks.</p>
       </section>
-      {error ? (
-        <div className="card text-sm text-red-700">
-          {error === 'admin_write_denied' ? 'Only superadmins can change admin data.' : 'Choose a product category before saving.'}
+      {errorMessage ? (
+        <div className="card text-sm text-red-700" role="alert">
+          {errorMessage}
         </div>
       ) : null}
       <section className="card space-y-4">
@@ -53,7 +63,7 @@ export default async function NewProductPage(
           ))}
         </select>
         <textarea className="input min-h-28" name="description" placeholder="Description" />
-        <PendingSubmitButton className="btn-primary" label="Create" pendingLabel="Creating..." />
+        <PendingSubmitButton className="btn-primary" label="Create product" pendingLabel="Creating and syncing..." />
       </section>
     </form>
   );

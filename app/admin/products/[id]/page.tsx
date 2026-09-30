@@ -1,4 +1,5 @@
 import { notFound, redirect } from 'next/navigation';
+import { revalidatePath } from 'next/cache';
 import PendingSubmitButton from '@/components/pending-submit-button';
 import StatusToast from '@/components/status-toast';
 import { requireAdminSectionView } from '@/lib/admin-permissions';
@@ -19,6 +20,8 @@ import {
   type InventoryUnit,
 } from '@/lib/inventory';
 import { PRODUCT_CATEGORY_OPTIONS, isProductCategory } from '@/lib/product-categories';
+import { syncSavedProductToQuickBooks } from '@/lib/product-create';
+import { createMissingQuickBooksProductsFromPortal } from '@/lib/quickbooks';
 import { IMAGE_UPLOAD_ACCEPT, ImageUploadError, prepareImageUpload } from '@/lib/image-upload';
 import { createClient } from '@/lib/supabase/server';
 import { supabaseAdmin } from '@/lib/supabase/admin';
@@ -136,6 +139,24 @@ async function removeProduct(formData: FormData) {
   const supabase = await createClient();
   await supabase.from('products').delete().eq('id', id);
   redirect('/admin/products');
+}
+
+async function syncProductToQuickBooks(formData: FormData) {
+  'use server';
+  await requireAdminWriteAccess('/admin/products?toast=admin_write_denied', 'products');
+  const id = String(formData.get('id') ?? '').trim();
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+    redirect('/admin/products?toast=quickbooks_sync_failed');
+  }
+  const supabase = await createClient();
+  const { data: product, error } = await supabase.from('products')
+    .select('id,name,sku,description,active,quickbooks_item_id').eq('id', id).single();
+  if (error || !product) redirect(`/admin/products/${id}?toast=quickbooks_sync_attention`);
+  const status = await syncSavedProductToQuickBooks(product, createMissingQuickBooksProductsFromPortal);
+  revalidatePath('/admin/products');
+  revalidatePath(`/admin/products/${id}`);
+  revalidatePath('/admin/invoicing');
+  redirect(`/admin/products/${id}?toast=${status === 'synced' ? 'quickbooks_synced' : 'quickbooks_sync_attention'}`);
 }
 
 async function saveRecipe(formData: FormData) {
@@ -323,6 +344,43 @@ export default async function ProductPage(
       {toast === 'recipe_saved' ? <StatusToast message="Product recipe saved." tone="success" /> : null}
       {toast === 'recipe_error' ? <StatusToast message="Unable to save product recipe." tone="error" /> : null}
       {toast === 'admin_write_denied' ? <StatusToast message="Only superadmins can change admin data." tone="error" /> : null}
+      {toast === 'created_quickbooks_synced' ? <StatusToast message="Product created and synced to QuickBooks." tone="success" /> : null}
+      {toast === 'created_quickbooks_attention' ? (
+        <div className="card border-amber-200 bg-amber-50 text-sm text-amber-900" role="status">
+          <p className="font-semibold">Product created. QuickBooks sync needs attention.</p>
+          <p className="mt-1">Your product is saved. Retry its QuickBooks sync below.</p>
+        </div>
+      ) : null}
+      {toast === 'quickbooks_synced' ? <StatusToast message="Product synced to QuickBooks." tone="success" /> : null}
+      {toast === 'quickbooks_sync_attention' ? (
+        <StatusToast message="Your product is saved, but QuickBooks sync still needs attention. Check the connection and retry below." tone="error" />
+      ) : null}
+      <section className="card space-y-3" aria-labelledby="product-quickbooks-heading">
+        <span className="eyebrow">QuickBooks</span>
+        <h2 id="product-quickbooks-heading" className="text-lg font-semibold text-slate-950">
+          {product.quickbooks_item_id ? 'Product synced' : 'Product sync needs attention'}
+        </h2>
+        <p className="text-sm text-slate-600">
+          {product.quickbooks_item_id
+            ? 'This product is linked to QuickBooks and ready for invoicing. Customer pricing is set in the order guide.'
+            : 'This product is saved in your catalog. Sync this saved product to QuickBooks before invoicing it.'}
+        </p>
+        {!product.quickbooks_item_id && product.quickbooks_sync_error ? (
+          <p className="text-sm text-amber-800">{product.quickbooks_sync_error}</p>
+        ) : null}
+        {!product.quickbooks_item_id ? (
+          <form action={syncProductToQuickBooks}>
+            <input type="hidden" name="id" value={product.id} />
+            <PendingSubmitButton
+              className="btn-secondary"
+              label="Retry QuickBooks sync"
+              pendingLabel="Syncing..."
+              disabled={product.active === false}
+              disabledLabel="Activate product to sync"
+            />
+          </form>
+        ) : null}
+      </section>
       <form action={updateProduct} className="card space-y-4">
         <input type="hidden" name="id" value={product.id} />
         <input className="input" name="name" defaultValue={product.name} required />

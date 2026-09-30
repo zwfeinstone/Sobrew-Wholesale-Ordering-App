@@ -41,6 +41,7 @@ vi.mock('@/lib/supabase/admin', () => ({ getSupabaseAdmin: () => ({
     return {
       select() { return this; },
       eq(key: string, value: unknown) { filters[key] = value; return this; },
+      is(key: string, value: unknown) { filters[key] = value; return this; },
       order() { return this; },
       limit() { return this; },
       update(next: Record<string, unknown>) { values = next; return this; },
@@ -80,7 +81,7 @@ function quickBooksFixture(options: {
     ...options.invoice,
   };
   if (options.missingInvoiceCustomer) delete invoice.CustomerRef;
-  const customer = options.customer === undefined ? {
+  let customer = options.customer === undefined ? {
     Id: 'customer-1', PrimaryEmailAddr: { Address: 'billing@example.com, ap@example.com' },
   } : options.customer;
   const failure = () => Response.json({ Fault: { Error: [{ Message: 'Provider unavailable' }] } }, { status: 503 });
@@ -95,7 +96,8 @@ function quickBooksFixture(options: {
       return options.fail === 'customer' ? failure() : Response.json({ Customer: requestedCustomer });
     }
     if (url.pathname.endsWith('/customer') && method === 'POST') {
-      return Response.json({ Customer: { ...body, Id: 'customer-1', SyncToken: '0' } });
+      customer = { ...body, Id: 'customer-1', SyncToken: '0' };
+      return Response.json({ Customer: customer });
     }
     if (url.pathname.endsWith('/invoice/invoice-1/send')) return Response.json({ Invoice: { ...invoice, EmailStatus: 'EmailSent' } });
     if (url.pathname.endsWith('/invoice/invoice-1')) {

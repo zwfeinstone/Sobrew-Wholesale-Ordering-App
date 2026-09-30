@@ -14,6 +14,7 @@ import { requireAdminSectionView, requireManageAdmins } from '@/lib/admin-permis
 import { requireAdminWriteAccess } from '@/lib/admin-write-access';
 import { sendCustomerWelcomeEmail } from '@/lib/email';
 import { productCategoryLabel } from '@/lib/product-categories';
+import { retryCustomerQuickBooksSync } from './quickbooks-actions';
 import { createClient } from '@/lib/supabase/server';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { formatAppDateTime, usd } from '@/lib/utils';
@@ -68,6 +69,7 @@ function adminUserDeniedHref(id: string) {
 }
 
 function adminActionErrorMessage(error: string) {
+  if (error === 'quickbooks_sync_failed') return 'The customer is saved, but QuickBooks could not be linked. Check the connection and retry below; do not create the customer again.';
   if (error === 'pricing_invalid') return 'Pricing was not saved. Every selected product needs a valid price, or explicit complimentary approval for $0.';
   if (error === 'admin_write_denied') return 'You do not have edit access to this section.';
   if (error === 'admin_permission_denied') return 'Only superadmins can manage admin accounts and permissions.';
@@ -446,6 +448,7 @@ export default async function UserDetailPage(
     const priceMap = new Map((prices ?? []).map((row) => [row.product_id, row.price_cents]));
     const complimentarySet = new Set((prices ?? []).filter(row => row.allow_zero_price).map(row => row.product_id));
     const centerLocations = (locations ?? []) as CenterLocationRow[];
+    const quickBooksPending = !center.quickbooks_customer_id;
 
     const [ordersResult, activityResult] = currentAccess.access.orders.canView ? await Promise.all([
       supabase.from('orders').select('id,created_at,status,subtotal_cents,notes').eq('center_id', center.id).order('created_at', { ascending: false }).limit(100),
@@ -454,6 +457,7 @@ export default async function UserDetailPage(
     const initialTab = typeof searchParams?.tab === 'string' ? searchParams.tab : /location/.test(success + error) ? 'locations' : /login/.test(success + error) ? 'people' : 'catalog';
     return <div className="space-y-5">
         {success === 'center_created' ? <div className="card text-sm text-green-700">Center created and first login added.</div> : null}
+        {success === 'quickbooks_linked' ? <div className="card text-sm text-green-700" role="status">Customer linked to QuickBooks. You can now create and send invoices.</div> : null}
         {success === 'center_saved' ? <div className="card text-sm text-green-700">Center settings saved.</div> : null}
         {success === 'login_added' ? <div className="card text-sm text-green-700">Login added to center.</div> : null}
         {success === 'login_saved' ? <div className="card text-sm text-green-700">Login updated.</div> : null}
@@ -467,6 +471,19 @@ export default async function UserDetailPage(
 
       {success === 'pricing_saved' ? <p className="workspace-notice" role="status">Catalog pricing saved.</p> : null}
       <header className="workspace-heading"><div><Link className="text-sm text-slate-500" href="/admin/users">Customers</Link><h1 className="page-title mt-2">{center.name}</h1><p className="mt-2 text-sm text-slate-500">{members?.length ?? 0} people · {centerLocations.length} locations</p></div><span className="workspace-badge">{center.is_active ? 'Active' : 'Inactive'}</span></header>
+      <section className={`rounded-2xl border px-5 py-4 ${quickBooksPending ? 'border-amber-200 bg-amber-50' : 'border-emerald-200 bg-emerald-50/60'}`} aria-label="QuickBooks connection">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h2 className={`font-semibold ${quickBooksPending ? 'text-amber-900' : 'text-emerald-900'}`}>{quickBooksPending ? 'QuickBooks connection pending' : 'Linked to QuickBooks'}</h2>
+            <p className="mt-1 text-sm text-slate-700">{quickBooksPending ? 'This customer is saved. Connect QuickBooks before sending invoices; there’s no need to create the customer again.' : 'Customer details are linked for invoice creation and sending.'}</p>
+            {quickBooksPending && center.quickbooks_sync_error ? <p className="mt-2 text-sm text-amber-800">{center.quickbooks_sync_error}</p> : null}
+          </div>
+          {quickBooksPending && currentAccess.access.centers.canEdit ? <form action={retryCustomerQuickBooksSync}>
+            <input type="hidden" name="center_id" value={center.id} />
+            <PendingSubmitButton className="btn-secondary whitespace-nowrap" label="Retry QuickBooks connection" pendingLabel="Connecting…" />
+          </form> : null}
+        </div>
+      </section>
       <CustomerWorkspaceTabs key={center.id} initialTab={initialTab} panels={{
         catalog: <CenterCatalogEditor key={center.id} centerId={center.id} action={updateCenterPricing} products={(products ?? []).map(product => ({ id: product.id, name: productDisplayName(product), category: productCategoryLabel(product.category), assigned: assignedSet.has(product.id), price: priceMap.get(product.id) ?? null, complimentary: complimentarySet.has(product.id) }))} />,
         settings: <>        <form action={updateCenter} className="space-y-6">
