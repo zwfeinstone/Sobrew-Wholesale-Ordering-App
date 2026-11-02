@@ -13,6 +13,7 @@ import { usd } from '@/lib/utils';
 export type AdminOrderRow = {
   id: string; customerName: string; email: string; status: string; kind: string; createdAt: string;
   placedLabel: string; subtotal: number; notes: string; items: string[]; hasRecurring: boolean;
+  source?: 'portal' | 'shopify'; shopifyOrderName?: string | null; shopifySyncStatus?: string | null;
 };
 
 export function AdminOrderWorkspace({ orders, counts, canArchive, canEdit, initialQuery = '', initialStatus = '' }: {
@@ -26,9 +27,9 @@ export function AdminOrderWorkspace({ orders, counts, canArchive, canEdit, initi
   const [selected, setSelected] = useState<string[]>([]);
   const deferredQuery = useDeferredValue(query.toLowerCase().trim());
   const rows = useMemo(() => orders.filter((order) => (!status || order.status === status)
-    && (kind === 'all' || (kind === 'sample' ? order.kind === 'prospecting_sample' : order.kind !== 'prospecting_sample'))
+    && (kind === 'all' || (kind === 'shopify' ? order.source === 'shopify' : kind === 'sample' ? order.kind === 'prospecting_sample' : order.kind !== 'prospecting_sample' && order.source !== 'shopify'))
     && (!notesOnly || order.notes)
-    && [order.id, order.customerName, order.email, order.notes, ...order.items].join(' ').toLowerCase().includes(deferredQuery))
+    && [order.id, order.shopifyOrderName, order.customerName, order.email, order.notes, ...order.items].join(' ').toLowerCase().includes(deferredQuery))
     .sort((a, b) => sort === 'value' ? b.subtotal - a.subtotal : (sort === 'oldest' ? 1 : -1) * a.createdAt.localeCompare(b.createdAt)), [orders, status, kind, notesOnly, deferredQuery, sort]);
   const archivable = rows.filter((row) => ['Processing', 'Shipped'].includes(row.status)).map((row) => row.id);
   const notesCount = orders.filter((order) => order.notes).length;
@@ -39,7 +40,7 @@ export function AdminOrderWorkspace({ orders, counts, canArchive, canEdit, initi
     <div className="workspace-tabs" role="tablist" aria-label="Order status">{['', 'New', 'Processing', 'Shipped'].map((value) => <button key={value} type="button" role="tab" aria-selected={status === value} className={status === value ? 'is-active' : ''} onClick={() => setStatus(value)}>{value || 'All'}<span>{value ? counts[value] ?? 0 : Object.values(counts).reduce((sum, count) => sum + count, 0)}</span></button>)}</div>
     <div className="workspace-toolbar">
       <label className="workspace-search"><Search aria-hidden="true" /><input type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search customer, product or order" aria-label="Search orders" /></label>
-      <select className="input workspace-select" value={kind} onChange={(event) => setKind(event.target.value)} aria-label="Order type"><option value="all">All orders</option><option value="wholesale">Wholesale</option><option value="sample">Samples</option></select>
+      <select className="input workspace-select" value={kind} onChange={(event) => setKind(event.target.value)} aria-label="Order type"><option value="all">All orders</option><option value="wholesale">Wholesale</option><option value="shopify">Shopify</option><option value="sample">Samples</option></select>
       <select className="input workspace-select" value={sort} onChange={(event) => setSort(event.target.value)} aria-label="Sort orders"><option value="newest">Newest first</option><option value="oldest">Oldest first</option><option value="value">Highest value</option></select>
       {query || status || kind !== 'all' || notesOnly ? <button type="button" className="icon-button" title="Clear filters" aria-label="Clear filters" onClick={clearFilters}><X aria-hidden="true" /></button> : null}
       <span className="workspace-result-count" role="status">{rows.length} orders</span>
@@ -53,7 +54,7 @@ export function AdminOrderWorkspace({ orders, counts, canArchive, canEdit, initi
       </div>
       {rows.map((order) => <div key={order.id} role="row" className={`order-table-row${canArchive ? ' has-selection' : ''}${order.notes ? ' has-note' : ''}`}>
         {canArchive ? <div role="cell" className="order-checkbox"><input type="checkbox" disabled={!['Processing', 'Shipped'].includes(order.status)} checked={selected.includes(order.id)} onChange={(event) => setChecked(order.id, event.target.checked)} aria-label={`Select ${order.customerName} order ${order.id.slice(0, 8)}`} /></div> : null}
-        <div role="cell" className="order-customer-column"><Link href={`/admin/orders/${order.id}`} prefetch={false} className="order-customer-name">{order.customerName}</Link><p className="order-row-meta">#{order.id.slice(0, 8)} {order.kind === 'prospecting_sample' ? <span className="workspace-badge">Sample</span> : null}</p>{order.notes ? <p className="order-row-note"><StickyNote aria-hidden="true" /><span>{order.notes}</span></p> : null}</div>
+        <div role="cell" className="order-customer-column"><Link href={`/admin/orders/${order.id}`} prefetch={false} className="order-customer-name">{order.customerName}</Link><p className="order-row-meta">{order.shopifyOrderName || `#${order.id.slice(0, 8)}`} {order.source === 'shopify' ? <span className="workspace-badge">Paid in Shopify</span> : order.kind === 'prospecting_sample' ? <span className="workspace-badge">Sample</span> : null}</p>{order.source === 'shopify' && order.status === 'Shipped' && order.shopifySyncStatus !== 'synced' ? <p className="text-xs text-rose-700">Shopify sync needs attention</p> : null}{order.notes ? <p className="order-row-note"><StickyNote aria-hidden="true" /><span>{order.notes}</span></p> : null}</div>
         <div role="cell" className="order-products-column">
           {order.items.slice(0, 2).map((label, index) => <p key={index}>{label}</p>)}
           {order.items.length > 2 ? <details className="order-products-disclosure">

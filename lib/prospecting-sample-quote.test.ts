@@ -24,12 +24,13 @@ describe('sample quote greeting name', () => {
 });
 
 describe('sample quote validation', () => {
-  it('keeps the requested default prices and all eleven independently selectable items', () => {
+  it('uses the approved quote prices and keeps all thirteen independently selectable items', () => {
     expect(SAMPLE_QUOTE_ITEMS.map(item => [item.id, item.defaultPriceCents])).toEqual([
-      ['bulk-regular', 4000], ['bulk-decaf', 4800],
-      ['fraction-1-5oz', 9000], ['fraction-2oz', 11500], ['fraction-2-5oz', 14000], ['fraction-3oz', 17000], ['fraction-decaf', 11500],
-      ['filter-1-5oz', 4900], ['filter-2oz', 5500],
-      ['k-cups-regular', 4000], ['k-cups-fourth-dimension', 5000],
+      ['bulk-regular', 4250], ['bulk-decaf', 6000],
+      ['fraction-1-5oz', 10000], ['fraction-2oz', 12500], ['fraction-2-5oz', 14500], ['fraction-3oz', 18000], ['fraction-decaf', 13000],
+      ['filter-1-5oz', 4200], ['filter-2oz', 5500],
+      ['k-cups-regular', 3800], ['k-cups-fourth-dimension', 5000],
+      ['concentrate-regular', 11500], ['concentrate-decaf', 11500],
     ]);
   });
 
@@ -60,7 +61,7 @@ describe('sample pricing and tracking email', () => {
       expect(body).toContain('Hi Ron!');
       expect(body).toContain(tracking);
       expect(body).toContain('$35.00 per bag ($7.00/lb)');
-      expect(body).not.toContain('$40.00');
+      expect(body).not.toContain('$42.50');
       expect(body).not.toContain('Decaf');
       expect(body).not.toContain('Fraction Pack');
       expect(body).not.toContain('Filter Pack');
@@ -78,11 +79,12 @@ describe('sample pricing and tracking email', () => {
       lines: SAMPLE_QUOTE_ITEMS.map(item => ({ id: item.id, priceCents: item.defaultPriceCents })),
     });
     for (const body of [email.text, visibleHtmlText(email.html)]) {
-      expect(body).toContain('$48.00 per bag ($9.60/lb)');
+      expect(body).toContain('$42.50 per bag ($8.50/lb)');
+      expect(body).toContain('$60.00 per bag ($12.00/lb)');
       expect(body).toContain('Specialty Fourth Dimension Medium Roast');
       expect(body).toContain('Haskins');
     }
-    expect(email.html.match(/data-email-quote-item=/g)).toHaveLength(11);
+    expect(email.html.match(/data-email-quote-item=/g)).toHaveLength(13);
     for (const item of SAMPLE_QUOTE_ITEMS) {
       expect(email.text).toContain(formatSampleQuotePrice(item, item.defaultPriceCents));
       const priceRow = email.html.match(new RegExp(`<tr data-email-quote-item="${item.id}">[\\s\\S]*?<\\/tr>`))?.[0] ?? '';

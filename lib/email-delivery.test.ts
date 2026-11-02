@@ -99,6 +99,23 @@ describe('email delivery acceptance', () => {
     }));
   });
 
+  it.each(['invoice', 'receipt'] as const)('passes an automatic %s idempotency key as a provider option', async (kind) => {
+    const idempotencyKey = `ship-${kind}-order-1234`;
+    const result = kind === 'invoice'
+      ? await sendInvoicePdfEmail({ ...invoice, idempotencyKey })
+      : await sendPaymentReceiptEmail({
+        ...invoice, idempotencyKey, amountCents: 1200,
+        paymentMethodLabel: 'Visa 1234', paymentMethodType: 'card', paymentStatus: 'CAPTURED',
+      });
+
+    expect(result).toEqual({ ok: true });
+    expect(send).toHaveBeenCalledWith(expect.objectContaining({
+      subject: `Sobrew ${kind === 'invoice' ? 'Invoice' : 'Receipt'} SO-1001`,
+      cc: ['zach@sobrew.com'],
+    }), { idempotencyKey });
+    expect(send.mock.calls[0][0]).not.toHaveProperty('idempotencyKey');
+  });
+
   it.each([
     { cc: undefined, expectedCc: ['zach@sobrew.com'] },
     { cc: 'ap@example.com; accountant@example.com', expectedCc: ['ap@example.com', 'accountant@example.com', 'zach@sobrew.com'] },
@@ -139,6 +156,112 @@ describe('email delivery acceptance', () => {
   it('rejects empty recipients without invoking the provider', async () => {
     expect((await sendOrderEmail({ ...order, customerEmail: ' ; ' })).ok).toBe(false);
     expect(send).not.toHaveBeenCalled();
+  });
+});
+
+describe('customer welcome delivery retries', () => {
+  const welcome = { centerName: 'Test Center', email: order.customerEmail, fullName: 'Test Buyer', password: 'test-password' };
+  const timeout = { message: 'Operation timed out. Please try again later.' };
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+  afterEach(() => vi.useRealTimers());
+
+  it('recovers from the observed timeout using the same credentials, recipients, and idempotency key', async () => {
+    send.mockResolvedValueOnce({ data: null, error: timeout });
+    const delivery = sendCustomerWelcomeEmail(welcome);
+    await vi.runAllTimersAsync();
+
+    expect(await delivery).toEqual({ ok: true });
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(send.mock.calls[1]).toEqual(send.mock.calls[0]);
+    expect(send.mock.calls[0][1]).toEqual({ idempotencyKey: expect.any(String) });
+    expect(send.mock.calls[0][1].idempotencyKey.length).toBeGreaterThan(0);
+    expect(send.mock.calls[0][0]).toMatchObject({
+      to: [welcome.email],
+      cc: ['haskins@sobrew.com', 'zach@sobrew.com'],
+      from: 'Sobrew Wholesale <orders@orders.sobrew.com>',
+      text: expect.stringContaining(`Password: ${welcome.password}`),
+    });
+    expect(send.mock.calls[0][0]).not.toHaveProperty('idempotencyKey');
+  });
+
+  it.each([
+    'application_error', 'internal_server_error', 'rate_limit_exceeded',
+    'service_unavailable', 'concurrent_idempotent_requests',
+  ])('recovers from a transient %s provider response', async (name) => {
+    send.mockResolvedValueOnce({ data: null, error: { name, message: 'Temporary provider failure' } });
+    const delivery = sendCustomerWelcomeEmail(welcome);
+    await vi.runAllTimersAsync();
+    expect(await delivery).toEqual({ ok: true });
+    expect(send).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    new TypeError('fetch failed'),
+    new TypeError('fetch failed', { cause: new Error('connect ECONNRESET') }),
+    Object.assign(new Error('The operation was aborted'), { name: 'AbortError' }),
+  ])('recovers from a thrown transport error: %s', async (error) => {
+    send.mockRejectedValueOnce(error);
+    const delivery = sendCustomerWelcomeEmail(welcome);
+    await vi.runAllTimersAsync();
+    expect(await delivery).toEqual({ ok: true });
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(send.mock.calls[1]).toEqual(send.mock.calls[0]);
+  });
+
+  it('stops after three attempts with one-second then two-second backoff', async () => {
+    const error = { ...timeout, name: 'application_error' };
+    send.mockResolvedValue({ data: null, error });
+    const delivery = sendCustomerWelcomeEmail(welcome);
+    await vi.advanceTimersByTimeAsync(999);
+    expect(send).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(send).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(1999);
+    expect(send).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(1);
+    const result = await delivery;
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toHaveProperty('cause', error);
+    await vi.runAllTimersAsync();
+    expect(send).toHaveBeenCalledTimes(3);
+    expect(send.mock.calls[2]).toEqual(send.mock.calls[0]);
+  });
+
+  it.each([
+    { name: 'validation_error', message: 'Sender domain is not verified' },
+    { name: 'invalid_api_Key', message: 'Invalid API key' },
+    { name: 'daily_quota_exceeded', message: 'Daily quota exceeded' },
+    { name: 'monthly_quota_exceeded', message: 'Monthly quota exceeded' },
+    { name: 'validation_error', message: 'Operation timed out. Please try again later.' },
+  ])('does not retry permanent failures: $name / $message', async (error) => {
+    send.mockResolvedValue({ data: null, error });
+    const delivery = sendCustomerWelcomeEmail(welcome);
+    await vi.runAllTimersAsync();
+    expect((await delivery).ok).toBe(false);
+    expect(send).toHaveBeenCalledOnce();
+  });
+
+  it('sends each successful invocation once with a distinct idempotency key', async () => {
+    expect(await sendCustomerWelcomeEmail(welcome)).toEqual({ ok: true });
+    expect(await sendCustomerWelcomeEmail(welcome)).toEqual({ ok: true });
+    await vi.runAllTimersAsync();
+    expect(send).toHaveBeenCalledTimes(2);
+    const keys = send.mock.calls.map((call) => call[1]?.idempotencyKey);
+    expect(keys).toEqual([expect.any(String), expect.any(String)]);
+    expect(keys[0]).not.toBe(keys[1]);
+  });
+
+  it('keeps invoice delivery at one attempt so its existing recovery flow remains in control', async () => {
+    send.mockResolvedValue({ data: null, error: timeout });
+    const delivery = sendInvoicePdfEmail({ ...invoice, idempotencyKey: 'invoice-recovery-key' });
+    await vi.runAllTimersAsync();
+    expect((await delivery).ok).toBe(false);
+    expect(send).toHaveBeenCalledOnce();
+    expect(send.mock.calls[0][1]).toEqual({ idempotencyKey: 'invoice-recovery-key' });
   });
 });
 

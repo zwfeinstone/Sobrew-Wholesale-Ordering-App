@@ -2,12 +2,13 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
-const migrationPath = fileURLToPath(
-  new URL('../db/migrations/049_prospecting_report_aggregates.sql', import.meta.url)
-);
-const migration = readFileSync(migrationPath, 'utf8');
+const migrationNames = [
+  '049_prospecting_report_aggregates.sql',
+  '20261001225053_prospecting_outcome_assigned_rep.sql',
+];
 
-describe('prospecting report aggregate migration contract', () => {
+describe.each(migrationNames)('prospecting report aggregate migration contract: %s', (migrationName) => {
+  const migration = readFileSync(fileURLToPath(new URL(`../db/migrations/${migrationName}`, import.meta.url)), 'utf8');
   it('exposes only the approved service-role RPC signature', () => {
     expect(migration).toMatch(
       /create or replace function public\.admin_prospecting_report_v1\(\s*p_range_start date,\s*p_range_end_exclusive date,\s*p_as_of_date date,\s*p_sales_profile_id uuid,\s*p_center_ids uuid\[\]\s*\)\s*returns jsonb\s*language sql\s*stable\s*security invoker\s*set search_path = ''/s

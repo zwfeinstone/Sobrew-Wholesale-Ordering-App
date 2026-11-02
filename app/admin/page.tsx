@@ -1,3 +1,5 @@
+import { createPagePerformance } from '@/lib/page-performance';
+import { PagePerformanceMarker } from '@/components/page-performance';
 import Link from 'next/link';
 import { OrderStatusBadge } from '@/components/order-status';
 import { TrackedLink } from '@/components/tracked-link';
@@ -7,8 +9,9 @@ import { getCachedNewOrderCount } from '@/lib/admin-order-status';
 import { requireAdminSectionView } from '@/lib/admin-permissions';
 import { ADMIN_QUERY_ROW_LIMIT, queryReachedAdminRowLimit } from '@/lib/admin-query-limits';
 import { getCachedPayrollStatus } from '@/lib/payroll-status';
+import { addDays, addMonths, formatDateInput, startOfDay, startOfMonth } from '@/lib/reporting';
 import { createClient } from '@/lib/supabase/server';
-import { formatAppDateTime, usd } from '@/lib/utils';
+import { formatAppDate, formatAppDateTime, usd } from '@/lib/utils';
 
 const TIME_RANGE_OPTIONS = [
   { value: 'week', label: 'This week' },
@@ -18,7 +21,6 @@ const TIME_RANGE_OPTIONS = [
   { value: 'lifetime', label: 'Lifetime' },
 ] as const;
 
-const DAY_IN_MS = 24 * 60 * 60 * 1000;
 const PAGE_SIZE = 8;
 
 type TimeRange = (typeof TIME_RANGE_OPTIONS)[number]['value'];
@@ -42,50 +44,35 @@ function normalizeTimeRange(value: string | string[] | undefined): TimeRange {
   return TIME_RANGE_OPTIONS.some((option) => option.value === value) ? (value as TimeRange) : 'month';
 }
 
-function startOfDay(date: Date) {
-  const next = new Date(date);
-  next.setHours(0, 0, 0, 0);
-  return next;
-}
-
 function startOfWeek(date: Date) {
-  const next = startOfDay(date);
-  next.setDate(next.getDate() - next.getDay());
-  return next;
-}
-
-function startOfMonth(date: Date) {
-  return new Date(date.getFullYear(), date.getMonth(), 1);
+  const calendarDate = new Date(`${formatDateInput(date)}T00:00:00Z`);
+  return addDays(startOfDay(date), -calendarDate.getUTCDay());
 }
 
 function startOfYear(date: Date) {
-  return new Date(date.getFullYear(), 0, 1);
-}
-
-function addDays(date: Date, days: number) {
-  return new Date(date.getTime() + days * DAY_IN_MS);
+  const monthIndex = Number(formatDateInput(date).slice(5, 7)) - 1;
+  return addMonths(startOfMonth(date), -monthIndex);
 }
 
 function formatBucketLabel(date: Date, range: TimeRange) {
-  if (range === 'week') return date.toLocaleDateString('en-US', { weekday: 'short' });
-  if (range === 'month') return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-  return date.toLocaleDateString('en-US', { month: 'short' });
+  if (range === 'week') return formatAppDate(date, '', { weekday: 'short' });
+  if (range === 'month') return formatAppDate(date, '', { month: 'short', day: 'numeric' });
+  return formatAppDate(date, '', { month: 'short' });
 }
 
 function keyForDate(date: Date, range: TimeRange) {
-  if (range === 'week' || range === 'month') {
-    return `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
-  }
-  if (range === 'year') {
-    return `${date.getFullYear()}-${date.getMonth()}`;
-  }
-  return String(date.getFullYear());
+  const centralDate = formatDateInput(date);
+  if (range === 'week' || range === 'month') return centralDate;
+  if (range === 'year') return centralDate.slice(0, 7);
+  return centralDate.slice(0, 4);
 }
 
 function getRangeBounds(range: TimeRange, now: Date) {
-  if (range === 'week') return { start: startOfWeek(now), end: null as Date | null };
-  if (range === 'month') return { start: startOfMonth(now), end: null as Date | null };
-  if (range === 'year') return { start: startOfYear(now), end: null as Date | null };
+  // Match Reports: current periods run through today in Central time.
+  const end = addDays(startOfDay(now), 1);
+  if (range === 'week') return { start: startOfWeek(now), end };
+  if (range === 'month') return { start: startOfMonth(now), end };
+  if (range === 'year') return { start: startOfYear(now), end };
   if (range === 'previous_years') return { start: null as Date | null, end: startOfYear(now) };
   return { start: null as Date | null, end: null as Date | null };
 }
@@ -113,8 +100,7 @@ function buildPredefinedBuckets(range: TimeRange, now: Date): Bucket[] | null {
 
   if (range === 'month') {
     const start = startOfMonth(now);
-    const today = startOfDay(now);
-    const dayCount = Math.floor((today.getTime() - start.getTime()) / DAY_IN_MS) + 1;
+    const dayCount = Number(formatDateInput(now).slice(8, 10));
     return Array.from({ length: dayCount }, (_, index) => {
       const date = addDays(start, index);
       return { key: keyForDate(date, range), label: formatBucketLabel(date, range), value: 0 };
@@ -122,8 +108,10 @@ function buildPredefinedBuckets(range: TimeRange, now: Date): Bucket[] | null {
   }
 
   if (range === 'year') {
-    return Array.from({ length: now.getMonth() + 1 }, (_, monthIndex) => {
-      const date = new Date(now.getFullYear(), monthIndex, 1);
+    const start = startOfYear(now);
+    const monthCount = Number(formatDateInput(now).slice(5, 7));
+    return Array.from({ length: monthCount }, (_, monthIndex) => {
+      const date = addMonths(start, monthIndex);
       return { key: keyForDate(date, range), label: formatBucketLabel(date, range), value: 0 };
     });
   }
@@ -150,7 +138,8 @@ function buildBuckets(rows: MetricRow[], range: TimeRange, now: Date, getValue: 
     if (!row.created_at) continue;
     const date = new Date(row.created_at);
     if (Number.isNaN(date.getTime())) continue;
-    yearMap.set(date.getFullYear(), (yearMap.get(date.getFullYear()) ?? 0) + getValue(row));
+    const year = Number(keyForDate(date, range));
+    yearMap.set(year, (yearMap.get(year) ?? 0) + getValue(row));
   }
 
   return [...yearMap.entries()]
@@ -313,13 +302,17 @@ export default async function AdminDashboard(
     searchParams?: Promise<Record<string, string | string[] | undefined>>;
   }
 ) {
+  const timing = createPagePerformance('admin_dashboard');
   const searchParams = await props.searchParams;
   const currentAccess = await requireAdminSectionView('dashboard');
+  timing.checkpoint('authentication');
   const supabase = await createClient();
   const centerScope = await getAssignedCenterIdsForAdmin({ current: currentAccess, supabase });
+  timing.checkpoint('scope');
   const now = new Date();
   const payrollStatus = canViewAdminSection(currentAccess.access, 'payroll') ? await getCachedPayrollStatus() : null;
 
+  timing.checkpoint('payroll_status');
   const ordersRange = normalizeTimeRange(searchParams?.ordersRange);
   const revenueRange = normalizeTimeRange(searchParams?.revenueRange);
   const usersRange = normalizeTimeRange(searchParams?.usersRange);
@@ -409,6 +402,7 @@ export default async function AdminDashboard(
     centerScope
   );
 
+  timing.checkpoint('preparation');
   const [
     newOrders,
     { count: processingOrders },
@@ -429,12 +423,14 @@ export default async function AdminDashboard(
     usersMetricQuery,
   ]);
 
+  timing.checkpoint('main_data');
   const dashboardOrders = [...(workQueue ?? []), ...(recent ?? [])];
   const orderIds = [...new Set(dashboardOrders.map((order: any) => order.id))];
   const { data: items } = orderIds.length
     ? await supabase.from('order_items').select('order_id,product_id,product_name_snapshot,products(name)').in('order_id', orderIds).limit(ADMIN_QUERY_ROW_LIMIT)
     : { data: [] as any[] };
 
+  timing.checkpoint('order_items');
   const firstNameByOrderId = new Map<string, string>();
   for (const item of items ?? []) {
     if (!firstNameByOrderId.has(item.order_id)) {
@@ -464,7 +460,8 @@ export default async function AdminDashboard(
       : null,
   ].filter((link): link is { href: string; label: string; copy: string } => Boolean(link));
 
-  return (
+  timing.checkpoint('calculations');
+  const content = (
     <div className="space-y-6">
       {metricRowsLimited ? (
         <section className="rounded-xl border border-amber-200 bg-amber-50/80 px-4 py-3 text-sm leading-6 text-amber-900" role="status">
@@ -647,4 +644,7 @@ export default async function AdminDashboard(
 
     </div>
   );
+  timing.checkpoint('jsx_build');
+  const sample = timing.finish({ orders: orderIds.length, items: items?.length ?? 0 });
+  return <>{sample ? <PagePerformanceMarker sample={sample} /> : null}{content}</>;
 }

@@ -92,7 +92,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   state.canEdit = true;
   state.order = {
-    id: 'order-1', status: 'Shipped', order_kind: 'wholesale', archived_at: null,
+    id: 'order-1', status: 'Shipped', order_kind: 'wholesale', order_source: 'portal', archived_at: null,
     created_at: '2026-09-30T10:00:00Z', shipped_at: '2026-09-30T12:00:00Z', subtotal_cents: 2400,
     invoice_status: 'invoice_error', invoice_error: 'Invoice email unavailable',
     quickbooks_invoice_id: 'invoice-1', quickbooks_payment_id: 'payment-1',
@@ -106,6 +106,21 @@ beforeEach(() => {
 afterEach(() => { vi.restoreAllMocks(); });
 
 describe('automatic invoice retry action', () => {
+  it('keeps Shopify orders out of the invoicing queue', async () => {
+    state.order.order_source = 'shopify';
+    const retry = await findRetryForm(await InvoicingPage({ searchParams: Promise.resolve({}) }));
+    expect(retry).toBeUndefined();
+    expect(state.billing).not.toHaveBeenCalled();
+  });
+
+  it.each(['Create & send invoice', 'Create & send PDF', 'Check QuickBooks & charge', 'Mark sent'])('rejects a stale %s form targeting a Shopify order', async (label) => {
+    const actionForm = await findRetryForm(await InvoicingPage({ searchParams: Promise.resolve({}) }), label);
+    expect(actionForm).toBeDefined();
+    state.order.order_source = 'shopify';
+    await expect(actionForm!.action(form())).rejects.toThrow('toast=invoice_not_ready');
+    expect(state.billing).not.toHaveBeenCalled();
+  });
+
   it('offers a retry for a recorded payment whose invoice email failed, and delegates resumption to billing', async () => {
     const retry = await retryForm();
     expect(retry.disabled).toBe(false);
@@ -128,6 +143,7 @@ describe('automatic invoice retry action', () => {
 
   it.each([
     ['sample order', { order_kind: 'prospecting_sample' }, 'invoice_not_ready'],
+    ['Shopify prepaid order', { order_source: 'shopify' }, 'invoice_not_ready'],
     ['unshipped order', { status: 'Processing' }, 'invoice_not_ready'],
     ['archived order', { archived_at: '2026-09-30T13:00:00Z' }, 'invoice_not_ready'],
     ['older order', { created_at: '2026-07-01T00:00:00Z' }, 'invoice_not_ready'],

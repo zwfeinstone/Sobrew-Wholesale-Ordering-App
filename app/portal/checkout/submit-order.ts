@@ -7,6 +7,7 @@ export type PortalCheckoutSubmitResult =
   | { type: 'redirect'; location: string }
   | { type: 'invalid_cart' }
   | { type: 'location_required' }
+  | { type: 'stock_unavailable' }
   | { type: 'checkout_error' };
 
 type PortalCheckoutProfile = {
@@ -143,6 +144,7 @@ export async function submitPortalOrderWithContext({
 
   if (placeOrderError) {
     const message = String(placeOrderError.message ?? '').toLowerCase();
+    if (message.includes('customer stock unavailable')) return { type: 'stock_unavailable' };
     if (message.includes('delivery location')) return { type: 'location_required' };
     if (placeOrderError.code === '22023' || message.includes('cart') || message.includes('submission id')) {
       return { type: 'invalid_cart' };

@@ -15,7 +15,7 @@ export default async function CheckoutPage(
   const cartStorageKey = cartStorageKeyForUser(user.id);
   const searchToast = typeof searchParams?.toast === 'string' ? searchParams.toast : '';
   const initialToast =
-    searchToast === 'invalid_cart' || searchToast === 'checkout_error' || searchToast === 'location_required'
+    searchToast === 'invalid_cart' || searchToast === 'checkout_error' || searchToast === 'location_required' || searchToast === 'stock_unavailable'
       ? searchToast
       : '';
   const centerId = profile?.center_id ?? user.id;

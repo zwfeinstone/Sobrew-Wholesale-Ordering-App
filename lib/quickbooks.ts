@@ -5,6 +5,8 @@ import { env } from '@/lib/env';
 import { mapWithConcurrency } from '@/lib/async-work';
 import { parseBillingEmail, parseBillingEmailCc } from '@/lib/billing-email';
 import { INVOICE_AUDIT_CC } from '@/lib/invoice-email-recipients';
+import { isHeldStockReleaseForBilling, type HeldStockSaleBilling } from '@/lib/held-stock-billing';
+import { sendInvoicePdfEmail, sendPaymentReceiptEmail } from '@/lib/email';
 import {
   performQuickBooksRequest,
   QuickBooksRequestTimeoutError,
@@ -78,6 +80,7 @@ type QuickBooksOrderItem = {
 };
 
 type QuickBooksInvoiceCenter = {
+  automatic_invoice_only?: boolean;
   billing_email?: string | null;
   billing_email_cc?: string[] | null;
   invoice_recipients_configured_at?: string | null;
@@ -96,11 +99,19 @@ type QuickBooksInvoiceCenter = {
 
 type QuickBooksSalesTaxOrder = {
   centers?: QuickBooksInvoiceCenter | QuickBooksInvoiceCenter[] | null;
+  held_stock_sales?: HeldStockSaleBilling | HeldStockSaleBilling[] | null;
   shipping_state: string | null;
 };
 
-type QuickBooksInvoiceOrder = {
+type QuickBooksOrderBillingSource = {
+  order_source?: string | null;
+  shopify_order_id?: string | null;
+};
+
+type QuickBooksInvoiceOrder = QuickBooksOrderBillingSource & {
+  center_id?: string | null;
   centers?: QuickBooksInvoiceCenter | QuickBooksInvoiceCenter[] | null;
+  held_stock_sales?: HeldStockSaleBilling | HeldStockSaleBilling[] | null;
   created_at: string | null;
   id: string;
   notes: string | null;
@@ -117,7 +128,7 @@ type QuickBooksInvoiceOrder = {
   subtotal_cents?: number | string | null;
 };
 
-export type QuickBooksPaidInvoiceReconciliationOrder = {
+export type QuickBooksPaidInvoiceReconciliationOrder = QuickBooksOrderBillingSource & {
   archived_at?: string | null;
   centers?: {
     quickbooks_customer_id?: string | null;
@@ -276,6 +287,8 @@ export type QuickBooksInvoiceReceivable = {
   dueDate: string | null;
   id: string;
   paidAmountCents: number;
+  /** Present only when requested; null means the payment date cannot be verified. */
+  paidDate?: string | null;
   status: QuickBooksInvoiceReceivableStatus;
   statusLabel: string;
   timing: QuickBooksInvoiceReceivableTiming;
@@ -389,7 +402,19 @@ export class QuickBooksConfigurationError extends Error {
 
 class QuickBooksNoSavedPaymentMethodError extends QuickBooksConfigurationError {}
 
+class QuickBooksInvoiceOnlyCustomerError extends Error {}
+
 class QuickBooksPaymentDeclinedError extends Error {}
+
+function isShopifyPrepaidOrder(order: QuickBooksOrderBillingSource) {
+  return order.order_source === 'shopify' || Boolean(order.shopify_order_id);
+}
+
+function assertOrderRequiresQuickBooksBilling(order: QuickBooksOrderBillingSource) {
+  if (isShopifyPrepaidOrder(order)) {
+    throw new Error('This Shopify order is already paid. Do not invoice or charge it in QuickBooks.');
+  }
+}
 
 function relatedOne<T>(value: T | T[] | null | undefined): T | null {
   if (Array.isArray(value)) return value[0] ?? null;
@@ -680,6 +705,7 @@ function quickBooksDate(value = new Date()) {
 }
 
 export function shouldCollectQuickBooksSalesTax(order: QuickBooksSalesTaxOrder, taxableStates: string[]) {
+  if (relatedOne(order.held_stock_sales)?.tax_exempt === true) return false;
   const center = relatedOne(order.centers);
   if (center?.customer_tax_status !== 'for_profit') return false;
   const shippingState = normalizeStateCode(order.shipping_state);
@@ -1264,6 +1290,68 @@ function invoiceLinkedPaymentId(invoice: any) {
   return cleanText(payment?.TxnId) || null;
 }
 
+function invoiceLinkedPaymentIds(invoice: any) {
+  const linkedTransactions = Array.isArray(invoice?.LinkedTxn) ? invoice.LinkedTxn : [];
+  return [...new Set<string>(linkedTransactions
+    .filter((txn: any) => cleanText(txn?.TxnType).toLowerCase() === 'payment')
+    .map((txn: any) => cleanText(txn?.TxnId))
+    .filter(Boolean))];
+}
+
+function verifiedQuickBooksDate(value: unknown) {
+  const text = cleanText(value);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return null;
+  const date = new Date(`${text}T00:00:00.000Z`);
+  return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === text ? text : null;
+}
+
+function positiveQuickBooksAmountCents(value: unknown) {
+  if ((typeof value !== 'number' && typeof value !== 'string')
+    || (typeof value === 'string' && !value.trim())
+    || !Number.isFinite(Number(value)) || Number(value) <= 0) return null;
+  const cents = centsFromAmount(value);
+  return Number.isSafeInteger(cents) && cents > 0 ? cents : null;
+}
+
+/**
+ * Use the posting dates of the payments actually allocated to this invoice.
+ * Invoice dates and modification timestamps do not establish when cash arrived.
+ * Credit adjustments or incomplete allocations cannot establish a cash-paid date.
+ */
+function quickBooksInvoicePaidDate(invoice: any, paymentsById: ReadonlyMap<string, any>) {
+  const amountCents = positiveQuickBooksAmountCents(invoice?.TotalAmt);
+  if (!amountCents || Number(invoice?.Balance) !== 0) return null;
+  const invoiceId = cleanText(invoice?.Id);
+  const paymentIds = invoiceLinkedPaymentIds(invoice);
+  if (!invoiceId || !paymentIds.length) return null;
+
+  let appliedCents = 0;
+  let paidDate: string | null = null;
+  for (const paymentId of paymentIds) {
+    const payment = paymentsById.get(paymentId);
+    const date = verifiedQuickBooksDate(payment?.TxnDate);
+    const totalCents = positiveQuickBooksAmountCents(payment?.TotalAmt);
+    if (!date || !totalCents || !Array.isArray(payment?.Line)) return null;
+
+    let paymentAppliedCents = 0;
+    let invoiceAppliedCents = 0;
+    for (const line of payment.Line) {
+      const lineCents = positiveQuickBooksAmountCents(line?.Amount);
+      if (!lineCents) return null;
+      const links = Array.isArray(line?.LinkedTxn) ? line.LinkedTxn : [];
+      // A mixed credit/payment line does not identify how much cash paid this invoice.
+      if (links.length !== 1 || cleanText(links[0]?.TxnType).toLowerCase() !== 'invoice'
+        || !cleanText(links[0]?.TxnId)) return null;
+      paymentAppliedCents += lineCents;
+      if (cleanText(links[0]?.TxnId) === invoiceId) invoiceAppliedCents += lineCents;
+    }
+    if (invoiceAppliedCents <= 0 || paymentAppliedCents > totalCents) return null;
+    appliedCents += invoiceAppliedCents;
+    if (!paidDate || date > paidDate) paidDate = date;
+  }
+  return appliedCents === amountCents ? paidDate : null;
+}
+
 function quickBooksInvoiceMentionsOrder(invoice: any, orderId: string) {
   const orderText = cleanText(orderId);
   if (!orderText) return false;
@@ -1302,6 +1390,7 @@ export function findQuickBooksPaidInvoiceMatchForOrder(
   order: QuickBooksPaidInvoiceReconciliationOrder,
   invoices: any[]
 ): QuickBooksPaidInvoiceMatch | null {
+  if (isShopifyPrepaidOrder(order)) return null;
   const amountCents = invoiceableTotalCents(order);
   if (amountCents <= 0) return null;
 
@@ -1371,7 +1460,8 @@ export async function reconcileQuickBooksPaidInvoicesForOrders(
   orders: QuickBooksPaidInvoiceReconciliationOrder[]
 ): Promise<QuickBooksPaidInvoiceReconciliationResult> {
   const candidates = orders.filter((order) => (
-    order.archived_at
+    !isShopifyPrepaidOrder(order)
+    && order.archived_at
     && !cleanText(order.quickbooks_invoice_id)
     && !cleanText(order.quickbooks_payment_id)
     && cleanText(relatedOne(order.centers)?.quickbooks_customer_id)
@@ -1423,6 +1513,7 @@ export async function reconcileQuickBooksPaidInvoicesForOrders(
           quickbooks_payment_status: match.paymentId ? 'PAID' : null,
         })
         .eq('id', order.id)
+        .eq('order_source', 'portal')
         .is('quickbooks_invoice_id', null)
         .select('id')
         .maybeSingle();
@@ -1829,7 +1920,8 @@ export function buildQuickBooksInvoiceEmailRecipients(
   // other order messages continue to use their existing recipient rules.
   const sendToOrderCreator = [center?.name, center?.quickbooks_display_name,
     quickBooksCustomerRecord.DisplayName, quickBooksCustomerRecord.CompanyName]
-    .some((name) => cleanText(name).toLowerCase().replace(/[^a-z0-9]/g, '') === 'cooperriis');
+    .some((name) => ['cooperriis', 'cooperriishealingcommunity']
+      .includes(cleanText(name).toLowerCase().replace(/[^a-z0-9]/g, '')));
   const invoiceEmails = uniqueEmailAddresses(emailAddressesFromValue(invoice?.BillEmail));
   const primaryEmails = sendToOrderCreator
     ? uniqueEmailAddresses(emailAddressesFromValue(relatedOne(order.profiles)?.email))
@@ -1977,6 +2069,7 @@ export function buildQuickBooksInvoicePayload(
   customerRef: QuickBooksRef,
   options: { docNumber?: string; emailRecipients?: QuickBooksInvoiceEmailRecipients; invoiceDate?: Date; taxableStates?: string[] } = {}
 ) {
+  assertOrderRequiresQuickBooksBilling(order);
   const shouldCollectSalesTax = shouldCollectQuickBooksSalesTax(order, options.taxableStates ?? DEFAULT_QUICKBOOKS_SALES_TAX_STATES);
   const lineTaxCode = shouldCollectSalesTax ? QUICKBOOKS_LINE_TAXABLE_CODE : QUICKBOOKS_LINE_NON_TAXABLE_CODE;
   const lineItems = (order.order_items ?? []).map((item) => {
@@ -1998,6 +2091,7 @@ export function buildQuickBooksInvoicePayload(
   if (!lineItems.length) throw new Error('This order has no invoiceable line items.');
 
   const emailRecipients = options.emailRecipients ?? buildQuickBooksInvoiceEmailRecipients(order);
+  const heldStockSale = Boolean(relatedOne(order.held_stock_sales));
   const shippingAddress = addressForOrder(order);
   const privateNoteParts = [`Sobrew order ${order.id}`];
   const orderNotes = cleanText(order.notes);
@@ -2007,16 +2101,20 @@ export function buildQuickBooksInvoicePayload(
     BillEmail: emailAddressPayload(emailRecipients.to),
     BillEmailCc: emailAddressPayload(emailRecipients.cc),
     CustomerMemo: {
-      value: `Invoice for Sobrew order ${order.id.slice(0, 8)}.`,
+      value: heldStockSale
+        ? 'Purchased items are held at Sobrew for delivery on request. Shipping is included.'
+        : `Invoice for Sobrew order ${order.id.slice(0, 8)}.`,
     },
     CustomerRef: customerRef,
     DocNumber: options.docNumber ? cleanText(options.docNumber) : undefined,
     Line: lineItems,
     PrivateNote: privateNoteParts.join('\n'),
     ShipAddr: shippingAddress,
-    ShipDate: quickBooksDate(options.invoiceDate),
-    ShipMethodRef: { value: QUICKBOOKS_DEFAULT_SHIP_VIA },
-    TrackingNum: QUICKBOOKS_DEFAULT_TRACKING_NOTE,
+    ...(heldStockSale ? {} : {
+      ShipDate: quickBooksDate(options.invoiceDate),
+      ShipMethodRef: { value: QUICKBOOKS_DEFAULT_SHIP_VIA },
+      TrackingNum: QUICKBOOKS_DEFAULT_TRACKING_NOTE,
+    }),
   };
 }
 
@@ -2271,6 +2369,7 @@ async function prepareQuickBooksInvoiceEmail(
     const invoice = await readQuickBooksInvoice(connection, invoiceId);
     if (!invoice?.Id) throw new Error('Unable to load QuickBooks invoice email recipients. No invoice was emailed.');
     assertQuickBooksInvoiceCustomer(order, invoice);
+    assertHeldStockInvoiceTotal(order, invoice);
     recipients = buildQuickBooksInvoiceEmailRecipients(order, customer, invoice);
     if (!recipients.to.length) throw new Error('Add a primary billing email before sending the invoice.');
     if (sendEmail || hasConfiguredInvoiceRecipients(relatedOne(order.centers))) {
@@ -2298,13 +2397,25 @@ function assertQuickBooksInvoiceCustomer(order: QuickBooksInvoiceOrder, invoice:
   }
 }
 
+function assertHeldStockInvoiceTotal(
+  order: Parameters<typeof invoiceableTotalCents>[0] & Pick<QuickBooksInvoiceOrder, 'held_stock_sales'>,
+  invoice: { TotalAmt?: unknown },
+) {
+  if (relatedOne(order.held_stock_sales)?.tax_exempt !== true) return;
+  const total = Number(invoice.TotalAmt);
+  if (!Number.isFinite(total) || Math.round(total * 100) !== invoiceableTotalCents(order)) {
+    throw new Error('The held-stock invoice total does not match the approved tax-exempt order. No invoice was emailed. Review it in QuickBooks before retrying.');
+  }
+}
+
 async function loadQuickBooksInvoiceEmailRecipientsForOrder(orderId: string, requireInvoice: boolean): Promise<QuickBooksInvoiceEmailRecipients> {
   const { data: order, error } = await getSupabaseAdmin()
     .from('orders')
-    .select('id,quickbooks_invoice_id,centers(name,billing_email,billing_email_cc,invoice_recipients_configured_at,quickbooks_customer_id),profiles(email,full_name)')
+    .select('id,order_source,shopify_order_id,quickbooks_invoice_id,centers(name,billing_email,billing_email_cc,invoice_recipients_configured_at,quickbooks_customer_id),profiles(email,full_name)')
     .eq('id', orderId)
     .single();
   if (error || !order) throw new Error(error?.message || 'Order not found.');
+  assertOrderRequiresQuickBooksBilling(order);
   const invoiceId = cleanText(order.quickbooks_invoice_id);
   if (requireInvoice && !invoiceId) throw new Error('Create the QuickBooks invoice before emailing it.');
   const customerId = quickBooksCustomerRefFromCenter(order as QuickBooksInvoiceOrder).value;
@@ -2342,10 +2453,11 @@ export async function getQuickBooksInvoicePdfForOrder(orderId: string): Promise<
   const supabase = getSupabaseAdmin();
   const { data: order, error } = await supabase
     .from('orders')
-    .select('id,quickbooks_invoice_id,quickbooks_invoice_doc_number')
+    .select('id,order_source,shopify_order_id,quickbooks_invoice_id,quickbooks_invoice_doc_number')
     .eq('id', orderId)
     .single();
   if (error || !order) throw new Error(error?.message || 'Order not found.');
+  assertOrderRequiresQuickBooksBilling(order);
   const invoiceId = cleanText((order as any).quickbooks_invoice_id);
   if (!invoiceId) throw new Error('Create the QuickBooks invoice before downloading its PDF.');
   const content = await getQuickBooksInvoicePdf(invoiceId);
@@ -2353,6 +2465,43 @@ export async function getQuickBooksInvoicePdfForOrder(orderId: string): Promise<
   return {
     content,
     filename: `Sobrew-Invoice-${invoiceNumber}.pdf`,
+  };
+}
+
+/** Read-only provider audit for the explicitly approved held-stock invoice CLI. */
+export async function getHeldStockInvoiceAuditForOrder(orderId: string) {
+  const { data: order, error } = await getSupabaseAdmin().from('orders')
+    .select('id,subtotal_cents,held_stock_sales(invoice_only,tax_exempt),centers(quickbooks_customer_id),quickbooks_invoice_id,order_items(line_total_cents)')
+    .eq('id', orderId).single();
+  if (error || !order?.quickbooks_invoice_id) throw new Error('The held-stock invoice is not linked to this order.');
+  const held = relatedOne(order.held_stock_sales);
+  if (!held?.invoice_only || !held.tax_exempt) throw new Error('The order is not an invoice-only, tax-exempt held-stock sale.');
+  const invoice = await readQuickBooksInvoice(await getAuthorizedConnection(), order.quickbooks_invoice_id);
+  if (!invoice?.Id) throw new Error('The linked QuickBooks invoice is unavailable.');
+  const customer = relatedOne(order.centers);
+  if (!customer?.quickbooks_customer_id || cleanText(invoice.CustomerRef?.value) !== customer.quickbooks_customer_id) {
+    throw new Error('The linked invoice belongs to a different QuickBooks customer.');
+  }
+  assertHeldStockInvoiceTotal(order, invoice);
+  const money = (value: unknown) => value != null && Number.isFinite(Number(value)) ? Math.round(Number(value) * 100) : null;
+  return {
+    id: cleanText(invoice.Id),
+    docNumber: cleanText(invoice.DocNumber),
+    amountCents: money(invoice.TotalAmt),
+    balanceCents: money(invoice.Balance),
+    taxCents: money(invoice.TxnTaxDetail?.TotalTax ?? 0),
+    shipDate: cleanText(invoice.ShipDate),
+    shipMethod: cleanText(invoice.ShipMethodRef?.value),
+    tracking: cleanText(invoice.TrackingNum),
+    memo: cleanText(invoice.CustomerMemo?.value),
+    lines: (Array.isArray(invoice.Line) ? invoice.Line : [])
+      .filter((line: any) => line.DetailType === 'SalesItemLineDetail')
+      .map((line: any) => ({
+        amountCents: money(line.Amount),
+        quantity: Number(line.SalesItemLineDetail?.Qty),
+        unitPriceCents: money(line.SalesItemLineDetail?.UnitPrice),
+        taxCode: cleanText(line.SalesItemLineDetail?.TaxCodeRef?.value),
+      })),
   };
 }
 
@@ -2403,11 +2552,15 @@ export async function createQuickBooksInvoiceForOrder(
   const supabase = getSupabaseAdmin();
   const { data: order, error } = await supabase
     .from('orders')
-    .select('id,status,archived_at,created_at,notes,subtotal_cents,quickbooks_invoice_id,quickbooks_invoice_doc_number,quickbooks_invoice_url,shipping_company,shipping_name,shipping_address1,shipping_address2,shipping_city,shipping_state,shipping_zip,profiles(email,full_name),centers(name,billing_email,billing_email_cc,invoice_recipients_configured_at,customer_tax_status,quickbooks_customer_id,quickbooks_display_name),order_items(qty,unit_price_cents,line_total_cents,product_id,product_name_snapshot,products(name,sku,quickbooks_item_id,quickbooks_item_name))')
+    .select('id,center_id,held_stock_sales(invoice_only,tax_exempt),order_source,shopify_order_id,status,archived_at,created_at,notes,subtotal_cents,quickbooks_invoice_id,quickbooks_invoice_doc_number,quickbooks_invoice_url,shipping_company,shipping_name,shipping_address1,shipping_address2,shipping_city,shipping_state,shipping_zip,profiles(email,full_name),centers(name,billing_email,billing_email_cc,invoice_recipients_configured_at,customer_tax_status,quickbooks_customer_id,quickbooks_display_name),order_items(qty,unit_price_cents,line_total_cents,product_id,product_name_snapshot,products(name,sku,quickbooks_item_id,quickbooks_item_name))')
     .eq('id', orderId)
     .single();
   if (error || !order) throw new Error(error?.message || 'Order not found.');
+  assertOrderRequiresQuickBooksBilling(order);
   if ((order as any).status !== 'Shipped') throw new Error('Only shipped orders can be invoiced.');
+  if (await isHeldStockReleaseForBilling(supabase, order as QuickBooksInvoiceOrder)) {
+    throw new Error('This customer stock release has no amount due and does not require an invoice or payment.');
+  }
 
   const connection = await getAuthorizedConnection();
   const environment = connection.environment === 'production' ? 'production' : 'sandbox';
@@ -2581,18 +2734,25 @@ async function createQuickBooksPaymentCharge(
   return { charge, chargeId, chargeStatus };
 }
 
-export async function createQuickBooksPaidInvoiceForOrder(orderId: string): Promise<CreatedQuickBooksPaidInvoice> {
+export async function createQuickBooksPaidInvoiceForOrder(
+  orderId: string,
+  options: { automatic?: boolean } = {},
+): Promise<CreatedQuickBooksPaidInvoice> {
   const cleanOrderId = cleanText(orderId);
   if (!cleanOrderId) throw new Error('Order is required.');
 
   const supabase = getSupabaseAdmin();
   const { data: order, error } = await supabase
     .from('orders')
-    .select('id,status,archived_at,created_at,notes,subtotal_cents,quickbooks_payment_charge_id,quickbooks_payment_id,quickbooks_payment_status,quickbooks_payment_method_type,quickbooks_payment_method_label,shipping_company,shipping_name,shipping_address1,shipping_address2,shipping_city,shipping_state,shipping_zip,profiles(email,full_name),centers(id,name,billing_email,billing_email_cc,invoice_recipients_configured_at,customer_tax_status,quickbooks_customer_id,quickbooks_display_name,quickbooks_payment_method_brand,quickbooks_payment_method_exp_month,quickbooks_payment_method_exp_year,quickbooks_payment_method_id,quickbooks_payment_method_last4,quickbooks_payment_method_type),order_items(qty,unit_price_cents,line_total_cents,product_id,product_name_snapshot,products(name,sku,quickbooks_item_id,quickbooks_item_name))')
+    .select('id,center_id,held_stock_sales(invoice_only,tax_exempt),order_source,shopify_order_id,status,archived_at,created_at,notes,subtotal_cents,quickbooks_payment_charge_id,quickbooks_payment_id,quickbooks_payment_status,quickbooks_payment_method_type,quickbooks_payment_method_label,shipping_company,shipping_name,shipping_address1,shipping_address2,shipping_city,shipping_state,shipping_zip,profiles(email,full_name),centers(id,name,automatic_invoice_only,billing_email,billing_email_cc,invoice_recipients_configured_at,customer_tax_status,quickbooks_customer_id,quickbooks_display_name,quickbooks_payment_method_brand,quickbooks_payment_method_exp_month,quickbooks_payment_method_exp_year,quickbooks_payment_method_id,quickbooks_payment_method_last4,quickbooks_payment_method_type),order_items(qty,unit_price_cents,line_total_cents,product_id,product_name_snapshot,products(name,sku,quickbooks_item_id,quickbooks_item_name))')
     .eq('id', cleanOrderId)
     .single();
   if (error || !order) throw new Error(error?.message || 'Order not found.');
+  assertOrderRequiresQuickBooksBilling(order);
   if ((order as any).status !== 'Shipped') throw new Error('Only shipped orders can be invoiced.');
+  if (await isHeldStockReleaseForBilling(supabase, order as QuickBooksInvoiceOrder)) {
+    throw new Error('This customer stock release has no amount due and does not require an invoice or payment.');
+  }
   if (cleanText((order as any).quickbooks_payment_id)) {
     throw new Error('This order already has a recorded QuickBooks payment.');
   }
@@ -2609,6 +2769,14 @@ export async function createQuickBooksPaidInvoiceForOrder(orderId: string): Prom
   const recordedMethodType = normalizeQuickBooksSavedPaymentMethodType(order.quickbooks_payment_method_type);
   if (paymentChargeId && !recordedMethodType) {
     throw new Error('Review the recorded QuickBooks charge before retrying: its payment method type is missing.');
+  }
+  // Only new automatic charges are subject to the saved customer setting. Keep
+  // uncertain attempts blocked and reconcile already-recorded charges on retry.
+  if (!paymentChargeId && relatedOne((order as QuickBooksInvoiceOrder).held_stock_sales)?.invoice_only === true) {
+    throw new QuickBooksInvoiceOnlyCustomerError('This held-stock order is invoice-only. Automatic and manual payment charges are disabled.');
+  }
+  if (options.automatic && !paymentChargeId && relatedOne((order as QuickBooksInvoiceOrder).centers)?.automatic_invoice_only === true) {
+    throw new QuickBooksInvoiceOnlyCustomerError('This customer receives an invoice instead of an automatic payment charge.');
   }
   const method: QuickBooksSavedPaymentMethod = paymentChargeId
     ? { id: '', type: recordedMethodType!, label: cleanText(order.quickbooks_payment_method_label) || 'Saved payment method' }
@@ -2743,10 +2911,11 @@ export async function fulfillShippedOrderBilling(orderId: string): Promise<Shipp
     .update({ invoice_status: 'invoicing', invoice_error: null })
     .eq('id', orderId)
     .eq('status', 'Shipped')
+    .eq('order_source', 'portal')
     .neq('order_kind', 'prospecting_sample')
     .is('archived_at', null)
     .in('invoice_status', ['not_invoiced', 'invoice_error'])
-    .select('id,quickbooks_payment_id,quickbooks_payment_charge_id,quickbooks_payment_status,quickbooks_invoice_email_sent_at')
+    .select('id,center_id,subtotal_cents,held_stock_sales(invoice_only,tax_exempt),order_items(product_id,qty,unit_price_cents,line_total_cents),quickbooks_invoice_id,quickbooks_payment_id,quickbooks_payment_charge_id,quickbooks_payment_status,quickbooks_payment_method_type,quickbooks_payment_method_label,quickbooks_invoice_email_sent_at,quickbooks_receipt_email_sent_at')
     .maybeSingle();
   if (claimError) return { status: 'error', error: `Unable to start automatic billing: ${claimError.message}` };
   if (!order) return { status: 'skipped' };
@@ -2756,20 +2925,31 @@ export async function fulfillShippedOrderBilling(orderId: string): Promise<Shipp
     if (error) throw new Error(`Unable to save automatic billing details: ${error.message}`);
   };
   try {
+    if (await isHeldStockReleaseForBilling(supabase, order)) {
+      if (order.quickbooks_invoice_id || order.quickbooks_payment_id || order.quickbooks_payment_charge_id || order.quickbooks_payment_status === 'CHARGE_PENDING') {
+        throw new Error('This customer stock release already has billing activity. Review it before marking billing unnecessary.');
+      }
+      await save({ invoice_status: 'not_required', invoice_error: null });
+      return { status: 'skipped' };
+    }
     let paid = Boolean(order.quickbooks_payment_id);
     let invoice: CreatedQuickBooksInvoice | undefined;
+    let payment: CreatedQuickBooksPaidInvoice | undefined;
     const previousStatus = cleanText(order.quickbooks_payment_status);
     if (!paid && previousStatus !== 'NO_PAYMENT_METHOD' && !paymentChargeWasDeclined(previousStatus)) {
       try {
-        invoice = await createQuickBooksPaidInvoiceForOrder(orderId);
+        payment = await createQuickBooksPaidInvoiceForOrder(orderId, { automatic: true });
+        invoice = payment;
         paid = true;
       } catch (error) {
         if (order.quickbooks_payment_charge_id) throw error;
-        if (!(error instanceof QuickBooksNoSavedPaymentMethodError) && !(error instanceof QuickBooksPaymentDeclinedError)) throw error;
-        await save({
-          quickbooks_payment_status: error instanceof QuickBooksNoSavedPaymentMethodError ? 'NO_PAYMENT_METHOD' : 'DECLINED',
-          quickbooks_payment_error: error instanceof QuickBooksPaymentDeclinedError ? error.message : null,
-        });
+        if (!(error instanceof QuickBooksInvoiceOnlyCustomerError)) {
+          if (!(error instanceof QuickBooksNoSavedPaymentMethodError) && !(error instanceof QuickBooksPaymentDeclinedError)) throw error;
+          await save({
+            quickbooks_payment_status: error instanceof QuickBooksNoSavedPaymentMethodError ? 'NO_PAYMENT_METHOD' : 'DECLINED',
+            quickbooks_payment_error: error instanceof QuickBooksPaymentDeclinedError ? error.message : null,
+          });
+        }
       }
     }
     invoice ??= await createQuickBooksInvoiceForOrder(orderId, { prepareEmailRecipients: true, sendQuickBooksEmail: false });
@@ -2782,16 +2962,67 @@ export async function fulfillShippedOrderBilling(orderId: string): Promise<Shipp
     });
     if (invoice.emailError) throw new Error(invoice.emailError);
 
-    let emailSentAt = order.quickbooks_invoice_email_sent_at;
+    // Older automation recorded its paid QuickBooks email in the invoice field.
+    // Honor that audit on retry rather than sending those customers another email.
+    const emailSentAt = paid
+      ? order.quickbooks_receipt_email_sent_at || order.quickbooks_invoice_email_sent_at
+      : order.quickbooks_invoice_email_sent_at;
     if (!emailSentAt) {
       const recipients = await getQuickBooksInvoiceEmailRecipientsForOrder(orderId);
       const connection = await getAuthorizedConnection();
       const currentInvoice = await readQuickBooksInvoice(connection, invoice.id);
+      assertHeldStockInvoiceTotal(order, currentInvoice ?? {});
       await updateQuickBooksInvoiceEmailRecipients(connection, recipients, currentInvoice);
-      // Intuit replays this request on retry if delivery succeeded but our audit write failed.
-      const requestId = `ship-email-${createHash('sha256').update(`${orderId}:${invoice.id}`).digest('hex').slice(0, 36)}`;
-      emailSentAt = await sendQuickBooksInvoiceEmail(connection, invoice.id, recipients, requestId);
-      await save({ quickbooks_invoice_email_to: recipients.display, quickbooks_invoice_email_sent_at: emailSentAt });
+      const pdf = await downloadQuickBooksInvoicePdf(connection, invoice.id);
+      // Use the same Sobrew templates as the manual PDF/receipt actions. A stable
+      // Resend key also protects retries during the provider's deduplication window.
+      const delivery = {
+        cc: recipients.cc,
+        customerName: invoice.customerName,
+        idempotencyKey: `ship-${paid ? 'receipt' : 'invoice'}-${createHash('sha256').update(`${orderId}:${invoice.id}`).digest('hex').slice(0, 36)}`,
+        invoiceNumber: invoice.docNumber || invoice.id,
+        orderId,
+        pdf,
+        to: recipients.to,
+      };
+      if (paid) {
+        let amountCents = payment?.amountCents;
+        if (amountCents == null) {
+          // The invoice can change after a successful charge. A receipt retry
+          // must describe the recorded payment, not today's invoice balance/total.
+          const recordedPaymentId = cleanText(order.quickbooks_payment_id);
+          const result = await quickBooksRequest(connection, `/payment/${encodeURIComponent(recordedPaymentId)}`);
+          const recordedPayment = result?.Payment;
+          const lines = Array.isArray(recordedPayment?.Line) ? recordedPayment.Line : [];
+          const links = Array.isArray(lines[0]?.LinkedTxn) ? lines[0].LinkedTxn : [];
+          amountCents = centsFromAmount(recordedPayment?.TotalAmt);
+          if (cleanText(recordedPayment?.Id) !== recordedPaymentId
+            || !cleanText(currentInvoice?.CustomerRef?.value)
+            || cleanText(recordedPayment?.CustomerRef?.value) !== cleanText(currentInvoice?.CustomerRef?.value)
+            || !Number.isFinite(Number(recordedPayment?.TotalAmt)) || amountCents <= 0
+            || lines.length !== 1 || centsFromAmount(lines[0]?.Amount) !== amountCents
+            || links.length !== 1 || links[0]?.TxnType !== 'Invoice' || cleanText(links[0]?.TxnId) !== invoice.id) {
+            throw new Error('Unable to verify the QuickBooks payment receipt amount. Review the recorded payment before retrying.');
+          }
+        }
+        const emailResult = await sendPaymentReceiptEmail({
+          ...delivery,
+          amountCents,
+          paymentMethodLabel: payment?.paymentMethodLabel || cleanText(order.quickbooks_payment_method_label) || 'Saved payment method',
+          paymentMethodType: payment?.paymentMethodType || cleanText(order.quickbooks_payment_method_type),
+          paymentStatus: payment?.paymentChargeStatus || cleanText(order.quickbooks_payment_status),
+        });
+        if (!emailResult.ok) throw emailResult.error instanceof Error ? emailResult.error : new Error('Payment was recorded, but the receipt email could not be sent.');
+        await save({
+          quickbooks_payment_error: null,
+          quickbooks_receipt_email_to: recipients.display,
+          quickbooks_receipt_email_sent_at: new Date().toISOString(),
+        });
+      } else {
+        const emailResult = await sendInvoicePdfEmail(delivery);
+        if (!emailResult.ok) throw emailResult.error instanceof Error ? emailResult.error : new Error('QuickBooks invoice was created, but the PDF email could not be sent.');
+        await save({ quickbooks_invoice_email_to: recipients.display, quickbooks_invoice_email_sent_at: new Date().toISOString() });
+      }
     }
     await save({ invoice_status: 'invoiced', invoice_error: null, invoiced_at: new Date().toISOString() });
     return { status: paid ? 'paid' : 'invoiced' };
@@ -2866,13 +3097,17 @@ export async function getQuickBooksProductSummary(): Promise<QuickBooksProductSu
   }
 }
 
-export async function getQuickBooksInvoiceReceivables(invoiceIds: string[]): Promise<QuickBooksInvoiceReceivablesResult> {
+export async function getQuickBooksInvoiceReceivables(
+  invoiceIds: string[],
+  options: { includePaymentDates?: boolean } = {},
+): Promise<QuickBooksInvoiceReceivablesResult> {
   const uniqueIds = [...new Set(invoiceIds.map(cleanText).filter(Boolean))];
   if (!uniqueIds.length) return { error: null, invoices: [], missingIds: [] };
 
   try {
     const connection = await getAuthorizedConnection();
     const invoices: QuickBooksInvoiceReceivable[] = [];
+    const paidInvoiceRecords = new Map<string, any>();
     const foundIds = new Set<string>();
     const today = quickBooksDate();
 
@@ -2884,8 +3119,30 @@ export async function getQuickBooksInvoiceReceivables(invoiceIds: string[]): Pro
         const receivable = normalizeQuickBooksInvoiceReceivable(invoice, today);
         if (receivable) {
           foundIds.add(receivable.id);
+          if (options.includePaymentDates) {
+            receivable.paidDate = null;
+            if (receivable.status === 'paid' && receivable.amountCents > 0) paidInvoiceRecords.set(receivable.id, invoice);
+          }
           invoices.push(receivable);
         }
+      }
+    }
+
+    if (options.includePaymentDates) {
+      const paymentIds = [...new Set([...paidInvoiceRecords.values()].flatMap(invoiceLinkedPaymentIds))];
+      const paymentsById = new Map<string, any>();
+      for (let index = 0; index < paymentIds.length; index += 30) {
+        const chunk = paymentIds.slice(index, index + 30);
+        const idList = chunk.map((id) => `'${escapeQueryString(id)}'`).join(',');
+        const result = await quickBooksQuery(connection, `SELECT * FROM Payment WHERE Id IN (${idList}) MAXRESULTS ${chunk.length}`);
+        const payments = result?.QueryResponse?.Payment;
+        if (Array.isArray(payments)) {
+          for (const payment of payments) paymentsById.set(cleanText(payment?.Id), payment);
+        }
+      }
+      for (const invoice of invoices) {
+        const record = paidInvoiceRecords.get(invoice.id);
+        if (record) invoice.paidDate = quickBooksInvoicePaidDate(record, paymentsById);
       }
     }
 

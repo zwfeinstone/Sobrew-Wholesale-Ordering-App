@@ -22,6 +22,7 @@ import {
   type ProductCategoryGroup
 } from '@/lib/product-categories';
 import { createClient } from '@/lib/supabase/server';
+import { fetchAllPages } from '@/lib/supabase/pagination';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 
 type ProductRow = {
@@ -33,6 +34,8 @@ type ProductRow = {
   sku: string | null;
   category: string | null;
   active: boolean | null;
+  shopify_variant_id?: string | null;
+  product_recipes?: { id: string } | { id: string }[] | null;
 };
 
 type RecipeLaborRow = {
@@ -232,8 +235,8 @@ export default async function ProductsPage(
   const searchParams = await props.searchParams;
   await requireAdminSectionView('products');
   const supabase = await createClient();
-  const [{ data }, { count: recipeCount }, quickBooksStatus] = await Promise.all([
-    supabase.from('products').select('id,name,sku,category,active,quickbooks_item_id,quickbooks_sync_status,quickbooks_sync_error').order('name', { ascending: true }),
+  const [{ data, error: productsError }, { count: recipeCount }, quickBooksStatus] = await Promise.all([
+    fetchAllPages((from, to) => supabase.from('products').select('id,name,sku,category,active,quickbooks_item_id,quickbooks_sync_status,quickbooks_sync_error,shopify_variant_id,product_recipes(id)').order('name', { ascending: true }).order('id').range(from, to)),
     supabase.from('product_recipes').select('id', { count: 'exact', head: true }),
     getQuickBooksConnectionStatus(),
   ]);
@@ -269,6 +272,7 @@ export default async function ProductsPage(
 
   return (
     <div className="space-y-6">
+      {productsError ? <StatusToast message="The product catalog could not be loaded completely. Please retry." tone="error" /> : null}
       {toast === 'bulk_labor_saved' ? <StatusToast message={`Updated labor on ${Number.isFinite(adjustedCount) ? adjustedCount : recipeCount ?? 0} product recipe${adjustedCount === 1 ? '' : 's'}.`} tone="success" /> : null}
       {toast === 'bulk_labor_invalid' ? <StatusToast message="Enter at least one non-zero percentage between -100 and 500." tone="error" /> : null}
       {toast === 'bulk_labor_confirm_required' ? <StatusToast message="Confirm the bulk labor adjustment before applying it." tone="error" /> : null}
@@ -285,7 +289,7 @@ export default async function ProductsPage(
           <span className="eyebrow">Catalog Admin</span>
           <h1 className="page-title mt-4">Products</h1>
         </div>
-        <Link href="/admin/products/new" className="btn-primary w-full sm:w-auto">New product</Link>
+        <div className="flex flex-wrap gap-3"><Link href="/admin/products/shopify" className="btn-secondary">Shopify products &amp; COGS</Link><Link href="/admin/products/new" className="btn-primary w-full sm:w-auto">New product</Link></div>
       </div>
 
       <section className="card space-y-4">
@@ -381,6 +385,8 @@ export default async function ProductsPage(
                   <p className="mt-2 break-all text-sm text-slate-500">SKU: {product.sku || 'No SKU'}</p>
                 </div>
                 <div className="flex flex-wrap gap-2">
+                  {product.shopify_variant_id ? <span className="workspace-badge">Shopify</span> : null}
+                  {product.shopify_variant_id && (!product.product_recipes || (Array.isArray(product.product_recipes) && !product.product_recipes.length)) ? <span className="workspace-badge text-amber-800">Needs COGS setup</span> : null}
                   <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold uppercase tracking-[0.14em] text-slate-600">
                     {productCategoryLabel(product.category)}
                   </span>

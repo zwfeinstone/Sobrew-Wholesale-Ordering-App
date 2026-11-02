@@ -1,0 +1,555 @@
+{
+  "schema_version": 1,
+  "title": "Wholesale portal database loading improvements — local comparison",
+  "date": "2026-10-15",
+  "baseline_file": "performance-baseline-2026-10-15.json",
+  "units": "milliseconds",
+  "environment": {
+    "url": "http://localhost:3000",
+    "runtime": "next dev",
+    "reused_server_pid": 60929,
+    "git_head": "6a469cd069c565d7a27b6556ad9ce0eca9e69e0e",
+    "working_tree": "Existing unrelated changes preserved. Only the listed source/test files were changed for this implementation.",
+    "source_sha256": {
+      "lib/supabase/pagination.ts": "f7a86f0a53a0e820eed5d04cf0b197031cb2a5e04e1dd4aefd9a1e11ffbda95d",
+      "lib/supabase/pagination.test.ts": "124e92f7b9f0f761d85b534e75a255c79d8b6da1c967abba9b9c724edb5aa7b4",
+      "lib/admin-report-commerce.ts": "df3daa8a962cbb9f72f22e5ff4ae3853bb6ae38e67a25071c868c7e9242b3690",
+      "lib/admin-report-commerce.test.ts": "c787999bd0eb40919725f1afc05305120a407f91a2bd7c610bd8e034b4af9474",
+      "lib/admin-report-lookups.ts": "9efc290e019f77634cc768fca97a42ff41f3a6fd4c20c5abb119df3d325678ce",
+      "lib/admin-report-data-needs.ts": "b444b312972aba2598f3bc99527a7938e1c736ce2baab7102f833f389162f86f",
+      "lib/admin-report-data-needs.test.ts": "b0f49f9f3bea9e8f10e8741d77afb263003299913d6aef4ee6ad34ade5ee3b4b",
+      "app/admin/reports/page.tsx": "fcee904e5c583cc782afa134f8687ec9a5513446fdde054577facc880fdc4ee3",
+      "tests/reports-page.test.ts": "682bd66b1bc6d3993204e9511c6cd6de9a35d562f7dc918e6aa061591af0afee"
+    },
+    "deployment_performed": false,
+    "schema_changes": false,
+    "production": "No production deployment or settings changes. Improvement measurements are local; they are not production speed claims."
+  },
+  "changes": [
+    "Recent Order GPM selects at most ten eligible rows from each shipment-date and legacy creation-date stream, merges by effective date/ID, then loads every item for the final ten orders.",
+    "Positive-quantity/product eligibility and permission/center filters are applied before selecting the recent orders. Full sibling items remain available for financial allocations.",
+    "Recent-order production history is fetched only for products with positive-quantity lines lacking a saved COGS snapshot. All historical runs for those products remain eligible for the existing fallback logic.",
+    "The sales-rep settings/profile waterfall is replaced with one authenticated joined query, fully paginated to empty. Unfiltered reports load it concurrently with main report data.",
+    "Requested sales-rep filters are validated before scoped report loading. Unfiltered AI reports and Payroll Labor GPM skip unused dropdown data; AI navigation retains validated existing filters.",
+    "Independent 200-ID batches run with default concurrency three, configurable one to four. Pages within each batch remain sequential and advance by actual returned row count until empty.",
+    "Inventory Adjustments skips standalone inventory valuation reads; its adjustment rows already embed the required item details."
+  ],
+  "preserved_invariants": [
+    "Existing report permissions, RLS clients and center/sales-rep scopes.",
+    "Historical production fallback semantics, including older viable runs behind voided or zero-cost runs.",
+    "Complete sibling lines for shipping and fee allocations, including product-filtered reports.",
+    "Sales lifetime/unshipped metrics and previous/trailing comparison periods.",
+    "No short-page termination assumption; partial results are discarded after any read failure."
+  ],
+  "measurement_method": {
+    "sample_count": 25,
+    "per_page": "One full reload, one initial link navigation, three repeated link navigations.",
+    "sequence": "Overview reload; Centers switch/reload; Recent Order GPM switch/reload; Dashboard switch/reload; Orders switch/reload; Overview switch; three Centers → Recent Order GPM → Dashboard → Orders → Overview cycles.",
+    "metric": "Existing browser timing marker, performance.now from navigation/captured click to marker useEffect. Waited for the page-specific heading, Orders search box, and populated timing attribute.",
+    "account": "Authenticated owner",
+    "report_filters": "All products/customers/reps; October 1–31, 2026.",
+    "preflight": "Warmup navigations and five captures without valid timing markers were excluded. All 25 saved samples have valid browser timings. No complete slow sample was discarded.",
+    "limitations": [
+      "Three repeated samples per page; medians describe this diagnostic run, not a population percentile or load test.",
+      "Baseline and improved run were approximately one hour apart against the same database. Network and authentication latency vary.",
+      "The Overview reload regressed from 2911.1 to 3671.5 ms. It included 988 ms authentication and 2190.6 ms main data. This sample is retained; the exact cause of the spike was not isolated.",
+      "Reloads reuse sessions/caches and are not guaranteed cold-cache or server-cold-start measurements.",
+      "Selected phases and spans are saved; spans overlap phases and must not be added. The main_data phase excludes earlier authentication.",
+      "Dashboard and Orders had no route-specific optimization in this phase. Their smaller timing changes may reflect ordinary variability.",
+      "Production performance was not retested because the implementation was not deployed."
+    ]
+  },
+  "row_counts": {
+    "recent_order_gpm": {
+      "before": {
+        "orders": 527,
+        "items": 717,
+        "production_runs": 381
+      },
+      "after": {
+        "orders": 10,
+        "items": 16,
+        "production_runs": 0
+      },
+      "note": "All 16 lines had saved snapshots in this sample; estimated snapshots still use their saved values."
+    },
+    "overview": {
+      "before": {
+        "orders": 230,
+        "items": 303,
+        "production_runs": 381
+      },
+      "after": {
+        "orders": 230,
+        "items": 303,
+        "production_runs": 381
+      }
+    },
+    "centers": {
+      "before": {
+        "orders": 230,
+        "items": 303,
+        "production_runs": 381
+      },
+      "after": {
+        "orders": 230,
+        "items": 303,
+        "production_runs": 381
+      }
+    },
+    "dashboard": {
+      "after": {
+        "orders": 7,
+        "items": 13
+      }
+    },
+    "orders": {
+      "after": {
+        "orders": 10,
+        "items": 16
+      }
+    }
+  },
+  "correctness": {
+    "browser_financial_output_exactly_equal": [
+      "overview",
+      "centers",
+      "recent_order_gpm",
+      "sales"
+    ],
+    "browser_product_filter": {
+      "report": "recent_order_gpm",
+      "result": "Rendered ten matching orders; loaded all 15 sibling items; no query error."
+    },
+    "typecheck": "passed",
+    "focused_eslint": "passed",
+    "diff_whitespace_check": "passed",
+    "tests": {
+      "passed": 129,
+      "files": [
+        "lib/supabase/pagination.test.ts",
+        "lib/admin-report-commerce.test.ts",
+        "lib/admin-report-data-needs.test.ts",
+        "lib/profitability-reporting.test.ts",
+        "lib/reporting.test.ts",
+        "lib/gross-profit-simulator.test.ts",
+        "lib/labor-paid-gpm-reporting.test.ts",
+        "lib/production-planning-data.test.ts",
+        "lib/deferred-pay-accounting-data.test.ts",
+        "tests/reports-page.test.ts",
+        "tests/admin-dashboard-page.test.ts",
+        "tests/shopify-admin-pages.test.ts"
+      ]
+    },
+    "independent_review": "One AI navigation filter-retention regression was identified, fixed, and covered with regression tests. No remaining findings."
+  },
+  "comparison": [
+    {
+      "page": "overview",
+      "baseline_repeat_median_ms": 2084.7,
+      "after_repeat_median_ms": 1022.9,
+      "repeat_median_reduction_percent": 50.9,
+      "after_repeat_min_ms": 979.2,
+      "after_repeat_max_ms": 1113.4,
+      "baseline_reload_ms": 2911.1,
+      "after_reload_ms": 3671.5,
+      "after_first_switch_ms": 1166.5
+    },
+    {
+      "page": "centers",
+      "baseline_repeat_median_ms": 1937.6,
+      "after_repeat_median_ms": 1284.9,
+      "repeat_median_reduction_percent": 33.7,
+      "after_repeat_min_ms": 1253.4,
+      "after_repeat_max_ms": 1325.4,
+      "baseline_reload_ms": 2343.7,
+      "after_reload_ms": 1145.8,
+      "after_first_switch_ms": 1217.4
+    },
+    {
+      "page": "recent_order_gpm",
+      "baseline_repeat_median_ms": 2443.7,
+      "after_repeat_median_ms": 584.2,
+      "repeat_median_reduction_percent": 76.1,
+      "after_repeat_min_ms": 572.6,
+      "after_repeat_max_ms": 636.8,
+      "baseline_reload_ms": 2575.4,
+      "after_reload_ms": 911,
+      "after_first_switch_ms": 640.4
+    },
+    {
+      "page": "dashboard",
+      "baseline_repeat_median_ms": 1040,
+      "after_repeat_median_ms": 936.3,
+      "repeat_median_reduction_percent": 10,
+      "after_repeat_min_ms": 900,
+      "after_repeat_max_ms": 991.5,
+      "baseline_reload_ms": 1417.6,
+      "after_reload_ms": 1294.2,
+      "after_first_switch_ms": 927.5
+    },
+    {
+      "page": "orders",
+      "baseline_repeat_median_ms": 764.8,
+      "after_repeat_median_ms": 642.8,
+      "repeat_median_reduction_percent": 16,
+      "after_repeat_min_ms": 635.3,
+      "after_repeat_max_ms": 686.2,
+      "baseline_reload_ms": 1137.2,
+      "after_reload_ms": 1055.1,
+      "after_first_switch_ms": 1293.2
+    }
+  ],
+  "local_samples": [
+    {
+      "page": "overview",
+      "mode": "reload",
+      "at": "2026-10-15T17:30:45.723Z",
+      "server_ms": 3193.7,
+      "navigation_to_commit_ms": 3671.5,
+      "authentication_ms": 988,
+      "main_data_ms": 2190.6,
+      "calculations_ms": 7.1,
+      "sales_reps_span_ms": 1012.3,
+      "commerce_span_ms": 2188.7,
+      "production_runs_span_ms": 1884.6,
+      "response_to_commit_ms": 38.6
+    },
+    {
+      "page": "centers",
+      "mode": "first_switch",
+      "at": "2026-10-15T17:30:57.335Z",
+      "server_ms": 1102,
+      "navigation_to_commit_ms": 1217.4,
+      "authentication_ms": 196.1,
+      "main_data_ms": 898.8,
+      "calculations_ms": 3.6,
+      "sales_reps_span_ms": 288.4,
+      "commerce_span_ms": 898.4,
+      "production_runs_span_ms": 528.1,
+      "response_to_commit_ms": 29.1
+    },
+    {
+      "page": "centers",
+      "mode": "reload",
+      "at": "2026-10-15T17:30:58.588Z",
+      "server_ms": 933.2,
+      "navigation_to_commit_ms": 1145.8,
+      "authentication_ms": 152.3,
+      "main_data_ms": 775.2,
+      "calculations_ms": 2.7,
+      "sales_reps_span_ms": 301.1,
+      "commerce_span_ms": 774.9,
+      "production_runs_span_ms": 525.4,
+      "response_to_commit_ms": 51.2
+    },
+    {
+      "page": "recent_order_gpm",
+      "mode": "first_switch",
+      "at": "2026-10-15T17:30:59.282Z",
+      "server_ms": 556.3,
+      "navigation_to_commit_ms": 640.4,
+      "authentication_ms": 122.3,
+      "main_data_ms": 427,
+      "calculations_ms": 4.2,
+      "sales_reps_span_ms": 297.2,
+      "commerce_span_ms": 426.5,
+      "production_runs_span_ms": 0.1,
+      "response_to_commit_ms": 20.2
+    },
+    {
+      "page": "recent_order_gpm",
+      "mode": "reload",
+      "at": "2026-10-15T17:31:00.214Z",
+      "server_ms": 603,
+      "navigation_to_commit_ms": 911,
+      "authentication_ms": 137.7,
+      "main_data_ms": 461.4,
+      "calculations_ms": 1.4,
+      "sales_reps_span_ms": 307.6,
+      "commerce_span_ms": 461.1,
+      "production_runs_span_ms": 0,
+      "response_to_commit_ms": 228.7
+    },
+    {
+      "page": "dashboard",
+      "mode": "first_switch",
+      "at": "2026-10-15T17:31:01.228Z",
+      "server_ms": 838.2,
+      "navigation_to_commit_ms": 927.5,
+      "authentication_ms": 127.4,
+      "main_data_ms": 181.4,
+      "calculations_ms": 5.7,
+      "sales_reps_span_ms": null,
+      "commerce_span_ms": null,
+      "production_runs_span_ms": null,
+      "response_to_commit_ms": 41.1
+    },
+    {
+      "page": "dashboard",
+      "mode": "reload",
+      "at": "2026-10-15T17:31:02.594Z",
+      "server_ms": 951.9,
+      "navigation_to_commit_ms": 1294.2,
+      "authentication_ms": 114.6,
+      "main_data_ms": 214.4,
+      "calculations_ms": 5.5,
+      "sales_reps_span_ms": null,
+      "commerce_span_ms": null,
+      "production_runs_span_ms": null,
+      "response_to_commit_ms": 206.6
+    },
+    {
+      "page": "orders",
+      "mode": "first_switch",
+      "at": "2026-10-15T17:31:04.046Z",
+      "server_ms": 483.6,
+      "navigation_to_commit_ms": 1293.2,
+      "authentication_ms": 10.3,
+      "main_data_ms": null,
+      "calculations_ms": 0.3,
+      "sales_reps_span_ms": null,
+      "commerce_span_ms": null,
+      "production_runs_span_ms": null,
+      "response_to_commit_ms": 35.9
+    },
+    {
+      "page": "orders",
+      "mode": "reload",
+      "at": "2026-10-15T17:31:05.128Z",
+      "server_ms": 642.2,
+      "navigation_to_commit_ms": 1055.1,
+      "authentication_ms": 157.6,
+      "main_data_ms": null,
+      "calculations_ms": 0.1,
+      "sales_reps_span_ms": null,
+      "commerce_span_ms": null,
+      "production_runs_span_ms": null,
+      "response_to_commit_ms": 314.6
+    },
+    {
+      "page": "overview",
+      "mode": "first_switch",
+      "at": "2026-10-15T17:31:06.394Z",
+      "server_ms": 1070.7,
+      "navigation_to_commit_ms": 1166.5,
+      "authentication_ms": 126.5,
+      "main_data_ms": 933.5,
+      "calculations_ms": 7.1,
+      "sales_reps_span_ms": 328.7,
+      "commerce_span_ms": 932.7,
+      "production_runs_span_ms": 479.5,
+      "response_to_commit_ms": 13.7
+    },
+    {
+      "page": "centers",
+      "mode": "repeat_1",
+      "at": "2026-10-15T17:31:23.028Z",
+      "server_ms": 1172.5,
+      "navigation_to_commit_ms": 1284.9,
+      "authentication_ms": 281.8,
+      "main_data_ms": 875.4,
+      "calculations_ms": 11.4,
+      "sales_reps_span_ms": 288.2,
+      "commerce_span_ms": 874.7,
+      "production_runs_span_ms": 520.8,
+      "response_to_commit_ms": 21.3
+    },
+    {
+      "page": "recent_order_gpm",
+      "mode": "repeat_1",
+      "at": "2026-10-15T17:31:23.753Z",
+      "server_ms": 586.3,
+      "navigation_to_commit_ms": 636.8,
+      "authentication_ms": 147.9,
+      "main_data_ms": 433.7,
+      "calculations_ms": 2.5,
+      "sales_reps_span_ms": 271.1,
+      "commerce_span_ms": 433.3,
+      "production_runs_span_ms": 0,
+      "response_to_commit_ms": 15.8
+    },
+    {
+      "page": "dashboard",
+      "mode": "repeat_1",
+      "at": "2026-10-15T17:31:24.871Z",
+      "server_ms": 900.9,
+      "navigation_to_commit_ms": 991.5,
+      "authentication_ms": 143.7,
+      "main_data_ms": 201,
+      "calculations_ms": 6.1,
+      "sales_reps_span_ms": null,
+      "commerce_span_ms": null,
+      "production_runs_span_ms": null,
+      "response_to_commit_ms": 27.9
+    },
+    {
+      "page": "orders",
+      "mode": "repeat_1",
+      "at": "2026-10-15T17:31:25.600Z",
+      "server_ms": 577.5,
+      "navigation_to_commit_ms": 635.3,
+      "authentication_ms": 120.5,
+      "main_data_ms": null,
+      "calculations_ms": 0.1,
+      "sales_reps_span_ms": null,
+      "commerce_span_ms": null,
+      "production_runs_span_ms": null,
+      "response_to_commit_ms": 37.3
+    },
+    {
+      "page": "overview",
+      "mode": "repeat_1",
+      "at": "2026-10-15T17:31:26.730Z",
+      "server_ms": 927.9,
+      "navigation_to_commit_ms": 979.2,
+      "authentication_ms": 117.1,
+      "main_data_ms": 806,
+      "calculations_ms": 2.7,
+      "sales_reps_span_ms": 253.9,
+      "commerce_span_ms": 805.6,
+      "production_runs_span_ms": 485.4,
+      "response_to_commit_ms": 7.2
+    },
+    {
+      "page": "centers",
+      "mode": "repeat_2",
+      "at": "2026-10-15T17:31:28.154Z",
+      "server_ms": 1228.5,
+      "navigation_to_commit_ms": 1325.4,
+      "authentication_ms": 425.3,
+      "main_data_ms": 794.1,
+      "calculations_ms": 4.7,
+      "sales_reps_span_ms": 257.5,
+      "commerce_span_ms": 793.6,
+      "production_runs_span_ms": 435.1,
+      "response_to_commit_ms": 16.1
+    },
+    {
+      "page": "recent_order_gpm",
+      "mode": "repeat_2",
+      "at": "2026-10-15T17:31:28.860Z",
+      "server_ms": 521.4,
+      "navigation_to_commit_ms": 572.6,
+      "authentication_ms": 117.1,
+      "main_data_ms": 399.4,
+      "calculations_ms": 2.5,
+      "sales_reps_span_ms": 284,
+      "commerce_span_ms": 399,
+      "production_runs_span_ms": 0,
+      "response_to_commit_ms": 15.6
+    },
+    {
+      "page": "dashboard",
+      "mode": "repeat_2",
+      "at": "2026-10-15T17:31:29.869Z",
+      "server_ms": 874.2,
+      "navigation_to_commit_ms": 936.3,
+      "authentication_ms": 101.7,
+      "main_data_ms": 197.7,
+      "calculations_ms": 4.1,
+      "sales_reps_span_ms": null,
+      "commerce_span_ms": null,
+      "production_runs_span_ms": null,
+      "response_to_commit_ms": 20.3
+    },
+    {
+      "page": "orders",
+      "mode": "repeat_2",
+      "at": "2026-10-15T17:31:30.586Z",
+      "server_ms": 606.5,
+      "navigation_to_commit_ms": 642.8,
+      "authentication_ms": 129.9,
+      "main_data_ms": null,
+      "calculations_ms": 0.1,
+      "sales_reps_span_ms": null,
+      "commerce_span_ms": null,
+      "production_runs_span_ms": null,
+      "response_to_commit_ms": 17.5
+    },
+    {
+      "page": "overview",
+      "mode": "repeat_2",
+      "at": "2026-10-15T17:31:31.703Z",
+      "server_ms": 959.6,
+      "navigation_to_commit_ms": 1022.9,
+      "authentication_ms": 107.6,
+      "main_data_ms": 842,
+      "calculations_ms": 6,
+      "sales_reps_span_ms": 252.4,
+      "commerce_span_ms": 841.7,
+      "production_runs_span_ms": 491.4,
+      "response_to_commit_ms": 8.8
+    },
+    {
+      "page": "centers",
+      "mode": "repeat_3",
+      "at": "2026-10-15T17:31:33.019Z",
+      "server_ms": 1149.6,
+      "navigation_to_commit_ms": 1253.4,
+      "authentication_ms": 147.5,
+      "main_data_ms": 992.3,
+      "calculations_ms": 5.1,
+      "sales_reps_span_ms": 281.4,
+      "commerce_span_ms": 991.8,
+      "production_runs_span_ms": 471.9,
+      "response_to_commit_ms": 15.4
+    },
+    {
+      "page": "recent_order_gpm",
+      "mode": "repeat_3",
+      "at": "2026-10-15T17:31:33.736Z",
+      "server_ms": 531.5,
+      "navigation_to_commit_ms": 584.2,
+      "authentication_ms": 130.4,
+      "main_data_ms": 396.5,
+      "calculations_ms": 2.3,
+      "sales_reps_span_ms": 286.3,
+      "commerce_span_ms": 396,
+      "production_runs_span_ms": 0,
+      "response_to_commit_ms": 15.5
+    },
+    {
+      "page": "dashboard",
+      "mode": "repeat_3",
+      "at": "2026-10-15T17:31:34.755Z",
+      "server_ms": 841.6,
+      "navigation_to_commit_ms": 900,
+      "authentication_ms": 111.3,
+      "main_data_ms": 179,
+      "calculations_ms": 4.9,
+      "sales_reps_span_ms": null,
+      "commerce_span_ms": null,
+      "production_runs_span_ms": null,
+      "response_to_commit_ms": 16.7
+    },
+    {
+      "page": "orders",
+      "mode": "repeat_3",
+      "at": "2026-10-15T17:31:35.571Z",
+      "server_ms": 645.1,
+      "navigation_to_commit_ms": 686.2,
+      "authentication_ms": 137.4,
+      "main_data_ms": null,
+      "calculations_ms": 0.1,
+      "sales_reps_span_ms": null,
+      "commerce_span_ms": null,
+      "production_runs_span_ms": null,
+      "response_to_commit_ms": 21.1
+    },
+    {
+      "page": "overview",
+      "mode": "repeat_3",
+      "at": "2026-10-15T17:31:36.807Z",
+      "server_ms": 1048.7,
+      "navigation_to_commit_ms": 1113.4,
+      "authentication_ms": 139.6,
+      "main_data_ms": 892.5,
+      "calculations_ms": 5.9,
+      "sales_reps_span_ms": 250.6,
+      "commerce_span_ms": 892,
+      "production_runs_span_ms": 486.2,
+      "response_to_commit_ms": 8.6
+    }
+  ]
+}

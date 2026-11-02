@@ -79,7 +79,7 @@ export function UserWizard({ products }: { products: Product[] }) {
     if (!formRef.current?.reportValidity()) return;
     if (step === 1) {
       const addressError = customerAddressError(state);
-      if (addressError || billingEmail.error || billingCc.error || !state.center_name.trim() || state.password.trim().length < 8) {
+      if (addressError || billingEmail.error || billingCc.error || !state.center_name.trim() || state.password.length < 8) {
         setError(addressError || billingEmail.error || billingCc.error || 'Enter a center name and a temporary password of at least 8 characters.');
         return;
       }

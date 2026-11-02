@@ -1,10 +1,10 @@
 import { createClient } from '@supabase/supabase-js';
 import fs from 'node:fs';
 import path from 'node:path';
+import { donationCogsCentsForOrder, shopifyDonationCogsCentsForBags } from '../lib/order-fees.ts';
 
 const PROCESSING_FEE_RATE = 0.0299;
 const PROCESSING_FEE_FIXED_CENTS = 30;
-const DONATION_COGS_RATE = 0.01;
 const PLACEHOLDER_SHIPPING_CENTS_PER_LB = 100;
 const FIXED_TAPE_COST_CENTS = 5;
 const FIXED_SHIPPING_LABEL_COST_CENTS = 2;
@@ -104,12 +104,6 @@ function processingFeeCentsForRevenue(revenueCents) {
   const parsed = numericValue(revenueCents);
   if (parsed < 0) return 0;
   return Math.round(parsed * PROCESSING_FEE_RATE + PROCESSING_FEE_FIXED_CENTS);
-}
-
-function donationCogsCentsForRevenue(revenueCents) {
-  const parsed = numericValue(revenueCents);
-  if (parsed <= 0) return 0;
-  return Math.round(parsed * DONATION_COGS_RATE);
 }
 
 function allocateShipping(items, shippingCostCents) {
@@ -392,7 +386,7 @@ async function main() {
   const orders = await fetchAll(() =>
     supabase
       .from('orders')
-      .select('id,center_id,status,subtotal_cents,shipping_cost_cents,created_at,shipped_at')
+      .select('id,center_id,order_source,status,subtotal_cents,shipping_cost_cents,created_at,shipped_at')
       .eq('status', 'Shipped')
       .order('created_at', { ascending: true })
   );
@@ -535,7 +529,7 @@ async function main() {
     const items = itemsByOrderId.get(order.id) ?? [];
     const revenueCents = numericValue(order.subtotal_cents) || items.reduce((sum, item) => sum + lineRevenueCents(item), 0);
     const processingFeeCents = processingFeeCentsForRevenue(revenueCents);
-    const donationCogsCents = donationCogsCentsForRevenue(revenueCents);
+    const donationCogsCents = donationCogsCentsForOrder({ orderSource: order.order_source, revenueCents, items });
     const hasActualShipping = numericValue(order.shipping_cost_cents) > 0;
     let poundsSold = 0;
     const missingPoundsByItemId = new Set();
@@ -576,7 +570,9 @@ async function main() {
 
     const shippingAllocations = allocateShipping(items, shippingCostCents);
     const processingAllocations = allocateByRevenue(items, processingFeeCents);
-    const donationAllocations = allocateByRevenue(items, donationCogsCents);
+    const donationAllocations = order.order_source === 'shopify'
+      ? new Map(items.map((item) => [item.id, shopifyDonationCogsCentsForBags(item.qty)]))
+      : allocateByRevenue(items, donationCogsCents);
     const computedItems = [];
     let orderProductCogsMissing = false;
 
@@ -679,7 +675,7 @@ async function main() {
   console.log(`Orders receiving placeholder shipping: ${placeholderShippingOrderCount}`);
   console.log(`Placeholder shipping total: $${(totalPlaceholderShippingCents / 100).toFixed(2)}`);
   console.log(`Processing fee total at 2.99% + $0.30: $${(totalProcessingFeeCents / 100).toFixed(2)}`);
-  console.log(`Donation COGS total at 1%: $${(totalDonationCents / 100).toFixed(2)}`);
+  console.log(`Donation COGS total (Shopify $1/bag; wholesale 1%): $${(totalDonationCents / 100).toFixed(2)}`);
   console.log(`Order items receiving recipe-estimated product COGS: ${recipeBackfilledItemCount}`);
   console.log(`Recipe-estimated product COGS total: $${(totalBackfilledProductCogsCents / 100).toFixed(2)}`);
   console.log(`  Material: $${(totalBackfilledMaterialCents / 100).toFixed(2)}`);

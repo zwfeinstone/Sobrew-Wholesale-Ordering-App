@@ -1,0 +1,1107 @@
+{
+  "schema_version": 1,
+  "title": "Wholesale portal performance baseline",
+  "date": "2026-10-15",
+  "units": "milliseconds",
+  "methodology": {
+    "environments": {
+      "local": {
+        "url": "http://localhost:3000",
+        "runtime": "next dev",
+        "reused_server_pid": 60929,
+        "git_head": "6a469cd069c565d7a27b6556ad9ce0eca9e69e0e",
+        "working_tree": "Existing uncommitted changes retained; includes diagnostic instrumentation. Git HEAD alone does not identify measured code.",
+        "source_sha256": {
+          "lib/page-performance.ts": "9bf666fca953afac84c3d2f924a7ff3fe5d7b85e8c3cf9d07f222a50738d2c04",
+          "lib/page-performance.test.ts": "127448a0a0a7a6fbabdc837205d86c20707ce42106cf49dba28472e506e5be77",
+          "components/page-performance.tsx": "0dbf591dc7acee77e57cc64b02111a5be433b7313e27c67984355f5afd177151",
+          "lib/auth.ts": "2202ff7226a640b396d0ad4bf06fa257d531e42df13f1a6672113a995d7e196f",
+          "middleware.ts": "2b596178f7d79cc73cf99b00dbc0ec1ae2b1f5bde97b327265f9fbcc4c06666c",
+          "app/admin/layout.tsx": "cb2fa4c37fc46eec5bdfab33f3a302468f3648adde6eafecc082b315298d346d",
+          "app/admin/page.tsx": "5068745510cdb45e43a24eb3da7d65894c71980a9d2095b4e325549331421e62",
+          "app/admin/orders/page.tsx": "1d7e4624333fe4e0f4f15fc76e7696f5969af3f04a088653e3855c12e425b749",
+          "app/admin/reports/page.tsx": "8a80591506eaba8dfb49bff56d8290d89e8ffe8bba5e4dafbfa5ef02aa317268",
+          "lib/admin-report-commerce.ts": "7065d81183dde9c06459e25a5f285b75bafbb0915affbeb0ec3bf6013d7b68bb",
+          "lib/supabase/pagination.ts": "66125ec158480dc4acd7a292dc52f3701eaab09f645d129a332042339d758277"
+        }
+      },
+      "production": {
+        "url": "https://app.sobrew.com",
+        "deployment_id": "dpl_5q36eHSBgFf3P8LM2AD8bhw4UMVZ",
+        "deployment_verification": "All 25 requests matched existing Vercel runtime logs to the same deployment. An externally initiated new deployment was building during the run but did not serve these samples.",
+        "deployed_by_this_task": false
+      }
+    },
+    "browser": "Codex in-app browser, authenticated owner session",
+    "report_filters": "Default October 1–31, 2026 reporting period; no filters changed during repeated switches.",
+    "sample_design": "25 navigations per environment: one full document reload and one initial link navigation per page, followed by three cycles through Centers, Recent Order GPM, Dashboard, Orders, Overview.",
+    "local_metric": "Browser performance.now from navigation/captured link click to diagnostic marker useEffect. Server totals partition awaited page-function work and JSX construction.",
+    "production_metric": "Wall clock immediately before browser action until the target heading/content was observed. Orders additionally waited for Search orders so a loading heading could not satisfy the completion check. Includes browser automation/observation overhead.",
+    "production_server_metric": "Existing auth_context and admin_report runtime logs, paired chronologically by route/report and request ID. Authentication is included in admin_report duration; do not add these metrics.",
+    "warmup": "Existing authenticated browser sessions were reused. Reload means a full document reload, not an empty-cache visit or a proven server cold start.",
+    "row_counts_local": {
+      "overview": {
+        "orders": 230,
+        "items": 303,
+        "production_runs": 381,
+        "production_inputs": 0
+      },
+      "centers": {
+        "orders": 230,
+        "items": 303,
+        "production_runs": 381,
+        "production_inputs": 0
+      },
+      "recent_order_gpm": {
+        "orders": 527,
+        "items": 717,
+        "production_runs": 381,
+        "production_inputs": 0,
+        "displayed_orders": 10
+      },
+      "dashboard": {
+        "unique_orders": 7,
+        "items": 13
+      },
+      "orders": {
+        "orders": 10,
+        "items": 16
+      }
+    }
+  },
+  "limitations": [
+    "Small diagnostic sample: repeated-switch medians use three observations per page. These are not percentile SLOs or a load test.",
+    "Local is a development server with existing uncommitted changes; production is a separate optimized deployment. The end-to-end measurement methods also differ. Do not use the table as an exact local/production speed ratio.",
+    "The database timing phases include request round trips, pagination, deserialization and helper work; they do not isolate PostgreSQL execution time.",
+    "selected_phases_ms retains the significant phase measurements; small preparation/scope/extra-data/presentation phases are omitted. The selected phases therefore need not sum exactly to server_ms.",
+    "spans_ms are concurrent measurements inside the phases, not additional time to add to server_ms.",
+    "jsx_build measures JSX construction only. response_to_commit_ms measures the residual from completed response to browser effect and includes client scheduling. Pure React server/client render CPU was not separately profiled.",
+    "Completed resource counts can omit in-flight or prefetched requests. Every measured local navigation had a fresh page sample; repeated navigation did not reuse the previous computed report.",
+    "Auth claims/profile/permission subphase logging and layout badge timings were added, but the existing local server stdout was not retrievable in this session. These subphase values are not part of this baseline.",
+    "Detailed local diagnostics were not deployed. Production database/calculation/render phase breakdowns, and Dashboard/Orders server totals, remain unavailable.",
+    "The production Overview reload took 4161 ms, with 1687.3 ms in the existing report timer including 628.4 ms authentication. The remaining delay was not isolated; it is not proof of a cold start."
+  ],
+  "findings": [
+    {
+      "priority": 1,
+      "finding": "Recent Order GPM fetches lifetime orders and related line items before selecting ten displayed orders.",
+      "evidence": "527 orders, 717 items and 381 production runs loaded per local sample. Repeated commerce spans 1654.2–1665.2 ms.",
+      "next_step": "Select the ten eligible orders before loading their items, while preserving existing date/status/scope and costing semantics. Check report totals against the baseline."
+    },
+    {
+      "priority": 2,
+      "finding": "Reports await rep settings and profiles sequentially before main data fetching, and repeat the work on tab switches.",
+      "evidence": "Two rep lookup phases generally add about 0.5–0.6 seconds locally; one repeat spent 1449.3 ms. Overview/Centers commerce fetching adds roughly 1.1–1.2 seconds on repeated switches.",
+      "next_step": "Remove unnecessary metadata dependencies, parallelize independent reads, and evaluate scoped reuse/invalidation for shared report data. Preserve user permissions and freshness."
+    },
+    {
+      "priority": 3,
+      "finding": "Dashboard awaits payroll status before its main dashboard queries.",
+      "evidence": "Payroll status cost 351.3–854.3 ms across local samples; repeated median 361.6 ms.",
+      "next_step": "Run independent payroll and dashboard reads concurrently or load the payroll status separately, then repeat the benchmark."
+    },
+    {
+      "priority": 4,
+      "finding": "Calculations and post-response browser work are small relative to fetching in the measured local workflows.",
+      "evidence": "Report calculation phases were 2.4–9.2 ms. Repeated response-to-commit residuals across all pages were 8.7–25.9 ms. Middleware auth measured 1.2–3.7 ms.",
+      "next_step": "Prioritize fetch volume and serial dependencies before changes to rendering."
+    },
+    {
+      "priority": 5,
+      "finding": "Authentication contributes latency and occasional spikes but does not explain most routine report-switch time.",
+      "evidence": "Local authentication 115.7–502.5 ms. Production auth_context 36–139.9 ms except the 628.4 ms Overview reload.",
+      "next_step": "Use new claims/profile/permission timings in a later comparable server run to determine the source of auth spikes."
+    }
+  ],
+  "instrumentation": {
+    "new_files": [
+      "lib/page-performance.ts",
+      "lib/page-performance.test.ts",
+      "components/page-performance.tsx"
+    ],
+    "instrumented_files": [
+      "lib/auth.ts",
+      "middleware.ts",
+      "app/admin/layout.tsx",
+      "app/admin/page.tsx",
+      "app/admin/orders/page.tsx",
+      "app/admin/reports/page.tsx"
+    ],
+    "enabling": "Page diagnostics are enabled in development or with PORTAL_PERFORMANCE_TIMINGS=1. No production setting was changed. The existing auth_context logger now includes claims_ms, profile_ms and permissions_scope_ms.",
+    "outputs": [
+      "Server [page-performance] JSON with durations and aggregate counts",
+      "Browser [page-performance-browser] JSON",
+      "Hidden [data-page-performance] element with server and browser sample",
+      "Server-Timing middleware_auth entry"
+    ],
+    "intended_scope": "Diagnostic instrumentation only; no query optimization or business logic changes."
+  },
+  "validation": {
+    "typecheck": "passed",
+    "focused_eslint": "passed",
+    "focused_existing_tests": {
+      "passed": 28,
+      "files": [
+        "tests/reports-page.test.ts",
+        "tests/admin-dashboard-page.test.ts",
+        "tests/shopify-admin-pages.test.ts"
+      ]
+    },
+    "diagnostic_helper_tests": {
+      "passed": 3,
+      "file": "lib/page-performance.test.ts"
+    },
+    "production_deployment": "none"
+  },
+  "summary": [
+    {
+      "page": "overview",
+      "local_reload_ms": 2911.1,
+      "local_first_switch_ms": 2283.4,
+      "local_repeated_ms": {
+        "median": 2084.7,
+        "min": 1942.2,
+        "max": 2740.8
+      },
+      "production_reload_ms": 4161,
+      "production_first_switch_ms": 1225,
+      "production_repeated_ms": {
+        "median": 1098,
+        "min": 1079,
+        "max": 1734
+      }
+    },
+    {
+      "page": "centers",
+      "local_reload_ms": 2343.7,
+      "local_first_switch_ms": 1999.9,
+      "local_repeated_ms": {
+        "median": 1937.6,
+        "min": 1857.1,
+        "max": 1991.4
+      },
+      "production_reload_ms": 1049,
+      "production_first_switch_ms": 1116,
+      "production_repeated_ms": {
+        "median": 1227,
+        "min": 1105,
+        "max": 1418
+      }
+    },
+    {
+      "page": "recent_order_gpm",
+      "local_reload_ms": 2575.4,
+      "local_first_switch_ms": 2354.1,
+      "local_repeated_ms": {
+        "median": 2443.7,
+        "min": 2365.2,
+        "max": 2451.5
+      },
+      "production_reload_ms": 1126,
+      "production_first_switch_ms": 1255,
+      "production_repeated_ms": {
+        "median": 1956,
+        "min": 1466,
+        "max": 1994
+      }
+    },
+    {
+      "page": "dashboard",
+      "local_reload_ms": 1417.6,
+      "local_first_switch_ms": 1555.6,
+      "local_repeated_ms": {
+        "median": 1040,
+        "min": 1036.1,
+        "max": 1299.8
+      },
+      "production_reload_ms": 589,
+      "production_first_switch_ms": 604,
+      "production_repeated_ms": {
+        "median": 610,
+        "min": 605,
+        "max": 708
+      }
+    },
+    {
+      "page": "orders",
+      "local_reload_ms": 1137.2,
+      "local_first_switch_ms": 1402.8,
+      "local_repeated_ms": {
+        "median": 764.8,
+        "min": 720,
+        "max": 768
+      },
+      "production_reload_ms": 716,
+      "production_first_switch_ms": 1247,
+      "production_repeated_ms": {
+        "median": 599,
+        "min": 597,
+        "max": 603
+      }
+    }
+  ],
+  "local_samples": [
+    {
+      "page": "overview",
+      "mode": "reload",
+      "at": "2026-10-15T16:17:41.536Z",
+      "server_ms": 2777.8,
+      "navigation_to_commit_ms": 2911.1,
+      "response_to_commit_ms": 37.1,
+      "middleware_auth_ms": 1.8,
+      "route_requests": 1,
+      "selected_phases_ms": {
+        "authentication": 502.5,
+        "rep_settings": 421.3,
+        "rep_profiles": 291.1,
+        "main_data": 1557.8,
+        "calculations": 2.4,
+        "jsx_build": 1.3
+      },
+      "spans_ms": {
+        "commerce": 1557.7,
+        "centers": 350.6
+      }
+    },
+    {
+      "page": "centers",
+      "mode": "first_switch",
+      "at": "2026-10-15T16:17:43.600Z",
+      "server_ms": 1882.6,
+      "navigation_to_commit_ms": 1999.9,
+      "response_to_commit_ms": 28.2,
+      "middleware_auth_ms": 2.5,
+      "route_requests": 1,
+      "selected_phases_ms": {
+        "authentication": 141.4,
+        "rep_settings": 272.9,
+        "rep_profiles": 271,
+        "main_data": 1188,
+        "calculations": 5.9,
+        "jsx_build": 2.2
+      },
+      "spans_ms": {
+        "commerce": 1187.7,
+        "centers": 331.9
+      }
+    },
+    {
+      "page": "centers",
+      "mode": "reload",
+      "at": "2026-10-15T16:17:46.007Z",
+      "server_ms": 1937.1,
+      "navigation_to_commit_ms": 2343.7,
+      "response_to_commit_ms": 174,
+      "middleware_auth_ms": 1.4,
+      "route_requests": 1,
+      "selected_phases_ms": {
+        "authentication": 151.3,
+        "rep_settings": 407.6,
+        "rep_profiles": 206.6,
+        "main_data": 1165.4,
+        "calculations": 3.4,
+        "jsx_build": 1.6
+      },
+      "spans_ms": {
+        "commerce": 1165.3,
+        "centers": 319.9
+      }
+    },
+    {
+      "page": "recent_order_gpm",
+      "mode": "first_switch",
+      "at": "2026-10-15T16:17:48.410Z",
+      "server_ms": 2291.3,
+      "navigation_to_commit_ms": 2354.1,
+      "response_to_commit_ms": 18.8,
+      "middleware_auth_ms": 1.5,
+      "route_requests": 1,
+      "selected_phases_ms": {
+        "authentication": 129.4,
+        "rep_settings": 260,
+        "rep_profiles": 249.3,
+        "main_data": 1640.5,
+        "calculations": 9.2,
+        "jsx_build": 1.8
+      },
+      "spans_ms": {
+        "commerce": 1640.2,
+        "centers": 352.9
+      }
+    },
+    {
+      "page": "recent_order_gpm",
+      "mode": "reload",
+      "at": "2026-10-15T16:17:50.993Z",
+      "server_ms": 2304,
+      "navigation_to_commit_ms": 2575.4,
+      "response_to_commit_ms": 26.4,
+      "middleware_auth_ms": 1.4,
+      "route_requests": 1,
+      "selected_phases_ms": {
+        "authentication": 144.1,
+        "rep_settings": 229.9,
+        "rep_profiles": 231.8,
+        "main_data": 1688.4,
+        "calculations": 6.9,
+        "jsx_build": 1.8
+      },
+      "spans_ms": {
+        "commerce": 1688.2,
+        "centers": 304.7
+      }
+    },
+    {
+      "page": "dashboard",
+      "mode": "first_switch",
+      "at": "2026-10-15T16:18:18.102Z",
+      "server_ms": 1461.6,
+      "navigation_to_commit_ms": 1555.6,
+      "response_to_commit_ms": 39.6,
+      "middleware_auth_ms": 1.7,
+      "route_requests": 1,
+      "selected_phases_ms": {
+        "authentication": 174,
+        "payroll_status": 854.3,
+        "main_data": 246,
+        "order_items": 179.5,
+        "calculations": 4.6,
+        "jsx_build": 1
+      }
+    },
+    {
+      "page": "dashboard",
+      "mode": "reload",
+      "at": "2026-10-15T16:18:19.585Z",
+      "server_ms": 1052.2,
+      "navigation_to_commit_ms": 1417.6,
+      "response_to_commit_ms": 193.6,
+      "middleware_auth_ms": 1.4,
+      "route_requests": 1,
+      "selected_phases_ms": {
+        "authentication": 125.6,
+        "payroll_status": 457,
+        "main_data": 244.8,
+        "order_items": 216.6,
+        "calculations": 5.3,
+        "jsx_build": 1.1
+      }
+    },
+    {
+      "page": "orders",
+      "mode": "first_switch",
+      "at": "2026-10-15T16:18:21.087Z",
+      "server_ms": 661.3,
+      "navigation_to_commit_ms": 1402.8,
+      "response_to_commit_ms": 41.2,
+      "middleware_auth_ms": 1.3,
+      "route_requests": 1,
+      "selected_phases_ms": {
+        "authentication": 127.8,
+        "orders_and_counts": 215.3,
+        "items_and_recurring": 317.3,
+        "calculations": 0.6,
+        "jsx_build": 0.2
+      }
+    },
+    {
+      "page": "orders",
+      "mode": "reload",
+      "at": "2026-10-15T16:18:22.264Z",
+      "server_ms": 725.8,
+      "navigation_to_commit_ms": 1137.2,
+      "response_to_commit_ms": 324.1,
+      "middleware_auth_ms": 1.5,
+      "route_requests": 1,
+      "selected_phases_ms": {
+        "authentication": 198.8,
+        "orders_and_counts": 213,
+        "items_and_recurring": 313.4,
+        "calculations": 0,
+        "jsx_build": 0.1
+      }
+    },
+    {
+      "page": "overview",
+      "mode": "first_switch",
+      "at": "2026-10-15T16:18:24.701Z",
+      "server_ms": 2168.3,
+      "navigation_to_commit_ms": 2283.4,
+      "response_to_commit_ms": 18.6,
+      "middleware_auth_ms": 1.4,
+      "route_requests": 1,
+      "selected_phases_ms": {
+        "authentication": 127.8,
+        "rep_settings": 230.1,
+        "rep_profiles": 247.4,
+        "main_data": 1551.5,
+        "calculations": 8.7,
+        "jsx_build": 1.7
+      },
+      "spans_ms": {
+        "commerce": 1551.2,
+        "centers": 869.1
+      }
+    },
+    {
+      "page": "centers",
+      "mode": "repeat_1",
+      "at": "2026-10-15T16:18:26.759Z",
+      "server_ms": 1879.1,
+      "navigation_to_commit_ms": 1991.4,
+      "response_to_commit_ms": 23.3,
+      "middleware_auth_ms": 1.3,
+      "route_requests": 1,
+      "selected_phases_ms": {
+        "authentication": 116.9,
+        "rep_settings": 312.5,
+        "rep_profiles": 265.9,
+        "main_data": 1172.2,
+        "calculations": 7.3,
+        "jsx_build": 3.1
+      },
+      "spans_ms": {
+        "commerce": 1171.9,
+        "centers": 327.9
+      }
+    },
+    {
+      "page": "recent_order_gpm",
+      "mode": "repeat_1",
+      "at": "2026-10-15T16:18:29.280Z",
+      "server_ms": 2280.6,
+      "navigation_to_commit_ms": 2365.2,
+      "response_to_commit_ms": 14.5,
+      "middleware_auth_ms": 1.3,
+      "route_requests": 1,
+      "selected_phases_ms": {
+        "authentication": 115.7,
+        "rep_settings": 238.9,
+        "rep_profiles": 261.4,
+        "main_data": 1654.5,
+        "calculations": 6.8,
+        "jsx_build": 1.8
+      },
+      "spans_ms": {
+        "commerce": 1654.2,
+        "centers": 306.6
+      }
+    },
+    {
+      "page": "dashboard",
+      "mode": "repeat_1",
+      "at": "2026-10-15T16:18:30.730Z",
+      "server_ms": 1207.9,
+      "navigation_to_commit_ms": 1299.8,
+      "response_to_commit_ms": 25.9,
+      "middleware_auth_ms": 3.7,
+      "route_requests": 1,
+      "selected_phases_ms": {
+        "authentication": 176.4,
+        "payroll_status": 361.6,
+        "main_data": 459,
+        "order_items": 202.5,
+        "calculations": 5.6,
+        "jsx_build": 1.4
+      }
+    },
+    {
+      "page": "orders",
+      "mode": "repeat_1",
+      "at": "2026-10-15T16:18:31.559Z",
+      "server_ms": 722.8,
+      "navigation_to_commit_ms": 768,
+      "response_to_commit_ms": 21.8,
+      "middleware_auth_ms": 1.7,
+      "route_requests": 1,
+      "selected_phases_ms": {
+        "authentication": 124.3,
+        "orders_and_counts": 247.9,
+        "items_and_recurring": 350.2,
+        "calculations": 0.2,
+        "jsx_build": 0.2
+      }
+    },
+    {
+      "page": "overview",
+      "mode": "repeat_1",
+      "at": "2026-10-15T16:18:34.380Z",
+      "server_ms": 2674.5,
+      "navigation_to_commit_ms": 2740.8,
+      "response_to_commit_ms": 9.5,
+      "middleware_auth_ms": 1.5,
+      "route_requests": 1,
+      "selected_phases_ms": {
+        "authentication": 154.6,
+        "rep_settings": 247.6,
+        "rep_profiles": 1201.7,
+        "main_data": 1062.6,
+        "calculations": 4.6,
+        "jsx_build": 2.5
+      },
+      "spans_ms": {
+        "commerce": 1062.3,
+        "centers": 390.5
+      }
+    },
+    {
+      "page": "centers",
+      "mode": "repeat_2",
+      "at": "2026-10-15T16:18:36.339Z",
+      "server_ms": 1744.3,
+      "navigation_to_commit_ms": 1857.1,
+      "response_to_commit_ms": 19.5,
+      "middleware_auth_ms": 1.5,
+      "route_requests": 1,
+      "selected_phases_ms": {
+        "authentication": 125.4,
+        "rep_settings": 229.3,
+        "rep_profiles": 232.9,
+        "main_data": 1146.6,
+        "calculations": 5.9,
+        "jsx_build": 2.8
+      },
+      "spans_ms": {
+        "commerce": 1146.3,
+        "centers": 279.1
+      }
+    },
+    {
+      "page": "recent_order_gpm",
+      "mode": "repeat_2",
+      "at": "2026-10-15T16:18:38.841Z",
+      "server_ms": 2388,
+      "navigation_to_commit_ms": 2443.7,
+      "response_to_commit_ms": 12.8,
+      "middleware_auth_ms": 1.5,
+      "route_requests": 1,
+      "selected_phases_ms": {
+        "authentication": 153.1,
+        "rep_settings": 227.3,
+        "rep_profiles": 334.7,
+        "main_data": 1663,
+        "calculations": 7,
+        "jsx_build": 1.6
+      },
+      "spans_ms": {
+        "commerce": 1662.7,
+        "centers": 306.3
+      }
+    },
+    {
+      "page": "dashboard",
+      "mode": "repeat_2",
+      "at": "2026-10-15T16:18:39.986Z",
+      "server_ms": 977.2,
+      "navigation_to_commit_ms": 1040,
+      "response_to_commit_ms": 20.2,
+      "middleware_auth_ms": 1.5,
+      "route_requests": 1,
+      "selected_phases_ms": {
+        "authentication": 137.4,
+        "payroll_status": 398.6,
+        "main_data": 204.2,
+        "order_items": 230,
+        "calculations": 4.9,
+        "jsx_build": 1.2
+      }
+    },
+    {
+      "page": "orders",
+      "mode": "repeat_2",
+      "at": "2026-10-15T16:18:40.811Z",
+      "server_ms": 670.9,
+      "navigation_to_commit_ms": 720,
+      "response_to_commit_ms": 21.2,
+      "middleware_auth_ms": 2.7,
+      "route_requests": 1,
+      "selected_phases_ms": {
+        "authentication": 159.4,
+        "orders_and_counts": 218.6,
+        "items_and_recurring": 292.4,
+        "calculations": 0.2,
+        "jsx_build": 0.2
+      }
+    },
+    {
+      "page": "overview",
+      "mode": "repeat_2",
+      "at": "2026-10-15T16:18:42.894Z",
+      "server_ms": 1867.2,
+      "navigation_to_commit_ms": 1942.2,
+      "response_to_commit_ms": 8.7,
+      "middleware_auth_ms": 2.1,
+      "route_requests": 1,
+      "selected_phases_ms": {
+        "authentication": 157.2,
+        "rep_settings": 282.9,
+        "rep_profiles": 218.9,
+        "main_data": 1197.1,
+        "calculations": 7.1,
+        "jsx_build": 3.3
+      },
+      "spans_ms": {
+        "commerce": 1196.8,
+        "centers": 371.5
+      }
+    },
+    {
+      "page": "centers",
+      "mode": "repeat_3",
+      "at": "2026-10-15T16:18:44.969Z",
+      "server_ms": 1835.2,
+      "navigation_to_commit_ms": 1937.6,
+      "response_to_commit_ms": 21.5,
+      "middleware_auth_ms": 1.2,
+      "route_requests": 1,
+      "selected_phases_ms": {
+        "authentication": 142.3,
+        "rep_settings": 248.7,
+        "rep_profiles": 282.4,
+        "main_data": 1153.1,
+        "calculations": 4.8,
+        "jsx_build": 2.6
+      },
+      "spans_ms": {
+        "commerce": 1152.7,
+        "centers": 325.3
+      }
+    },
+    {
+      "page": "recent_order_gpm",
+      "mode": "repeat_3",
+      "at": "2026-10-15T16:18:47.476Z",
+      "server_ms": 2389.5,
+      "navigation_to_commit_ms": 2451.5,
+      "response_to_commit_ms": 15.9,
+      "middleware_auth_ms": 1.4,
+      "route_requests": 1,
+      "selected_phases_ms": {
+        "authentication": 185.8,
+        "rep_settings": 226.3,
+        "rep_profiles": 301.1,
+        "main_data": 1665.5,
+        "calculations": 7.6,
+        "jsx_build": 1.9
+      },
+      "spans_ms": {
+        "commerce": 1665.2,
+        "centers": 310.6
+      }
+    },
+    {
+      "page": "dashboard",
+      "mode": "repeat_3",
+      "at": "2026-10-15T16:18:48.627Z",
+      "server_ms": 980,
+      "navigation_to_commit_ms": 1036.1,
+      "response_to_commit_ms": 17.7,
+      "middleware_auth_ms": 1.3,
+      "route_requests": 1,
+      "selected_phases_ms": {
+        "authentication": 222.2,
+        "payroll_status": 351.3,
+        "main_data": 202.5,
+        "order_items": 197.4,
+        "calculations": 4.8,
+        "jsx_build": 1
+      }
+    },
+    {
+      "page": "orders",
+      "mode": "repeat_3",
+      "at": "2026-10-15T16:18:49.466Z",
+      "server_ms": 715,
+      "navigation_to_commit_ms": 764.8,
+      "response_to_commit_ms": 22.1,
+      "middleware_auth_ms": 1.7,
+      "route_requests": 1,
+      "selected_phases_ms": {
+        "authentication": 138.6,
+        "orders_and_counts": 223.1,
+        "items_and_recurring": 353.1,
+        "calculations": 0.1,
+        "jsx_build": 0.1
+      }
+    },
+    {
+      "page": "overview",
+      "mode": "repeat_3",
+      "at": "2026-10-15T16:18:51.637Z",
+      "server_ms": 2018.3,
+      "navigation_to_commit_ms": 2084.7,
+      "response_to_commit_ms": 9.2,
+      "middleware_auth_ms": 1.4,
+      "route_requests": 1,
+      "selected_phases_ms": {
+        "authentication": 237.8,
+        "rep_settings": 266.4,
+        "rep_profiles": 309.1,
+        "main_data": 1188.5,
+        "calculations": 5.6,
+        "jsx_build": 9.7
+      },
+      "spans_ms": {
+        "commerce": 1188.1,
+        "centers": 402
+      }
+    }
+  ],
+  "production_samples": [
+    {
+      "page": "overview",
+      "mode": "reload",
+      "at": "2026-10-15T16:19:50.201Z",
+      "observed_navigation_ms": 4161,
+      "server": {
+        "request": "t6tw6-1792081188181-fcf37f6ab234",
+        "at": "2026-10-15T16:19:48.925Z",
+        "path": "/admin/reports",
+        "deployment": "dpl_5q36eHSBgFf3P8LM2AD8bhw4UMVZ",
+        "admin_report_ms": 1687.3,
+        "report": "overview",
+        "auth_context_ms": 628.4
+      }
+    },
+    {
+      "page": "centers",
+      "mode": "first_switch",
+      "at": "2026-10-15T16:19:51.318Z",
+      "observed_navigation_ms": 1116,
+      "server": {
+        "request": "w7kd7-1792081190413-a89c305a2a9f",
+        "at": "2026-10-15T16:19:50.563Z",
+        "path": "/admin/reports",
+        "deployment": "dpl_5q36eHSBgFf3P8LM2AD8bhw4UMVZ",
+        "admin_report_ms": 743.4,
+        "report": "centers",
+        "auth_context_ms": 48.3
+      }
+    },
+    {
+      "page": "centers",
+      "mode": "reload",
+      "at": "2026-10-15T16:19:52.368Z",
+      "observed_navigation_ms": 1049,
+      "server": {
+        "request": "w7kd7-1792081191487-84812948ffcd",
+        "at": "2026-10-15T16:19:51.651Z",
+        "path": "/admin/reports",
+        "deployment": "dpl_5q36eHSBgFf3P8LM2AD8bhw4UMVZ",
+        "admin_report_ms": 731.7,
+        "report": "centers",
+        "auth_context_ms": 70.1
+      }
+    },
+    {
+      "page": "recent_order_gpm",
+      "mode": "first_switch",
+      "at": "2026-10-15T16:19:53.624Z",
+      "observed_navigation_ms": 1255,
+      "server": {
+        "request": "zw5wp-1792081192595-11aeb1eb4482",
+        "at": "2026-10-15T16:19:52.773Z",
+        "path": "/admin/reports",
+        "deployment": "dpl_5q36eHSBgFf3P8LM2AD8bhw4UMVZ",
+        "admin_report_ms": 851.6,
+        "report": "recent_order_gpm",
+        "auth_context_ms": 36
+      }
+    },
+    {
+      "page": "recent_order_gpm",
+      "mode": "reload",
+      "at": "2026-10-15T16:19:54.751Z",
+      "observed_navigation_ms": 1126,
+      "server": {
+        "request": "89kth-1792081193800-2a898755e1d8",
+        "at": "2026-10-15T16:19:53.951Z",
+        "path": "/admin/reports",
+        "deployment": "dpl_5q36eHSBgFf3P8LM2AD8bhw4UMVZ",
+        "admin_report_ms": 819.6,
+        "report": "recent_order_gpm",
+        "auth_context_ms": 40.1
+      }
+    },
+    {
+      "page": "dashboard",
+      "mode": "first_switch",
+      "at": "2026-10-15T16:19:55.356Z",
+      "observed_navigation_ms": 604,
+      "server": {
+        "request": "89kth-1792081194972-acd90bbeffc9",
+        "at": "2026-10-15T16:19:55.104Z",
+        "path": "/admin",
+        "deployment": "dpl_5q36eHSBgFf3P8LM2AD8bhw4UMVZ",
+        "auth_context_ms": 36.1
+      }
+    },
+    {
+      "page": "dashboard",
+      "mode": "reload",
+      "at": "2026-10-15T16:19:55.946Z",
+      "observed_navigation_ms": 589,
+      "server": {
+        "request": "j9bpx-1792081195529-e30acb5fc48a",
+        "at": "2026-10-15T16:19:55.697Z",
+        "path": "/admin",
+        "deployment": "dpl_5q36eHSBgFf3P8LM2AD8bhw4UMVZ",
+        "auth_context_ms": 45
+      }
+    },
+    {
+      "page": "orders",
+      "mode": "first_switch",
+      "at": "2026-10-15T16:19:57.194Z",
+      "observed_navigation_ms": 1247,
+      "server": {
+        "request": "t6tw6-1792081196494-7d53a6f5bbf9",
+        "at": "2026-10-15T16:19:56.857Z",
+        "path": "/admin/orders",
+        "deployment": "dpl_5q36eHSBgFf3P8LM2AD8bhw4UMVZ",
+        "auth_context_ms": 139.6
+      }
+    },
+    {
+      "page": "orders",
+      "mode": "reload",
+      "at": "2026-10-15T16:19:57.912Z",
+      "observed_navigation_ms": 716,
+      "server": {
+        "request": "t6tw6-1792081197368-d8f2a44dff62",
+        "at": "2026-10-15T16:19:57.584Z",
+        "path": "/admin/orders",
+        "deployment": "dpl_5q36eHSBgFf3P8LM2AD8bhw4UMVZ",
+        "auth_context_ms": 59.4
+      }
+    },
+    {
+      "page": "overview",
+      "mode": "first_switch",
+      "at": "2026-10-15T16:19:59.137Z",
+      "observed_navigation_ms": 1225,
+      "server": {
+        "request": "t6tw6-1792081198122-fde86091c03d",
+        "at": "2026-10-15T16:19:58.322Z",
+        "path": "/admin/reports",
+        "deployment": "dpl_5q36eHSBgFf3P8LM2AD8bhw4UMVZ",
+        "admin_report_ms": 766.7,
+        "report": "overview",
+        "auth_context_ms": 48.2
+      }
+    },
+    {
+      "page": "centers",
+      "mode": "repeat_1",
+      "at": "2026-10-15T16:20:25.273Z",
+      "observed_navigation_ms": 1227,
+      "server": {
+        "request": "hfwv4-1792081224248-64510e2f2da8",
+        "at": "2026-10-15T16:20:24.475Z",
+        "path": "/admin/reports",
+        "deployment": "dpl_5q36eHSBgFf3P8LM2AD8bhw4UMVZ",
+        "admin_report_ms": 780,
+        "report": "centers",
+        "auth_context_ms": 86.7
+      }
+    },
+    {
+      "page": "recent_order_gpm",
+      "mode": "repeat_1",
+      "at": "2026-10-15T16:20:26.740Z",
+      "observed_navigation_ms": 1466,
+      "server": {
+        "request": "rvhd7-1792081225567-595359e6821b",
+        "at": "2026-10-15T16:20:25.746Z",
+        "path": "/admin/reports",
+        "deployment": "dpl_5q36eHSBgFf3P8LM2AD8bhw4UMVZ",
+        "admin_report_ms": 1030.6,
+        "report": "recent_order_gpm",
+        "auth_context_ms": 56.7
+      }
+    },
+    {
+      "page": "dashboard",
+      "mode": "repeat_1",
+      "at": "2026-10-15T16:20:27.352Z",
+      "observed_navigation_ms": 610,
+      "server": {
+        "request": "682rm-1792081226959-ddedd37838c6",
+        "at": "2026-10-15T16:20:27.110Z",
+        "path": "/admin",
+        "deployment": "dpl_5q36eHSBgFf3P8LM2AD8bhw4UMVZ",
+        "auth_context_ms": 42.9
+      }
+    },
+    {
+      "page": "orders",
+      "mode": "repeat_1",
+      "at": "2026-10-15T16:20:27.951Z",
+      "observed_navigation_ms": 599,
+      "server": {
+        "request": "gcljn-1792081227577-c16458d72e4e",
+        "at": "2026-10-15T16:20:27.821Z",
+        "path": "/admin/orders",
+        "deployment": "dpl_5q36eHSBgFf3P8LM2AD8bhw4UMVZ",
+        "auth_context_ms": 139.9
+      }
+    },
+    {
+      "page": "overview",
+      "mode": "repeat_1",
+      "at": "2026-10-15T16:20:29.696Z",
+      "observed_navigation_ms": 1734,
+      "server": {
+        "request": "mxqr4-1792081228168-b6975781ec8b",
+        "at": "2026-10-15T16:20:28.391Z",
+        "path": "/admin/reports",
+        "deployment": "dpl_5q36eHSBgFf3P8LM2AD8bhw4UMVZ",
+        "admin_report_ms": 1303.8,
+        "report": "overview",
+        "auth_context_ms": 44.7
+      }
+    },
+    {
+      "page": "centers",
+      "mode": "repeat_2",
+      "at": "2026-10-15T16:20:31.115Z",
+      "observed_navigation_ms": 1418,
+      "server": {
+        "request": "xk55p-1792081230024-68a4e260b8bc",
+        "at": "2026-10-15T16:20:30.213Z",
+        "path": "/admin/reports",
+        "deployment": "dpl_5q36eHSBgFf3P8LM2AD8bhw4UMVZ",
+        "admin_report_ms": 587.8,
+        "report": "centers",
+        "auth_context_ms": 54.4
+      }
+    },
+    {
+      "page": "recent_order_gpm",
+      "mode": "repeat_2",
+      "at": "2026-10-15T16:20:33.072Z",
+      "observed_navigation_ms": 1956,
+      "server": {
+        "request": "vwcdm-1792081231480-6ab9354d28e7",
+        "at": "2026-10-15T16:20:31.687Z",
+        "path": "/admin/reports",
+        "deployment": "dpl_5q36eHSBgFf3P8LM2AD8bhw4UMVZ",
+        "admin_report_ms": 1069.6,
+        "report": "recent_order_gpm",
+        "auth_context_ms": 55.7
+      }
+    },
+    {
+      "page": "dashboard",
+      "mode": "repeat_2",
+      "at": "2026-10-15T16:20:33.781Z",
+      "observed_navigation_ms": 708,
+      "server": {
+        "request": "sf65q-1792081233302-ccb2a54e051d",
+        "at": "2026-10-15T16:20:33.464Z",
+        "path": "/admin",
+        "deployment": "dpl_5q36eHSBgFf3P8LM2AD8bhw4UMVZ",
+        "auth_context_ms": 53.5
+      }
+    },
+    {
+      "page": "orders",
+      "mode": "repeat_2",
+      "at": "2026-10-15T16:20:34.385Z",
+      "observed_navigation_ms": 603,
+      "server": {
+        "request": "8x7gp-1792081234075-1cf894644079",
+        "at": "2026-10-15T16:20:34.218Z",
+        "path": "/admin/orders",
+        "deployment": "dpl_5q36eHSBgFf3P8LM2AD8bhw4UMVZ",
+        "auth_context_ms": 44.6
+      }
+    },
+    {
+      "page": "overview",
+      "mode": "repeat_2",
+      "at": "2026-10-15T16:20:35.493Z",
+      "observed_navigation_ms": 1098,
+      "server": {
+        "request": "9fgsf-1792081234608-82aa7c7159da",
+        "at": "2026-10-15T16:20:34.785Z",
+        "path": "/admin/reports",
+        "deployment": "dpl_5q36eHSBgFf3P8LM2AD8bhw4UMVZ",
+        "admin_report_ms": 769.9,
+        "report": "overview",
+        "auth_context_ms": 73.5
+      }
+    },
+    {
+      "page": "centers",
+      "mode": "repeat_3",
+      "at": "2026-10-15T16:20:36.599Z",
+      "observed_navigation_ms": 1105,
+      "server": {
+        "request": "zpfpc-1792081235848-50dd270802f1",
+        "at": "2026-10-15T16:20:36.034Z",
+        "path": "/admin/reports",
+        "deployment": "dpl_5q36eHSBgFf3P8LM2AD8bhw4UMVZ",
+        "admin_report_ms": 611,
+        "report": "centers",
+        "auth_context_ms": 41.9
+      }
+    },
+    {
+      "page": "recent_order_gpm",
+      "mode": "repeat_3",
+      "at": "2026-10-15T16:20:38.594Z",
+      "observed_navigation_ms": 1994,
+      "server": {
+        "request": "pwpnb-1792081236979-f44006106293",
+        "at": "2026-10-15T16:20:37.124Z",
+        "path": "/admin/reports",
+        "deployment": "dpl_5q36eHSBgFf3P8LM2AD8bhw4UMVZ",
+        "admin_report_ms": 886.2,
+        "report": "recent_order_gpm",
+        "auth_context_ms": 46.8
+      }
+    },
+    {
+      "page": "dashboard",
+      "mode": "repeat_3",
+      "at": "2026-10-15T16:20:39.200Z",
+      "observed_navigation_ms": 605,
+      "server": {
+        "request": "9xp52-1792081238818-4e262098503a",
+        "at": "2026-10-15T16:20:38.953Z",
+        "path": "/admin",
+        "deployment": "dpl_5q36eHSBgFf3P8LM2AD8bhw4UMVZ",
+        "auth_context_ms": 39.4
+      }
+    },
+    {
+      "page": "orders",
+      "mode": "repeat_3",
+      "at": "2026-10-15T16:20:39.797Z",
+      "observed_navigation_ms": 597,
+      "server": {
+        "request": "64sn2-1792081239441-b02f5af4a149",
+        "at": "2026-10-15T16:20:39.605Z",
+        "path": "/admin/orders",
+        "deployment": "dpl_5q36eHSBgFf3P8LM2AD8bhw4UMVZ",
+        "auth_context_ms": 66.7
+      }
+    },
+    {
+      "page": "overview",
+      "mode": "repeat_3",
+      "at": "2026-10-15T16:20:40.877Z",
+      "observed_navigation_ms": 1079,
+      "server": {
+        "request": "gcljn-1792081240030-07b988dd0bdc",
+        "at": "2026-10-15T16:20:40.166Z",
+        "path": "/admin/reports",
+        "deployment": "dpl_5q36eHSBgFf3P8LM2AD8bhw4UMVZ",
+        "admin_report_ms": 739.2,
+        "report": "overview",
+        "auth_context_ms": 53.7
+      }
+    }
+  ]
+}

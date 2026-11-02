@@ -4,6 +4,7 @@ import { OrderStatusBadge, OrderStatusTimeline } from '@/components/order-status
 import OrderConfirmation from '@/components/order-confirmation';
 import { OrderNotes } from '@/components/order-notes';
 import { requireUser } from '@/lib/auth';
+import { getCenterCartProducts } from '@/lib/center-cart-products';
 import { cartStorageKeyForUser } from '@/lib/cart';
 import { createClient } from '@/lib/supabase/server';
 import { formatAppDateTime, usd } from '@/lib/utils';
@@ -31,15 +32,11 @@ export default async function OrderDetail(
     toast === 'order_placed_recurring_error';
   const { data: order } = await supabase.from('orders').select('*').eq('id', params.id).eq('center_id', centerId).single();
   if (!order) return notFound();
-  const { data: items } = await supabase.from('order_items').select('id,qty,line_total_cents,product_id,product_name_snapshot,unit_price_cents').eq('order_id', order.id);
-
-  const productIds = [...new Set((items ?? []).map((item: any) => item.product_id))];
-  const { data: catalogProducts } = productIds.length
-    ? await supabase
-        .from('portal_catalog')
-        .select('product_id,name,current_price_cents')
-        .in('product_id', productIds)
-    : { data: [] as any[] };
+  const [{ data: items }, catalogProducts] = await Promise.all([
+    supabase.from('order_items').select('id,qty,line_total_cents,product_id,product_name_snapshot,unit_price_cents').eq('order_id', order.id),
+    // A saved receipt must remain available even when inventory cannot be refreshed.
+    isOrderConfirmation ? Promise.resolve([]) : getCenterCartProducts(supabase, centerId),
+  ]);
   const catalogProductById = new Map((catalogProducts ?? []).map((product) => [product.product_id, product]));
   const reorderItems = (items ?? [])
     .filter((item: any) => catalogProductById.has(item.product_id))
@@ -48,7 +45,7 @@ export default async function OrderDetail(
       return {
         product_id: item.product_id,
         name: product.name,
-        price_cents: product.current_price_cents,
+        price_cents: product.price_cents,
         qty: item.qty,
       };
     });
@@ -95,6 +92,7 @@ export default async function OrderDetail(
           <p className="mt-2 text-3xl font-semibold text-slate-950">{usd(order.subtotal_cents)}</p>
         </div>
         <ReorderButton
+          products={catalogProducts}
           items={reorderItems}
           storageKey={cartStorageKey}
           label="Reorder & review"

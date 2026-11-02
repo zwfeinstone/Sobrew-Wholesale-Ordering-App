@@ -4,7 +4,8 @@ import { getResend, resendEmailAcceptanceError } from '@/lib/email';
 import { getSupabaseAdmin, type SupabaseAdminClient } from '@/lib/supabase/admin';
 import type { SampleQuoteRow } from '@/lib/supabase/schema';
 import { hasSampleRequestContact } from '@/lib/prospecting-sample-contact';
-import { buildSampleQuoteEmail, getSampleQuoteGreetingName, validateSampleQuoteGreetingName, validateSampleQuoteInput } from '@/lib/prospecting-sample-quote';
+import { buildSampleQuoteEmail, formatSampleQuoteSenderName, getSampleQuoteGreetingName, validateSampleQuoteGreetingName, validateSampleQuoteInput } from '@/lib/prospecting-sample-quote';
+import { validateSampleQuoteCcEmails } from '@/lib/prospecting-sample-quote-recipients';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 // Resend keeps idempotency keys for 24 hours. Stop earlier on uncertain sends.
@@ -25,7 +26,7 @@ export type SampleQuoteContext = {
   sendBlockedReason?: string;
 };
 type Access = { actorId: string; isOwner: boolean; workspaceEnabled: boolean };
-type DeliveryResult = { error?: string; sentAt?: string; locked?: boolean };
+type DeliveryResult = { error?: string; sentAt?: string; locked?: boolean; ccEmails?: string[] };
 
 /** Service-role reads are scoped here before any contact or quote is returned. */
 export async function loadSampleQuoteContext({ orderId, actorId, isOwner, workspaceEnabled, supabase = getSupabaseAdmin() }: Access & {
@@ -81,16 +82,17 @@ export async function loadSampleQuoteContext({ orderId, actorId, isOwner, worksp
   return { ok: true, context: {
     orderId, leadId: lead.id, companyName: lead.company_name,
     contactId: contact.id, contactName: contact.full_name!.trim(), contactEmail: contact.email!.trim(),
-    senderProfileId: sender.id, senderName: sender.full_name?.trim() || senderEmail.split('@')[0], senderEmail, quote: null,
+    senderProfileId: sender.id, senderName: formatSampleQuoteSenderName(sender.full_name?.trim() || senderEmail.split('@')[0]), senderEmail, quote: null,
     sendBlockedReason: lead.do_not_contact ? 'This lead is marked do not contact. Update the lead before sending an email.' : undefined,
   } };
 }
 
-export async function sendSampleQuote({ orderId, trackingNumber, lines, greetingName, expectedRecipientEmail, expectedSenderEmail, actorId, isOwner, workspaceEnabled, supabase = getSupabaseAdmin(), resend = getResend(), now = new Date() }: Access & {
+export async function sendSampleQuote({ orderId, trackingNumber, lines, greetingName, ccEmails, expectedRecipientEmail, expectedSenderEmail, actorId, isOwner, workspaceEnabled, supabase = getSupabaseAdmin(), resend = getResend(), now = new Date() }: Access & {
   orderId: string;
   trackingNumber: string;
   lines: unknown;
   greetingName?: string;
+  ccEmails?: unknown;
   expectedRecipientEmail: string;
   expectedSenderEmail: string;
   supabase?: SupabaseAdminClient;
@@ -100,7 +102,7 @@ export async function sendSampleQuote({ orderId, trackingNumber, lines, greeting
   const loaded = await loadSampleQuoteContext({ orderId, actorId, isOwner, workspaceEnabled, supabase });
   if (!loaded.ok) return { error: loaded.error };
   const context = loaded.context;
-  if (context.quote?.sent_at) return { sentAt: context.quote.sent_at, locked: true };
+  if (context.quote?.sent_at) return { sentAt: context.quote.sent_at, locked: true, ccEmails: context.quote.cc_emails ?? [] };
   if (context.sendBlockedReason) return { error: context.sendBlockedReason, locked: Boolean(context.quote) };
   if (context.contactEmail !== expectedRecipientEmail || context.senderEmail !== expectedSenderEmail) {
     return { error: 'The recipient or lead owner changed. Reload to review the current email addresses before sending.', locked: Boolean(context.quote) };
@@ -109,6 +111,8 @@ export async function sendSampleQuote({ orderId, trackingNumber, lines, greeting
   if (!input.ok) return { error: input.error, locked: Boolean(context.quote) };
   const greeting = validateSampleQuoteGreetingName(greetingName === undefined ? getSampleQuoteGreetingName(context.contactName) : greetingName);
   if (!greeting.ok) return { error: greeting.error, locked: Boolean(context.quote) };
+  const cc = validateSampleQuoteCcEmails(ccEmails, context.contactEmail);
+  if (!cc.ok) return { error: cc.error, locked: Boolean(context.quote) };
   if (!resend) return { error: 'Email sending is not configured. Your sample order is saved; try this email again after Resend is configured.', locked: Boolean(context.quote) };
   let quote = context.quote;
   if (!quote) {
@@ -129,12 +133,21 @@ export async function sendSampleQuote({ orderId, trackingNumber, lines, greeting
       sender_profile_id: context.senderProfileId, created_by: actorId,
       sender_name: context.senderName, sender_email: context.senderEmail,
       recipient_name: context.contactName, recipient_email: context.contactEmail,
+      cc_emails: cc.ccEmails,
       greeting_name: greeting.greetingName,
       tracking_number: input.trackingNumber, lines: input.lines,
       subject: content.subject, body_text: content.text, body_html: content.html,
     }).select('*').single();
     if (inserted.error) {
-      if (inserted.error.code !== '23505') return { error: 'The email could not be saved, so nothing was sent. Please try again.' };
+      if (inserted.error.code !== '23505') {
+        // Database messages and details can contain submitted recipient or quote
+        // data. Keep diagnostics limited to the failure code and order reference.
+        console.error('Sample quote snapshot insert failed', { code: inserted.error.code || 'unknown', orderId });
+        if (['PGRST204', '42703', '42P01', 'PGRST205'].includes(inserted.error.code)) {
+          return { error: 'The email could not be saved, so nothing was sent. Ask an administrator to apply the sample pricing database update before trying again. Your draft is still editable.' };
+        }
+        return { error: 'The email could not be saved, so nothing was sent. Please try again.' };
+      }
       // Another click or tab won the unique order constraint. Use its exact payload.
       const existing = await supabase.from('prospecting_sample_quotes').select('*').eq('order_id', orderId).maybeSingle();
       if (existing.error || !existing.data) return { error: 'A send attempt is already being saved. Reload to check its status.', locked: true };
@@ -142,22 +155,29 @@ export async function sendSampleQuote({ orderId, trackingNumber, lines, greeting
     } else quote = inserted.data;
   }
   if (!quote) return { error: 'The email could not be saved, so nothing was sent.' };
-  if (quote.sent_at) return { sentAt: quote.sent_at, locked: true };
+  if (quote.sent_at) return { sentAt: quote.sent_at, locked: true, ccEmails: quote.cc_emails ?? [] };
   const savedInput = validateSampleQuoteInput(quote.tracking_number, quote.lines);
   const savedGreetingName = quote.greeting_name ?? getSampleQuoteGreetingName(quote.recipient_name);
+  const savedCc = validateSampleQuoteCcEmails(quote.cc_emails, quote.recipient_email);
   if (!savedInput.ok || quote.tracking_number !== input.trackingNumber || JSON.stringify(savedInput.lines) !== JSON.stringify(input.lines)
-    || quote.recipient_email !== context.contactEmail || quote.sender_email !== context.senderEmail || savedGreetingName !== greeting.greetingName) {
+    || quote.recipient_email !== context.contactEmail || quote.sender_email !== context.senderEmail || savedGreetingName !== greeting.greetingName
+    || !savedCc.ok || JSON.stringify([...savedCc.ccEmails].sort()) !== JSON.stringify([...cc.ccEmails].sort())) {
     return { error: 'An email was already prepared for this order with different details. Reload to review and retry that original email.', locked: true };
   }
   const age = now.getTime() - new Date(quote.created_at).getTime();
   if (!Number.isFinite(age) || age >= SAFE_RETRY_MS || age < -60_000) {
     return { error: 'This earlier send has an unconfirmed status. Ask an administrator to check Resend before sending again, so the customer does not receive a duplicate.', locked: true };
   }
+  // Retain the original BCC payload for older pending quotes; only suppress it
+  // when the owner is explicitly included in this quote's visible CC snapshot.
+  const senderAlreadyIncluded = savedCc.ccEmails.includes(quote.sender_email.trim().toLowerCase());
   try {
     const response = await resend.emails.send({
       from: `${quote.sender_name.replace(/[<>"\r\n]/g, '')} <${quote.sender_email}>`,
-      replyTo: quote.sender_email, to: [quote.recipient_email], bcc: [quote.sender_email], subject: quote.subject,
-      text: quote.body_text, html: quote.body_html,
+      replyTo: quote.sender_email, to: [quote.recipient_email],
+      ...(!senderAlreadyIncluded ? { bcc: [quote.sender_email] } : {}),
+      ...(savedCc.ccEmails.length ? { cc: savedCc.ccEmails } : {}),
+      subject: quote.subject, text: quote.body_text, html: quote.body_html,
     }, { idempotencyKey: `sample-quote/${quote.id}` });
     const deliveryError = resendEmailAcceptanceError(response, 'Samples and pricing email');
     if (deliveryError) return { error: `${deliveryError.message} The saved email can be retried.`, locked: true };
@@ -165,7 +185,7 @@ export async function sendSampleQuote({ orderId, trackingNumber, lines, greeting
     const saved = await supabase.from('prospecting_sample_quotes').update({ sent_at: sentAt, resend_email_id: response.data!.id })
       .eq('id', quote.id).is('sent_at', null).select('sent_at').maybeSingle();
     if (saved.error) return { error: 'The email was accepted, but its confirmation could not be saved. Retry to recover the same email confirmation.', locked: true };
-    return { sentAt: saved.data?.sent_at ?? sentAt, locked: true };
+    return { sentAt: saved.data?.sent_at ?? sentAt, locked: true, ccEmails: quote.cc_emails ?? [] };
   } catch {
     return { error: 'The email response was interrupted. Retry this saved email to safely check whether it was sent.', locked: true };
   }

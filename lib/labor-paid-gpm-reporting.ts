@@ -40,10 +40,15 @@ export type LaborPaidGpmProductionRunRow = {
 };
 
 export type LaborPaidGpmSummary = {
+  accruedLaborCostCents: number;
+  accrualGrossProfitCents: number;
+  accrualGpmPercent: number;
+  accrualTotalCogsCents: number;
   actualGrossProfitCents: number;
   actualLaborGpmPercent: number;
   actualLaborPaidCents: number;
   actualTotalCogsCents: number;
+  deferredProductionAccruedCents: number;
   hourlyEntryCount: number;
   hourlyLaborPaidCents: number;
   laborDifferenceCents: number;
@@ -139,6 +144,7 @@ function buildHourlySegments(
 export function buildLaborPaidGpmSummary({
   allocations,
   current,
+  deferredProductionAccruedCents = 0,
   entries,
   overtimeContextEntries = entries,
   productionRunLaborCogsCents,
@@ -147,6 +153,8 @@ export function buildLaborPaidGpmSummary({
 }: {
   allocations: LaborPaidGpmAllocationRow[];
   current: ProfitabilityTotals;
+  /** Additional earned production compensation, independent of cash settlement. */
+  deferredProductionAccruedCents?: number;
   entries: LaborPaidGpmTimeEntryRow[];
   overtimeContextEntries?: LaborPaidGpmTimeEntryRow[];
   productionRunLaborCogsCents?: number;
@@ -178,6 +186,11 @@ export function buildLaborPaidGpmSummary({
   const totalCogsBeforeLaborCents = Math.max(0, shippedTotalCogsCents - shippedLaborCogsCents);
   const actualTotalCogsCents = totalCogsBeforeLaborCents + actualLaborPaidCents;
   const actualGrossProfitCents = current.revenueCents - actualTotalCogsCents;
+  // A period may carry a cent of cumulative rounding reclassification between labor tags.
+  const deferredProductionCents = Math.round(numericValue(deferredProductionAccruedCents));
+  const accruedLaborCostCents = actualLaborPaidCents + deferredProductionCents;
+  const accrualTotalCogsCents = totalCogsBeforeLaborCents + accruedLaborCostCents;
+  const accrualGrossProfitCents = current.revenueCents - accrualTotalCogsCents;
   const safeProductionRunLaborCogsCents = typeof productionRunLaborCogsCents === 'number' && Number.isFinite(productionRunLaborCogsCents)
     ? productionRunLaborCogsCents
     : productionRuns.reduce((sum, run) => {
@@ -187,10 +200,15 @@ export function buildLaborPaidGpmSummary({
     }, 0);
 
   return {
+    accruedLaborCostCents,
+    accrualGrossProfitCents,
+    accrualGpmPercent: marginPercent(current.revenueCents, accrualGrossProfitCents),
+    accrualTotalCogsCents,
     actualGrossProfitCents,
     actualLaborGpmPercent: marginPercent(current.revenueCents, actualGrossProfitCents),
     actualLaborPaidCents,
     actualTotalCogsCents,
+    deferredProductionAccruedCents: deferredProductionCents,
     hourlyEntryCount: productionEntryIds.size,
     hourlyLaborPaidCents,
     laborDifferenceCents: actualLaborPaidCents - safeProductionRunLaborCogsCents,

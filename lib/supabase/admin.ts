@@ -2,10 +2,14 @@ import 'server-only';
 
 import { createClient } from '@supabase/supabase-js';
 import { env } from '@/lib/env';
+import { createReportInvalidatingFetch } from '@/lib/supabase/report-cache-fetch';
 import type { Database } from './schema';
 
 function createAdminClient() {
   return createClient<Database>(env.supabaseUrl, env.serviceRole, {
+    global: {
+      fetch: createReportInvalidatingFetch((input, init) => globalThis.fetch(input, init), env.supabaseUrl),
+    },
     auth: {
       autoRefreshToken: false,
       detectSessionInUrl: false,

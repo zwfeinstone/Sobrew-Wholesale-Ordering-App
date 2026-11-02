@@ -48,7 +48,10 @@ export function prospectingQueueQuery(
   query = profileId ? query.eq('assigned_profile_id', profileId) : query.is('assigned_profile_id', null);
   query = query.in('stage', prospectingQueueStageFilter(context));
 
-  if (context.tab === 'today') {
+  if (context.tab === 'recent') {
+    // Logged work stays accessible regardless of when its next follow-up is due.
+    query = query.not('last_activity_at', 'is', null);
+  } else if (context.tab === 'today') {
     const preset = context.preset ?? 'all';
     if (preset === 'all') {
       query = query.or(`next_follow_up_at.lte.${today},and(stage.eq.new,next_follow_up_at.is.null,or(last_activity_at.is.null,last_activity_at.lt.${todayStartIso}))`);

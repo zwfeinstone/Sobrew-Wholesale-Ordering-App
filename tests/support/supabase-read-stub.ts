@@ -36,6 +36,7 @@ export function supabaseReadStub({
           return query;
         },
         eq: (column: string, value: unknown) => filter('eq', column, value),
+        is: (column: string, value: unknown) => filter('is', column, value),
         gte: (column: string, value: unknown) => filter('gte', column, value),
         gt: (column: string, value: unknown) => filter('gt', column, value),
         lt: (column: string, value: unknown) => filter('lt', column, value),

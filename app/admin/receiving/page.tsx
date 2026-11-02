@@ -1,4 +1,5 @@
 import { redirect } from 'next/navigation';
+import InventoryReceiptForm from '@/components/inventory-receipt-form';
 import PendingSubmitButton from '@/components/pending-submit-button';
 import StatusToast from '@/components/status-toast';
 import { requireAdminSectionEdit, requireAdminSectionView } from '@/lib/admin-permissions';
@@ -16,6 +17,7 @@ import {
   type InventoryUnit,
 } from '@/lib/inventory';
 import { buildInventoryLotCode, receiptNotesWithSupplierReference } from '@/lib/inventory-lot-codes';
+import { calculateReceiptCosts } from '@/lib/inventory-receiving';
 import { createClient } from '@/lib/supabase/server';
 import { usd } from '@/lib/utils';
 
@@ -98,21 +100,24 @@ async function receiveInventory(formData: FormData) {
 
   const supabase = await createClient();
   const itemId = String(formData.get('inventory_item_id') ?? '');
-  const quantity = parsePositiveNumber(formData.get('quantity'));
-  const itemUnitCostCents = centsFromDollars(String(formData.get('unit_cost') ?? '0'));
-  const freightCents = centsFromDollars(String(formData.get('freight_cost') ?? '0'));
-  const otherCostCents = centsFromDollars(String(formData.get('other_cost') ?? '0'));
+  const costs = calculateReceiptCosts({
+    quantity: String(formData.get('quantity') ?? ''),
+    totalItemCost: String(formData.get('total_item_cost') ?? ''),
+    freightCost: String(formData.get('freight_cost') ?? ''),
+    miscellaneousCost: String(formData.get('other_cost') ?? ''),
+  });
+  if (!costs) redirect(receivingHref('receipt_error'));
+  const { quantity, itemUnitCostCents, freightCents, otherCostCents, landedUnitCostCents } = costs;
 
   const { data: itemResult } = await supabase
     .from('inventory_items')
-    .select('id,name,sku,base_unit,item_type,products(receivable_finished_good)')
+    .select('id,name,sku,base_unit,item_type,products!inventory_items_product_id_fkey(receivable_finished_good)')
     .eq('id', itemId)
     .single();
   const item = itemResult as InventoryItemRow | null;
 
   if (!item || !canReceiveInventoryItem(item) || quantity <= 0) redirect(receivingHref('receipt_error'));
 
-  const landedUnitCostCents = ((quantity * itemUnitCostCents) + freightCents + otherCostCents) / quantity;
   const receivedAt = String(formData.get('received_at') ?? '') || new Date().toISOString();
   const lotCode = buildInventoryLotCode({ item, receivedAt, source: 'purchase' });
   const notes = receiptNotesWithSupplierReference({
@@ -185,7 +190,7 @@ async function adjustInventory(formData: FormData) {
 
   const { data: itemResult } = await supabase
     .from('inventory_items')
-    .select('id,name,sku,base_unit,item_type,products(receivable_finished_good)')
+    .select('id,name,sku,base_unit,item_type,products!inventory_items_product_id_fkey(receivable_finished_good)')
     .eq('id', itemId)
     .single();
   const item = itemResult as InventoryItemRow | null;
@@ -328,11 +333,12 @@ export default async function ReceivingPage(
   const canReverseReceipts = current.isOwner;
   const supabase = await createClient();
   const toast = typeof searchParams?.toast === 'string' ? searchParams.toast : '';
-  const [{ data: items }, { data: receipts }, { data: expenses }] = await Promise.all([
-    supabase.from('inventory_items').select('id,name,sku,item_type,base_unit,active,products(receivable_finished_good)').eq('active', true).order('name', { ascending: true }),
+  const [{ data: items, error: itemsError }, { data: receipts }, { data: expenses }] = await Promise.all([
+    supabase.from('inventory_items').select('id,name,sku,item_type,base_unit,active,products!inventory_items_product_id_fkey(receivable_finished_good)').eq('active', true).order('name', { ascending: true }),
     supabase.from('inventory_receipts').select('id,inventory_item_id,quantity,unit,landed_unit_cost_cents,received_at,supplier,reversed_at,reversal_reason,inventory_lots(id,lot_code,quantity_remaining)').order('received_at', { ascending: false }).limit(8),
     supabase.from('non_inventory_expenses').select('id,expense_type,vendor,amount_cents,spent_at').order('spent_at', { ascending: false }).limit(8),
   ]);
+  if (itemsError) console.error('[receiving] Unable to load inventory items', itemsError);
   const receivableItems = ((items ?? []) as InventoryItemRow[]).filter(canReceiveInventoryItem);
   const itemById = new Map(receivableItems.map((item) => [item.id, item]));
 
@@ -380,39 +386,19 @@ export default async function ReceivingPage(
           <PendingSubmitButton className="btn-primary w-full sm:w-auto" label="Save inventory item" pendingLabel="Saving..." />
         </form>
 
-        <form action={receiveInventory} className="card space-y-4">
-          <div>
-            <span className="eyebrow">Receive</span>
-            <h2 className="mt-3 text-2xl font-semibold tracking-tight text-slate-950">Receive purchased inventory</h2>
-            <p className="mt-2 text-sm text-slate-500">Creates a clean internal lot code automatically, updates stock, and calculates landed unit cost.</p>
+        {itemsError ? (
+          <div className="card space-y-3" role="alert">
+            <h2 className="text-xl font-semibold text-slate-950">Unable to load inventory items</h2>
+            <p className="text-sm text-slate-600">Reload the page to try again.</p>
+            <a className="btn-secondary inline-flex" href="/admin/receiving">Reload inventory</a>
           </div>
-          <label className="space-y-2 text-sm font-medium text-slate-700">
-            Item received
-            <select className="input" name="inventory_item_id" required defaultValue="">
-              <option value="" disabled>Select inventory item</option>
-              {receivableItems.map((item) => <option key={item.id} value={item.id}>{itemDisplayName(item)} - {inventoryItemTypeLabel(item.item_type)} - {item.base_unit}</option>)}
-            </select>
-          </label>
-          <div className="grid gap-3 sm:grid-cols-2">
-            <input className="input" name="supplier_reference" placeholder="Supplier batch or PO reference" />
-            <input className="input" name="received_at" type="date" defaultValue={new Date().toISOString().slice(0, 10)} />
-          </div>
-          <input className="input" name="supplier" placeholder="Supplier" />
-          <div className="grid gap-3 sm:grid-cols-2">
-            <input className="input" name="quantity" required min="0.0001" step="0.0001" type="number" placeholder="Quantity received" />
-            <input className="input" name="unit_cost" required min="0" step="0.0001" type="number" placeholder="Item cost per unit" />
-          </div>
-          <div className="grid gap-3 sm:grid-cols-2">
-            <input className="input" name="freight_cost" min="0" step="0.01" type="number" placeholder="Freight/shipping total" />
-            <input className="input" name="other_cost" min="0" step="0.01" type="number" placeholder="Other landed cost" />
-          </div>
-          <textarea className="input min-h-20" name="notes" placeholder="Receipt notes" />
-          <PendingSubmitButton className="btn-primary w-full sm:w-auto" label="Receive lot" pendingLabel="Receiving..." />
-        </form>
+        ) : (
+          <InventoryReceiptForm action={receiveInventory} items={receivableItems} receivedAt={new Date().toISOString().slice(0, 10)} />
+        )}
       </section>
 
       <section className="grid gap-6 xl:grid-cols-2">
-        <form action={adjustInventory} className="card space-y-4">
+        {!itemsError ? <form action={adjustInventory} className="card space-y-4">
           <div>
             <span className="eyebrow">Adjust</span>
             <h2 className="mt-3 text-2xl font-semibold tracking-tight text-slate-950">Starting counts and corrections</h2>
@@ -437,7 +423,7 @@ export default async function ReceivingPage(
           </div>
           <textarea className="input min-h-20" name="notes" placeholder="Adjustment reason" />
           <PendingSubmitButton className="btn-primary w-full sm:w-auto" label="Save adjustment" pendingLabel="Saving..." />
-        </form>
+        </form> : null}
 
         <form action={recordExpense} className="card space-y-4">
           <div>

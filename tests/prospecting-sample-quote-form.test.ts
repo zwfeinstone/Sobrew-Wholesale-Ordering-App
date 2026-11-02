@@ -16,10 +16,13 @@ const props = {
 describe('sample quote review form', () => {
   it('starts with every catalog item unchecked and a neutral prompt to select items', () => {
     const html = renderToStaticMarkup(createElement(ProspectingSampleQuoteForm, props));
-    expect((html.match(/type="checkbox"/g) || []).length).toBe(11);
+    expect((html.match(/type="checkbox"/g) || []).length).toBe(13);
     expect((html.match(/type="checkbox" checked=""/g) || []).length).toBe(0);
-    expect(html).toContain('value="40.00"');
-    expect(html).toContain('value="48.00"');
+    expect(html).toContain('value="42.50"');
+    expect(html).toContain('value="60.00"');
+    expect((html.match(/value="115.00"/g) || []).length).toBe(2);
+    expect(html).toContain('Bag in Box Concentrate');
+    expect(html).toContain('2 x 64oz');
     expect(html).toContain('name="greeting_name"');
     expect(html).toContain('value="Ron"');
     expect(html).toContain('maxLength="120"');
@@ -86,5 +89,13 @@ describe('sample quote review form', () => {
     expect(preview).not.toContain('Thanks for your interest in Sobrew Coffee');
     expect(preview).not.toContain('Hi Previously saved name!');
     expect(html).toMatch(/id="sample-greeting-name"[^>]*disabled=""/);
+  });
+
+  it('shows an optional CC field and previews saved CC recipients on locked quotes', () => {
+    const html = renderToStaticMarkup(createElement(ProspectingSampleQuoteForm, { ...props, locked: true, initialCcEmails: ['lisa@example.test'], initialTrackingNumber: '1Z123', initialLines: [{ id: 'bulk-regular', priceCents: 3500 }] }));
+    expect(html).toContain('CC (optional)');
+    expect(html).toContain('Does anyone else need a copy of this pricing email?');
+    expect(html).toMatch(/<textarea[^>]*name="cc_emails"[^>]*disabled=""[^>]*>lisa@example.test<\/textarea>/);
+    expect(html).toMatch(/<dt[^>]*>CC<\/dt><dd[^>]*>lisa@example.test<\/dd>/);
   });
 });

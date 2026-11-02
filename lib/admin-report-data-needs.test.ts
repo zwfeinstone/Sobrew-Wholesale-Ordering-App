@@ -111,11 +111,11 @@ describe('dataNeedsForReport', () => {
     });
   });
 
-  it('loads inventory items and adjustments only for inventory adjustment reporting', () => {
+  it('loads adjustments with embedded items without separate inventory valuation', () => {
     expect(dataNeedsForReport('inventory_adjustments')).toEqual({
       coreCommerce: false,
       inventoryAdjustments: true,
-      inventoryValuation: true,
+      inventoryValuation: false,
       laborPaidGpm: false,
       nonInventoryExpenses: false,
       productionInputs: false,

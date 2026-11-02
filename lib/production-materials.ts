@@ -11,6 +11,7 @@ export type ProductionMaterialItem = {
   id: string;
   base_unit: InventoryUnit;
   active?: boolean | null;
+  item_type?: string | null;
   name?: string;
   sku?: string | null;
 };
@@ -28,6 +29,12 @@ export type ProductionMaterialRecipe = {
   output_qty: number | string;
   waste_percent: number | string;
   product_recipe_components?: ProductionMaterialComponent[] | null;
+  material_fallbacks?: ProductionMaterialFallback[] | null;
+};
+
+export type ProductionMaterialFallback = {
+  primary_inventory_item_id: string;
+  fallback_inventory_item_id: string;
 };
 
 export type ProductionComponentPayload = {
@@ -125,6 +132,8 @@ export function buildProductionMaterialPreview({
 
   const remaining = new Map(onHandByItemId);
   const fallback = productCategory === 'sample_boxes' ? preferredProductionFallbackItem(fallbackItems) : null;
+  const fallbackByPrimary = new Map((recipe.material_fallbacks ?? [])
+    .map((rule) => [rule.primary_inventory_item_id, rule.fallback_inventory_item_id]));
   const payload: ProductionComponentPayload[] = [];
   const available = (id: string) => Math.max(0, normalizeInventoryNumber(remaining.get(id)));
   const addLine = (line: ProductionComponentPayload) => {
@@ -160,19 +169,35 @@ export function buildProductionMaterialPreview({
       usedQty = roundWholeCountQuantity(usedQty);
     }
 
-    if (fallback && isSampleBoxPrimaryComponent(component) && fallback.base_unit === item.base_unit) {
-      const primaryAvailable = available(component.inventory_item_id);
+    const explicitFallbackId = fallbackByPrimary.get(component.inventory_item_id);
+    const explicitFallback = explicitFallbackId && explicitFallbackId !== component.inventory_item_id
+      ? fallbackItems.find((candidate) => candidate.id === explicitFallbackId && candidate.active === true
+        && candidate.item_type === 'material_supply' && candidate.base_unit === item.base_unit)
+      : null;
+    if (explicitFallbackId && (!explicitFallback || item.active !== true || item.item_type !== 'material_supply')) {
+      // Configured rules are validated even when primary stock covers the run,
+      // matching the database's checks before it locks and consumes inventory.
+      return { ...result, invalidRecipe: true };
+    }
+    const eligibleFallback = explicitFallback ?? (!explicitFallbackId && fallback && isSampleBoxPrimaryComponent(component) && fallback.base_unit === item.base_unit ? fallback : null);
+    if (eligibleFallback) {
+      const wholeCount = isWholeCountPackagingComponentRole(component.component_role) && item.base_unit === 'each';
+      // Match the database's whole-package floor. Lots store four decimal
+      // places, so normalize only floating-point summation noise first.
+      const primaryAvailable = wholeCount ? Math.floor(Math.round(available(component.inventory_item_id) * 10_000) / 10_000) : available(component.inventory_item_id);
       const primaryUsed = Math.min(primaryAvailable, usedQty);
       const fallbackUsed = Math.max(0, usedQty - primaryUsed);
-      // A substitution is valid only when it can cover the entire missing quantity.
+      // Explicit rules retain their shortage on the designated alternative, so
+      // shared planning never counts that inventory twice. Keep the historical
+      // carton rule's all-or-nothing fallback behavior.
       if (primaryAvailable + QUANTITY_EPSILON < usedQty
         && fallbackUsed > QUANTITY_EPSILON
-        && available(fallback.id) + QUANTITY_EPSILON >= fallbackUsed) {
+        && (explicitFallback || available(eligibleFallback.id) + QUANTITY_EPSILON >= fallbackUsed)) {
         const primaryExpected = usedQty > QUANTITY_EPSILON ? expectedQty * (primaryUsed / usedQty) : 0;
         if (primaryUsed > QUANTITY_EPSILON || primaryExpected > QUANTITY_EPSILON) {
           addLine({ inventory_item_id: component.inventory_item_id, quantity_expected: primaryExpected, quantity_used: primaryUsed, unit: item.base_unit });
         }
-        addLine({ inventory_item_id: fallback.id, quantity_expected: Math.max(0, expectedQty - primaryExpected), quantity_used: fallbackUsed, unit: fallback.base_unit });
+        addLine({ inventory_item_id: eligibleFallback.id, quantity_expected: Math.max(0, expectedQty - primaryExpected), quantity_used: fallbackUsed, unit: eligibleFallback.base_unit });
         continue;
       }
     }

@@ -51,7 +51,7 @@ describe('invoicing sample order exclusion contract', () => {
     );
     expect((invoicingPage.match(/\.neq\('order_kind', PROSPECTING_SAMPLE_ORDER_KIND\)/g) ?? []).length).toBeGreaterThanOrEqual(3);
     expect(invoiceDownloadRoute).toMatch(
-      /\.select\('id,order_kind,status[\s\S]*?order_kind === PROSPECTING_SAMPLE_ORDER_KIND/
+      /\.select\('id,(?:order_source,)?order_kind,status[\s\S]*?order_kind === PROSPECTING_SAMPLE_ORDER_KIND/
     );
     expect(invoiceDownloadRoute).toContain(".neq('order_kind', PROSPECTING_SAMPLE_ORDER_KIND)");
   });

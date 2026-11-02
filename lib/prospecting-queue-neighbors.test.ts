@@ -87,6 +87,8 @@ describe('prospecting queue neighbor cursors', () => {
     { tab: 'pipeline' },
     { tab: 'pipeline', stage: 'new' },
     { tab: 'list', list: LIST_ID },
+    { tab: 'recent' },
+    { tab: 'recent', list: LIST_ID },
   ])('finds exact adjacent rows under every queue ordering: %j', (params) => {
     const fields = prospectingQueueOrderFields(prospectingQueueContextFromParams(params));
     const sorted = [...rows].sort((left, right) => compareRows(left, right, fields));
@@ -149,6 +151,47 @@ const options = {
 };
 
 describe('prospecting neighbor requests through the installed Supabase client', () => {
+  it('revisits future follow-ups in newest-work order with stable timestamp ties', async () => {
+    const recentRows = [
+      { ...cursor, id: PREVIOUS_ID, last_activity_at: '2026-09-08T10:00:00+00:00', next_follow_up_at: '2026-10-01' },
+      { ...cursor, id: CURRENT_ID, last_activity_at: '2026-09-08T10:00:00+00:00', next_follow_up_at: '2026-10-02' },
+      { ...cursor, id: NEXT_ID, last_activity_at: '2026-09-07T10:00:00+00:00', next_follow_up_at: '2026-10-03' },
+      { ...cursor, id: '00000000-0000-0000-0000-000000000004', last_activity_at: null, next_follow_up_at: null },
+    ];
+    const { supabase, requests } = queryFixture((url) => {
+      if (url.searchParams.get('id') === `eq.${CURRENT_ID}`) return [recentRows[1]];
+      const fields = url.searchParams.get('order')!.split(',').map((field) => {
+        const [column, direction, nulls] = field.split('.');
+        return { column, ascending: direction === 'asc', nullsFirst: nulls === 'nullsfirst' };
+      });
+      return recentRows
+        .filter((row) => url.searchParams.get('last_activity_at') !== 'not.is.null' || row.last_activity_at !== null)
+        .filter((row) => url.searchParams.getAll('or').every((filter) => matches(`or${filter}`, row)))
+        .sort((left, right) => compareRows(left, right, fields))
+        .slice(0, Number(url.searchParams.get('limit')));
+    });
+    const context = prospectingQueueContextFromParams({ tab: 'recent', list: LIST_ID, state: 'IL' });
+    expect(context.tab).toBe('recent');
+
+    expect(await loadProspectingQueueNeighbors(supabase, { ...options, context })).toEqual({
+      previousLeadId: PREVIOUS_ID, nextLeadId: NEXT_ID,
+    });
+    expect(requests).toHaveLength(3);
+    for (const url of requests.slice(1)) {
+      expect(url.searchParams.get('assigned_profile_id')).toBe(`eq.${REP_ID}`);
+      expect(url.searchParams.get('archived_at')).toBe('is.null');
+      expect(url.searchParams.get('do_not_contact')).toBe('eq.false');
+      expect(url.searchParams.get('stage')).toBe('in.(new,working,follow_up,interested)');
+      expect(url.searchParams.get('last_activity_at')).toBe('not.is.null');
+      expect(url.searchParams.get('state_key')).toBe('eq.IL');
+      expect(url.searchParams.get('prospecting_list_leads.list_id')).toBe(`eq.${LIST_ID}`);
+      expect(url.searchParams.has('next_follow_up_at')).toBe(false);
+      expect(url.searchParams.getAll('or').join(',')).not.toContain('next_follow_up_at');
+    }
+    expect(requests[1].searchParams.get('order')).toBe('last_activity_at.asc.nullslast,id.desc.nullsfirst');
+    expect(requests[2].searchParams.get('order')).toBe('last_activity_at.desc.nullsfirst,id.asc.nullslast');
+  });
+
   it('keeps every queue filter on membership and both bounded neighbor queries', async () => {
     const { supabase, requests } = queryFixture((url) => {
       if (url.searchParams.get('id') === `eq.${CURRENT_ID}`) return [cursor];

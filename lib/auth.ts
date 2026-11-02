@@ -8,7 +8,7 @@ import {
 import { loadSavedAdminPermissions } from '@/lib/admin-permission-save';
 import { logAuthProfileIssue } from '@/lib/auth-diagnostics';
 import { scheduleUserLastSeen } from '@/lib/last-seen';
-import { logServerTiming } from '@/lib/server-performance';
+import { elapsedMilliseconds, logServerTiming } from '@/lib/server-performance';
 import { createClient } from '@/lib/supabase/server';
 import { getVerifiedClaims } from '@/lib/supabase/verified-claims';
 import { env } from '@/lib/env';
@@ -91,7 +91,9 @@ async function loadAdminCenterScope({
 export const getRequestContext = cache(async (): Promise<RequestContext> => {
   const requestContextStartedAt = performance.now();
   const supabase = await createClient();
+  const claimsStartedAt = performance.now();
   const { data: claimsData, error: claimsError } = await getVerifiedClaims(supabase.auth, env.supabaseUrl);
+  const claimsMs = elapsedMilliseconds(claimsStartedAt);
   if (claimsError) {
     logAuthProfileIssue('Protected route auth claims verification failed', claimsError);
   }
@@ -99,12 +101,14 @@ export const getRequestContext = cache(async (): Promise<RequestContext> => {
   const user = requestUserFromClaims(claimsData?.claims);
   if (!user) redirect('/login');
 
+  const profileStartedAt = performance.now();
   const { data: profile, error: profileError } = await supabase
     .from('profiles')
     .select('id,is_admin,is_superadmin,is_active,email,full_name,avatar_url,center_id,centers!profiles_center_id_fkey(id,name,is_active)')
     .eq('id', user.id)
     .maybeSingle();
 
+  const profileMs = elapsedMilliseconds(profileStartedAt);
   if (profileError || !profile) {
     logAuthProfileIssue('Protected route profile lookup failed', profileError, user.id);
     await supabase.auth.signOut();
@@ -138,6 +142,7 @@ export const getRequestContext = cache(async (): Promise<RequestContext> => {
   let adminAccess: AdminAccessMap | null = null;
   let centerScope: string[] | null = profile.center_id ? [profile.center_id] : [];
 
+  const permissionsStartedAt = performance.now();
   if (profile.is_admin) {
     [adminAccess, centerScope] = await Promise.all([
       loadSavedAdminPermissions(supabase, profile.id, user.email || profile.email, profile.is_superadmin),
@@ -156,6 +161,9 @@ export const getRequestContext = cache(async (): Promise<RequestContext> => {
   logServerTiming('auth_context', requestContextStartedAt, {
     is_admin: Boolean(profile.is_admin),
     is_owner: isOwnerAdmin,
+    claims_ms: claimsMs,
+    profile_ms: profileMs,
+    permissions_scope_ms: elapsedMilliseconds(permissionsStartedAt),
   });
   return context;
 });

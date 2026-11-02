@@ -36,6 +36,7 @@ export const MISSING_STATE_FILTER = 'missing';
 
 export const REP_PROSPECTING_TABS = [
   { id: 'today', label: 'Today' },
+  { id: 'recent', label: 'Recently worked' },
   { id: 'list', label: 'List' },
   { id: 'pipeline', label: 'Pipeline' },
   { id: 'tasks', label: 'Tasks' },
@@ -548,6 +549,12 @@ export function prospectingQueueSkipsTouchedToday(context: ProspectingQueueConte
 }
 
 export function prospectingQueueOrderFields(context: ProspectingQueueContext) {
+  if (context.tab === 'recent') {
+    return [
+      { column: 'last_activity_at', ascending: false },
+      { column: 'id', ascending: true },
+    ];
+  }
   if (context.tab === 'tasks' || (context.tab === 'today' && !['new', 'needs_scheduling'].includes(context.preset ?? 'all'))) {
     return [
       { column: 'next_follow_up_at', ascending: true },

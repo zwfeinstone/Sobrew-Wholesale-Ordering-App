@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { SampleQuoteRow } from '@/lib/supabase/schema';
 import type { SupabaseAdminClient } from '@/lib/supabase/admin';
 import { buildSampleQuoteEmail } from './prospecting-sample-quote';
@@ -88,7 +88,7 @@ function savedQuote(overrides: Partial<SampleQuoteRow> = {}): SampleQuoteRow {
   return {
     id: QUOTE_ID, order_id: ORDER_ID, lead_id: LEAD_ID, contact_id: CONTACT_ID,
     sender_profile_id: REP_ID, created_by: REP_ID, sender_name: 'Haskins', sender_email: 'haskins@sobrew.com',
-    recipient_name: 'Ron Buyer', recipient_email: 'ron@example.com', greeting_name: null, tracking_number: TRACKING,
+    recipient_name: 'Ron Buyer', recipient_email: 'ron@example.com', cc_emails: [], greeting_name: null, tracking_number: TRACKING,
     lines: structuredClone(LINES), subject: content.subject, body_text: content.text, body_html: content.html,
     created_at: NOW.toISOString(), sent_at: null, resend_email_id: null, ...overrides,
   };
@@ -117,9 +117,29 @@ describe('sample quote authorized context', () => {
 
   it('allows an owner to handle another rep’s lead while sending from that assigned rep', async () => {
     const { options, db, send } = setup();
-    expect(await sendSampleQuote({ ...options, actorId: OWNER_ID, isOwner: true })).toEqual({ sentAt: NOW.toISOString(), locked: true });
+    expect(await sendSampleQuote({ ...options, actorId: OWNER_ID, isOwner: true })).toEqual({ sentAt: NOW.toISOString(), locked: true, ccEmails: [] });
     expect(send).toHaveBeenCalledWith(expect.objectContaining({ from: 'Haskins <haskins@sobrew.com>', replyTo: 'haskins@sobrew.com', to: ['ron@example.com'], bcc: ['haskins@sobrew.com'] }), { idempotencyKey: `sample-quote/${QUOTE_ID}` });
     expect(db.tables.prospecting_sample_quotes[0]).toMatchObject({ sender_profile_id: REP_ID, created_by: OWNER_ID, sent_at: NOW.toISOString(), resend_email_id: 'resend-email-1' });
+  });
+
+  it.each([
+    { actorId: REP_ID, isOwner: false, actor: 'Thomas' },
+    { actorId: OWNER_ID, isOwner: true, actor: 'an administrator' },
+  ])('sends Thomas’s requested sample pricing from his email and BCCs him when $actor sends it', async ({ actorId, isOwner }) => {
+    const { options, db, send } = setup();
+    db.tables.prospecting_leads[0].stage = 'sample_requested';
+    Object.assign(db.tables.profiles[0], { full_name: 'Thomas Sheddan', email: ' Thomas@Sobrew.com ' });
+
+    expect(await sendSampleQuote({ ...options, actorId, isOwner, expectedSenderEmail: 'thomas@sobrew.com', ccEmails: 'colleague@example.com' }))
+      .toEqual({ sentAt: NOW.toISOString(), locked: true, ccEmails: ['colleague@example.com'] });
+
+    expect(send).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      from: 'Thomas Sheddan <thomas@sobrew.com>', replyTo: 'thomas@sobrew.com',
+      to: ['ron@example.com'], cc: ['colleague@example.com'], bcc: ['thomas@sobrew.com'],
+    }), { idempotencyKey: `sample-quote/${QUOTE_ID}` });
+    expect(db.tables.prospecting_sample_quotes[0]).toMatchObject({
+      sender_profile_id: REP_ID, created_by: actorId, sender_email: 'thomas@sobrew.com', sender_name: 'Thomas Sheddan',
+    });
   });
 
   it('denies an unrelated rep before reading contact information', async () => {
@@ -145,7 +165,7 @@ describe('sample quote authorized context', () => {
     const { db, options, send } = setup();
     db.tables.prospecting_leads[0].stage = 'sample_requested';
     expect(await loadSampleQuoteContext(options)).toMatchObject({ ok: true, context: { leadId: LEAD_ID, senderProfileId: REP_ID } });
-    expect(await sendSampleQuote(options)).toEqual({ sentAt: NOW.toISOString(), locked: true });
+    expect(await sendSampleQuote(options)).toEqual({ sentAt: NOW.toISOString(), locked: true, ccEmails: [] });
     expect(send).toHaveBeenCalledTimes(1);
   });
 
@@ -183,6 +203,78 @@ describe('sample quote authorized context', () => {
 });
 
 describe('sample quote delivery and immutable retries', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it('saves normalized CC recipients and sends them as visible carbon copies while keeping the owner BCC', async () => {
+    const { options, db, send } = setup();
+    expect(await sendSampleQuote({ ...options, ccEmails: ' Ann@Example.com; bob@example.com\nANN@example.com, RON@EXAMPLE.COM ' }))
+      .toMatchObject({ sentAt: NOW.toISOString() });
+    expect(db.tables.prospecting_sample_quotes[0].cc_emails).toEqual(['ann@example.com', 'bob@example.com']);
+    expect(send.mock.calls[0][0]).toMatchObject({ to: ['ron@example.com'], cc: ['ann@example.com', 'bob@example.com'], bcc: ['haskins@sobrew.com'] });
+  });
+
+  it('includes the owner once when explicitly copied', async () => {
+    const { options, send } = setup();
+    expect(await sendSampleQuote({ ...options, ccEmails: ' HASKINS@SOBREW.COM; colleague@example.com ' })).toMatchObject({ sentAt: NOW.toISOString() });
+    expect(send.mock.calls[0][0].cc).toEqual(['haskins@sobrew.com', 'colleague@example.com']);
+    expect(send.mock.calls[0][0]).not.toHaveProperty('bcc');
+  });
+
+  it('preserves the legacy BCC payload when the sender is also the primary recipient', async () => {
+    const { db, options, send } = setup();
+    db.tables.prospecting_contacts[1].email = 'HASKINS@SOBREW.COM';
+    expect(await sendSampleQuote({ ...options, expectedRecipientEmail: 'HASKINS@SOBREW.COM' })).toMatchObject({ sentAt: NOW.toISOString() });
+    expect(send.mock.calls[0][0].to).toEqual(['HASKINS@SOBREW.COM']);
+    expect(send.mock.calls[0][0].bcc).toEqual(['haskins@sobrew.com']);
+  });
+
+  it.each(['bad-address', 'ann@example.com\r\nBcc: unexpected@example.com', Array.from({ length: 21 }, (_, index) => `person${index}@example.com`)])
+    ('rejects invalid CCs before saving a snapshot or contacting Resend: %j', async ccEmails => {
+      const { options, db, send, listDomains } = setup();
+      expect(await sendSampleQuote({ ...options, ccEmails })).toMatchObject({ error: expect.any(String), locked: false });
+      expect(db.tables.prospecting_sample_quotes).toEqual([]);
+      expect(send).not.toHaveBeenCalled();
+      expect(listDomains).not.toHaveBeenCalled();
+    });
+
+  it('keeps the saved CC order and provider payload when retry inputs reorder or repeat recipients', async () => {
+    const { options, db, send } = setup();
+    db.tables.prospecting_sample_quotes.push(savedQuote({ cc_emails: ['bob@example.com', 'ann@example.com'] }));
+    send.mockRejectedValueOnce(new Error('Lost acknowledgement'));
+    expect(await sendSampleQuote({ ...options, ccEmails: 'BOB@example.com, ann@example.com' })).toMatchObject({ error: expect.any(String), locked: true });
+    expect(await sendSampleQuote({ ...options, ccEmails: ['ann@example.com', 'bob@example.com', 'ann@example.com'] })).toMatchObject({ sentAt: NOW.toISOString() });
+    expect(send.mock.calls[0]).toEqual(send.mock.calls[1]);
+    expect(send.mock.calls[0][0].cc).toEqual(['bob@example.com', 'ann@example.com']);
+    expect(send.mock.calls[0][1]).toEqual({ idempotencyKey: `sample-quote/${QUOTE_ID}` });
+  });
+
+  it.each([undefined, '', 'different@example.com', 'ann@example.com, extra@example.com'])
+    ('blocks recipient changes to a saved send attempt: %j', async ccEmails => {
+      const { options, db, send } = setup();
+      db.tables.prospecting_sample_quotes.push(savedQuote({ cc_emails: ['ann@example.com'] }));
+      expect(await sendSampleQuote({ ...options, ccEmails })).toMatchObject({ error: expect.stringContaining('different details'), locked: true });
+      expect(send).not.toHaveBeenCalled();
+      expect(db.calls.filter(call => call.operation === 'update')).toEqual([]);
+    });
+
+  it('blocks competing snapshots with different CC recipients', async () => {
+    const { options, db, send } = setup();
+    db.insertRace = savedQuote({ cc_emails: ['other@example.com'] });
+    expect(await sendSampleQuote({ ...options, ccEmails: ['ann@example.com'] })).toMatchObject({ error: expect.stringContaining('different details'), locked: true });
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it('retries old snapshots without CC data using the unchanged recipient payload', async () => {
+    const { options, db, send } = setup();
+    const legacy = savedQuote();
+    const { cc_emails: _ccEmails, ...oldColumns } = legacy;
+    db.tables.prospecting_sample_quotes.push(oldColumns);
+    expect(await sendSampleQuote(options)).toMatchObject({ sentAt: NOW.toISOString() });
+    expect(send.mock.calls[0][0]).not.toHaveProperty('cc');
+    expect(send.mock.calls[0][0].bcc).toEqual(['haskins@sobrew.com']);
+    expect(db.tables.prospecting_sample_quotes[0]).not.toHaveProperty('cc_emails');
+  });
+
   it('persists a trimmed multiword greeting without changing the original recipient identity', async () => {
     const { options, db, send } = setup();
     expect(await sendSampleQuote({ ...options, greetingName: '  Ron and the team  ' })).toMatchObject({ sentAt: NOW.toISOString() });
@@ -274,11 +366,45 @@ describe('sample quote delivery and immutable retries', () => {
     expect(listDomains).not.toHaveBeenCalled();
   });
 
+  it('keeps Thomas’s original sender, BCC, and provider key after an interrupted send even if his profile email changes', async () => {
+    const { db, options, send } = setup();
+    Object.assign(db.tables.profiles[0], { full_name: 'Thomas Sheddan', email: 'thomas@sobrew.com' });
+    const thomasOptions = { ...options, expectedSenderEmail: 'thomas@sobrew.com' };
+    send.mockRejectedValueOnce(new Error('Lost acknowledgement'));
+
+    expect(await sendSampleQuote(thomasOptions)).toMatchObject({ error: expect.stringContaining('interrupted'), locked: true });
+    db.tables.profiles[0].email = 'rob@sobrew.com';
+    expect(await sendSampleQuote(thomasOptions)).toMatchObject({ sentAt: NOW.toISOString() });
+
+    expect(send.mock.calls[0]).toEqual(send.mock.calls[1]);
+    expect(send.mock.calls[1]).toEqual([expect.objectContaining({
+      from: 'Thomas Sheddan <thomas@sobrew.com>', replyTo: 'thomas@sobrew.com', bcc: ['thomas@sobrew.com'],
+    }), { idempotencyKey: `sample-quote/${QUOTE_ID}` }]);
+    expect(db.calls.filter(call => call.operation === 'insert')).toHaveLength(1);
+    expect(db.tables.prospecting_sample_quotes[0].sender_email).toBe('thomas@sobrew.com');
+  });
+
   it('returns the existing confirmation without resending even after later inputs change', async () => {
     const { db, options, send } = setup();
     const sentAt = '2026-09-29T10:00:00.000Z';
     db.tables.prospecting_sample_quotes.push(savedQuote({ sent_at: sentAt }));
-    expect(await sendSampleQuote({ ...options, lines: [], trackingNumber: '', resend: null })).toEqual({ sentAt, locked: true });
+    expect(await sendSampleQuote({ ...options, lines: [], trackingNumber: '', resend: null })).toEqual({ sentAt, locked: true, ccEmails: [] });
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it('confirms only the saved CC recipients when another tab already sent different recipients', async () => {
+    const { db, options, send } = setup();
+    db.tables.prospecting_sample_quotes.push(savedQuote({ sent_at: NOW.toISOString(), cc_emails: ['alice@example.com'] }));
+    expect(await sendSampleQuote({ ...options, ccEmails: ['bob@example.com'] }))
+      .toEqual({ sentAt: NOW.toISOString(), locked: true, ccEmails: ['alice@example.com'] });
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it('confirms the actual CC recipients after losing a race to an already-sent snapshot', async () => {
+    const { db, options, send } = setup();
+    db.insertRace = savedQuote({ sent_at: NOW.toISOString(), cc_emails: ['alice@example.com'] });
+    expect(await sendSampleQuote({ ...options, ccEmails: ['bob@example.com'] }))
+      .toEqual({ sentAt: NOW.toISOString(), locked: true, ccEmails: ['alice@example.com'] });
     expect(send).not.toHaveBeenCalled();
   });
 
@@ -288,17 +414,19 @@ describe('sample quote delivery and immutable retries', () => {
     db.tables.prospecting_sample_quotes.push(savedQuote({ contact_id: null, sent_at: sentAt }));
     db.tables.prospecting_contacts = [];
     expect(await loadSampleQuoteContext(options)).toMatchObject({ ok: true, context: { contactId: '', contactName: 'Ron Buyer', contactEmail: 'ron@example.com' } });
-    expect(await sendSampleQuote(options)).toEqual({ sentAt, locked: true });
+    expect(await sendSampleQuote(options)).toEqual({ sentAt, locked: true, ccEmails: [] });
     expect(send).not.toHaveBeenCalled();
   });
 
   it('uses the winning immutable snapshot after a duplicate-insert race', async () => {
     const { db, options, send } = setup();
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
     db.insertRace = savedQuote({ body_text: 'Race winner text' });
     expect(await sendSampleQuote(options)).toMatchObject({ sentAt: NOW.toISOString() });
     expect(db.tables.prospecting_sample_quotes).toHaveLength(1);
     expect(send.mock.calls[0][0].text).toBe('Race winner text');
     expect(send.mock.calls[0][1]).toEqual({ idempotencyKey: `sample-quote/${QUOTE_ID}` });
+    expect(log).not.toHaveBeenCalled();
   });
 
   it('does not send when the competing saved email contains different pricing', async () => {
@@ -393,7 +521,24 @@ describe('sample quote delivery and immutable retries', () => {
     expect(send).not.toHaveBeenCalled();
   });
 
+  it.each(['PGRST204', '42703', '42P01', 'PGRST205'])('identifies missing quote schema (%s) without sending or exposing submitted data', async code => {
+    const { db, options, send } = setup();
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    db.errors['prospecting_sample_quotes:insert'] = { code, message: 'Missing column: private-recipient@example.com, quoted price $35.00' };
+
+    const result = await sendSampleQuote(options);
+
+    expect(result.error).toContain('Ask an administrator to apply the sample pricing database update');
+    expect(result.error).toContain('nothing was sent');
+    expect(result.locked).not.toBe(true);
+    expect(send).not.toHaveBeenCalled();
+    expect(db.tables.prospecting_sample_quotes).toEqual([]);
+    expect(db.calls.filter(call => call.operation === 'insert')).toHaveLength(1);
+    expect(log).toHaveBeenCalledExactlyOnceWith('Sample quote snapshot insert failed', { code, orderId: ORDER_ID });
+  });
+
   it('sends nothing when durable quote storage cannot be read or written', async () => {
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
     const unavailable = setup();
     unavailable.db.errors['prospecting_sample_quotes:select'] = { code: '42P01', message: 'Missing table' };
     expect(await sendSampleQuote(unavailable.options)).toMatchObject({ error: expect.stringContaining('database update') });
@@ -402,5 +547,7 @@ describe('sample quote delivery and immutable retries', () => {
     insertFailed.db.errors['prospecting_sample_quotes:insert'] = { code: '42501', message: 'Permission denied' };
     expect(await sendSampleQuote(insertFailed.options)).toMatchObject({ error: expect.stringContaining('nothing was sent') });
     expect(insertFailed.send).not.toHaveBeenCalled();
+    expect(insertFailed.db.tables.prospecting_sample_quotes).toEqual([]);
+    expect(log).toHaveBeenCalledExactlyOnceWith('Sample quote snapshot insert failed', { code: '42501', orderId: ORDER_ID });
   });
 });

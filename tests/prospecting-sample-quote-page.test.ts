@@ -33,6 +33,7 @@ function snapshot(greetingName: string | null): SampleQuoteRow {
     id: 'quote-id', order_id: context.orderId, lead_id: context.leadId, contact_id: context.contactId,
     sender_profile_id: context.senderProfileId, created_by: 'actor-id', sender_name: context.senderName,
     sender_email: context.senderEmail, recipient_name: context.contactName, recipient_email: context.contactEmail,
+    cc_emails: [],
     greeting_name: greetingName, tracking_number: '1Z123', lines: [{ id: 'bulk-regular', priceCents: 3500 }],
     subject: 'Original subject', body_text: 'Original text', body_html: '<p>Original HTML</p>',
     created_at: '2026-09-30T12:00:00Z', sent_at: null, resend_email_id: null,
@@ -44,6 +45,7 @@ async function renderForm(quote: SampleQuoteRow | null = null) {
   renderToStaticMarkup(await SampleQuotePage({ params: Promise.resolve({ orderId: context.orderId }) }));
   return mocks.form.mock.calls.at(-1)![0] as unknown as {
     initialGreetingName: string;
+    initialCcEmails: string[];
     contactName: string;
     savedEmail?: { subject: string; html: string };
     action: (previous: object, data: FormData) => Promise<{ error?: string; sentAt?: string }>;
@@ -57,6 +59,7 @@ describe('sample quote page greeting boundary', () => {
     const props = await renderForm();
     expect(props.initialGreetingName).toBe('Ron');
     expect(props.contactName).toBe('Ron Buyer');
+    expect(props.initialCcEmails).toEqual([]);
   });
 
   it.each(['Ron and the team', null])('loads the stored greeting or legacy fallback alongside the exact saved email: %s', async greetingName => {
@@ -75,6 +78,7 @@ describe('sample quote page greeting boundary', () => {
     if (greetingName !== undefined) data.set('greeting_name', greetingName);
     await expect(props.action({}, data)).resolves.toMatchObject({ sentAt: '2026-09-30T12:00:00Z' });
     expect(mocks.send).toHaveBeenCalledWith(expect.objectContaining({ greetingName, actorId: 'actor-id', expectedRecipientEmail: context.contactEmail, expectedSenderEmail: context.senderEmail }));
+    expect(mocks.revalidate).toHaveBeenCalledWith('/admin/center-pricing', 'layout');
   });
 
   it('rejects a non-text greeting field before invoking delivery', async () => {
@@ -83,6 +87,31 @@ describe('sample quote page greeting boundary', () => {
     data.set('order_id', context.orderId);
     data.set('greeting_name', new Blob(['Ron']), 'greeting.txt');
     await expect(props.action({}, data)).resolves.toMatchObject({ error: expect.stringContaining('greeting name') });
+    expect(mocks.send).not.toHaveBeenCalled();
+  });
+
+  it('loads saved CC recipients with the quote', async () => {
+    const props = await renderForm({ ...snapshot('Ron'), cc_emails: ['lisa@example.com'] });
+    expect(props.initialCcEmails).toEqual(['lisa@example.com']);
+  });
+
+  it('forwards optional CC addresses to validated delivery', async () => {
+    const props = await renderForm();
+    const data = new FormData();
+    data.set('order_id', context.orderId);
+    data.set('tracking_number', '1Z123');
+    data.set('lines', JSON.stringify([{ id: 'bulk-regular', priceCents: 3500 }]));
+    data.set('cc_emails', 'Lisa@example.com; buyer@example.com');
+    await expect(props.action({}, data)).resolves.toMatchObject({ sentAt: '2026-09-30T12:00:00Z' });
+    expect(mocks.send).toHaveBeenCalledWith(expect.objectContaining({ ccEmails: 'Lisa@example.com; buyer@example.com' }));
+  });
+
+  it('rejects a non-text CC field before invoking delivery', async () => {
+    const props = await renderForm();
+    const data = new FormData();
+    data.set('order_id', context.orderId);
+    data.set('cc_emails', new Blob(['lisa@example.com']), 'cc.txt');
+    await expect(props.action({}, data)).resolves.toMatchObject({ error: expect.stringContaining('CC recipients') });
     expect(mocks.send).not.toHaveBeenCalled();
   });
 });

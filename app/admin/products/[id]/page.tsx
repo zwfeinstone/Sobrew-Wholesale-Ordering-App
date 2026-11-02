@@ -14,9 +14,7 @@ import {
   centsFromDollars,
   isWholeCountQuantity,
   type InventoryUnit,
-  convertInventoryQuantity,
   fixedRecipeCostCents,
-  isWholeCountPackagingComponentRole,
   laborCostCents,
   normalizeInventoryNumber,
   roundWholeCountQuantity,
@@ -24,9 +22,11 @@ import {
 import { PRODUCT_CATEGORY_OPTIONS, isProductCategory } from '@/lib/product-categories';
 import { syncSavedProductToQuickBooks } from '@/lib/product-create';
 import { EXTRA_COMPONENT_ROWS, RAW_COFFEE_ROWS, RAW_COFFEE_UNITS } from '@/lib/product-recipe';
+import { buildProductionMaterialPreview, type ProductionMaterialFallback } from '@/lib/production-materials';
 import { createMissingQuickBooksProductsFromPortal } from '@/lib/quickbooks';
 import { IMAGE_UPLOAD_ACCEPT, ImageUploadError, prepareImageUpload } from '@/lib/image-upload';
 import { createClient } from '@/lib/supabase/server';
+import { fetchAllByIds } from '@/lib/supabase/pagination';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { usd } from '@/lib/utils';
 
@@ -212,6 +212,8 @@ async function saveRecipe(formData: FormData) {
 
   if (recipeError || !recipe) redirect(`/admin/products/${productId}?toast=recipe_error`);
 
+  // Packaging alternatives belong to the product, so replacing these component
+  // rows must preserve product_material_fallbacks and their stable material IDs.
   const { error: deleteError } = await supabase.from('product_recipe_components').delete().eq('recipe_id', recipe.id);
   if (deleteError) redirect(`/admin/products/${productId}?toast=recipe_error`);
 
@@ -257,10 +259,10 @@ export default async function ProductPage(
             : error === 'image_upload_failed'
               ? 'The product image could not be uploaded. Please try again.'
               : '';
-  const [{ data: items }, { data: recipeData }, { data: lots }] = await Promise.all([
+  const [{ data: items }, { data: recipeData }, { data: fallbackData, error: fallbackError }] = await Promise.all([
     supabase.from('inventory_items').select('id,name,sku,item_type,base_unit,active').neq('item_type', 'finished_good').eq('active', true).order('name', { ascending: true }),
     supabase.from('product_recipes').select('id,product_id,output_qty,waste_percent,labor_minutes,labor_rate_cents,shipping_label_qty,branding_label_qty,notes,product_recipe_components(id,inventory_item_id,quantity,unit,component_role,sort_order,notes,inventory_items(id,name,sku,item_type,base_unit,active))').eq('product_id', params.id).maybeSingle(),
-    supabase.from('inventory_lots').select('inventory_item_id,quantity_remaining,unit_cost_cents').limit(50000),
+    supabase.from('product_material_fallbacks').select('primary_inventory_item_id,fallback_inventory_item_id').eq('product_id', params.id),
   ]);
   const inventoryItems = (items ?? []) as InventoryItemRow[];
   const recipe = recipeData as RecipeRow | null;
@@ -269,11 +271,28 @@ export default async function ProductPage(
     const sortOrderB = Number.isFinite(Number(b.sort_order)) ? Number(b.sort_order) : Number.MAX_SAFE_INTEGER;
     return sortOrderA - sortOrderB || (a.component_role ?? '').localeCompare(b.component_role ?? '') || (a.notes ?? '').localeCompare(b.notes ?? '');
   });
+  const componentItemIds = new Set(recipeComponents.map((component) => component.inventory_item_id));
+  const materialFallbacks = ((fallbackData ?? []) as ProductionMaterialFallback[])
+    .filter((rule) => componentItemIds.has(rule.primary_inventory_item_id));
+  const fallbackItemIds = [...new Set(materialFallbacks.map((rule) => rule.fallback_inventory_item_id))];
+  const { data: fallbackItems, error: fallbackItemError } = fallbackItemIds.length
+    ? await supabase.from('inventory_items').select('id,name,sku,item_type,base_unit,active').in('id', fallbackItemIds)
+    : { data: [], error: null };
+  const materialById = new Map([
+    ...inventoryItems,
+    ...recipeComponents.flatMap((component) => relatedOne(component.inventory_items) ?? []),
+    ...((fallbackItems ?? []) as InventoryItemRow[]),
+  ].map((item) => [item.id, item]));
+  // Include the recipe editor's available materials as well as saved components
+  // and alternatives, so its stock labels use the same consumable lots as COGS.
+  const { data: lots, error: lotsError } = await fetchAllByIds([...materialById.keys()], (ids, from, to) => supabase
+    .from('inventory_lots').select('id,inventory_item_id,quantity_remaining,unit_cost_cents')
+    .in('inventory_item_id', ids).gt('quantity_remaining', 0).order('id', { ascending: true }).range(from, to));
   const lotSummaryByItem = new Map<string, { remaining: number; avgCostCents: number }>();
-  for (const item of inventoryItems) {
-    const itemLots = (lots ?? []).filter((lot: any) => lot.inventory_item_id === item.id);
-    const remaining = itemLots.reduce((sum: number, lot: any) => sum + normalizeInventoryNumber(lot.quantity_remaining), 0);
-    const valueCents = itemLots.reduce((sum: number, lot: any) => sum + normalizeInventoryNumber(lot.quantity_remaining) * normalizeInventoryNumber(lot.unit_cost_cents), 0);
+  for (const item of materialById.values()) {
+    const itemLots = lots.filter((lot) => lot.inventory_item_id === item.id);
+    const remaining = itemLots.reduce((sum, lot) => sum + normalizeInventoryNumber(lot.quantity_remaining), 0);
+    const valueCents = itemLots.reduce((sum, lot) => sum + normalizeInventoryNumber(lot.quantity_remaining) * normalizeInventoryNumber(lot.unit_cost_cents), 0);
     lotSummaryByItem.set(item.id, { remaining, avgCostCents: remaining > 0 ? valueCents / remaining : 0 });
   }
   const boxQty = recipeComponents.filter((component) => component.component_role === 'box' || isBoxSku(relatedOne(component.inventory_items)?.sku)).reduce((sum, component) => sum + normalizeInventoryNumber(component.quantity), 0);
@@ -283,20 +302,18 @@ export default async function ProductPage(
     brandingLabelQty: recipe?.branding_label_qty,
   });
   const laborCostForRecipeOutput = laborCostCents(recipe?.labor_minutes, recipe?.labor_rate_cents);
-  const materialCostForRecipeOutput = recipeComponents.reduce((sum, component) => {
-    const item = relatedOne(component.inventory_items);
-    if (!item) return sum;
-    try {
-      const rawBaseQty = convertInventoryQuantity(normalizeInventoryNumber(component.quantity), component.unit, item.base_unit);
-      const baseQty = isWholeCountPackagingComponentRole(component.component_role) && item.base_unit === 'each'
-        ? roundWholeCountQuantity(rawBaseQty)
-        : rawBaseQty;
-      return sum + baseQty * (lotSummaryByItem.get(component.inventory_item_id)?.avgCostCents ?? 0);
-    } catch {
-      return sum;
-    }
-  }, 0);
   const recipeOutputQty = normalizeInventoryNumber(recipe?.output_qty) || 1;
+  const materialPreview = buildProductionMaterialPreview({
+    recipe: recipe ? { ...recipe, material_fallbacks: materialFallbacks } : null,
+    productCategory: product.category,
+    quantity: recipeOutputQty,
+    onHandByItemId: new Map([...lotSummaryByItem].map(([id, summary]) => [id, summary.remaining])),
+    fallbackItems: [...materialById.values()],
+  });
+  const materialCostForRecipeOutput = materialPreview.lines.reduce((sum, line) => (
+    sum + line.requiredQty * (lotSummaryByItem.get(line.inventoryItemId)?.avgCostCents ?? 0)
+  ), 0);
+  const estimateUnavailable = Boolean(lotsError || fallbackError || fallbackItemError || materialPreview.invalidRecipe || materialPreview.invalidUnit);
   const estimatedUnitCogs = (materialCostForRecipeOutput + fixedCostForRecipeOutput + laborCostForRecipeOutput) / recipeOutputQty;
 
   return (
@@ -325,15 +342,21 @@ export default async function ProductPage(
       {toast === 'quickbooks_sync_attention' ? (
         <StatusToast message="Your product is saved, but QuickBooks sync still needs attention. Check the connection and retry below." tone="error" />
       ) : null}
+      {product.shopify_variant_id ? <section className="card space-y-3" aria-label="Shopify product">
+        <p className="font-semibold">Imported from Shopify</p>
+        <p className="text-sm text-slate-600">Portal SKU: {product.sku}. Shopify SKU: {product.shopify_sku || 'Not set'}. Orders stay linked by Shopify variant even when the SKUs differ.</p>
+        <p className="text-sm text-slate-600">Set up this variant’s production recipe and COGS below. Shopify updates preserve your costs, category, and portal SKU.</p>
+        {!recipe ? <p className="workspace-notice warning">COGS setup is needed for this product.</p> : null}
+      </section> : null}
       <section className="card space-y-3" aria-labelledby="product-quickbooks-heading">
         <span className="eyebrow">QuickBooks</span>
         <h2 id="product-quickbooks-heading" className="text-lg font-semibold text-slate-950">
-          {product.quickbooks_item_id ? 'Product synced' : 'Product sync needs attention'}
+          {product.quickbooks_item_id ? 'Product synced' : product.shopify_variant_id ? 'Optional for Shopify orders' : 'Product sync needs attention'}
         </h2>
         <p className="text-sm text-slate-600">
           {product.quickbooks_item_id
             ? 'This product is linked to QuickBooks and ready for invoicing. Customer pricing is set in the order guide.'
-            : 'This product is saved in your catalog. Sync this saved product to QuickBooks before invoicing it.'}
+            : product.shopify_variant_id ? 'Paid Shopify orders do not need a QuickBooks invoice. Link this product only if you also use it on wholesale invoices.' : 'This product is saved in your catalog. Sync this saved product to QuickBooks before invoicing it.'}
         </p>
         {!product.quickbooks_item_id && product.quickbooks_sync_error ? (
           <p className="text-sm text-amber-800">{product.quickbooks_sync_error}</p>
@@ -376,16 +399,29 @@ export default async function ProductPage(
         <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
           <div>
             <span className="eyebrow">Recipe</span>
-            <h2 className="mt-3 text-2xl font-semibold tracking-tight text-slate-950">Production recipe and COGS</h2>
+            <h2 id="recipe" className="mt-3 text-2xl font-semibold tracking-tight text-slate-950">Production recipe and COGS</h2>
             <p className="mt-2 max-w-2xl text-sm text-slate-500">Coffee and materials are consumed from inventory. Tape, shipping labels, branding labels, and labor are fixed COGS lines, not inventory.</p>
           </div>
           <div className="rounded-2xl border border-teal-100 bg-teal-50/70 p-4 text-sm">
             <p className="font-semibold text-teal-900">Estimated unit COGS</p>
-            <p className="mt-1 text-2xl font-semibold text-slate-950">{usd(Math.round(estimatedUnitCogs))}</p>
-            <p className="mt-1 text-teal-800">Materials {usd(Math.round(materialCostForRecipeOutput))} - Fixed {usd(Math.round(fixedCostForRecipeOutput))} - Labor {usd(Math.round(laborCostForRecipeOutput))}</p>
+            {estimateUnavailable ? <p className="mt-1 text-teal-800">Material estimate unavailable.</p> : <>
+              <p className="mt-1 text-2xl font-semibold text-slate-950">{usd(Math.round(estimatedUnitCogs))}</p>
+              <p className="mt-1 text-teal-800">Materials {usd(Math.round(materialCostForRecipeOutput))} - Fixed {usd(Math.round(fixedCostForRecipeOutput))} - Labor {usd(Math.round(laborCostForRecipeOutput))}</p>
+            </>}
           </div>
         </div>
 
+        {fallbackError || fallbackItemError ? <p className="workspace-notice warning" role="alert">Packaging fallback details could not be loaded. Saved fallback settings are preserved when saving this recipe.</p> : materialFallbacks.length ? (
+          <div className="rounded-xl border border-teal-100 bg-teal-50/60 p-4 text-sm text-teal-950">
+            <p className="font-semibold">Packaging fallback</p>
+            <ul className="mt-2 space-y-2">{materialFallbacks.map((rule) => {
+              const primary = materialById.get(rule.primary_inventory_item_id);
+              const fallback = materialById.get(rule.fallback_inventory_item_id);
+              return <li key={rule.primary_inventory_item_id}>Use {primary?.name ?? 'the primary material'} first, then {fallback?.name ?? 'the saved fallback material'} for any remaining quantity when primary stock runs out.{fallback?.active === false ? ' The fallback is inactive and cannot currently be used.' : ''}</li>;
+            })}</ul>
+            <p className="mt-2 text-xs">These settings stay with this product when the recipe is saved.</p>
+          </div>
+        ) : null}
         <form action={saveRecipe} className="space-y-5">
           <input type="hidden" name="product_id" value={product.id} />
           <ProductRecipeFields

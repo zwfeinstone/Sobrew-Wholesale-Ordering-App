@@ -22,6 +22,19 @@ function checkoutForm(cart: unknown) {
 }
 
 describe('atomic portal checkout', () => {
+  it('returns a recoverable stock warning when another order reserved the remaining bags', async () => {
+    const single = vi.fn().mockResolvedValue({ data: null, error: { code: '23514', message: 'Customer stock unavailable: only 25 bags remain available' } });
+    const rpc = vi.fn().mockReturnValue({ single });
+    const result = await submitPortalOrderWithContext({
+      formData: checkoutForm([{ product_id: PRODUCT_ID, qty: 100 }]),
+      user: { id: USER_ID, email: 'buyer@example.com' },
+      profile: { center_id: USER_ID },
+      supabase: { rpc },
+    });
+    expect(result).toEqual({ type: 'stock_unavailable' });
+    expect(sendOrderEmails).not.toHaveBeenCalled();
+  });
+
   it('rejects malformed carts before calling the database', async () => {
     const rpc = vi.fn();
     const result = await submitPortalOrderWithContext({

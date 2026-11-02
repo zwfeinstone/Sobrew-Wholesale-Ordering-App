@@ -49,6 +49,23 @@ beforeEach(() => {
 });
 
 describe('commission invoice eligibility', () => {
+  it('uses the final payment month without shifting a date-only October 1 into September', async () => {
+    const database = new InvoiceLinkDatabase([{ id: 'september-order', quickbooks_invoice_id: 'invoice' }]);
+    getReceivables.mockResolvedValue({ error: null, invoices: [{ ...invoice('invoice'), txnDate: '2026-09-15', paidDate: '2026-10-01' }], missingIds: [] });
+    const result = await getCommissionInvoiceEligibility(['september-order'], database, { includePaymentDates: true });
+    expect(result.error).toBeNull();
+    expect(result.paidOrderMonths?.get('september-order')).toBe('2026-10-01');
+    expect(getReceivables).toHaveBeenCalledExactlyOnceWith(['invoice'], { includePaymentDates: true });
+  });
+
+  it.each([undefined, null, '', '2026-02-30', '2026-13-01', 'invalid'])('does not guess an earnings month from invalid payment date %j', async (paidDate) => {
+    const database = new InvoiceLinkDatabase([{ id: 'order', quickbooks_invoice_id: 'invoice' }]);
+    getReceivables.mockResolvedValue({ error: null, invoices: [{ ...invoice('invoice'), txnDate: '2026-09-15', paidDate }], missingIds: [] });
+    const result = await getCommissionInvoiceEligibility(['order'], database, { includePaymentDates: true });
+    expect(result.error).toContain('payment date');
+    expect(result.paidOrderIds.size).toBe(0);
+  });
+
   it('only releases fully paid, positive-value invoices and holds partial/unpaid/voided invoices', async () => {
     const database = new InvoiceLinkDatabase([
       { id: 'paid-order', quickbooks_invoice_id: 'paid' },

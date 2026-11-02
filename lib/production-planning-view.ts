@@ -10,6 +10,7 @@ export const PLANNING_SORTS = [
 ] as const;
 
 export type PlanningView = {
+  tab: 'plan' | 'summary';
   q: string;
   category: string;
   focus: 'all' | 'recurring' | 'attention';
@@ -20,6 +21,7 @@ export type PlanningView = {
 export function planningView(params: Record<string, string | string[] | undefined>): PlanningView {
   const value = (key: string) => typeof params[key] === 'string' ? params[key] as string : '';
   return {
+    tab: value('tab') === 'summary' ? 'summary' : 'plan',
     q: value('q').trim().slice(0, 200),
     category: isProductCategory(value('category')) || value('category') === UNCATEGORIZED_PRODUCT_CATEGORY ? value('category') : 'all',
     focus: value('focus') === 'recurring' ? 'recurring' : value('focus') === 'attention' ? 'attention' : 'all',
@@ -30,6 +32,7 @@ export function planningView(params: Record<string, string | string[] | undefine
 
 export function planningViewHref(view: PlanningView, toast?: string) {
   const params = new URLSearchParams();
+  if (view.tab === 'summary') params.set('tab', 'summary');
   if (view.q) params.set('q', view.q);
   if (view.category !== 'all') params.set('category', view.category);
   if (view.focus !== 'all') params.set('focus', view.focus);

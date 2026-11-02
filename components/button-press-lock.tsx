@@ -159,6 +159,9 @@ export function ButtonPressLock() {
     const handleSubmit = (event: SubmitEvent) => {
       if (!(event.target instanceof HTMLFormElement)) return;
       const form = event.target;
+      // Report GET navigation is cancellable and must accept a newer filter
+      // immediately; duplicate-submit locks still protect mutation forms.
+      if (form.dataset.navigationForm && form.method.toLowerCase() === 'get') return;
       const actionKey = formActionKey(form);
 
       if (form.dataset.submitLocked === 'true' || isActionLocked(actionKey)) {

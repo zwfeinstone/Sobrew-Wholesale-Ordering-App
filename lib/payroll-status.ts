@@ -1,5 +1,6 @@
 import { cache } from 'react';
 import { supabaseAdmin } from '@/lib/supabase/admin';
+import { fetchAllPages } from '@/lib/supabase/pagination';
 import { formatCentralDateInput, parseCentralDateInput } from '@/lib/time-clock';
 
 const DAY_IN_MS = 24 * 60 * 60 * 1000;
@@ -193,12 +194,13 @@ function moneyCents(value: number | string | null | undefined) {
 
 async function evaluatePayrollWindow(supabase: SupabaseLike, window: PayrollWeekWindow, now: Date): Promise<WeeklyPayrollStatus> {
   const [{ data: entries, error: entriesError }, { data: locks, error: locksError }] = await Promise.all([
-    supabase
+    fetchAllPages<PayrollStatusEntryRow>((from, to) => supabase
       .from('admin_time_entries')
       .select('id,status,clock_out_at')
       .gte('clock_in_at', window.weekStart.toISOString())
       .lte('clock_in_at', window.weekEnd.toISOString())
-      .limit(PAYROLL_RESULT_LIMIT),
+      .order('id', { ascending: true })
+      .range(from, to)),
     supabase
       .from('admin_payroll_locks')
       .select('id,lock_start_at,lock_end_at')
@@ -220,7 +222,11 @@ async function evaluatePayrollWindow(supabase: SupabaseLike, window: PayrollWeek
   const openEntryCount = rows.filter((entry) => !entry.clock_out_at).length;
   const unapprovedEntryCount = rows.filter((entry) => entry.clock_out_at && !['approved', 'locked'].includes(entry.status ?? '')).length;
   const hasCoveringLock = Boolean((locks ?? []).length);
-  const isComplete = hasCoveringLock && openEntryCount === 0 && unapprovedEntryCount === 0;
+  // Recording each employee now completes payroll without a second week-level
+  // action. A prior range lock must not hide shifts added or reopened afterward.
+  const allEntriesPaid = rows.length > 0 && rows.every((entry) => entry.status === 'locked');
+  const isComplete = !entriesError && !locksError && (allEntriesPaid || (!rows.length && hasCoveringLock))
+    && openEntryCount === 0 && unapprovedEntryCount === 0;
   const todayInput = formatCentralDateInput(now);
   const isDue = !isComplete && compareDateInputs(todayInput, window.dueDateInput) >= 0;
   const isOverdue = isDue && compareDateInputs(todayInput, window.dueDateInput) > 0;

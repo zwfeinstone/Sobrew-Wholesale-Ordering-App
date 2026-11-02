@@ -41,10 +41,15 @@ export async function archiveSelectedOrders(formData: FormData) {
   const current = await requireAdminSectionEdit('orders', '/admin/orders?toast=admin_write_denied');
   if (!current.isOwner) redirect('/admin/orders?toast=archive_denied');
   const ids = [...new Set(formData.getAll('order_id').map(String).filter(Boolean))];
-  if (!ids.length || ids.length > 1000) redirect('/admin/orders?toast=archive_error');
+  if (!ids.length) redirect('/admin/orders?toast=archive_selection_required');
+  if (ids.length > 1000) redirect('/admin/orders?toast=archive_selection_limit');
   const supabase = await createClient();
   const result = await supabase.from('orders').update({ archived_at: new Date().toISOString() }).in('id', ids).in('status', ['Processing', 'Shipped']).is('archived_at', null).select('id');
-  if (result.error || !result.data?.length) redirect('/admin/orders?toast=archive_error');
+  if (result.error) {
+    console.error('[orders] archive failed', { code: result.error.code, message: result.error.message, selectedCount: ids.length });
+    redirect('/admin/orders?toast=archive_error');
+  }
+  if (!result.data?.length) redirect('/admin/orders?toast=archive_unavailable');
   revalidatePath('/admin', 'layout');
   redirect('/admin/orders?toast=archive_success');
 }

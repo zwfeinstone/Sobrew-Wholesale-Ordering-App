@@ -27,18 +27,39 @@ export async function fetchAllPages<T>(
   }
 }
 
-/** Keep PostgREST IN filters below URL limits while loading every related row. */
+/**
+ * Keep PostgREST IN filters below URL limits while loading every related row.
+ * Independent ID batches overlap, but each batch's pages stay sequential because
+ * a server-side cap may be smaller than the requested page size. Callbacks must
+ * construct a fresh query per request, rather than mutate a shared query builder.
+ */
 export async function fetchAllByIds<T>(
   ids: readonly string[],
   fetchPage: (ids: string[], from: number, to: number) => PromiseLike<QueryPage<T>>,
+  { concurrency = 3 }: { concurrency?: number } = {},
 ): Promise<{ data: T[]; error: QueryError | null }> {
-  const uniqueIds = [...new Set(ids)];
-  const data: T[] = [];
-  for (let start = 0; start < uniqueIds.length; start += 200) {
-    const batch = uniqueIds.slice(start, start + 200);
-    const result = await fetchAllPages((from, to) => fetchPage(batch, from, to));
-    if (result.error) return { data: [], error: result.error };
-    data.push(...result.data);
+  if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 4) {
+    throw new RangeError('ID batch concurrency must be an integer between 1 and 4.');
   }
-  return { data, error: null };
+  const uniqueIds = [...new Set(ids)];
+  const batches: string[][] = [];
+  for (let start = 0; start < uniqueIds.length; start += 200) {
+    batches.push(uniqueIds.slice(start, start + 200));
+  }
+  const results: Awaited<ReturnType<typeof fetchAllPages<T>>>[] = [];
+  let nextBatch = 0;
+  let failed = false;
+  const worker = async () => {
+    while (!failed && nextBatch < batches.length) {
+      const batchIndex = nextBatch++;
+      const result = await fetchAllPages((from, to) => fetchPage(batches[batchIndex], from, to));
+      results[batchIndex] = result;
+      if (result.error) failed = true;
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(concurrency, batches.length) }, worker));
+  // Wait for already running batches and select errors in input order, so neither
+  // returned rows nor the reported error depend on network completion order.
+  const error = results.find((result) => result.error)?.error ?? null;
+  return error ? { data: [], error } : { data: results.flatMap((result) => result.data), error: null };
 }

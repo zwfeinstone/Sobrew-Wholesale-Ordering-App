@@ -1,6 +1,8 @@
 import { pushProspectingHubSpotLeadWithTracking } from '@/lib/prospecting-hubspot-export';
 import { createSingleLead } from './create-lead';
 import ProspectingSingleLeadForm from '@/components/prospecting-single-lead-form';
+import ProspectingSampleOutcomeCard from '@/components/prospecting-sample-outcome-card';
+import { markSampleOutcome } from './sample-outcome';
 import { hasSampleRequestContact, isSampleContactError, SAMPLE_CONTACT_REQUIRED } from '@/lib/prospecting-sample-contact';
 import type { TablesUpdate } from '@/lib/supabase/database.types';
 import Link from 'next/link';
@@ -47,7 +49,6 @@ import {
   PROSPECTING_STAGES,
   US_STATE_OPTIONS,
   chunkArray,
-  cleanText,
   csvLine,
   formatDate,
   formatDateTime,
@@ -841,75 +842,6 @@ function hubspotPushRedirect(toast: string) {
   return prospectingHref({ bucket: 'hubspot', tab: 'leads', toast });
 }
 
-
-async function markSampleOutcome(formData: FormData) {
-  'use server';
-
-  const current = await requireProspectingOwner(prospectingHref({ tab: 'samples', toast: 'admin_write_denied' }));
-  const supabase = await createClient();
-  const leadId = String(formData.get('lead_id') ?? '').trim();
-  const outcome = String(formData.get('outcome') ?? '') === 'lost' ? 'lost' : 'converted';
-  const result = outcome === 'converted' ? 'Won' : 'Lost';
-  const note = cleanText(formData.get('outcome_note'));
-  const samplePage = normalizePageNumber(String(formData.get('sample_page') ?? '1'));
-  const samplePageSize = normalizePageSize(String(formData.get('sample_page_size') ?? String(DEFAULT_PROSPECTING_PAGE_SIZE)));
-  const redirectBase = {
-    samplePage,
-    samplePageSize,
-    tab: 'samples' as ProspectingAdminTab,
-  };
-
-  const { data: lead } = await supabase
-    .from('prospecting_leads')
-    .select('id,assigned_profile_id,company_name,hubspot_status,stage')
-    .eq('id', leadId)
-    .is('archived_at', null)
-    .eq('stage', 'sample_requested')
-    .maybeSingle();
-  const sampleLead = lead as Pick<LeadRow, 'assigned_profile_id' | 'company_name' | 'hubspot_status' | 'id' | 'stage'> | null;
-  if (!sampleLead) redirect(prospectingHref({ ...redirectBase, toast: 'sample_outcome_missing' }));
-
-  const now = new Date().toISOString();
-  const leadUpdate: TablesUpdate<'prospecting_leads'> = {
-    last_activity_at: now,
-    last_result: result,
-    next_follow_up_at: null,
-    stage: outcome,
-    updated_at: now,
-    updated_by: current.profile.id,
-  };
-  if (outcome === 'lost') leadUpdate.assigned_profile_id = null;
-
-  const { error: leadError, data: updatedLead } = await supabase
-    .from('prospecting_leads')
-    .update(leadUpdate)
-    .eq('id', leadId)
-    .eq('stage', 'sample_requested')
-    .select('id')
-    .maybeSingle();
-  if (leadError || !updatedLead) redirect(prospectingHref({ ...redirectBase, toast: 'sample_outcome_error' }));
-
-  if (sampleLead.hubspot_status === 'queued') {
-    const { error: queueDeleteError } = await supabase.from('prospecting_hubspot_queue').delete().eq('lead_id', leadId).eq('status', 'queued');
-    const { error: queueLeadError } = await supabase.from('prospecting_leads').update({ hubspot_status: 'not_queued' }).eq('id', leadId).eq('hubspot_status', 'queued');
-    if (queueDeleteError || queueLeadError) redirect(prospectingHref({ ...redirectBase, toast: 'sample_outcome_error' }));
-  }
-
-  const body = note || `Sample outcome marked ${outcome === 'converted' ? 'won' : 'lost'}.`;
-  const { error: activityError } = await supabase.from('prospecting_activities').insert({
-    activity_type: 'stage_change',
-    body,
-    created_by: current.profile.id,
-    lead_id: leadId,
-    next_stage: outcome,
-    previous_assigned_profile_id: outcome === 'lost' ? sampleLead.assigned_profile_id : null,
-    previous_stage: 'sample_requested',
-    result,
-  });
-  if (activityError) redirect(prospectingHref({ ...redirectBase, toast: 'sample_outcome_error' }));
-
-  redirect(prospectingHref({ ...redirectBase, toast: outcome === 'converted' ? 'sample_outcome_won' : 'sample_outcome_lost' }));
-}
 
 async function pushSelectedHubspotLeads(formData: FormData) {
   'use server';
@@ -1991,55 +1923,35 @@ export default async function ProspectingAdminPage(props: { searchParams?: Promi
                 const assigned = lead.assigned_profile_id ? sampleProfileById.get(lead.assigned_profile_id) : null;
                 const missing = missingLeadFields(lead, leadContacts);
                 return (
-                  <article key={lead.id} className="card">
-                    <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_24rem] xl:items-start">
-                      <div className="min-w-0">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <LeadStageBadge stage={lead.stage} />
-                          <span className="rounded-full bg-white px-2.5 py-1 text-xs font-semibold text-slate-700">{priorityLabel(lead.priority)}</span>
-                          {lead.hubspot_status ? <span className="rounded-full bg-teal-50 px-2.5 py-1 text-xs font-semibold text-teal-800">HubSpot: {lead.hubspot_status}</span> : null}
-                        </div>
-                        <Link href={leadDetailHref(lead.id, selectedStateKey)} className="mt-3 block text-2xl font-semibold tracking-tight text-slate-950 hover:text-teal-800">
-                          {lead.company_name}
-                        </Link>
-                        <div className="mt-2 grid gap-2 text-sm text-slate-600 md:grid-cols-2 xl:grid-cols-4">
-                          <p>{lead.phone || 'Missing phone'}</p>
-                          <p>{lead.company_email || 'Missing company email'}</p>
-                          <p>{[lead.city, lead.state].filter(Boolean).join(', ') || 'Missing city/state'}</p>
-                          <p>Rep: {profileLabel(assigned)}</p>
-                        </div>
-                        <div className="mt-3 grid gap-2 text-sm text-slate-600 md:grid-cols-2">
-                          <p>
-                            Contact: {primaryContact?.full_name || primaryContact?.email || primaryContact?.phone || 'Missing key contact'}
-                          </p>
-                          <p>Last result: {lead.last_result || 'No activity yet'}</p>
-                        </div>
-                        <div className="mt-3 flex flex-wrap gap-2">
-                          <MissingBadges missing={missing} />
-                          {lists.slice(0, 3).map((name) => <span key={name} className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-700">{name}</span>)}
-                        </div>
-                        {lead.notes ? <p className="mt-3 line-clamp-2 text-sm leading-6 text-slate-500">{lead.notes}</p> : null}
+                  <ProspectingSampleOutcomeCard key={lead.id} action={markSampleOutcome} canEdit={canEdit} leadId={lead.id} companyName={lead.company_name} expectedUpdatedAt={lead.updated_at}>
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <LeadStageBadge stage={lead.stage} />
+                        <span className="rounded-full bg-white px-2.5 py-1 text-xs font-semibold text-slate-700">{priorityLabel(lead.priority)}</span>
+                        {lead.hubspot_status ? <span className="rounded-full bg-teal-50 px-2.5 py-1 text-xs font-semibold text-teal-800">HubSpot: {lead.hubspot_status}</span> : null}
                       </div>
-                      <form action={markSampleOutcome} className="grid gap-3 rounded-lg border border-slate-200 bg-white/70 p-3">
-                        <input type="hidden" name="lead_id" value={lead.id} />
-                        <input type="hidden" name="sample_page" value={samplePage} />
-                        <input type="hidden" name="sample_page_size" value={samplePageSize} />
-                        <label className="text-sm font-semibold text-slate-700">
-                          Outcome note
-                          <textarea className="input mt-2 min-h-24" name="outcome_note" placeholder="Decision maker, order plan, reason lost..." />
-                        </label>
-                        <div className="grid gap-2 sm:grid-cols-2">
-                          <button className="btn-primary w-full" disabled={!canEdit} name="outcome" type="submit" value="converted">
-                            Mark Won
-                          </button>
-                          <button className="w-full rounded-full border border-rose-200 px-4 py-2 text-sm font-semibold text-rose-700 disabled:opacity-50" disabled={!canEdit} name="outcome" type="submit" value="lost">
-                            Mark Lost
-                          </button>
-                        </div>
-                        {!canEdit ? <p className="text-xs font-semibold text-rose-700">No edit access</p> : null}
-                      </form>
+                      <Link href={leadDetailHref(lead.id, selectedStateKey)} className="mt-3 block text-2xl font-semibold tracking-tight text-slate-950 hover:text-teal-800">
+                        {lead.company_name}
+                      </Link>
+                      <div className="mt-2 grid gap-2 text-sm text-slate-600 md:grid-cols-2 xl:grid-cols-4">
+                        <p>{lead.phone || 'Missing phone'}</p>
+                        <p>{lead.company_email || 'Missing company email'}</p>
+                        <p>{[lead.city, lead.state].filter(Boolean).join(', ') || 'Missing city/state'}</p>
+                        <p>Rep: {profileLabel(assigned)}</p>
+                      </div>
+                      <div className="mt-3 grid gap-2 text-sm text-slate-600 md:grid-cols-2">
+                        <p>
+                          Contact: {primaryContact?.full_name || primaryContact?.email || primaryContact?.phone || 'Missing key contact'}
+                        </p>
+                        <p>Last result: {lead.last_result || 'No activity yet'}</p>
+                      </div>
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        <MissingBadges missing={missing} />
+                        {lists.slice(0, 3).map((name) => <span key={name} className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-700">{name}</span>)}
+                      </div>
+                      {lead.notes ? <p className="mt-3 line-clamp-2 text-sm leading-6 text-slate-500">{lead.notes}</p> : null}
                     </div>
-                  </article>
+                  </ProspectingSampleOutcomeCard>
                 );
               })}
             </section>

@@ -3,6 +3,9 @@
 import Image from 'next/image';
 import Link from 'next/link';
 import { memo, useDeferredValue, useEffect, useMemo, useState } from 'react';
+import { CustomerStockSummary } from '@/components/customer-stock-summary';
+import { CustomerStockRefresh } from '@/components/customer-stock-refresh';
+import type { CustomerStockBalance } from '@/lib/customer-stock';
 import {
   CartCatalogSync,
   CatalogQuantityControl,
@@ -26,6 +29,7 @@ export type PortalRestockProduct = {
   image_url: string | null;
   category: string | null;
   price_cents: number;
+  customer_stock?: CustomerStockBalance;
 };
 
 export type PortalRecentOrder = {
@@ -79,12 +83,13 @@ function categoryOptions(products: PortalRestockProduct[]) {
   return options;
 }
 
-const RestockProductRow = memo(function RestockProductRow({ product, storageKey }: {
+const RestockProductRow = memo(function RestockProductRow({ product, products, storageKey }: {
   product: PortalRestockProduct;
+  products: PortalRestockProduct[];
   storageKey: string;
 }) {
   return (
-    <article className="restock-product-row">
+    <article className={`restock-product-row${product.customer_stock ? ' has-customer-stock' : ''}`}>
       <div className="restock-product-image">
         <Image
           src={product.image_url || DEFAULT_PRODUCT_IMAGE_SRC}
@@ -99,8 +104,9 @@ const RestockProductRow = memo(function RestockProductRow({ product, storageKey 
         <h3>{product.name}</h3>
         <p>{product.description || productCategoryLabel(product.category)}</p>
       </div>
-      <p className="restock-product-price">${(product.price_cents / 100).toFixed(2)}</p>
-      <CatalogQuantityControl compact product={product} storageKey={storageKey} />
+      <p className="restock-product-price">${(product.price_cents / 100).toFixed(2)}{product.customer_stock ? <span className="block text-xs font-normal text-teal-800">Purchased batch</span> : null}</p>
+      <CatalogQuantityControl compact product={product} products={products} storageKey={storageKey} />
+      {product.customer_stock ? <CustomerStockSummary balance={product.customer_stock} /> : null}
     </article>
   );
 });
@@ -202,12 +208,13 @@ export function PortalRestockWorkspace({
   }, [filteredProducts]);
 
   const productSnapshots = useMemo(
-    () => products.map(({ product_id, name, price_cents }) => ({ product_id, name, price_cents })),
+    () => products.map(({ product_id, name, price_cents, customer_stock }) => ({ product_id, name, price_cents, customer_stock })),
     [products]
   );
 
   return (
     <div className="restock-workspace">
+      <CustomerStockRefresh enabled={products.some((product) => Boolean(product.customer_stock))} />
       <CartCatalogSync products={productSnapshots} storageKey={cartStorageKey} />
 
       <section className="restock-welcome" aria-labelledby="restock-title">
@@ -239,6 +246,7 @@ export function PortalRestockWorkspace({
               <ReorderButton
                 className="btn-primary recent-order-button"
                 items={recentOrder.items}
+                products={productSnapshots}
                 label="Reorder & review"
                 storageKey={cartStorageKey}
               />
@@ -345,7 +353,7 @@ export function PortalRestockWorkspace({
               </div>
               <div className="restock-product-list">
                 {groupProducts.map((product) => (
-                  <RestockProductRow key={product.product_id} product={product} storageKey={cartStorageKey} />
+                  <RestockProductRow key={product.product_id} product={product} products={products} storageKey={cartStorageKey} />
                 ))}
               </div>
             </section>

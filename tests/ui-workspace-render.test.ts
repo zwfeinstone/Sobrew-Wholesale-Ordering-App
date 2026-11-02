@@ -10,7 +10,7 @@ vi.mock('next/link', () => ({ default: ({ prefetch: _prefetch, ...props }: Recor
 vi.mock('next/image', () => ({ default: ({ fill, priority: _priority, ...props }: Record<string, unknown>) => createElement('img',{ ...props, ...(fill ? { style:{ position:'absolute',inset:0,width:'100%',height:'100%' } } : {}) }) }));
 vi.mock('@/components/admin-realtime-sync', () => ({ AdminRealtimeSync: () => null }));
 vi.mock('@/lib/supabase/server', () => ({ createClient: async () => database }));
-vi.mock('@/lib/supabase/admin', () => ({ supabaseAdmin: {} }));
+vi.mock('@/lib/supabase/admin', () => ({ supabaseAdmin: {}, getSupabaseAdmin: () => database }));
 vi.mock('@/lib/auth', () => ({ requireUser: async () => ({ user:{id:'preview-customer'},profile:{is_admin:false,center_id:center.id,center} }) }));
 vi.mock('@/lib/admin-permissions', () => ({ requireAdminSectionView: async () => ({ isOwner:true, access:ownerAccessMap(), centerScope:null }), requireAdminSectionEdit: vi.fn(), requireManageAdmins:vi.fn() }));
 
@@ -39,6 +39,23 @@ class Query {
 const database = { from:(table:string) => new Query(table) };
 
 describe('implemented workspace rendering', () => {
+  it.each([
+    ['archive_error', 'Orders could not be archived. Refresh the list and try again.'],
+    ['archive_unavailable', 'None of the selected orders are available to archive. Only active processing or shipped orders can be archived.'],
+    ['archive_selection_required', 'Select at least one order to archive.'],
+    ['archive_selection_limit', 'Select no more than 1,000 orders to archive at a time.'],
+  ])('renders the appropriate archive error for %s', async (toast, message) => {
+    const Orders = (await import('@/app/admin/orders/page')).default;
+    state.pathname = '/admin/orders';
+    const html = renderToStaticMarkup(await Orders({ searchParams: Promise.resolve({ toast }) }));
+    expect(html).toContain('role="alert"');
+    expect(html).toContain(message);
+    if (toast === 'archive_error') {
+      expect(html).not.toContain('Only processing or shipped orders can be archived.');
+      expect(html).not.toContain('No orders were archived.');
+    }
+  });
+
   it('renders real order, fulfillment and customer views with isolated fixtures', async () => {
     const { AdminShell } = await import('@/components/admin-shell');
     const Orders = (await import('@/app/admin/orders/page')).default;

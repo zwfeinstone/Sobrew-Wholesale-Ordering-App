@@ -36,6 +36,16 @@ function htmlSectionBetween(html: string, start: string, end: string) {
 }
 
 describe('buildCustomerWelcomeEmailContent', () => {
+  it('preserves spaces and escapes special characters without changing the displayed password', () => {
+    const password = '  My  <Pass>&\"\' 123  ';
+    const content = buildCustomerWelcomeEmailContent({ email: 'buyer@example.com', password });
+    expect(content.text).toContain(`Password: ${password}\n`);
+    const passwordParagraph = content.html.match(/<p style="[^"]*">  My[\s\S]*?<\/p>/)?.[0];
+    expect(passwordParagraph).toContain('white-space:pre-wrap');
+    expect(passwordParagraph).toContain('font-family:monospace');
+    expect(passwordParagraph).toContain('>  My  &lt;Pass&gt;&amp;&quot;&#39; 123  </p>');
+  });
+
   it('uses the first name from the full name', () => {
     const content = buildCustomerWelcomeEmailContent({
       centerName: 'Lakeview Recovery',

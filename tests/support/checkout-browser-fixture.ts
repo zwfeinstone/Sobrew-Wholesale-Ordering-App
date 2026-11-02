@@ -8,11 +8,12 @@ export async function buildCheckoutBrowserFixture() {
     name: 'checkout-fixture-browser-stubs',
     enforce: 'pre',
     resolveId(id) {
-      if (id === 'next/link' || id === 'next/navigation' || id === '@/lib/analytics') return `\0checkout-fixture:${id}`;
+      if (id === 'next/link' || id === 'next/image' || id === 'next/navigation' || id === '@/lib/analytics') return `\0checkout-fixture:${id}`;
       return null;
     },
     load(id) {
       if (id === '\0checkout-fixture:next/link') return `import {createElement} from 'react'; export default function Link({prefetch,replace,scroll,...props}) {return createElement('a',props)}`;
+      if (id === '\0checkout-fixture:next/image') return `import {createElement} from 'react'; export default function Image({fill,priority,...props}) {return createElement('img',props)}`;
       if (id === '\0checkout-fixture:next/navigation') return `const router={push(href){location.assign(href)},replace(href){location.replace(href)},refresh(){location.reload()}};export function useRouter(){return router}export function usePathname(){return location.pathname}export function useSearchParams(){return new URLSearchParams(location.search)}`;
       if (id === '\0checkout-fixture:@/lib/analytics') return 'export function trackProductEvent() {}';
       return null;

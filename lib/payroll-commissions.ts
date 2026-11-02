@@ -8,7 +8,12 @@ import {
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { fetchAllPages, type QueryError } from '@/lib/supabase/pagination';
 import { getCommissionInvoiceEligibility } from '@/lib/commission-invoice-eligibility';
-import { commissionRequiresPaidInvoice, PAID_INVOICE_COMMISSION_START } from '@/lib/commission-payment-policy';
+import {
+  calculateMonthlyHourlyBaseWages,
+  commissionHourlyOffsetApplies,
+  loadCommissionHourlyEntries,
+  type HourlyOffsetCommissionSettings,
+} from '@/lib/commission-hourly-offset';
 
 type SupabaseLike = { from: (table: string) => any };
 type StoredCents = number | string | null;
@@ -18,6 +23,9 @@ export type PayrollCommissionPayout = {
   sales_profile_id: string | null;
   commission_month: string;
   commission_cents: StoredCents;
+  /** The gross commission basis retained when commission_cents is net of wages. */
+  gross_commission_cents?: StoredCents;
+  hourly_base_offset_cents?: StoredCents;
   donation_cogs_cents: StoredCents;
   gross_profit_cents: StoredCents;
   order_count: number | null;
@@ -49,6 +57,11 @@ export type PayrollCommissionRow = {
   pendingInvoiceOrderIds: string[];
   pendingInvoiceCount: number;
   pendingInvoiceCents: number;
+  hourlyOffsetEnabled?: boolean;
+  hourlyBaseWagesCents?: number;
+  netCommissionCents?: number;
+  commissionPercent?: number;
+  settlementBlockedReason?: string | null;
 };
 
 export type PayrollCommissionPaymentResult = {
@@ -76,26 +89,18 @@ export function isLegacyPaidCommissionPayout(payout: PayrollCommissionPayout | n
   return Boolean(payout && isPaid(payout) && payout.paid_order_ids == null);
 }
 
-/** Historical orders and previously settled commissions never need an invoice lookup. */
+/** Previously recorded payments never need another invoice lookup. */
 export function requiresInvoiceEligibility(
   snapshot: Pick<CommissionSnapshotRow, 'order_id' | 'shipped_at'>,
   payout: PayrollCommissionPayout | null,
 ) {
-  return commissionRequiresPaidInvoice(snapshot)
-    && !isLegacyPaidCommissionPayout(payout)
+  return !isLegacyPaidCommissionPayout(payout)
     && !(payout && isPaid(payout) && payout.paid_order_ids?.includes(snapshot.order_id));
-}
-
-function isHistoricalLockedPayout(payout: PayrollCommissionPayout | null) {
-  if (!payout || isPaid(payout) || payout.status !== 'locked') return false;
-  const lockedAt = Date.parse(payout.locked_at ?? payout.created_at ?? payout.updated_at);
-  return payout.commission_month < commissionMonthForDate(PAID_INVOICE_COMMISSION_START)
-    || (Number.isFinite(lockedAt) && lockedAt < Date.parse(PAID_INVOICE_COMMISSION_START));
 }
 
 function summaryFromPayout(payout: PayrollCommissionPayout): CommissionSummary {
   return {
-    commissionCents: numericCents(payout.commission_cents),
+    commissionCents: numericCents(payout.gross_commission_cents ?? payout.commission_cents),
     donationCogsCents: numericCents(payout.donation_cogs_cents),
     grossProfitCents: numericCents(payout.gross_profit_cents),
     orderCount: numericCents(payout.order_count),
@@ -107,107 +112,180 @@ function summaryFromPayout(payout: PayrollCommissionPayout): CommissionSummary {
   };
 }
 
-/** Preserve recorded payments while releasing only newly settled invoice commissions. */
+/** Combine this month's confirmed earnings with its immutable payment history. */
 export function buildPayrollCommissionRow({
-  salesProfileId,
-  snapshots,
-  payout,
-  paidInvoiceOrderIds,
+  salesProfileId, snapshots, payout, paidInvoiceOrderIds,
 }: {
   salesProfileId: string | null;
   snapshots: CommissionSnapshotRow[];
   payout: PayrollCommissionPayout | null;
   paidInvoiceOrderIds: ReadonlySet<string>;
 }): PayrollCommissionRow {
-  const legacyPaid = isLegacyPaidCommissionPayout(payout);
-  const paidOrderIds = legacyPaid ? null : payout && isPaid(payout) ? payout.paid_order_ids ?? [] : [];
+  const paidOrderIds = isLegacyPaidCommissionPayout(payout) ? null : payout && isPaid(payout) ? payout.paid_order_ids ?? [] : [];
   const alreadyPaid = new Set(paidOrderIds ?? []);
-  const remaining = legacyPaid ? [] : snapshots.filter((snapshot) => !alreadyPaid.has(snapshot.order_id));
-  const eligible = remaining.filter((snapshot) => !commissionRequiresPaidInvoice(snapshot) || paidInvoiceOrderIds.has(snapshot.order_id));
-  const pending = remaining.filter((snapshot) => commissionRequiresPaidInvoice(snapshot) && !paidInvoiceOrderIds.has(snapshot.order_id));
-  // A historical lock already contains its pre-policy orders and adjustments.
-  // Keep that exact base; only new-policy shipments can increase it.
-  const lockedHistory = isHistoricalLockedPayout(payout) ? summaryFromPayout(payout!) : null;
-  const summary = summarizeCommissionRows(lockedHistory ? eligible.filter(commissionRequiresPaidInvoice) : eligible);
+  const eligible = snapshots.filter((snapshot) => !alreadyPaid.has(snapshot.order_id) && paidInvoiceOrderIds.has(snapshot.order_id));
+  const summary = summarizeCommissionRows(eligible);
   const historical = payout && isPaid(payout) ? summaryFromPayout(payout) : null;
-  const priorSummary = historical ?? lockedHistory;
-  if (priorSummary) {
-    for (const key of Object.keys(summary) as (keyof CommissionSummary)[]) summary[key] += priorSummary[key];
+  if (historical) {
+    for (const key of Object.keys(summary) as (keyof CommissionSummary)[]) summary[key] += historical[key];
   }
   return {
-    salesProfileId,
-    summary,
-    payout,
-    amountOwedCents: Math.max(0, Math.round(summary.commissionCents) - Math.round(historical?.commissionCents ?? 0)),
+    salesProfileId, summary, payout,
+    amountOwedCents: Math.max(0, Math.round(summary.commissionCents) - Math.round(historical ? numericCents(payout?.commission_cents) : 0)),
     cogsEstimated: snapshots.some((snapshot) => Boolean(snapshot.cogs_estimated)),
     eligibleOrderIds: eligible.map((snapshot) => snapshot.order_id),
     paidOrderIds,
-    pendingInvoiceOrderIds: pending.map((snapshot) => snapshot.order_id),
-    pendingInvoiceCount: pending.length,
-    pendingInvoiceCents: Math.max(0, Math.round(summarizeCommissionRows(pending).commissionCents)),
+    pendingInvoiceOrderIds: [], pendingInvoiceCount: 0, pendingInvoiceCents: 0,
   };
 }
 
-function loadSnapshots(supabase: SupabaseLike, commissionMonth: string, salesProfileId?: string) {
+function loadSnapshots(supabase: SupabaseLike, salesProfileId?: string) {
   return fetchAllPages<CommissionSnapshotRow>((from, to) => {
-    let query = supabase.from('order_commission_snapshots').select(SNAPSHOT_COLUMNS).eq('commission_month', commissionMonth);
+    let query = supabase.from('order_commission_snapshots').select(SNAPSHOT_COLUMNS);
     if (salesProfileId) query = query.eq('sales_profile_id', salesProfileId);
     return query.order('id', { ascending: true }).range(from, to);
   });
 }
 
-/** Read existing earned commission snapshots without refreshing historical rates. */
+export type PayrollCommissionMonths = {
+  rowsByMonth: Map<string, PayrollCommissionRow[]>;
+  snapshotsByMonth: Map<string, CommissionSnapshotRow[]>;
+  error: QueryError | null;
+};
+
+const payoutKey = (profileId: string | null, month: string) => `${profileId ?? ''}:${month}`;
+
+/**
+ * Every unsettled commission belongs to the month its invoice was fully paid.
+ * Shipment snapshots retain the original rate/cost basis. Payments already
+ * recorded stay in their recorded month and are excluded across ALL months.
+ */
+export async function loadPayrollCommissionMonths({
+  commissionMonths, salesProfileId, supabase = supabaseAdmin, now = new Date(),
+}: {
+  commissionMonths: string[];
+  salesProfileId?: string;
+  supabase?: SupabaseLike;
+  now?: Date;
+}): Promise<PayrollCommissionMonths> {
+  const failure = (error: QueryError): PayrollCommissionMonths => ({ rowsByMonth: new Map(), snapshotsByMonth: new Map(), error });
+  if (commissionMonths.some((month) => !validCommissionMonth(month))) return failure({ message: 'Invalid commission month.' });
+  const months = [...new Set(commissionMonths)];
+  if (!months.length) return { rowsByMonth: new Map(), snapshotsByMonth: new Map(), error: null };
+  try {
+    const [snapshotsResult, payoutsResult, settingsResult] = await Promise.all([
+      loadSnapshots(supabase, salesProfileId),
+      fetchAllPages<PayrollCommissionPayout>((from, to) => supabase.from('monthly_commission_payouts')
+        .select('*').order('id', { ascending: true }).range(from, to)),
+      fetchAllPages<HourlyOffsetCommissionSettings>((from, to) => {
+        let query = supabase.from('admin_commission_settings')
+          .select('profile_id,commission_percent,hourly_offset_enabled,hourly_offset_start_month');
+        if (salesProfileId) query = query.eq('profile_id', salesProfileId);
+        return query.order('profile_id', { ascending: true }).range(from, to);
+      }),
+    ]);
+    if (snapshotsResult.error || payoutsResult.error || settingsResult.error) return failure((snapshotsResult.error ?? payoutsResult.error ?? settingsResult.error)!);
+    const settingsByProfile = new Map(settingsResult.data.filter((setting) => !salesProfileId || setting.profile_id === salesProfileId)
+      .map((setting) => [setting.profile_id, setting]));
+    const offsetProfiles = [...settingsByProfile.values()].filter((setting) => months.some((month) => commissionHourlyOffsetApplies(setting, month))).map((setting) => setting.profile_id);
+    const hourlyEntries = await loadCommissionHourlyEntries(supabase, offsetProfiles, months);
+    if (hourlyEntries.error) return failure(hourlyEntries.error);
+    const snapshots = snapshotsResult.data.filter((snapshot) => !salesProfileId || snapshot.sales_profile_id === salesProfileId);
+    const payouts = payoutsResult.data;
+    const payoutByKey = new Map<string, PayrollCommissionPayout>();
+    const recordedByOrder = new Map<string, PayrollCommissionPayout>();
+    for (const payout of payouts) {
+      const key = payoutKey(payout.sales_profile_id, payout.commission_month);
+      if (payoutByKey.has(key)) return failure({ message: 'Multiple commission payouts exist for the same employee and month.' });
+      payoutByKey.set(key, payout);
+      if (isPaid(payout)) {
+        for (const orderId of payout.paid_order_ids ?? []) recordedByOrder.set(orderId, payout);
+      }
+    }
+    for (const snapshot of snapshots) {
+      const legacy = payoutByKey.get(payoutKey(snapshot.sales_profile_id, snapshot.commission_month));
+      if (!recordedByOrder.has(snapshot.order_id) && legacy && isLegacyPaidCommissionPayout(legacy)) {
+        recordedByOrder.set(snapshot.order_id, legacy);
+      }
+    }
+    const outstanding = snapshots.filter((snapshot) => !recordedByOrder.has(snapshot.order_id));
+    const eligibility = outstanding.length
+      ? await getCommissionInvoiceEligibility(outstanding.map((snapshot) => snapshot.order_id), supabase, { includePaymentDates: true })
+      : { paidOrderIds: new Set<string>(), paidOrderMonths: new Map<string, string>(), error: null };
+    if (eligibility.error) return failure({ message: eligibility.error });
+    if ([...eligibility.paidOrderIds].some((id) => !validCommissionMonth(eligibility.paidOrderMonths?.get(id)))) {
+      return failure({ message: 'Unable to verify an invoice payment month in QuickBooks.' });
+    }
+    const snapshotsByMonth = new Map(months.map((month) => [month, [] as CommissionSnapshotRow[]]));
+    for (const snapshot of snapshots) {
+      const recorded = recordedByOrder.get(snapshot.order_id);
+      const earnedMonth = recorded?.commission_month ?? eligibility.paidOrderMonths?.get(snapshot.order_id);
+      if (!earnedMonth || (!recorded && !eligibility.paidOrderIds.has(snapshot.order_id))) continue;
+      snapshotsByMonth.get(earnedMonth)?.push(snapshot);
+    }
+    const rowsByMonth = new Map<string, PayrollCommissionRow[]>();
+    for (const month of months) {
+      const monthSnapshots = snapshotsByMonth.get(month)!;
+      const monthPayouts = payouts.filter((payout) => payout.commission_month === month && (!salesProfileId || payout.sales_profile_id === salesProfileId));
+      const byProfile = new Map<string | null, CommissionSnapshotRow[]>();
+      // Include a zero row for a salesperson whose invoices are not paid yet,
+      // without adding unpaid invoice amounts or statuses to payroll.
+      const profileIds = new Set([...snapshots.filter((snapshot) => snapshot.commission_month === month).map((snapshot) => snapshot.sales_profile_id),
+        ...monthPayouts.map((payout) => payout.sales_profile_id),
+        ...offsetProfiles.filter((profileId) => commissionHourlyOffsetApplies(settingsByProfile.get(profileId), month))]);
+      for (const snapshot of monthSnapshots) {
+        const profileId = recordedByOrder.get(snapshot.order_id)?.sales_profile_id ?? snapshot.sales_profile_id;
+        const rows = byProfile.get(profileId) ?? [];
+        rows.push(snapshot);
+        byProfile.set(profileId, rows);
+        profileIds.add(profileId);
+      }
+      rowsByMonth.set(month, [...profileIds].map((profileId) => {
+        const payout = payoutByKey.get(payoutKey(profileId, month)) ?? null;
+        const profileSnapshots = byProfile.get(profileId) ?? [];
+        const row = buildPayrollCommissionRow({ salesProfileId: profileId, snapshots: profileSnapshots, payout,
+          paidInvoiceOrderIds: eligibility.paidOrderIds });
+        // Resolve legacy paid snapshots before the first additional payment so
+        // changing a legacy NULL to tracked order IDs cannot release them twice.
+        if (payout && isLegacyPaidCommissionPayout(payout)) {
+          row.paidOrderIds = profileSnapshots.filter((snapshot) => recordedByOrder.get(snapshot.order_id)?.id === payout.id).map((snapshot) => snapshot.order_id);
+        }
+        const settings = profileId ? settingsByProfile.get(profileId) : undefined;
+        row.commissionPercent = numericCents(settings?.commission_percent ?? profileSnapshots[0]?.commission_percent);
+        const offsetApplies = commissionHourlyOffsetApplies(settings, month);
+        // Previously paid offset months retain their deduction even if the
+        // employee's plan is later disabled. New unpaid months use live wages.
+        const recordedOffset = payout && isPaid(payout) ? numericCents(payout.hourly_base_offset_cents) : 0;
+        row.hourlyOffsetEnabled = offsetApplies || recordedOffset > 0;
+        const wages = offsetApplies
+          ? calculateMonthlyHourlyBaseWages(hourlyEntries.entries.filter((entry) => entry.profile_id === profileId), month, now)
+          : { hourlyBaseWagesCents: recordedOffset, settlementBlockedReason: null };
+        row.hourlyBaseWagesCents = Math.max(recordedOffset, wages.hourlyBaseWagesCents);
+        row.settlementBlockedReason = wages.settlementBlockedReason ?? (offsetApplies && wages.hourlyBaseWagesCents < recordedOffset
+          ? 'Monthly hourly wages are lower than the wages used for an earlier commission payment. Review and adjust this month before paying more commission.'
+          : null);
+        row.netCommissionCents = Math.max(0, Math.round(row.summary.commissionCents) - row.hourlyBaseWagesCents);
+        const paidCents = payout && isPaid(payout) ? Math.round(numericCents(payout.commission_cents)) : 0;
+        row.amountOwedCents = Math.max(0, row.netCommissionCents - paidCents);
+        return row;
+      }).sort((left, right) => (left.salesProfileId ?? '').localeCompare(right.salesProfileId ?? '')));
+    }
+    return { rowsByMonth, snapshotsByMonth, error: null };
+  } catch (error) {
+    return failure({ message: error instanceof Error ? error.message : 'Commission invoice payment status could not be verified.' });
+  }
+}
+
 export async function loadPayrollCommissions({
-  commissionMonth,
-  supabase = supabaseAdmin,
+  commissionMonth, salesProfileId, supabase = supabaseAdmin, now = new Date(),
 }: {
   commissionMonth: string;
+  salesProfileId?: string;
   supabase?: SupabaseLike;
+  now?: Date;
 }): Promise<{ rows: PayrollCommissionRow[]; error: QueryError | null }> {
-  if (!validCommissionMonth(commissionMonth)) return { rows: [], error: { message: 'Invalid commission month.' } };
-  try {
-    const [snapshots, payouts] = await Promise.all([
-      loadSnapshots(supabase, commissionMonth),
-      fetchAllPages<PayrollCommissionPayout>((from, to) => supabase.from('monthly_commission_payouts')
-        .select('*').eq('commission_month', commissionMonth).order('id', { ascending: true }).range(from, to)),
-    ]);
-    const error = snapshots.error ?? payouts.error;
-    if (error) return { rows: [], error };
-
-    const snapshotsByProfile = new Map<string | null, CommissionSnapshotRow[]>();
-    for (const snapshot of snapshots.data) {
-      const profileRows = snapshotsByProfile.get(snapshot.sales_profile_id) ?? [];
-      profileRows.push(snapshot);
-      snapshotsByProfile.set(snapshot.sales_profile_id, profileRows);
-    }
-    const payoutsByProfile = new Map<string | null, PayrollCommissionPayout>();
-    for (const payout of payouts.data) {
-      if (payoutsByProfile.has(payout.sales_profile_id)) {
-        return { rows: [], error: { message: 'Multiple commission payouts exist for the same employee and month.' } };
-      }
-      payoutsByProfile.set(payout.sales_profile_id, payout);
-    }
-    const profileIds = new Set([...snapshotsByProfile.keys(), ...payoutsByProfile.keys()]);
-    const remainingOrderIds = snapshots.data.filter((snapshot) => {
-      const payout = payoutsByProfile.get(snapshot.sales_profile_id) ?? null;
-      return requiresInvoiceEligibility(snapshot, payout);
-    }).map((snapshot) => snapshot.order_id);
-    const eligibility = remainingOrderIds.length ? await getCommissionInvoiceEligibility(remainingOrderIds, supabase) : { paidOrderIds: new Set<string>(), error: null };
-    if (eligibility.error) return { rows: [], error: { message: eligibility.error } };
-    const rows = [...profileIds].map((salesProfileId): PayrollCommissionRow => {
-      const profileSnapshots = snapshotsByProfile.get(salesProfileId) ?? [];
-      const payout = payoutsByProfile.get(salesProfileId) ?? null;
-      return buildPayrollCommissionRow({
-        salesProfileId,
-        snapshots: profileSnapshots,
-        payout,
-        paidInvoiceOrderIds: eligibility.paidOrderIds,
-      });
-    }).sort((left, right) => (left.salesProfileId ?? '').localeCompare(right.salesProfileId ?? ''));
-    return { rows, error: null };
-  } catch (error) {
-    return { rows: [], error: { message: error instanceof Error ? error.message : 'Commission invoice payment status could not be verified.' } };
-  }
+  const result = await loadPayrollCommissionMonths({ commissionMonths: [commissionMonth], salesProfileId, supabase, now });
+  return { rows: result.rowsByMonth.get(commissionMonth) ?? [], error: result.error };
 }
 
 function paymentError(message: string, code?: string): PayrollCommissionPaymentResult {
@@ -246,7 +324,7 @@ export async function recordPayrollCommissionPaid({
     const latest = await readPayout();
     if (latest.error) return { error: latest.error };
     const payout = latest.data as PayrollCommissionPayout | null;
-    if (payout && isPaid(payout) && (isLegacyPaidCommissionPayout(payout) || orderIds.every((id) => payout.paid_order_ids?.includes(id)))) {
+    if (payout && isPaid(payout) && orderIds.every((id) => payout.paid_order_ids?.includes(id))) {
       return { alreadyPaid: true, payout, before: payout };
     }
     return paymentError('The commission payout changed. Refresh payroll before recording payment.', 'conflict');
@@ -256,18 +334,18 @@ export async function recordPayrollCommissionPaid({
     const existing = await readPayout();
     if (existing.error) return { error: existing.error };
     const before = existing.data as PayrollCommissionPayout | null;
-    if (before && isLegacyPaidCommissionPayout(before)) return { alreadyPaid: true, payout: before, before };
     if (before && !isPaid(before) && before.status !== 'locked') {
       return paymentError('The existing commission payout must be locked before recording payment.');
     }
     const paidAt = now.toISOString();
-    const snapshots = await loadSnapshots(supabase, commissionMonth, salesProfileId);
-    if (snapshots.error) return { error: snapshots.error };
-    const alreadyPaidOrderIds = new Set(before && isPaid(before) ? before.paid_order_ids ?? [] : []);
-    const remainingOrderIds = snapshots.data.filter((snapshot) => requiresInvoiceEligibility(snapshot, before)).map((snapshot) => snapshot.order_id);
-    const eligibility = remainingOrderIds.length ? await getCommissionInvoiceEligibility(remainingOrderIds, supabase) : { paidOrderIds: new Set<string>(), error: null };
-    if (eligibility.error) return paymentError(eligibility.error);
-    const row = buildPayrollCommissionRow({ salesProfileId, snapshots: snapshots.data, payout: before, paidInvoiceOrderIds: eligibility.paidOrderIds });
+    const loaded = await loadPayrollCommissions({ commissionMonth, salesProfileId, supabase, now });
+    if (loaded.error) return { error: loaded.error };
+    const row = loaded.rows.find((candidate) => candidate.salesProfileId === salesProfileId);
+    if (!row) return paymentError('There is no positive commission amount on paid invoices to pay.');
+    if (row.settlementBlockedReason) return paymentError(row.settlementBlockedReason);
+    if ((row.payout?.id ?? null) !== (before?.id ?? null) || row.payout?.updated_at !== before?.updated_at) {
+      return paymentError('The commission payout changed. Refresh payroll before recording payment.', 'conflict');
+    }
     if (expectedPaymentCents !== undefined && expectedPaymentCents !== row.amountOwedCents) {
       return paymentError('The payable commission amount changed. Refresh payroll before recording payment.', 'conflict');
     }
@@ -276,14 +354,16 @@ export async function recordPayrollCommissionPaid({
       return paymentError('There is no positive commission amount on paid invoices to pay.');
     }
     const summary = row.summary;
-    const paidOrderIds = [...new Set([...alreadyPaidOrderIds, ...row.eligibleOrderIds])];
+    const paidOrderIds = [...new Set([...(row.paidOrderIds ?? []), ...row.eligibleOrderIds])];
     // A conditional update must always advance its optimistic concurrency token.
     const previousUpdatedAt = Date.parse(before?.updated_at ?? '');
     const updatedAt = new Date(Number.isFinite(previousUpdatedAt) ? Math.max(now.getTime(), previousUpdatedAt + 1) : now.getTime()).toISOString();
     const payload = {
       commission_month: commissionMonth,
       sales_profile_id: salesProfileId,
-      commission_cents: summary.commissionCents,
+      commission_cents: row.hourlyOffsetEnabled || row.hourlyBaseWagesCents ? row.netCommissionCents! : summary.commissionCents,
+      gross_commission_cents: summary.commissionCents,
+      hourly_base_offset_cents: row.hourlyBaseWagesCents ?? 0,
       donation_cogs_cents: summary.donationCogsCents,
       gross_profit_cents: summary.grossProfitCents,
       order_count: summary.orderCount,

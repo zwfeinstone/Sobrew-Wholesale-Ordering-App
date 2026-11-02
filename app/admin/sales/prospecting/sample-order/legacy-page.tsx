@@ -31,7 +31,7 @@ import { formatCentralDateInput, parseCentralDateInput } from '@/lib/time-clock'
 function prospectingQueueContextFromParams(source: Parameters<typeof currentQueueContextFromParams>[0]) {
   const context = currentQueueContextFromParams(source);
   // Direct links and forms opened before a rollout toggle keep the legacy List view.
-  return context.tab === 'today' ? { ...context, tab: 'list' as const, preset: undefined } : context;
+  return context.tab === 'today' || context.tab === 'recent' ? { ...context, tab: 'list' as const, preset: undefined } : context;
 }
 
 type SearchParams = Record<string, string | string[] | undefined>;

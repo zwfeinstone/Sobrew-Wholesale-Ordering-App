@@ -1,0 +1,314 @@
+{
+  "date": "2026-10-15",
+  "scope": "Report-tab and main-menu navigation, local working tree only; not deployed.",
+  "environment": {
+    "url": "http://localhost:3000",
+    "mode": "Next.js development",
+    "server": "Reused existing server on port 3000; did not start or restart a server.",
+    "browser": "Codex in-app browser, authenticated owner",
+    "data": "Existing configured Supabase data read only. No business records or permissions changed.",
+    "production": "Production was not modified or measured for this phase. These are local development timings, not production guarantees.",
+    "git_head": "6a469cd069c565d7a27b6556ad9ce0eca9e69e0e",
+    "working_tree": "Existing unrelated local changes preserved."
+  },
+  "methodology": [
+    "Browser markers separate navigation-to-commit, immediate pending feedback, server authentication, data loading, calculations, and response-to-commit.",
+    "Final animation-frame sampling records whether the previous heading remains visible until the new instrumented page commits. This is a visibility/commit measurement, not a pure rendering CPU benchmark.",
+    "Cold means the scoped report data cache expired or was invalidated; repeated visits occurred within the existing 30-second freshness window. Development compilation/HMR samples are excluded from final comparison.",
+    "A synthetic browser fixture uses the actual navigation components, button-lock component, error UI, and persistent Suspense boundary with delayed/held/failed responses. It performs no business requests or writes."
+  ],
+  "findings_fixed": [
+    "Report filters performed full document GET reloads despite warm data.",
+    "Global duplicate-submit action locks blocked a newer filter for 1500ms even after the previous report finished. Only report GET navigation now opts out; mutation locks remain.",
+    "Links lacked immediate destination-specific feedback.",
+    "Next route loading boundaries are keyed by child pathname and replaced current content. One explicit Suspense boundary in the persistent shell now retains the current workspace.",
+    "Hover/focus timers could start a redundant preload after a click. Clicking cancels the timer; active navigation suppresses preloading.",
+    "Ordinary query-envelope failures bypassed the route error boundary and lacked retry. Both error paths now offer a server refresh."
+  ],
+  "changes": {
+    "navigation": "Client router transitions, latest intent wins, native link semantics and GET fallback retained.",
+    "pending": "Destination label, selected-link ring, aria-busy and polite status; after 10 seconds, a retry destination link.",
+    "filters": "Client GET navigation, committed URL keys reset inputs correctly on history navigation; rapid newer filters remain allowed.",
+    "content": "Current workspace stays visible until destination resolves; query errors replace obsolete totals with an accessible error and retry.",
+    "preload": {
+      "trigger": "200ms deliberate hover or keyboard focus",
+      "reports": [
+        "overview",
+        "centers",
+        "recent_order_gpm"
+      ],
+      "budget": "One request in flight; at most two starts per 10 seconds; same canonical target suppressed for 20 seconds.",
+      "exclusions": "Nonempty customer/product/rep filters, other reports, current canonical destination, active navigation, hidden page, Save-Data and slow-2G/2G connections.",
+      "authorization": "Fresh reports permission, profitability permission, authenticated client and current center scope precede preload. Raw data keys retain actor, permissions, scope, filters and mutation generation. Actual router pushes still authenticate; no prefetched RSC page is retained.",
+      "response": "Empty response with private,no-store; failures do not block navigation.",
+      "freshness": "Uses the existing report data cache and invalidation mechanism. No additional stale window or authorization cache was added."
+    },
+    "instrumentation": "Pending-feedback milliseconds and frame retention added to existing opt-in page diagnostics."
+  },
+  "baseline": [
+    {
+      "case": "cold native filter",
+      "sample_id": "4cacc6a6-d548-464d-abb8-abcc4215c6e6",
+      "kind": "document",
+      "commit_ms": 2353.7,
+      "server_ms": 1845.4,
+      "auth_ms": 555.3,
+      "data_ms": 1280.4,
+      "response_to_commit_ms": 348.3,
+      "cache_hits": 0,
+      "cache_misses": 5
+    },
+    {
+      "case": "warm native filter",
+      "sample_id": "b8358c0e-2a63-4518-88e8-415eb4f4b9d6",
+      "kind": "document",
+      "commit_ms": 1208.6,
+      "server_ms": 203,
+      "auth_ms": 194.6,
+      "data_ms": 3.8,
+      "response_to_commit_ms": 301.1,
+      "cache_hits": 5,
+      "cache_misses": 0
+    }
+  ],
+  "final_samples": [
+    {
+      "case": "Dashboard main menu",
+      "sample_id": "f51824a2-3aba-428c-bab2-8dfd637d52f5",
+      "commit_ms": 1641.5,
+      "feedback_ms": 8.9,
+      "server_ms": 1534.5,
+      "auth_ms": 345.2,
+      "payroll_status_ms": 720.2,
+      "main_data_ms": 267.1,
+      "order_items_ms": 194.2,
+      "frames": 98,
+      "retained_frames": 98,
+      "pending_frames": 98
+    },
+    {
+      "case": "Orders main menu",
+      "sample_id": "9a02e8f7-6d48-4015-a6f2-d2c04b197161",
+      "commit_ms": 935.1,
+      "feedback_ms": 5.1,
+      "server_ms": 828.7,
+      "auth_ms": 132.1,
+      "orders_and_counts_ms": 321.1,
+      "items_and_recurring_ms": 374.4,
+      "frames": 56,
+      "retained_frames": 56,
+      "pending_frames": 56
+    },
+    {
+      "case": "Reports main menu cold",
+      "sample_id": "95950b09-bc2d-4c33-b3f3-cdb29f2918ee",
+      "commit_ms": 2006.9,
+      "feedback_ms": 5.9,
+      "server_ms": 1887.7,
+      "auth_ms": 587.4,
+      "data_ms": 1278.9,
+      "cache_hits": 0,
+      "cache_misses": 5,
+      "frames": 120,
+      "retained_frames": 120,
+      "pending_frames": 120
+    },
+    {
+      "case": "warm product filter 1",
+      "sample_id": "55619fdf-adce-4ecd-ba4f-8f35478c44c6",
+      "commit_ms": 183.5,
+      "feedback_ms": 5.8,
+      "server_ms": 123.6,
+      "auth_ms": 115.9,
+      "data_ms": 2,
+      "cache_hits": 5,
+      "cache_misses": 0,
+      "frames": 11,
+      "retained_frames": 11,
+      "pending_frames": 11
+    },
+    {
+      "case": "warm product filter 2",
+      "sample_id": "62faafd1-879a-45a8-9821-bf687a77b32d",
+      "commit_ms": 188.3,
+      "feedback_ms": 5.6,
+      "server_ms": 120.8,
+      "auth_ms": 112.5,
+      "data_ms": 2.1,
+      "cache_hits": 5,
+      "cache_misses": 0,
+      "frames": 11,
+      "retained_frames": 11,
+      "pending_frames": 11
+    },
+    {
+      "case": "warm product filter 3",
+      "sample_id": "f16b0da8-5c48-4047-b7d1-a08988b4b9af",
+      "commit_ms": 179.5,
+      "feedback_ms": 4.7,
+      "server_ms": 124.6,
+      "auth_ms": 117.8,
+      "data_ms": 1.9,
+      "cache_hits": 5,
+      "cache_misses": 0,
+      "frames": 10,
+      "retained_frames": 10,
+      "pending_frames": 10
+    },
+    {
+      "case": "warm product filter 4",
+      "sample_id": "672ad02a-6106-4afd-8714-60d8d973636e",
+      "commit_ms": 206.7,
+      "feedback_ms": 1.9,
+      "server_ms": 140.7,
+      "auth_ms": 132.1,
+      "data_ms": 2.4,
+      "cache_hits": 5,
+      "cache_misses": 0,
+      "frames": 12,
+      "retained_frames": 12,
+      "pending_frames": 12
+    },
+    {
+      "case": "warm Centers 1",
+      "sample_id": "668364ce-be15-401f-8aa1-e98500058b9c",
+      "commit_ms": 296.9,
+      "feedback_ms": 4.8,
+      "server_ms": 199.5,
+      "auth_ms": 190.2,
+      "data_ms": 2.6,
+      "cache_hits": 5,
+      "cache_misses": 0,
+      "frames": 18,
+      "retained_frames": 18,
+      "pending_frames": 18
+    },
+    {
+      "case": "warm Overview 1",
+      "sample_id": "0b4da7ef-988a-470a-804c-75a85481e2d0",
+      "commit_ms": 267.3,
+      "feedback_ms": 4.8,
+      "server_ms": 192.4,
+      "auth_ms": 181.9,
+      "data_ms": 2.9,
+      "cache_hits": 5,
+      "cache_misses": 0,
+      "frames": 16,
+      "retained_frames": 16,
+      "pending_frames": 15
+    },
+    {
+      "case": "warm Centers 2",
+      "sample_id": "38db44b3-f2c2-4057-8238-284eb0208550",
+      "commit_ms": 241.3,
+      "feedback_ms": 5.6,
+      "server_ms": 142.5,
+      "auth_ms": 135.2,
+      "data_ms": 2.1,
+      "cache_hits": 5,
+      "cache_misses": 0,
+      "frames": 14,
+      "retained_frames": 14,
+      "pending_frames": 14
+    },
+    {
+      "case": "warm Overview 2",
+      "sample_id": "92a1006e-eb01-40c8-96bd-88361d341e96",
+      "commit_ms": 218,
+      "feedback_ms": 4.4,
+      "server_ms": 156.7,
+      "auth_ms": 149,
+      "data_ms": 2.3,
+      "cache_hits": 5,
+      "cache_misses": 0,
+      "frames": 13,
+      "retained_frames": 13,
+      "pending_frames": 13
+    }
+  ],
+  "preload_experiment": {
+    "procedure": "Refresh data on Recent Orders invalidated the cache and refilled the Recent query. Focus Overview deliberately, complete independent fixture checks, then navigate to Overview.",
+    "sample_id": "a5839ccc-f328-4bf3-8572-00ffd2f1408b",
+    "commit_ms": 338.9,
+    "feedback_ms": 4.9,
+    "auth_ms": 218.1,
+    "data_ms": 2.5,
+    "cache_hits": 5,
+    "cache_misses": 0,
+    "result": "Overview commerce and production were warm on the actual visit; actual authorization still ran."
+  },
+  "recent_orders_experiment": {
+    "case": "Rapid Overview → Centers → Recent",
+    "sample_id": "f0a31613-bfa0-4fe7-85ec-af6d6ee9a842",
+    "commit_ms": 686.4,
+    "feedback_ms": 3.6,
+    "auth_ms": 150.7,
+    "data_ms": 461.1,
+    "cache_hits": 3,
+    "cache_misses": 1,
+    "orders": 10,
+    "items": 16,
+    "result": "Latest selected report committed with complete ten-order data."
+  },
+  "summary": {
+    "warm_filter_baseline_ms": 1208.6,
+    "warm_filter_final_median_ms": 185.9,
+    "warm_filter_reduction_percent": 84.6,
+    "warm_report_tab_median_ms": 254.3,
+    "final_feedback_range_ms": [
+      1.9,
+      8.9
+    ],
+    "previous_content_visible_frames": 379,
+    "total_observed_frames": 379,
+    "pending_visible_frames": 378,
+    "note": "One initial sampled frame preceded pending feedback. All sampled frames retained the previous useful content until commit."
+  },
+  "verification": {
+    "typecheck": "passed",
+    "focused_eslint": "passed, zero warnings",
+    "tests": {
+      "files": 17,
+      "passed": 186
+    },
+    "whitespace_check": "git diff --check passed",
+    "browser_checks": [
+      "Live report switch shows pending label while previous report remains visible.",
+      "Live main menu Reports → Dashboard → Orders → Reports retains content and pending feedback through the data load.",
+      "Four consecutive rapid live filters commit correctly after the button-lock fix.",
+      "Live report tabs and product filters restore correctly on back/forward.",
+      "Held B followed by C commits C; releasing old B never overwrites it.",
+      "Current route A → held B → A cancels the obsolete intent.",
+      "Held older filter followed by a newer product/customer filter commits the latest filter.",
+      "Back during pending navigation supersedes the outstanding request; forward restores the intended report/filter.",
+      "Injected fixture failure clears pending, hides obsolete totals, exposes alert and retry; retry recovers.",
+      "Held request beyond 10 seconds exposes explanatory slow state and destination reload link.",
+      "Keyboard focus preloads only allowed sources, respecting the two-request budget; ordinary rapid clicks start zero fixture preloads.",
+      "Actual ButtonPressLock remains enabled for POST/mutation forms in behavioral tests.",
+      "Preload tests cover authorization, actor/scope isolation, exact date/cache-key sharing, full pagination, and failure recovery."
+    ],
+    "limitation": "Fault injection and access-change isolation use automated mocks/isolated browser fixtures. Live portal checks used owner access and did not modify production permissions or business data."
+  },
+  "remaining_delay_and_tradeoffs": [
+    "Warm reports: fresh authorization about 112–190ms in final filter/tab samples; data loading about 2–3ms. Authentication was deliberately left uncached.",
+    "Cold report: around 2 seconds in final sample, with 1.28 seconds data loading and 0.59 seconds authentication. Network variance is material.",
+    "Dashboard: payroll-status query chain was 720ms of a 1.64-second click; Orders: data reads about 696ms of a 935ms click. Potential later work should profile these chains independently before changing their data semantics.",
+    "Preloading cannot guarantee an instant first visit and may overlap a cold query when a user clicks after a preload has already begun. It never blocks navigation; no speculative shared authorization-bearing page cache was introduced.",
+    "Existing raw report data freshness remains 30 seconds for external/out-of-band changes and immediate local invalidation for relevant application mutations; open reports remain snapshots until refreshed.",
+    "Next's existing back/forward Router Cache behavior remains. History restoration is not claimed to reauthenticate on every restore; new router pushes and preload requests perform their existing server permission checks."
+  ],
+  "development_note": "Deleting route loading files initially left stale generated loader entries in the running Next dev server. Touching the existing admin layout triggered recompilation; a fresh browser route tree then confirmed the final retention results. No server restart or deployment.",
+  "source_sha256": {
+    "components/admin-navigation.tsx": "b782a0fac63db9e4a98e7a650aea824495ab5b6a8e0dfd4fc7b98c64512174b0",
+    "components/active-nav-link.tsx": "9c12243b000587bcce36eb6a8d4a6e0936cd51135636fd82555e759feddd4825",
+    "components/admin-navigation-drawer.tsx": "8edef095a6328d8413ba57c49c308114452d0c5a77496d3f11ce6e149312a1b2",
+    "components/admin-shell.tsx": "44ae719bb050bb28519aa247b3f8d36230dacaad913c3612f9edb421f521451e",
+    "components/button-press-lock.tsx": "c1bda11c2311ecad537239c7e616cbc5f67d2ac99c4ed1908fc6b7ed3940da4e",
+    "components/page-performance.tsx": "c8be121ca3866832bcfafe83c14bd097821a6f980b9e9fdf0b63d48a5dfd558b",
+    "app/admin/reports/page.tsx": "1ac0ad97fb9af3014e7ead12c7eaef2c55e3636d2760c5cb98ef7a68dfbd2033",
+    "app/admin/reports/error.tsx": "0b6fcdbd5b92d067b184b03d190930a13c9a7806ce2eb22e87bce8c4f44ba4e2",
+    "lib/admin-report-preload.ts": "7bf02005936bb4690b360318162381f9f203161c7fa1cf17137dcdf35e3d6789",
+    "lib/report-navigation-policy.ts": "53a197250d5a8f4f85e5eabc8af118ae31a26925d5305fdf7f8b59158a461ea1",
+    "app/api/admin/report-preload/route.ts": "b1c74a4ce8c5e45ba204359517b5e59cdae64b0f624b27c5d1f305fe312b2e40"
+  }
+}

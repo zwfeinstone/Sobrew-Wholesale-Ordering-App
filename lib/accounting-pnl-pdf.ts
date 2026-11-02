@@ -345,10 +345,12 @@ function renderCoreStatement(doc: SimplePdfDocument, statement: AccountingPnlSta
   financialRow(doc, 'Total Revenue', signedMoney(statement.basePnl.revenueCents), { bold: true, shaded: true });
   financialRow(doc, 'Uploaded COGS', expenseMoney(statement.basePnl.cardCogsCents));
   financialRow(doc, 'Labor COGS Adjustment', expenseMoney(statement.laborCogsCents));
+  financialRow(doc, 'Deferred Production Pay Earned', expenseMoney(statement.deferredProductionAccrualCents));
   financialRow(doc, 'Adjusted COGS', expenseMoney(statement.adjustedPnl.cogsCents), { bold: true });
   financialRow(doc, 'Adjusted Gross Profit', signedMoney(statement.adjustedPnl.grossProfitCents), { bold: true, shaded: true });
   financialRow(doc, 'Uploaded Operating Expenses', expenseMoney(statement.basePnl.cardOperatingExpenseCents));
   financialRow(doc, 'Less: Labor COGS Moved Out Of OpEx', signedMoney(statement.laborReclassCents));
+  financialRow(doc, 'Deferred Operating Pay Earned', expenseMoney(statement.deferredOperatingAccrualCents));
   financialRow(doc, 'Adjusted Operating Expenses', expenseMoney(statement.adjustedPnl.operatingExpenseCents), { bold: true });
   financialRow(doc, 'Operating Income', signedMoney(statement.adjustedPnl.operatingIncomeCents), { bold: true, shaded: true });
   financialRow(doc, 'Other Income', signedMoney(statement.basePnl.otherIncomeCents));
@@ -365,7 +367,7 @@ function renderOperatingNotes(doc: SimplePdfDocument, statement: AccountingPnlSt
   doc.moveDown(8);
   financialRow(doc, 'Imported Rows Needing Review', String(statement.needsReviewCount));
   financialRow(doc, 'AI Flagged Rows', String(statement.aiFlaggedCount));
-  financialRow(doc, 'Total Labor Tagged', signedMoney(statement.payrollLaborSummary.totalLaborCents));
+  financialRow(doc, 'Base Payroll Labor Tagged', signedMoney(statement.payrollLaborSummary.totalLaborCents));
   financialRow(doc, 'Production Labor COGS', expenseMoney(statement.laborCogsCents));
   financialRow(doc, 'Sales/Admin/Owner/Other Labor', expenseMoney(statement.salesAdminOtherLaborCents));
 
@@ -471,6 +473,15 @@ export function createAccountingPnlPdf({
   renderSummary(doc, statement);
   renderCoreStatement(doc, statement);
   renderOperatingNotes(doc, statement);
+  if (statement.deferredPay?.plans.length) {
+    const deferred = statement.deferredPay;
+    heading(doc, 'Deferred Payroll Payable');
+    financialRow(doc, 'Opening Balance Owed', signedMoney(deferred.openingLiabilityCents));
+    financialRow(doc, 'Earned In This Period', signedMoney(deferred.accruedCents));
+    financialRow(doc, 'Less: Payments Recorded', signedMoney(deferred.paidCents));
+    financialRow(doc, 'Closing Balance Owed', signedMoney(deferred.closingLiabilityCents), { bold: true });
+    doc.textBlock(`${deferred.eligibleHours.toFixed(2)} eligible hours. Earned pay is included in the P&L by labor tag. Matched bank payments reduce the liability without creating another expense. Work dates use Central time.`, { color: COLORS.muted, size: 9.5 });
+  }
   renderCategoryBreakdown(doc, statement);
   renderTransactionDetail(doc, statement);
 

@@ -790,7 +790,7 @@ function buildMarginBridge(current: ProfitabilityTotals, previous: Profitability
     {
       label: 'Donation COGS',
       effectCents: -(current.donationCogsCents - previous.donationCogsCents),
-      detail: 'Fixed 1% donation COGS allocated by line revenue.',
+      detail: 'Shopify donation is $1 per bag; wholesale donation is 1% of order revenue.',
     },
   ];
 }

@@ -114,8 +114,8 @@ const US_STATE_OPTIONS = [
   ['WY', 'Wyoming'],
 ] as const;
 
-const INVOICE_ORDER_SELECT = 'id,order_kind,archived_at,created_at,shipped_at,subtotal_cents,shipping_company,shipping_name,shipping_state,invoice_status,invoice_error,invoiced_at,quickbooks_invoice_id,quickbooks_invoice_doc_number,quickbooks_invoice_url,quickbooks_invoice_email_to,quickbooks_invoice_email_sent_at,quickbooks_payment_charge_id,quickbooks_payment_error,quickbooks_payment_id,quickbooks_payment_method_label,quickbooks_payment_method_type,quickbooks_payment_status,quickbooks_receipt_email_to,quickbooks_receipt_email_sent_at,profiles(email,full_name),centers(id,name,billing_email_cc,customer_tax_status,quickbooks_customer_id,quickbooks_display_name,quickbooks_payment_method_brand,quickbooks_payment_method_exp_month,quickbooks_payment_method_exp_year,quickbooks_payment_method_id,quickbooks_payment_method_last4,quickbooks_payment_method_type),order_items(qty,line_total_cents,product_name_snapshot,products(name,sku,quickbooks_item_id))';
-const INVOICE_QUEUE_SUMMARY_SELECT = 'id,order_kind,invoice_status,subtotal_cents,centers(quickbooks_customer_id),order_items(line_total_cents,products(quickbooks_item_id))';
+const INVOICE_ORDER_SELECT = 'id,order_source,shopify_order_id,order_kind,archived_at,created_at,shipped_at,subtotal_cents,shipping_company,shipping_name,shipping_state,invoice_status,invoice_error,invoiced_at,quickbooks_invoice_id,quickbooks_invoice_doc_number,quickbooks_invoice_url,quickbooks_invoice_email_to,quickbooks_invoice_email_sent_at,quickbooks_payment_charge_id,quickbooks_payment_error,quickbooks_payment_id,quickbooks_payment_method_label,quickbooks_payment_method_type,quickbooks_payment_status,quickbooks_receipt_email_to,quickbooks_receipt_email_sent_at,profiles(email,full_name),centers(id,name,billing_email_cc,customer_tax_status,quickbooks_customer_id,quickbooks_display_name,quickbooks_payment_method_brand,quickbooks_payment_method_exp_month,quickbooks_payment_method_exp_year,quickbooks_payment_method_id,quickbooks_payment_method_last4,quickbooks_payment_method_type),order_items(qty,line_total_cents,product_name_snapshot,products(name,sku,quickbooks_item_id))';
+const INVOICE_QUEUE_SUMMARY_SELECT = 'id,order_source,shopify_order_id,order_kind,invoice_status,subtotal_cents,centers(quickbooks_customer_id),order_items(line_total_cents,products(quickbooks_item_id))';
 const INVOICE_ARCHIVE_SUMMARY_SELECT = 'id,subtotal_cents';
 const CUSTOMER_SYNC_SELECT = 'id,name,is_active,created_at,quickbooks_customer_id,quickbooks_display_name,quickbooks_company_name,quickbooks_fully_qualified_name,legal_name,billing_email,billing_email_cc,invoice_recipients_configured_at,billing_address1,billing_city,billing_state,billing_zip,quickbooks_sync_status,quickbooks_synced_at,quickbooks_sync_error,quickbooks_mapping_note,quickbooks_payment_method_brand,quickbooks_payment_method_exp_month,quickbooks_payment_method_exp_year,quickbooks_payment_method_id,quickbooks_payment_method_last4,quickbooks_payment_method_note,quickbooks_payment_method_type,quickbooks_payment_method_updated_at';
 
@@ -146,6 +146,8 @@ type InvoiceQueueOrder = {
   invoice_status: string | null;
   invoiced_at?: string | null;
   order_kind?: string | null;
+  order_source?: string | null;
+  shopify_order_id?: string | null;
   order_items?: Array<{
     line_total_cents: number | string | null;
     product_name_snapshot: string | null;
@@ -362,7 +364,9 @@ function hasUnresolvedPayment(order: Pick<InvoiceQueueOrder, 'quickbooks_payment
 }
 
 function orderIsReadyToInvoice(order: InvoiceQueueOrder) {
-  return order.order_kind !== PROSPECTING_SAMPLE_ORDER_KIND
+  return order.order_source !== 'shopify'
+    && !order.shopify_order_id
+    && order.order_kind !== PROSPECTING_SAMPLE_ORDER_KIND
     && (order.invoice_status === 'not_invoiced' || order.invoice_status === 'invoice_error')
     && !missingOrderCustomerMapping(order)
     && missingOrderProductMappings(order).length === 0
@@ -684,6 +688,7 @@ async function markInvoiceSentManually(formData: FormData) {
     .from('orders')
     .select('id,order_kind,status,created_at,invoice_status')
     .eq('id', orderId)
+    .eq('order_source', 'portal')
     .single();
 
   if (!order || order.order_kind === PROSPECTING_SAMPLE_ORDER_KIND || order.status !== 'Shipped' || !order.created_at || new Date(order.created_at) < new Date(startIso)) {
@@ -703,6 +708,7 @@ async function markInvoiceSentManually(formData: FormData) {
       quickbooks_payment_error: null,
     })
     .eq('id', orderId)
+    .eq('order_source', 'portal')
     .in('invoice_status', ['not_invoiced', 'invoicing', 'invoice_error']);
   if (error) {
     console.error('[invoicing] manual invoice mark failed', { error, orderId });
@@ -725,6 +731,7 @@ async function invoiceOrder(formData: FormData) {
     .from('orders')
     .select('id,order_kind,status,archived_at,created_at,quickbooks_invoice_id,invoice_status,quickbooks_payment_id,quickbooks_payment_charge_id,quickbooks_payment_status,centers(id,billing_email_cc,quickbooks_customer_id),order_items(line_total_cents,product_name_snapshot,products(name,quickbooks_item_id))')
     .eq('id', orderId)
+    .eq('order_source', 'portal')
     .single();
 
   if (!order || order.order_kind === PROSPECTING_SAMPLE_ORDER_KIND || order.status !== 'Shipped' || !order.created_at || new Date(order.created_at) < new Date(startIso)) {
@@ -739,7 +746,8 @@ async function invoiceOrder(formData: FormData) {
         invoice_error: 'This order has no invoiceable line items.',
         invoice_status: 'invoice_error',
       })
-      .eq('id', orderId);
+      .eq('id', orderId)
+      .eq('order_source', 'portal');
     redirect(invoicingHref('invoice_no_line_items'));
   }
   const missingCustomerMapping = !cleanText(relatedOne((order as any).centers)?.quickbooks_customer_id);
@@ -753,6 +761,7 @@ async function invoiceOrder(formData: FormData) {
     .from('orders')
     .update({ invoice_error: null, invoice_status: 'invoicing' })
     .eq('id', orderId)
+    .eq('order_source', 'portal')
     .eq('status', 'Shipped')
     .neq('order_kind', PROSPECTING_SAMPLE_ORDER_KIND)
     .in('invoice_status', ['not_invoiced', 'invoice_error']);
@@ -804,7 +813,8 @@ async function invoiceOrder(formData: FormData) {
         quickbooks_invoice_id: invoice.id,
         quickbooks_invoice_url: invoice.url,
       })
-      .eq('id', orderId);
+      .eq('id', orderId)
+      .eq('order_source', 'portal');
     if (updateError) throw updateError;
     if (emailError) successToast = delivery === 'pdf' ? 'invoice_pdf_failed' : 'invoice_email_failed';
   } catch (error) {
@@ -820,7 +830,8 @@ async function invoiceOrder(formData: FormData) {
         invoice_error: message,
         invoice_status: 'invoice_error',
       })
-      .eq('id', orderId);
+      .eq('id', orderId)
+      .eq('order_source', 'portal');
     redirect(invoicingHref(error instanceof QuickBooksConfigurationError ? 'quickbooks_config_error' : 'invoice_failed'));
   }
   redirect(invoicingHref(successToast));
@@ -835,6 +846,7 @@ async function retryAutomaticBilling(formData: FormData) {
   const { data: order } = await getSupabaseAdmin().from('orders')
     .select('id,order_kind,status,archived_at,created_at,invoice_status,centers(name,quickbooks_customer_id),order_items(qty,line_total_cents,product_name_snapshot,products(name,sku,quickbooks_item_id))')
     .eq('id', orderId)
+    .eq('order_source', 'portal')
     .single();
   if (!order || order.order_kind === PROSPECTING_SAMPLE_ORDER_KIND || order.status !== 'Shipped'
     || order.archived_at || !order.created_at || new Date(order.created_at) < new Date(quickBooksInvoicingStartIso())) {
@@ -875,6 +887,7 @@ async function chargeSavedPaymentForOrder(formData: FormData) {
     .from('orders')
     .select('id,order_kind,status,archived_at,created_at,quickbooks_invoice_id,invoice_status,quickbooks_payment_id,centers(id,billing_email_cc,quickbooks_customer_id,quickbooks_payment_method_id,quickbooks_payment_method_type),order_items(line_total_cents,product_name_snapshot,products(name,quickbooks_item_id))')
     .eq('id', orderId)
+    .eq('order_source', 'portal')
     .single();
 
   if (!order || (order as any).order_kind === PROSPECTING_SAMPLE_ORDER_KIND || (order as any).status !== 'Shipped' || !(order as any).created_at || new Date((order as any).created_at) < new Date(startIso)) {
@@ -890,7 +903,8 @@ async function chargeSavedPaymentForOrder(formData: FormData) {
         invoice_error: 'This order has no invoiceable line items.',
         invoice_status: 'invoice_error',
       })
-      .eq('id', orderId);
+      .eq('id', orderId)
+      .eq('order_source', 'portal');
     redirect(invoicingHref('invoice_no_line_items'));
   }
   const missingCustomerMapping = !cleanText(center?.quickbooks_customer_id);
@@ -908,6 +922,7 @@ async function chargeSavedPaymentForOrder(formData: FormData) {
       quickbooks_payment_error: null,
     })
     .eq('id', orderId)
+    .eq('order_source', 'portal')
     .eq('status', 'Shipped')
     .neq('order_kind', PROSPECTING_SAMPLE_ORDER_KIND)
     .is('quickbooks_payment_id', null)
@@ -966,7 +981,8 @@ async function chargeSavedPaymentForOrder(formData: FormData) {
         quickbooks_receipt_email_sent_at: receiptEmailSentAt,
         quickbooks_receipt_email_to: invoice.emailRecipients ?? invoice.emailTo,
       })
-      .eq('id', orderId);
+      .eq('id', orderId)
+      .eq('order_source', 'portal');
     if (updateError) throw updateError;
     if (receiptEmailError) successToast = 'payment_receipt_failed';
   } catch (error) {
@@ -983,7 +999,8 @@ async function chargeSavedPaymentForOrder(formData: FormData) {
         invoice_status: 'invoice_error',
         quickbooks_payment_error: message,
       })
-      .eq('id', orderId);
+      .eq('id', orderId)
+      .eq('order_source', 'portal');
     redirect(invoicingHref(error instanceof QuickBooksConfigurationError ? 'quickbooks_config_error' : 'payment_failed'));
   }
   redirect(invoicingHref(successToast));
@@ -1000,6 +1017,7 @@ async function resendQuickBooksInvoice(formData: FormData) {
     .from('orders')
     .select('id,quickbooks_invoice_id,invoice_status')
     .eq('id', orderId)
+    .eq('order_source', 'portal')
     .single();
   if (readError || !order?.quickbooks_invoice_id) redirect('/admin/invoicing?view=sent&toast=invoice_resend_failed');
 
@@ -1017,7 +1035,8 @@ async function resendQuickBooksInvoice(formData: FormData) {
         quickbooks_invoice_id: invoice.id,
         quickbooks_invoice_url: invoice.url,
       })
-      .eq('id', orderId);
+      .eq('id', orderId)
+      .eq('order_source', 'portal');
     if (updateError) throw updateError;
     if (invoice.emailError) toast = 'invoice_resend_failed';
   } catch (error) {
@@ -1029,7 +1048,8 @@ async function resendQuickBooksInvoice(formData: FormData) {
         invoice_error: message,
         invoice_status: 'invoiced',
       })
-      .eq('id', orderId);
+      .eq('id', orderId)
+      .eq('order_source', 'portal');
     toast = 'invoice_resend_failed';
   }
   redirect(`/admin/invoicing?view=sent&toast=${toast}`);
@@ -1046,6 +1066,7 @@ async function resendInvoicePdf(formData: FormData) {
     .from('orders')
     .select('id,quickbooks_invoice_id,quickbooks_invoice_doc_number,profiles(full_name),centers(name)')
     .eq('id', orderId)
+    .eq('order_source', 'portal')
     .single();
   if (readError || !order?.quickbooks_invoice_id) redirect('/admin/invoicing?view=sent&toast=invoice_resend_pdf_failed');
 
@@ -1072,7 +1093,8 @@ async function resendInvoicePdf(formData: FormData) {
         quickbooks_invoice_email_sent_at: new Date().toISOString(),
         quickbooks_invoice_email_to: recipients.display,
       })
-      .eq('id', orderId);
+      .eq('id', orderId)
+      .eq('order_source', 'portal');
     if (updateError) throw updateError;
   } catch (error) {
     const message = errorMessage(error, 'Unable to resend that invoice PDF.');
@@ -1083,7 +1105,8 @@ async function resendInvoicePdf(formData: FormData) {
         invoice_error: message,
         invoice_status: 'invoiced',
       })
-      .eq('id', orderId);
+      .eq('id', orderId)
+      .eq('order_source', 'portal');
     toast = 'invoice_resend_pdf_failed';
   }
   redirect(`/admin/invoicing?view=sent&toast=${toast}`);
@@ -1100,6 +1123,7 @@ async function resendPaymentReceipt(formData: FormData) {
     .from('orders')
     .select('id,subtotal_cents,quickbooks_invoice_id,quickbooks_invoice_doc_number,quickbooks_payment_id,quickbooks_payment_method_label,quickbooks_payment_method_type,quickbooks_payment_status,profiles(full_name),centers(name)')
     .eq('id', orderId)
+    .eq('order_source', 'portal')
     .single();
   if (readError || !order?.quickbooks_invoice_id || !order?.quickbooks_payment_id) {
     redirect('/admin/invoicing?view=sent&toast=payment_receipt_failed');
@@ -1131,7 +1155,8 @@ async function resendPaymentReceipt(formData: FormData) {
         quickbooks_receipt_email_sent_at: new Date().toISOString(),
         quickbooks_receipt_email_to: recipients.display,
       })
-      .eq('id', orderId);
+      .eq('id', orderId)
+      .eq('order_source', 'portal');
     if (updateError) throw updateError;
   } catch (error) {
     const message = errorMessage(error, 'Unable to resend that payment receipt.');
@@ -1141,7 +1166,8 @@ async function resendPaymentReceipt(formData: FormData) {
       .update({
         quickbooks_payment_error: message,
       })
-      .eq('id', orderId);
+      .eq('id', orderId)
+      .eq('order_source', 'portal');
     toast = 'payment_receipt_failed';
   }
   redirect(`/admin/invoicing?view=sent&toast=${toast}`);
@@ -1228,6 +1254,7 @@ async function InvoicingContent({ activeView, canInvoice, errorDetail, quickBook
     (activeView === 'queue'
       ? supabase.from('orders').select(INVOICE_ORDER_SELECT)
       : supabase.from('orders').select(INVOICE_QUEUE_SUMMARY_SELECT))
+      .eq('order_source', 'portal')
       .eq('status', 'Shipped')
       .neq('order_kind', PROSPECTING_SAMPLE_ORDER_KIND)
       .in('invoice_status', ['not_invoiced', 'invoicing', 'invoice_error'])
@@ -1237,6 +1264,7 @@ async function InvoicingContent({ activeView, canInvoice, errorDetail, quickBook
     (activeView === 'sent'
       ? supabase.from('orders').select(INVOICE_ORDER_SELECT)
       : supabase.from('orders').select(INVOICE_ARCHIVE_SUMMARY_SELECT))
+      .eq('order_source', 'portal')
       .eq('invoice_status', 'invoiced')
       .order('quickbooks_invoice_email_sent_at', { ascending: false, nullsFirst: false })
       .order('invoiced_at', { ascending: false, nullsFirst: false })
@@ -1245,6 +1273,7 @@ async function InvoicingContent({ activeView, canInvoice, errorDetail, quickBook
       ? supabase
           .from('orders')
           .select(INVOICE_ORDER_SELECT)
+          .eq('order_source', 'portal')
           .not('quickbooks_invoice_id', 'is', null)
           .order('invoiced_at', { ascending: false, nullsFirst: false })
           .order('created_at', { ascending: false })

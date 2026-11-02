@@ -1,7 +1,7 @@
 import { createClient } from '@supabase/supabase-js';
 import { describe, expect, it } from 'vitest';
 import type { Database } from '@/lib/supabase/schema';
-import { prospectingLeadPath, prospectingOriginPath, prospectingPath, prospectingQueueContextFromParams, prospectingQueueHiddenFields } from '@/lib/prospecting';
+import { prospectingLeadPath, prospectingOriginPath, prospectingPath, prospectingQueueContextFromParams, prospectingQueueHiddenFields, prospectingWorkspaceLeadPath } from '@/lib/prospecting';
 import { orderedProspectingQueueQuery, prospectingQueueQuery, prospectingTodayGroup } from '@/lib/prospecting-queue';
 
 const REP_ID = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
@@ -70,6 +70,53 @@ describe('Today queue contracts', () => {
     expect(prospectingTodayGroup('2026-09-23', date.today)).toBe('Overdue');
     expect(prospectingTodayGroup(date.today, date.today)).toBe('Due today');
     expect(prospectingTodayGroup(null, date.today)).toBe('New');
+  });
+});
+
+describe('Recently worked queue contracts', () => {
+  it('keeps worked leads with future follow-ups in the same assigned scope for rows and counts', async () => {
+    const { supabase, requests } = fixture();
+    const context = prospectingQueueContextFromParams({ tab: 'recent', priority: 'high', state: 'IL', list: LIST_ID });
+    await orderedProspectingQueueQuery(supabase, { ...date, context }, undefined, { count: 'exact' }).range(25, 49);
+    await prospectingQueueQuery(supabase, { ...date, context }, 'id', { count: 'exact', head: true });
+
+    const [rows, count] = requests;
+    for (const key of ['assigned_profile_id', 'archived_at', 'do_not_contact', 'stage', 'priority', 'state_key', 'prospecting_list_leads.list_id', 'last_activity_at', 'next_follow_up_at', 'or']) {
+      expect(rows.searchParams.getAll(key)).toEqual(count.searchParams.getAll(key));
+    }
+    expect(rows.searchParams.get('assigned_profile_id')).toBe(`eq.${REP_ID}`);
+    expect(rows.searchParams.get('archived_at')).toBe('is.null');
+    expect(rows.searchParams.get('do_not_contact')).toBe('eq.false');
+    expect(rows.searchParams.get('stage')).toBe('in.(new,working,follow_up,interested)');
+    expect(rows.searchParams.get('last_activity_at')).toBe('not.is.null');
+    expect(rows.searchParams.has('next_follow_up_at')).toBe(false);
+    expect(rows.searchParams.has('or')).toBe(false);
+    expect(rows.searchParams.get('order')).toBe('last_activity_at.desc.nullsfirst,id.asc.nullslast');
+    expect(rows.searchParams.get('offset')).toBe('25');
+    expect(rows.searchParams.get('limit')).toBe('25');
+  });
+
+  it('does not inherit a Today preset or touched-today exclusion from a saved URL', async () => {
+    const { supabase, requests } = fixture();
+    const context = prospectingQueueContextFromParams({ tab: 'recent', preset: 'new' });
+    await prospectingQueueQuery(supabase, { ...date, context });
+
+    expect(context.tab).toBe('recent');
+    expect(requests[0].searchParams.get('stage')).toBe('in.(new,working,follow_up,interested)');
+    expect(requests[0].searchParams.get('last_activity_at')).toBe('not.is.null');
+    expect(requests[0].searchParams.has('next_follow_up_at')).toBe(false);
+    expect(requests[0].searchParams.has('or')).toBe(false);
+  });
+
+  it('preserves Recently worked filters through list, record, and save navigation', () => {
+    const context = prospectingQueueContextFromParams({ tab: 'recent', q: 'Clinic', priority: 'high', state: 'TX', list: LIST_ID, rep: REP_ID, page: '2', page_size: '25' });
+    expect(context.tab).toBe('recent');
+    for (const href of [prospectingPath(context, { includePageSize: true }), prospectingWorkspaceLeadPath('lead-id', context, { includePageSize: true })]) {
+      expect(prospectingQueueContextFromParams(new URLSearchParams(href.split('?')[1]))).toEqual(context);
+    }
+    const form = new FormData();
+    prospectingQueueHiddenFields(context).forEach(({ name, value }) => form.set(name, value));
+    expect(prospectingQueueContextFromParams(form)).toEqual(context);
   });
 });
 

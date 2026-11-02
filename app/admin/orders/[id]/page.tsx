@@ -1,8 +1,11 @@
-import type { TablesUpdate } from '@/lib/supabase/database.types';
+import type { Database } from '@/lib/supabase/schema';
+type OrderUpdate = Database['public']['Tables']['orders']['Update'];
 import { notFound, redirect } from 'next/navigation';
 import Link from 'next/link';
 import { OrderStatusBadge } from '@/components/order-status';
 import { OrderNotes } from '@/components/order-notes';
+import { CustomerStockSummary } from '@/components/customer-stock-summary';
+import { CustomerStockRefresh } from '@/components/customer-stock-refresh';
 import { OrderTrashDialog } from '@/components/order-trash-dialog';
 import OrderFulfillmentForm from '@/components/order-fulfillment-form';
 import PrintOrderButton from '@/components/print-order-button';
@@ -12,15 +15,18 @@ import StatusToast from '@/components/status-toast';
 import { requireAdminSectionEdit, requireAdminSectionView } from '@/lib/admin-permissions';
 import { requireAdminWriteAccess } from '@/lib/admin-write-access';
 import { getCenterLoginEmails } from '@/lib/center-logins';
+import { loadCustomerStockBalances } from '@/lib/customer-stock';
+import { isHeldStockReleaseForBilling, isZeroPriceHeldStockRelease } from '@/lib/held-stock-billing';
 import { snapshotOrderCommissionForShipment } from '@/lib/commissions';
 import { sendShippedEmail } from '@/lib/email';
 import { centsFromDollars, isWholeCountQuantity, normalizeInventoryNumber, roundWholeCountQuantity } from '@/lib/inventory';
 import { snapshotOrderCogsForShipment } from '@/lib/order-cogs';
-import { donationCogsCentsForRevenue, processingFeeCentsForRevenue } from '@/lib/order-fees';
+import { donationCogsCentsForOrder, processingFeeCentsForRevenue } from '@/lib/order-fees';
 import { getOrderItemSummaries } from '@/lib/order-items';
 import { orderAddressLabel, orderActivityLabel } from '@/lib/order-workflow';
 import { fulfillShippedOrderBilling } from '@/lib/quickbooks';
 import { shipmentTrackingLinesFromFormData } from '@/lib/shipment-tracking';
+import { syncShopifyFulfillment, validateShopifyOrderForShipment } from '@/lib/shopify';
 import { createClient } from '@/lib/supabase/server';
 import { formatAppDateTime, usd } from '@/lib/utils';
 
@@ -126,7 +132,7 @@ async function shipOrder(formData: FormData) {
   const fulfillmentMethod = String(formData.get('fulfillment_method') ?? '');
   const localDeliveryConfirmed = formData.get('local_delivery_zero_confirm') === 'on';
   const zeroBoxesConfirmed = formData.get('zero_boxes_confirmed') === 'on';
-  const manualTrackingRows = shipmentTrackingLinesFromFormData(formData);
+  const manualTrackingRows = fulfillmentMethod === 'carrier' ? shipmentTrackingLinesFromFormData(formData) : [];
   if (!['carrier', 'local_delivery'].includes(fulfillmentMethod)) redirect(`/admin/orders/${id}?toast=fulfillment_required`);
   if (fulfillmentMethod === 'carrier' && shippingCostCents <= 0) redirect(`/admin/orders/${id}?toast=shipping_required`);
   if (fulfillmentMethod === 'local_delivery' && shippingCostCents === 0 && !localDeliveryConfirmed) {
@@ -143,14 +149,24 @@ async function shipOrder(formData: FormData) {
   if (fulfillmentMethod === 'carrier' && !manualTrackingRows.length) {
     redirect(`/admin/orders/${id}?toast=tracking_required`);
   }
+  if (order.order_source === 'shopify') {
+    const validation = await validateShopifyOrderForShipment(id);
+    if (!validation.ok) redirect(`/admin/orders/${id}?toast=shopify_validation_failed`);
+  }
 
-  const processingFeeCents = processingFeeCentsForRevenue((order as any).subtotal_cents);
-  const donationCogsCents = donationCogsCentsForRevenue((order as any).subtotal_cents);
-
-  const { data: orderItems } = await supabase
+  const { data: orderItems, error: orderItemsError } = await supabase
     .from('order_items')
-    .select('id,qty,product_id,product_name_snapshot,products(name,shipping_box_count_required)')
+    .select('id,qty,product_id,product_name_snapshot,unit_price_cents,line_total_cents,products(name,shipping_box_count_required)')
     .eq('order_id', id);
+
+  if (orderItemsError) redirect(`/admin/orders/${id}?toast=ship_error`);
+  const heldRelease = await isHeldStockReleaseForBilling(supabase, { ...order, order_items: orderItems });
+  const processingFeeCents = heldRelease ? 0 : processingFeeCentsForRevenue(order.subtotal_cents);
+  const donationCogsCents = heldRelease ? 0 : donationCogsCentsForOrder({
+    orderSource: order.order_source,
+    revenueCents: order.subtotal_cents,
+    items: orderItems ?? [],
+  });
 
   const requiredOrderItems = (orderItems ?? []).filter((item: any) => relatedOne(item.products)?.shipping_box_count_required);
   if (requiredOrderItems.length) {
@@ -203,41 +219,64 @@ async function shipOrder(formData: FormData) {
       if (!zeroBoxesConfirmed) redirect(`/admin/orders/${id}?toast=zero_boxes_confirm_required`);
     }
 
-    const deleteResult = await supabase
+    const { data: savedUsages, error: savedUsagesError } = await supabase
       .from('order_item_shipping_boxes')
-      .delete()
-      .eq('order_id', id)
-      .is('consumed_at', null);
-    if (deleteResult.error) redirect(`/admin/orders/${id}?toast=ship_error`);
+      .select('inventory_item_id,quantity,consumed_at')
+      .eq('order_id', id);
+    if (savedUsagesError) redirect(`/admin/orders/${id}?toast=box_usage_unavailable`);
 
-    const primaryOrderItemId = requiredLines[0]?.id;
-    const usageRows = primaryOrderItemId
-      ? [...submittedUsageByBoxItem.entries()].map(([boxItemId, quantity]) => ({
-        inventory_item_id: boxItemId,
-        order_id: id,
-        order_item_id: primaryOrderItemId,
-        quantity,
-      }))
-      : [];
+    if ((savedUsages ?? []).some((usage) => usage.consumed_at)) {
+      // A previous attempt already consumed boxes. Match the entire saved plan,
+      // including its unconsumed remainder, before resuming the same snapshot.
+      const savedUsageByBoxItem = new Map<string, number>();
+      for (const usage of savedUsages ?? []) {
+        const quantity = Number(usage.quantity);
+        if (!usage.inventory_item_id || !Number.isFinite(quantity) || quantity <= 0) {
+          redirect(`/admin/orders/${id}?toast=box_usage_changed`);
+        }
+        savedUsageByBoxItem.set(usage.inventory_item_id, (savedUsageByBoxItem.get(usage.inventory_item_id) ?? 0) + quantity);
+      }
+      const unchanged = savedUsageByBoxItem.size === submittedUsageByBoxItem.size
+        && [...savedUsageByBoxItem].every(([boxItemId, quantity]) => submittedUsageByBoxItem.get(boxItemId) === quantity);
+      if (!unchanged) redirect(`/admin/orders/${id}?toast=box_usage_changed`);
+    } else {
+      const deleteResult = await supabase
+        .from('order_item_shipping_boxes')
+        .delete()
+        .eq('order_id', id)
+        .is('consumed_at', null);
+      if (deleteResult.error) redirect(`/admin/orders/${id}?toast=ship_error`);
 
-    if (usageRows.length) {
-      const insertResult = await supabase.from('order_item_shipping_boxes').insert(usageRows);
-      if (insertResult.error) redirect(`/admin/orders/${id}?toast=ship_error`);
-    }
+      const primaryOrderItemId = requiredLines[0]?.id;
+      const usageRows = primaryOrderItemId
+        ? [...submittedUsageByBoxItem.entries()].map(([boxItemId, quantity]) => ({
+          inventory_item_id: boxItemId,
+          order_id: id,
+          order_item_id: primaryOrderItemId,
+          quantity,
+        }))
+        : [];
 
-    for (const line of requiredLines) {
-      const boxesUsed = line.id === primaryOrderItemId ? totalSubmittedQuantity : 0;
-      const { error: itemError } = await supabase
-        .from('order_items')
-        .update({ shipping_boxes_used: boxesUsed })
-        .eq('id', line.id);
-      if (itemError) redirect(`/admin/orders/${id}?toast=ship_error`);
+      if (usageRows.length) {
+        const insertResult = await supabase.from('order_item_shipping_boxes').insert(usageRows);
+        if (insertResult.error) redirect(`/admin/orders/${id}?toast=ship_error`);
+      }
+
+      for (const line of requiredLines) {
+        const boxesUsed = line.id === primaryOrderItemId ? totalSubmittedQuantity : 0;
+        const { error: itemError } = await supabase
+          .from('order_items')
+          .update({ shipping_boxes_used: boxesUsed })
+          .eq('id', line.id);
+        if (itemError) redirect(`/admin/orders/${id}?toast=ship_error`);
+      }
     }
   }
 
   const cogsResult = await snapshotOrderCogsForShipment({
     donationCogsCents,
     orderId: id,
+    orderSource: order.order_source,
     processingFeeCents,
     shippingCostCents,
     supabase,
@@ -259,11 +298,12 @@ async function shipOrder(formData: FormData) {
     redirect(`/admin/orders/${id}?toast=ship_error`);
   }
 
-  const orderUpdatePayload: TablesUpdate<'orders'> = {
+  const orderUpdatePayload: OrderUpdate = {
     donation_cogs_cents: donationCogsCents,
     fulfillment_method: fulfillmentMethod,
     processing_fee_cents: processingFeeCents,
     shipping_cost_cents: shippingCostCents,
+    shipping_tracking_numbers: manualTrackingRows.map((row) => row.trackingCode),
     shipped_at: shippedAt,
     status: 'Shipped',
   };
@@ -292,6 +332,13 @@ async function shipOrder(formData: FormData) {
 
   const claimedShipment = Boolean(orderUpdateResult.data?.length);
   if (!claimedShipment) redirect(`/admin/orders/${id}?toast=order_already_shipped`);
+
+  // Shopify already collected payment. Its fulfillment sends the shipping
+  // notification; do not create a QuickBooks invoice or send a second email.
+  if (order.order_source === 'shopify') {
+    const result = await syncShopifyFulfillment(id);
+    redirect(`/admin/orders/${id}?toast=${result.status === 'synced' ? 'shopify_shipped' : 'shopify_sync_failed'}`);
+  }
 
   const billing = (async () => {
     try {
@@ -343,6 +390,29 @@ async function shipOrder(formData: FormData) {
   redirect(`/admin/orders/${id}?toast=${toast}`);
 }
 
+async function retryShopifyShipment(formData: FormData) {
+  'use server';
+  const id = cleanText(formData.get('id'));
+  await requireAdminWriteAccess(orderToastHref(id, 'admin_write_denied'), 'orders');
+  if (!id) redirect('/admin/orders');
+  const result = await syncShopifyFulfillment(id);
+  redirect(orderToastHref(id, result.status === 'synced' ? 'shopify_shipped' : 'shopify_sync_failed'));
+}
+
+async function recheckShopifyOrder(formData: FormData) {
+  'use server';
+  const id = cleanText(formData.get('id'));
+  await requireAdminWriteAccess(orderToastHref(id, 'admin_write_denied'), 'orders');
+  if (!id) redirect('/admin/orders');
+  const supabase = await createClient();
+  const { data: order, error } = await supabase.from('orders').select('id,order_source,status,archived_at').eq('id', id).single();
+  if (error || !order || order.order_source !== 'shopify' || order.status === 'Shipped' || order.archived_at) {
+    redirect(orderToastHref(id, 'shopify_validation_failed'));
+  }
+  const result = await validateShopifyOrderForShipment(id);
+  redirect(orderToastHref(id, result.ok ? 'shopify_verified' : 'shopify_validation_failed'));
+}
+
 async function archiveOrder(formData: FormData) {
   'use server';
   const id = String(formData.get('id') ?? '');
@@ -368,14 +438,14 @@ async function saveDelivery(formData: FormData) {
   const supabase = await createClient();
   const { data: order } = await supabase.from('orders').select('id,status,archived_at,center_id').eq('id', id).single();
   if (!order || order.status === 'Shipped' || order.archived_at) redirect(orderToastHref(id, 'delivery_error'));
-  const update: TablesUpdate<'orders'> = {};
+  const update: OrderUpdate = {};
   const locationId = cleanText(formData.get('location_id'));
   if (locationId) {
     const { data: location } = await supabase.from('center_locations').select('*').eq('id', locationId).eq('center_id', order.center_id!).eq('is_active', true).single();
     if (!location) redirect(orderToastHref(id, 'delivery_error'));
     Object.assign(update, { center_location_id: location.id, shipping_address1: location.address1, shipping_address2: location.address2, shipping_city: location.city, shipping_state: location.state, shipping_zip: location.zip });
   } else {
-    for (const field of ['shipping_name','shipping_company','shipping_address1','shipping_address2','shipping_city','shipping_state','shipping_zip'] as const) update[field] = cleanText(formData.get(field)) || null;
+    for (const field of ['shipping_name','shipping_company','shipping_address1','shipping_address2','shipping_city','shipping_state','shipping_zip','shipping_country'] as const) update[field] = cleanText(formData.get(field)) || null;
   }
   const result = await supabase.from('orders').update(update).eq('id', id).neq('status','Shipped').is('archived_at',null).select('id');
   redirect(orderToastHref(id, result.error || !result.data?.length ? 'delivery_error' : 'delivery_updated'));
@@ -416,6 +486,31 @@ export default async function AdminOrderDetail(
     supabase.from('inventory_items').select('id,name,sku').eq('item_type', 'material_supply').eq('active', true).or('sku.ilike.BOX-%,sku.ilike.MAT-BOX-%,name.ilike.%box%').order('name', { ascending: true }),
   ]);
   const items = itemsResult.data ?? [];
+  const productIds = [...new Set(items.map(item => item.product_id).filter((id): id is string => Boolean(id)))];
+  const [{ data: heldSales, error: heldSalesError }, { data: stockAllocations, error: stockError }] = await Promise.all([
+    supabase.from('held_stock_sales').select('*').eq('order_id', order.id),
+    supabase.from('customer_stock_product_allocations').select('*').in('product_id', productIds),
+  ]);
+  if (heldSalesError || stockError) throw new Error('Unable to load held inventory details.');
+  const heldSale = heldSales?.[0];
+  const heldRelease = isZeroPriceHeldStockRelease({ ...order, order_items: items }, stockAllocations ?? []);
+  const productStockBalances = stockAllocations?.length && order.center_id
+    ? (await loadCustomerStockBalances(supabase, order.center_id)).filter(balance => productIds.includes(balance.product_id))
+    : [];
+  const stockBalances = [...new Map(productStockBalances.map(balance => [balance.allocation_id, balance])).values()];
+  const allocationIds = [...new Set((stockAllocations ?? []).map(allocation => allocation.allocation_id))];
+  const { data: batchProducts, error: batchProductsError } = allocationIds.length
+    ? await supabase.from('customer_stock_product_allocations').select('allocation_id,product_id').in('allocation_id', allocationIds)
+    : { data: [], error: null };
+  if (batchProductsError) throw new Error('Unable to load shared batch products.');
+  const batchAllocationByProduct = new Map((batchProducts ?? []).map(product => [product.product_id, product.allocation_id]));
+  const { data: batchCostItems, error: batchCostError } = batchAllocationByProduct.size
+    ? await supabase.from('order_items').select('order_id,product_id,cogs_total_cents,orders(status,archived_at)').in('product_id', [...batchAllocationByProduct.keys()])
+    : { data: [], error: null };
+  if (batchCostError) throw new Error('Unable to load custom batch expenses.');
+  const batchCosts = new Map(allocationIds.map(allocationId => [allocationId,
+    (batchCostItems ?? []).filter(item => item.product_id && batchAllocationByProduct.get(item.product_id) === allocationId && relatedOne(item.orders)?.status === 'Shipped')
+      .reduce((sum, item) => sum + normalizeInventoryNumber(item.cogs_total_cents), 0)]));
   const shippingBoxUsages = shippingBoxUsagesResult.error ? [] : (shippingBoxUsagesResult.data ?? []);
   const boxItems = boxItemsResult.error ? [] : (boxItemsResult.data ?? []);
   const { count: recurringCount } = await supabase
@@ -466,8 +561,12 @@ export default async function AdminOrderDetail(
     id: item.id,
     label: productBoxLabel(item),
   }));
-  const processingFeePreviewCents = processingFeeCentsForRevenue(order.subtotal_cents);
-  const donationCogsPreviewCents = donationCogsCentsForRevenue(order.subtotal_cents);
+  const processingFeePreviewCents = heldSale?.processing_fee_cents ?? (heldRelease ? 0 : processingFeeCentsForRevenue(order.subtotal_cents));
+  const donationCogsPreviewCents = heldSale?.donation_cogs_cents ?? (heldRelease ? 0 : donationCogsCentsForOrder({
+    orderSource: order.order_source,
+    revenueCents: order.subtotal_cents,
+    items,
+  }));
   const fulfillmentMethod = order.fulfillment_method === 'local_delivery' ? 'local_delivery' : 'carrier';
   const shippingBoxSummaryByItem = new Map<string, { label: string; quantity: number }>();
   for (const usage of shippingBoxUsages as any[]) {
@@ -479,6 +578,7 @@ export default async function AdminOrderDetail(
     shippingBoxSummaryByItem.set(key, current);
   }
   const shippingBoxSummary = [...shippingBoxSummaryByItem.values()].sort((a, b) => a.label.localeCompare(b.label));
+  const savedBoxUsages = [...shippingBoxSummaryByItem].map(([inventoryItemId, usage]) => ({ inventoryItemId, quantity: usage.quantity }));
 
   const [{ data: locations }, activityResult] = await Promise.all([
     order.center_id ? supabase.from('center_locations').select('*').eq('center_id', order.center_id).eq('is_active', true).order('name') : Promise.resolve({ data: [] }),
@@ -496,6 +596,12 @@ export default async function AdminOrderDetail(
     order_shipped_email_failed: ['Order shipped, but the shipping email failed. Do not ship it again; contact the customer directly.', 'error'],
     order_shipped_billing_failed: ['Order shipped and shipping email sent, but QuickBooks billing needs attention. Review Invoicing before retrying billing. Do not ship it again.', 'error'],
     order_shipped_billing_and_email_failed: ['Order shipped, but QuickBooks billing needs attention and the shipping email failed. Review Invoicing and contact the customer. Do not ship it again.', 'error'],
+    shopify_shipped: [fulfillmentMethod === 'carrier' ? 'Order shipped and tracking synced to Shopify. No invoice is needed.' : 'Local delivery / pickup marked fulfilled in Shopify. No invoice is needed.', 'success'],
+    shopify_sync_failed: ['Fulfillment saved in the portal. Shopify needs attention; use Retry Shopify sync below.', 'error'],
+    shopify_verified: ['Shopify verified. This order is ready to ship.', 'success'],
+    shopify_validation_failed: ['The order could not be verified for shipping in Shopify. Review the Shopify message below and try again.', 'error'],
+    box_usage_unavailable: ['Saved box usage could not be checked. Try again before shipping.', 'error'],
+    box_usage_changed: ['Boxes were already consumed during an earlier shipping attempt. Use the same box types and quantities shown on this order to retry, or review the saved packaging before making changes.', 'error'],
   };
 
   return <div className="order-detail-workspace space-y-6">
@@ -526,7 +632,28 @@ export default async function AdminOrderDetail(
       <div className="workspace-heading-actions"><OrderStatusBadge status={order.status} /><PrintOrderButton /></div>
     </header>
     <OrderNotes notes={orderNotes} />
-    {order.order_kind !== 'prospecting_sample' && items.some(item => item.unit_price_cents === 0) ? <p className="workspace-notice warning">This standard order includes $0 items. Verify that complimentary pricing is intentional before fulfillment.</p> : null}
+    {stockBalances.length ? <section className="order-detail-section" aria-label="Customer held inventory">
+      <CustomerStockRefresh enabled />
+      <h2 className="text-lg font-semibold">Customer held inventory</h2>
+      <p className="mt-2 text-sm text-slate-600">{heldSale ? 'Billed and held at Sobrew. The initial Shipped status closes the sale; physical deliveries are recorded on later release orders.' : 'Release of previously billed bags. Sobrew covers the boxes and freight; no additional charge for these bags.'}</p>
+      {stockBalances.map(balance => {
+        const allocation = stockAllocations?.find(row => row.allocation_id === balance.allocation_id);
+        return <div key={balance.allocation_id}>
+          <CustomerStockSummary balance={balance} productName={items.find(item => item.product_id === balance.product_id)?.product_name_snapshot ?? undefined} />
+          <p className="mt-2 text-sm">Recorded batch costs, including shipped releases: <strong>{usd(Math.round(batchCosts.get(balance.allocation_id) ?? 0))}</strong>. Future delivery costs are pending.</p>
+          {allocation && allocation.initial_order_id !== order.id ? <Link className="text-sm underline" href={`/admin/orders/${allocation.initial_order_id}`}>View original batch sale</Link> : null}
+        </div>;
+      })}
+    </section> : null}
+    {order.order_source === 'shopify' ? <section className="order-detail-section space-y-2" aria-label="Shopify order">
+      <p className="font-semibold">Shopify {order.shopify_order_name} <span className="workspace-badge">Paid in Shopify</span></p>
+      <p className="text-sm text-slate-600">No invoice or additional payment is needed.</p>
+      {order.status === 'Shipped' ? <p className="text-sm">{order.shopify_sync_status === 'synced' ? fulfillmentMethod === 'carrier' ? 'Shipment and tracking synced to Shopify.' : 'Local delivery / pickup fulfilled in Shopify.' : 'Fulfillment saved. Shopify sync is pending.'}</p> : null}
+      {order.shopify_sync_error ? <p className="text-sm text-rose-700" role="alert">{order.shopify_sync_error}</p> : null}
+      {editableDelivery ? <form action={recheckShopifyOrder}><input type="hidden" name="id" value={order.id} /><PendingSubmitButton className="btn-secondary" label="Recheck Shopify" pendingLabel="Checking Shopify..." /></form> : null}
+      {canEdit && order.status === 'Shipped' && order.shopify_sync_status !== 'synced' ? <form action={retryShopifyShipment}><input type="hidden" name="id" value={order.id} /><PendingSubmitButton className="btn-secondary" label="Retry Shopify sync" pendingLabel="Syncing..." /></form> : null}
+    </section> : null}
+    {order.order_kind !== 'prospecting_sample' && !heldRelease && items.some(item => item.unit_price_cents === 0) ? <p className="workspace-notice warning">This standard order includes $0 items. Verify that complimentary pricing is intentional before fulfillment.</p> : null}
     {order.archived_at ? <p className="workspace-notice">Archived {formatOrderTimestamp(order.archived_at)}</p> : null}
     <div className="order-detail-columns">
       <div className="min-w-0 space-y-6">
@@ -544,7 +671,7 @@ export default async function AdminOrderDetail(
           {editableDelivery ? <details className="mt-4"><summary className="cursor-pointer text-sm font-semibold">Edit address</summary>
             {locations?.length ? <form action={saveDelivery} className="flex flex-wrap items-end gap-3 mt-4"><input type="hidden" name="id" value={order.id} /><label className="workspace-field flex-1">Saved location<select className="input" name="location_id" required defaultValue=""><option value="" disabled>Select location</option>{locations.map(location => <option key={location.id} value={location.id}>{location.name} - {location.address1}</option>)}</select></label><PendingSubmitButton className="btn-secondary" label="Use location" pendingLabel="Saving..." /></form> : null}
             <form action={saveDelivery} className="delivery-grid mt-4"><input type="hidden" name="id" value={order.id} />
-              {([['shipping_name','Recipient'],['shipping_company','Company'],['shipping_address1','Street address'],['shipping_address2','Apartment / suite'],['shipping_city','City'],['shipping_state','State'],['shipping_zip','ZIP']] as const).map(([field,label]) => <label key={field} className="workspace-field">{label}<input className="input" name={field} defaultValue={order[field] || ''} /></label>)}
+              {([['shipping_name','Recipient'],['shipping_company','Company'],['shipping_address1','Street address'],['shipping_address2','Apartment / suite'],['shipping_city','City'],['shipping_state','State'],['shipping_zip','ZIP'],['shipping_country','Country code']] as const).map(([field,label]) => <label key={field} className="workspace-field">{label}<input className="input" name={field} defaultValue={order[field] || ''} /></label>)}
               <div><PendingSubmitButton className="btn-secondary" label="Save address" pendingLabel="Saving..." /></div>
             </form>
           </details> : null}
@@ -559,17 +686,19 @@ export default async function AdminOrderDetail(
       </div>
       <aside className="order-fulfillment-panel">
         <h2 className="text-lg font-semibold mb-4">Fulfillment</h2>
-        <p className="text-sm text-slate-500 mb-4 break-all">{order.profiles?.email || 'No customer login'}</p>
+        <p className="text-sm text-slate-500 mb-4 break-all">{order.shopify_email || order.profiles?.email || 'No customer login'}</p>
         {editableDelivery ? <>
           <form action={updateStatus} className="flex gap-2 mb-5"><input type="hidden" name="id" value={order.id} /><label className="sr-only" htmlFor="order-status">Order status</label><select id="order-status" className="input" name="status" defaultValue={order.status || 'New'}><option>New</option><option>Processing</option></select><PendingSubmitButton className="btn-secondary" label="Update" pendingLabel="Saving..." /></form>
-          <div className="fulfillment-fees mb-5"><p>Processing fee <strong>{usd(processingFeePreviewCents)}</strong></p><p>Donation <strong>{usd(donationCogsPreviewCents)}</strong></p></div>
-          <OrderFulfillmentForm action={shipOrder} orderId={order.id} hasRequiredBoxLines={productBoxRequiredLines.length > 0}>
-            {productBoxRequiredLines.length ? <div><h3 className="text-sm font-semibold mb-3">Product boxes</h3><ProductBoxUsageFields boxItems={productBoxOptions} recipeBoxCoveredLabels={recipeBoxCoveredLabels} requiredLines={productBoxRequiredLines} /></div> : null}
+          <div className="fulfillment-fees mb-5"><p>Processing fee <strong>{usd(processingFeePreviewCents)}</strong></p><p>Donation ({order.order_source === 'shopify' ? '$1 per bag' : '1% of revenue'}) <strong>{usd(donationCogsPreviewCents)}</strong></p></div>
+          {shippingBoxSummary.length ? <div className="mb-4 text-sm" aria-label="Saved product boxes"><p className="font-semibold">Saved product boxes</p>{shippingBoxSummary.map(usage => <p key={usage.label}>{usage.quantity} x {usage.label}</p>)}</div> : null}
+          <OrderFulfillmentForm action={shipOrder} orderId={order.id} prepaidShopify={order.order_source === 'shopify'} hasRequiredBoxLines={productBoxRequiredLines.length > 0}>
+            {productBoxRequiredLines.length ? <div><h3 className="text-sm font-semibold mb-3">Product boxes</h3><ProductBoxUsageFields key={JSON.stringify(savedBoxUsages)} initialUsages={savedBoxUsages} boxItems={productBoxOptions} recipeBoxCoveredLabels={recipeBoxCoveredLabels} requiredLines={productBoxRequiredLines} /></div> : null}
           </OrderFulfillmentForm>
-        </> : <div className="space-y-3 text-sm"><p>{fulfillmentLabel(fulfillmentMethod)}</p>{order.shipped_at ? <p>Shipped {formatOrderTimestamp(order.shipped_at)}</p> : null}<p>Shipping COGS: {usd(Math.round(normalizeInventoryNumber(order.shipping_cost_cents)))}</p><p>Processing COGS: {usd(Math.round(normalizeInventoryNumber(order.processing_fee_cents)))}</p><p>Donation COGS: {usd(Math.round(normalizeInventoryNumber(order.donation_cogs_cents)))}</p>{shippingBoxSummary.map(usage => <p key={usage.label}>{usage.quantity} x {usage.label}</p>)}</div>}
+        </> : <div className="space-y-3 text-sm"><p>{fulfillmentLabel(fulfillmentMethod)}</p>{order.shipped_at ? <p>Shipped {formatOrderTimestamp(order.shipped_at)}</p> : null}<p>Shipping COGS: {heldSale && order.shipping_cost_cents == null ? 'Pending future deliveries' : usd(Math.round(normalizeInventoryNumber(order.shipping_cost_cents)))}</p><p>Processing COGS: {usd(Math.round(normalizeInventoryNumber(order.processing_fee_cents)))}</p><p>Donation COGS: {usd(Math.round(normalizeInventoryNumber(order.donation_cogs_cents)))}</p>{shippingBoxSummary.map(usage => <p key={usage.label}>{usage.quantity} x {usage.label}</p>)}</div>}
+        {order.shipping_tracking_numbers?.length ? <div className="mt-4 text-sm"><p className="font-semibold">Tracking numbers</p>{order.shipping_tracking_numbers.map((tracking) => <p key={tracking} className="break-all">{tracking}</p>)}</div> : null}
         <div className="mt-6 pt-4 border-t space-y-3 print-hidden">
-          {canArchiveOrders && !order.archived_at && ['Processing','Shipped'].includes(order.status || '') ? <form action={archiveOrder}><input type="hidden" name="id" value={order.id} /><PendingSubmitButton className="btn-secondary w-full" label="Archive order" pendingLabel="Archiving..." /></form> : null}
-          {canEdit ? <OrderTrashDialog orderId={order.id} customerName={orderCustomerLabel(order)} hasRecurring={(recurringCount ?? 0) > 0} className="btn-secondary w-full" /> : null}
+          {canArchiveOrders && !heldSale && !order.archived_at && ['Processing','Shipped'].includes(order.status || '') ? <form action={archiveOrder}><input type="hidden" name="id" value={order.id} /><PendingSubmitButton className="btn-secondary w-full" label="Archive order" pendingLabel="Archiving..." /></form> : null}
+          {canEdit && !heldSale ? <OrderTrashDialog orderId={order.id} customerName={orderCustomerLabel(order)} hasRecurring={(recurringCount ?? 0) > 0} className="btn-secondary w-full" /> : null}
         </div>
       </aside>
     </div>

@@ -6,6 +6,7 @@ Wholesale ordering portal built with Next.js 15 App Router, React 19, TypeScript
 
 - Customer auth (email/password)
 - Customer-specific product visibility and pricing
+- Customer-managed delivery locations and addresses in Account, shared within their company and available at checkout; future recurring deliveries use the updated saved address
 - Cart, checkout, reordering, recurring orders, order history, and order detail
 - Admin dashboard with left nav:
   - Orders management (status workflow + CSV export)
@@ -15,6 +16,9 @@ Wholesale ordering portal built with Next.js 15 App Router, React 19, TypeScript
 - Bootstrap-first-admin flow at `/bootstrap` using `ADMIN_BOOTSTRAP_TOKEN`
 - Server-side order email notifications via Resend
 - Inventory and production planning, prospecting, accounting, payroll, reporting, and QuickBooks invoicing
+- Shopify product/variant imports with portal recipe and COGS setup, plus prepaid orders in the normal fulfillment queue and tracking sync back to Shopify
+
+See [Shopify order setup](docs/shopify-orders.md) for the migration, app credentials, webhook subscription, variant matching, COGS setup, and retry workflow.
 
 ## Environment
 

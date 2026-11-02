@@ -12,6 +12,9 @@ import {
   type CartProductSnapshot,
 } from '@/components/cart-client';
 import CheckoutSubmitButton from '@/components/checkout-submit-button';
+import { CustomerStockRefresh } from '@/components/customer-stock-refresh';
+import { cartCustomerStockGroups, cartExceedsAvailableStock } from '@/lib/cart';
+import { CustomerStockSummary } from '@/components/customer-stock-summary';
 import { trackProductEvent } from '@/lib/analytics';
 import { checkoutSubmitState } from '@/lib/checkout-submit-state';
 import {
@@ -29,7 +32,7 @@ import {
 type CheckoutFormProps = {
   actionUrl: string;
   cartStorageKey: string;
-  initialToast: '' | 'invalid_cart' | 'checkout_error' | 'location_required';
+  initialToast: '' | 'invalid_cart' | 'checkout_error' | 'location_required' | 'stock_unavailable';
   locations: CheckoutLocationOption[];
   products: CartProductSnapshot[];
 };
@@ -58,6 +61,7 @@ function checkoutErrorMessage(initialToast: CheckoutFormProps['initialToast']) {
   if (initialToast === 'invalid_cart') return 'Your order changed. Review the items and try placing it again.';
   if (initialToast === 'checkout_error') return 'We couldn’t confirm your order yet. Your draft is saved. Try again to check its status without placing a second order.';
   if (initialToast === 'location_required') return 'Choose a delivery location before placing your order.';
+  if (initialToast === 'stock_unavailable') return 'Your stored bag inventory changed. Your cart has been updated to the available quantity. Review it before placing your order again.';
   return '';
 }
 
@@ -71,6 +75,10 @@ export default function CheckoutForm({ actionUrl, cartStorageKey, initialToast, 
   const [isSubmitting, setIsSubmitting] = useState(false);
   const submittingRef = useRef(false);
   const { itemCount, items, subtotalCents } = useCart(cartStorageKey);
+  const productMap = useMemo(() => new Map(products.map((product) => [product.product_id, product])), [products]);
+  const containsCustomerStock = items.some((item) => Boolean(productMap.get(item.product_id)?.customer_stock));
+  const onlyCustomerStock = items.length > 0 && items.every((item) => Boolean(productMap.get(item.product_id)?.customer_stock));
+  const recurringEnabled = isRecurring && !containsCustomerStock;
   const cartFingerprint = checkoutCartFingerprint(items);
   const selectedLocation = locations.find((location) => location.id === selectedLocationId) ?? null;
   const { disabled: checkoutDisabled, disabledLabel } = checkoutSubmitState({
@@ -81,8 +89,8 @@ export default function CheckoutForm({ actionUrl, cartStorageKey, initialToast, 
   });
   const errorMessage = clientError || checkoutErrorMessage(initialToast);
   const nextRecurringDate = useMemo(
-    () => isRecurring ? formatNextRecurringOrderDate(frequency, new Date()) : '',
-    [frequency, isRecurring]
+    () => recurringEnabled ? formatNextRecurringOrderDate(frequency, new Date()) : '',
+    [frequency, recurringEnabled]
   );
 
   useEffect(() => {
@@ -139,6 +147,12 @@ export default function CheckoutForm({ actionUrl, cartStorageKey, initialToast, 
         router.refresh();
         return;
       }
+      if (cartExceedsAvailableStock(currentItems, products)) {
+        event.preventDefault();
+        setClientError('The combined quantity exceeds your shared bag inventory. Review the updated cart before placing this order.');
+        router.refresh();
+        return;
+      }
       const submission = submitCheckoutSubmission(localStorage, cartStorageKey, currentItems);
       if (!submission || submission.status === 'completed') {
         event.preventDefault();
@@ -160,6 +174,7 @@ export default function CheckoutForm({ actionUrl, cartStorageKey, initialToast, 
 
   return (
     <form action={actionUrl} method="post" className="checkout-form" onSubmit={handleSubmit}>
+      <CustomerStockRefresh enabled={!isSubmitting && products.some((product) => Boolean(product.customer_stock))} />
       <CartCatalogSync products={products} storageKey={cartStorageKey} />
       <CheckoutCartField storageKey={cartStorageKey} />
       <input type="hidden" name="submission_id" value={submissionId} />
@@ -174,6 +189,12 @@ export default function CheckoutForm({ actionUrl, cartStorageKey, initialToast, 
 
       <div className="checkout-content">
         <CheckoutCartSummary storageKey={cartStorageKey} />
+        {cartCustomerStockGroups(items, products).map(({ balance, quantity, productName }) => (
+          <CustomerStockSummary key={balance.allocation_id} balance={balance} productName={productName} requestedQuantity={quantity} />
+        ))}
+        {onlyCustomerStock ? (
+          <p className="rounded-xl border border-teal-100 bg-teal-50 p-4 text-sm text-teal-950">This delivery is included in your purchased batch. Sobrew covers boxes and shipping; no additional invoice will be sent.</p>
+        ) : null}
 
         <section className="checkout-section" aria-labelledby="checkout-delivery-heading">
           <div className="checkout-section-heading">
@@ -212,6 +233,9 @@ export default function CheckoutForm({ actionUrl, cartStorageKey, initialToast, 
           ) : locations.length > 1 ? (
             <p className="checkout-location-hint">Choose a location to review its delivery address.</p>
           ) : null}
+          <Link className="mt-4 inline-flex text-sm font-medium text-slate-950 underline" href="/portal/settings#delivery-locations">
+            Add or edit delivery locations
+          </Link>
         </section>
 
         <section className="checkout-section" aria-labelledby="checkout-recurring-heading">
@@ -223,7 +247,8 @@ export default function CheckoutForm({ actionUrl, cartStorageKey, initialToast, 
             <label className="checkout-switch">
               <span className="sr-only">Make this order recurring</span>
               <input
-                checked={isRecurring}
+                checked={recurringEnabled}
+                disabled={containsCustomerStock}
                 name="is_recurring"
                 type="checkbox"
                 onChange={(event) => setIsRecurring(event.target.checked)}
@@ -231,7 +256,7 @@ export default function CheckoutForm({ actionUrl, cartStorageKey, initialToast, 
               <span aria-hidden="true" className="checkout-switch-track"><span /></span>
             </label>
           </div>
-          {isRecurring ? (
+          {recurringEnabled ? (
             <div className="checkout-recurring-options">
               <label htmlFor="checkout-recurring-frequency">Repeat this order</label>
               <select
@@ -248,7 +273,7 @@ export default function CheckoutForm({ actionUrl, cartStorageKey, initialToast, 
               <p className="checkout-next-date">Next expected order: <strong>{nextRecurringDate}</strong></p>
             </div>
           ) : (
-            <p className="checkout-section-help">Turn this on to automatically create the same order on a schedule.</p>
+            <p className="checkout-section-help">{containsCustomerStock ? 'Your purchased bags have a fixed remaining quantity. Request each delivery as needed; recurring orders are unavailable for this cart.' : 'Turn this on to automatically create the same order on a schedule.'}</p>
           )}
         </section>
 
@@ -272,7 +297,7 @@ export default function CheckoutForm({ actionUrl, cartStorageKey, initialToast, 
           <span>Subtotal</span>
           <strong>${(subtotalCents / 100).toFixed(2)}</strong>
         </div>
-        <p>No payment is collected here. An invoice is sent when your order is processed.</p>
+        {!onlyCustomerStock ? <p>No payment is collected here. An invoice is sent when your order is processed.</p> : null}
         <CheckoutSubmitButton disabled={checkoutDisabled} disabledLabel={disabledLabel} pending={isSubmitting} />
         {isSubmitting ? (
           <p className="checkout-pending-notice" role="status">

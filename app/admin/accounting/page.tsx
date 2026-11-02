@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import AccountingBulkSelectionControls from '@/components/accounting-bulk-selection-controls';
+import AccountingPeriodFilter from '@/components/accounting-period-filter';
 import PendingSubmitButton from '@/components/pending-submit-button';
 import StatusToast from '@/components/status-toast';
 import { requireAdminSectionView } from '@/lib/admin-permissions';
@@ -23,6 +24,7 @@ import {
   type ParsedAccountingTransaction,
 } from '@/lib/accounting';
 import { buildAccountingPnlStatement, isStandaloneAccountingFlag } from '@/lib/accounting-pnl-statement';
+import { getAccountingPeriodPresets } from '@/lib/accounting-periods';
 import { loadAccountingCategories, loadAccountingPnlInputs } from '@/lib/accounting-data';
 import { fetchAllPages } from '@/lib/supabase/pagination';
 import type { Database } from '@/lib/supabase/schema';
@@ -191,9 +193,9 @@ function money(value: unknown) {
   return usd(Math.round(normalizeAccountingNumber(value)));
 }
 
-function normalizeDateRange(searchParams?: SearchParams) {
-  const start = typeof searchParams?.start === 'string' ? searchParams.start : firstDayOfCurrentYear();
-  const end = typeof searchParams?.end === 'string' ? searchParams.end : todayInput();
+function normalizeDateRange(searchParams: SearchParams | undefined, defaultRange: { start: string; end: string }) {
+  const start = typeof searchParams?.start === 'string' ? searchParams.start : defaultRange.start;
+  const end = typeof searchParams?.end === 'string' ? searchParams.end : defaultRange.end;
   return { end, endExclusive: addOneDay(end), start };
 }
 
@@ -851,7 +853,9 @@ export default async function AccountingPage(
   const reviewPage = positivePageParam(searchParams?.page);
   const reviewFrom = (reviewPage - 1) * REVIEW_PAGE_SIZE;
   const reviewTo = reviewFrom + REVIEW_PAGE_SIZE - 1;
-  const { end, endExclusive, start } = normalizeDateRange(searchParams);
+  const periodPresets = getAccountingPeriodPresets();
+  const yearToDate = periodPresets.find((preset) => preset.id === 'year_to_date')!;
+  const { end, endExclusive, start } = normalizeDateRange(searchParams, yearToDate);
   const reviewCategoryFilter = reviewCategoryParam(searchParams?.category);
   const reviewSearch = searchParam(searchParams?.q);
   const reviewSearchFilter = supabaseIlikeValue(reviewSearch);
@@ -974,6 +978,9 @@ export default async function AccountingPage(
   });
   const {
     adjustedPnl,
+    deferredPay,
+    deferredProductionAccrualCents,
+    deferredOperatingAccrualCents,
     basePnl: pnl,
     categoryBreakdown: pnlCategoryBreakdown,
     laborCogsCents,
@@ -1004,22 +1011,22 @@ export default async function AccountingPage(
       {aiReviewErrorMessage(searchParams?.ai_error) ? <StatusToast message={aiReviewErrorMessage(searchParams?.ai_error) ?? ''} tone="error" /> : null}
 
       <section className="panel">
-        <div className="flex flex-col gap-5 xl:flex-row xl:items-end xl:justify-between">
+        <div className="flex flex-col gap-5">
           <div className="min-w-0">
             <span className="eyebrow">Accounting</span>
             <h1 className="page-title mt-4">Accounting workspace</h1>
             <p className="page-subtitle mt-3 max-w-3xl">Upload bank and card activity, review possible duplicates, and track the numbers that feed your P&amp;L.</p>
           </div>
-          <div className="flex w-full min-w-0 flex-col gap-3 lg:flex-row lg:flex-wrap lg:items-end lg:justify-end xl:w-auto">
-            <form className="grid w-full min-w-0 gap-3 rounded-xl border border-slate-200 bg-white/60 p-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto_auto] lg:w-auto" action="/admin/accounting">
-              <input name="view" type="hidden" value={activeView} />
-              {activeView === 'review' && reviewCategoryFilter ? <input name="category" type="hidden" value={reviewCategoryFilter} /> : null}
-              {activeView === 'review' && reviewSearch ? <input name="q" type="hidden" value={reviewSearch} /> : null}
-              <input className="input min-w-0" name="start" type="date" defaultValue={start} />
-              <input className="input min-w-0" name="end" type="date" defaultValue={end} />
-              <button className="btn-primary w-full sm:w-auto" type="submit">Update</button>
-              <button className="btn-secondary w-full sm:w-auto" formAction="/admin/accounting/pnl-statement" type="submit">Download PDF</button>
-            </form>
+          <div className="flex w-full min-w-0 flex-col gap-3 xl:flex-row xl:items-end">
+            <AccountingPeriodFilter
+              key={`${activeView}:${start}:${end}`}
+              activeView={activeView}
+              start={start}
+              end={end}
+              presets={periodPresets}
+              reviewCategory={reviewCategoryFilter}
+              reviewSearch={reviewSearch}
+            />
             <form action={runAiAccountingReview} className="w-full rounded-xl border border-slate-200 bg-white/60 p-3 sm:w-auto">
               <input name="start" type="hidden" value={start} />
               <input name="end" type="hidden" value={end} />
@@ -1205,6 +1212,7 @@ export default async function AccountingPage(
           <div>
             <span className="eyebrow">P&amp;L</span>
             <h2 className="mt-3 text-2xl font-semibold tracking-tight text-slate-950">Profit and loss foundation</h2>
+            <p className="mt-2 text-sm text-slate-500">{formatDate(start)} – {formatDate(end)}</p>
           </div>
           <div className="overflow-x-auto">
             <table className="min-w-full text-sm">
@@ -1214,10 +1222,12 @@ export default async function AccountingPage(
                 <tr><td className="py-2 font-semibold text-slate-950">Uploaded revenue</td><td className="py-2 text-right font-semibold text-slate-950">{money(pnl.revenueCents)}</td></tr>
                 <tr><td className="py-2 font-medium text-slate-700">Uploaded COGS</td><td className="py-2 text-right font-semibold">({money(pnl.cardCogsCents)})</td></tr>
                 <tr><td className="py-2 font-medium text-slate-700">Labor COGS adjustment</td><td className="py-2 text-right font-semibold">({money(laborCogsCents)})</td></tr>
+                <tr><td className="py-2 font-medium text-slate-700">Deferred production pay earned</td><td className="py-2 text-right font-semibold">({money(deferredProductionAccrualCents)})</td></tr>
                 <tr><td className="py-2 font-semibold text-slate-950">Adjusted COGS</td><td className="py-2 text-right font-semibold text-slate-950">({money(adjustedPnl.cogsCents)})</td></tr>
                 <tr><td className="py-2 font-semibold text-slate-950">Adjusted gross profit</td><td className="py-2 text-right font-semibold text-slate-950">{money(adjustedPnl.grossProfitCents)}</td></tr>
                 <tr><td className="py-2 font-medium text-slate-700">Uploaded operating expenses</td><td className="py-2 text-right font-semibold">({money(pnl.cardOperatingExpenseCents)})</td></tr>
                 <tr><td className="py-2 font-medium text-slate-700">Labor COGS moved out of OpEx</td><td className="py-2 text-right font-semibold">{money(laborReclassCents)}</td></tr>
+                <tr><td className="py-2 font-medium text-slate-700">Deferred operating pay earned</td><td className="py-2 text-right font-semibold">({money(deferredOperatingAccrualCents)})</td></tr>
                 <tr><td className="py-2 font-semibold text-slate-950">Adjusted operating expenses</td><td className="py-2 text-right font-semibold text-slate-950">({money(adjustedPnl.operatingExpenseCents)})</td></tr>
                 <tr><td className="py-2 font-semibold text-slate-950">Operating income</td><td className="py-2 text-right font-semibold text-slate-950">{money(adjustedPnl.operatingIncomeCents)}</td></tr>
                 <tr><td className="py-2 font-medium text-slate-700">Other income</td><td className="py-2 text-right font-semibold">{money(pnl.otherIncomeCents)}</td></tr>
@@ -1227,7 +1237,7 @@ export default async function AccountingPage(
             </table>
           </div>
           <p className="rounded-xl border border-teal-100 bg-teal-50 px-4 py-3 text-sm font-medium text-teal-900">
-            The uploaded bank and card activity stays the source of truth. Labor COGS comes from {laborCogsSourceLabel.toLowerCase()}, and {money(laborReclassCents)} is moved out of Payroll/Owner Pay operating expense so net income is not double-counted.
+            Bank and card activity supplies cash transactions. Base labor COGS comes from {laborCogsSourceLabel.toLowerCase()}, with {money(laborReclassCents)} moved out of Payroll/Owner Pay operating expense. Deferred pay adds {money(deferredPay?.accruedCents ?? 0)} of expense when earned. Matched deferred payments repay the balance owed and are excluded from expense.
           </p>
         </div>
 
@@ -1246,16 +1256,16 @@ export default async function AccountingPage(
               <p className="mt-2 text-lg font-semibold text-slate-950">{needsReviewCount}</p>
             </div>
             <div className="rounded-xl border border-slate-200 bg-white/60 p-3">
-              <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Total Labor Tagged</p>
-              <p className="mt-2 text-lg font-semibold text-slate-950">{money(payrollLaborSummary.totalLaborCents)}</p>
+              <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Labor Including Deferred Pay</p>
+              <p className="mt-2 text-lg font-semibold text-slate-950">{money(payrollLaborSummary.totalLaborCents + (deferredPay?.accruedCents ?? 0))}</p>
             </div>
             <div className="rounded-xl border border-slate-200 bg-white/60 p-3">
-              <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Labor COGS</p>
-              <p className="mt-2 text-lg font-semibold text-slate-950">{money(laborCogsCents)}</p>
+              <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Labor COGS Including Deferred</p>
+              <p className="mt-2 text-lg font-semibold text-slate-950">{money(laborCogsCents + deferredProductionAccrualCents)}</p>
             </div>
             <div className="rounded-xl border border-slate-200 bg-white/60 p-3">
-              <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Sales/Admin/Owner/Other</p>
-              <p className="mt-2 text-lg font-semibold text-slate-950">{money(salesAdminOtherLaborCents)}</p>
+              <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Sales/Admin/Owner/Other Including Deferred</p>
+              <p className="mt-2 text-lg font-semibold text-slate-950">{money(salesAdminOtherLaborCents + deferredOperatingAccrualCents)}</p>
             </div>
             <div className="rounded-xl border border-slate-200 bg-white/60 p-3">
               <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Payroll Reclassed</p>
@@ -1264,7 +1274,7 @@ export default async function AccountingPage(
           </div>
           <div className="rounded-xl border border-slate-200 bg-white/60 p-3">
             <div className="flex items-center justify-between gap-3">
-              <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Payroll Split</p>
+              <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Base Payroll Split</p>
               <p className="text-xs font-medium text-slate-500">{laborCogsSourceLabel}</p>
             </div>
             <div className="mt-3 grid gap-2 sm:grid-cols-2">

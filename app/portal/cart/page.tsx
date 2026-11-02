@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { CartCatalogSync, CartTable } from '@/components/cart-client';
+import { CustomerStockRefresh } from '@/components/customer-stock-refresh';
 import { requireUser } from '@/lib/auth';
 import { cartStorageKeyForUser } from '@/lib/cart';
 import { getCenterCartProducts } from '@/lib/center-cart-products';
@@ -14,13 +15,14 @@ export default async function CartPage() {
 
   return (
     <div className="cart-page space-y-5">
+      <CustomerStockRefresh enabled={cartProducts.some((product) => Boolean(product.customer_stock))} />
       <CartCatalogSync products={cartProducts} storageKey={cartStorageKey} />
       <header className="cart-page-header">
         <Link className="cart-back-link" href="/portal">← Quick Restock</Link>
         <h1>Review your order</h1>
         <p>Fine-tune quantities before checkout.</p>
       </header>
-      <CartTable storageKey={cartStorageKey} />
+      <CartTable storageKey={cartStorageKey} products={cartProducts} />
     </div>
   );
 }

@@ -20,6 +20,7 @@ import {
 } from '@/lib/time-clock';
 import { fetchAllPages } from '@/lib/supabase/pagination';
 import { calculatePayrollWages, distributePayrollWages } from '@/lib/payroll-wages';
+import type { DeferredPayAccountingSummary } from '@/lib/deferred-pay-accounting';
 
 export const ACCOUNTING_PNL_PAGE_SIZE = 1000;
 
@@ -131,6 +132,9 @@ export type AccountingPnlStatementDetailSection = {
 };
 
 export type AccountingPnlStatement = {
+  deferredPay: DeferredPayAccountingSummary | null;
+  deferredProductionAccrualCents: number;
+  deferredOperatingAccrualCents: number;
   adjustedPnl: AccountingPnlAdjustedTotals;
   aiFlaggedCount: number;
   basePnl: AccountingPnlTotals;
@@ -417,6 +421,7 @@ function groupedStatementSections({
 
 export function buildAccountingPnlStatement({
   categories,
+  deferredPay = null,
   includeTransactionDetails = true,
   payrollAllocations = [],
   payrollSalaryPayments = [],
@@ -426,6 +431,7 @@ export function buildAccountingPnlStatement({
   transactions,
 }: {
   categories: AccountingCategoryRow[];
+  deferredPay?: DeferredPayAccountingSummary | null;
   includeTransactionDetails?: boolean;
   payrollAllocations?: AccountingPayrollAllocationRow[];
   payrollSalaryPayments?: AccountingSalaryPaymentRow[];
@@ -434,7 +440,11 @@ export function buildAccountingPnlStatement({
   productionRuns?: ProductionRunLaborRow[];
   transactions: AccountingPnlTransactionRow[];
 }): AccountingPnlStatement {
-  const basePnl = buildAccountingPnlTotals({ transactions });
+  // A linked bank settlement repays a liability, even if someone later changes
+  // its category. The original transaction remains in the bank activity.
+  const settlementIds = new Set(deferredPay?.settlementTransactionIds ?? []);
+  const expenseTransactions = transactions.filter((transaction) => !transaction.id || !settlementIds.has(transaction.id));
+  const basePnl = buildAccountingPnlTotals({ transactions: expenseTransactions });
   const payrollLaborSummary = buildAccountingLaborSummary({
     allocations: payrollAllocations,
     salaryPayments: payrollSalaryPayments,
@@ -450,29 +460,46 @@ export function buildAccountingPnlStatement({
     + payrollLaborSummary.adminSalariesCents
     + payrollLaborSummary.ownerSalariesCents
     + payrollLaborSummary.otherSalariesCents;
-  const payrollOperatingExpenseCents = transactions
+  const payrollOperatingExpenseCents = expenseTransactions
     .filter((transaction) => {
+      if (transaction.status === 'excluded') return false;
       const category = relatedAccountingCategory(transaction);
       return category ? isPayrollOperatingExpenseCategory(category) : false;
     })
     .reduce((sum, transaction) => sum + Math.max(0, normalizeAccountingNumber(transaction.amount_cents)), 0);
   const laborReclassCents = Math.min(laborCogsCents, payrollOperatingExpenseCents);
+  // Preserve the base-pay reclassification, then recognize new earned costs.
+  // Including unpaid accrual in the reclass would cancel its expense.
+  const deferredProductionAccrualCents = deferredPay?.productionAccruedCents ?? 0;
+  const deferredOperatingAccrualCents = deferredPay?.operatingAccruedCents ?? 0;
   const adjustedPnl: AccountingPnlAdjustedTotals = {
-    cogsCents: basePnl.cardCogsCents + laborCogsCents,
-    grossProfitCents: basePnl.revenueCents - basePnl.cardCogsCents - laborCogsCents,
+    cogsCents: basePnl.cardCogsCents + laborCogsCents + deferredProductionAccrualCents,
+    grossProfitCents: basePnl.revenueCents - basePnl.cardCogsCents - laborCogsCents - deferredProductionAccrualCents,
     netIncomeCents: 0,
-    operatingExpenseCents: Math.max(0, basePnl.cardOperatingExpenseCents - laborReclassCents),
+    operatingExpenseCents: Math.max(0, basePnl.cardOperatingExpenseCents - laborReclassCents) + deferredOperatingAccrualCents,
     operatingIncomeCents: 0,
   };
   adjustedPnl.operatingIncomeCents = adjustedPnl.grossProfitCents - adjustedPnl.operatingExpenseCents;
   adjustedPnl.netIncomeCents = adjustedPnl.operatingIncomeCents + basePnl.otherIncomeCents - basePnl.otherExpenseCents;
 
-  const retailSalesCents = transactions
+  const retailSalesCents = expenseTransactions
     .filter(isShopifyDepositTransaction)
     .reduce((sum, transaction) => sum + -normalizeAccountingNumber(transaction.amount_cents), 0);
   const wholesaleSalesCents = basePnl.revenueCents - retailSalesCents;
 
-  const groupedSections = groupedStatementSections({ categories, includeTransactionDetails, transactions });
+  const groupedSections = groupedStatementSections({ categories, includeTransactionDetails, transactions: expenseTransactions });
+  for (const [id, label, totalCents] of [
+    ['cogs', 'Deferred production pay earned', deferredProductionAccrualCents],
+    ['operating_expenses', 'Deferred operating pay earned', deferredOperatingAccrualCents],
+  ] as const) {
+    if (!totalCents) continue;
+    let section = groupedSections.find((row) => row.id === id);
+    if (!section) {
+      section = { ...ACCOUNTING_PNL_DETAIL_SECTIONS.find((row) => row.id === id)!, rows: [] };
+      groupedSections.push(section);
+    }
+    section.rows.push({ id: `deferred_${id}`, label, totalCents, transactions: [] });
+  }
   const detailSections = includeTransactionDetails ? groupedSections : [];
   const categoryBreakdown = groupedSections.map((section) => ({
     ...section,
@@ -490,6 +517,9 @@ export function buildAccountingPnlStatement({
   )).length;
 
   return {
+    deferredPay,
+    deferredProductionAccrualCents,
+    deferredOperatingAccrualCents,
     adjustedPnl,
     aiFlaggedCount,
     basePnl,

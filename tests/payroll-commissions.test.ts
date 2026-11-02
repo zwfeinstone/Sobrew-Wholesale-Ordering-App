@@ -4,11 +4,10 @@ vi.mock('@/lib/commission-invoice-eligibility', () => ({ getCommissionInvoiceEli
 import { getCommissionInvoiceEligibility } from '@/lib/commission-invoice-eligibility';
 
 import {
-  buildPayrollCommissionRow,
   isPayrollCommissionMonth,
   loadPayrollCommissions,
+  loadPayrollCommissionMonths,
   recordPayrollCommissionPaid,
-  requiresInvoiceEligibility,
   type PayrollCommissionPayout,
 } from '@/lib/payroll-commissions';
 
@@ -17,7 +16,7 @@ type Call = {
   table: string;
   operation: 'select' | 'insert' | 'update';
   payload?: Row;
-  filters: { column: string; value: unknown; operator: 'eq' | 'is' }[];
+  filters: { column: string; value: unknown; operator: 'eq' | 'is' | 'in' | 'lt' | 'or' }[];
   orders: string[];
   from: number;
   to: number;
@@ -43,6 +42,9 @@ function database({
         select() { return query; },
         eq(column: string, value: unknown) { call.filters.push({ column, value, operator: 'eq' }); return query; },
         is(column: string, value: unknown) { call.filters.push({ column, value, operator: 'is' }); return query; },
+        in(column: string, value: unknown) { call.filters.push({ column, value, operator: 'in' }); return query; },
+        lt(column: string, value: unknown) { call.filters.push({ column, value, operator: 'lt' }); return query; },
+        or(value: string) { call.filters.push({ column: '', value, operator: 'or' }); return query; },
         order(column: string) { call.orders.push(column); return query; },
         range(from: number, to: number) { call.from = from; call.to = to; return query; },
         maybeSingle() { single = true; return query; },
@@ -54,7 +56,16 @@ function database({
           const intercepted = intercept?.(call, saved);
           if (intercepted) return Promise.resolve(intercepted).then(resolve);
           const rows = saved[table] ?? [];
-          const matches = (row: Row) => call.filters.every((filter) => row[filter.column] === filter.value);
+          const matches = (row: Row) => call.filters.every((filter) => {
+            if (filter.operator === 'in') return (filter.value as unknown[]).includes(row[filter.column]);
+            if (filter.operator === 'lt') return Date.parse(row[filter.column]) < Date.parse(filter.value as string);
+            if (filter.operator === 'or') return String(filter.value).split(',').some((part) => {
+              const [column, operator, ...rest] = part.split('.');
+              const value = rest.join('.');
+              return operator === 'is' ? row[column] === null : Date.parse(row[column]) > Date.parse(value);
+            });
+            return row[filter.column] === filter.value;
+          });
           let result: Row[];
           if (call.operation === 'insert') {
             const created = { id: 'new-payout', notes: null, ...call.payload };
@@ -112,12 +123,13 @@ const writes = (db: ReturnType<typeof database>) => db.calls.filter((call) => ca
 const invoiceEligibility = vi.mocked(getCommissionInvoiceEligibility);
 beforeEach(() => {
   invoiceEligibility.mockReset();
-  invoiceEligibility.mockImplementation(async (orderIds) => ({ paidOrderIds: new Set(orderIds), unpaidOrderIds: new Set(), missingInvoiceOrderIds: new Set(), error: null }));
+  invoiceEligibility.mockImplementation(async (orderIds) => ({ paidOrderIds: new Set(orderIds), paidOrderMonths: new Map(orderIds.map((id) => [id, id === 'order-other-month' ? '2026-07-01' : '2026-10-01'])), unpaidOrderIds: new Set(), missingInvoiceOrderIds: new Set(), error: null }));
 });
 
 function onlyPaidInvoices(...orderIds: string[]) {
   invoiceEligibility.mockImplementation(async (requestedIds) => ({
     paidOrderIds: new Set(requestedIds.filter((id) => orderIds.includes(id))),
+    paidOrderMonths: new Map(requestedIds.filter((id) => orderIds.includes(id)).map((id) => [id, '2026-10-01'])),
     unpaidOrderIds: new Set(requestedIds.filter((id) => !orderIds.includes(id))),
     missingInvoiceOrderIds: new Set(), error: null,
   }));
@@ -132,84 +144,80 @@ describe('payroll commission month validation', () => {
   });
 });
 
-describe('prospective invoice payment policy', () => {
-  const historicalMonth = '2026-08-01';
-  const historicalSnapshot = (id: string, overrides: Row = {}) => snapshot(id, { commission_month: historicalMonth, shipped_at: '2026-08-15T12:00:00Z', ...overrides });
-  const historicalPayout = (overrides: Partial<PayrollCommissionPayout> = {}) => payout({ commission_month: historicalMonth, locked_at: '2026-08-31T12:00:00Z', updated_at: '2026-08-31T12:00:00Z', ...overrides });
+describe('commission earned in the invoice payment month', () => {
+  const septemberOrder = () => snapshot('late', { commission_month: '2026-09-01', shipped_at: '2026-09-15T12:00:00Z' });
 
-  it('leaves historical unpaid commissions payable without consulting QuickBooks', async () => {
-    invoiceEligibility.mockRejectedValue(new Error('Historical invoices must not be checked'));
-    const db = database({ tables: { order_commission_snapshots: [historicalSnapshot('a')] } });
-    const loaded = await loadPayrollCommissions({ commissionMonth: historicalMonth, supabase: db.client });
-    expect(loaded.rows[0]).toMatchObject({ amountOwedCents: 650, pendingInvoiceCount: 0, eligibleOrderIds: ['order-a'] });
+  it('earns a September sale in October when its invoice is fully paid in October', async () => {
+    const db = database({ tables: { order_commission_snapshots: [septemberOrder()] } });
+    const loaded = await loadPayrollCommissionMonths({ commissionMonths: ['2026-09-01', '2026-10-01'], supabase: db.client });
+    expect(loaded.error).toBeNull();
+    expect(loaded.rowsByMonth.get('2026-09-01')?.[0]).toMatchObject({ amountOwedCents: 0, summary: { orderCount: 0 } });
+    expect(loaded.rowsByMonth.get('2026-10-01')?.[0]).toMatchObject({ amountOwedCents: 650, eligibleOrderIds: ['order-late'], summary: { orderCount: 1 } });
+    expect(loaded.snapshotsByMonth.get('2026-09-01')).toEqual([]);
+    expect(loaded.snapshotsByMonth.get('2026-10-01')).toEqual([septemberOrder()]);
     expect(writes(db)).toEqual([]);
-    const paid = await recordPayrollCommissionPaid({ ...payRequest, commissionMonth: historicalMonth, supabase: db.client });
-    expect(paid).toMatchObject({ paymentAmountCents: 650, payout: { commission_cents: 650, paid_order_ids: ['order-a'] } });
-    expect(invoiceEligibility).not.toHaveBeenCalled();
+    expect(invoiceEligibility).toHaveBeenCalledExactlyOnceWith(['order-late'], db.client, { includePaymentDates: true });
   });
 
-  it('preserves every historical locked amount and adjustment when loading and recording payment', async () => {
-    invoiceEligibility.mockRejectedValue(new Error('Historical invoices must not be checked'));
-    const locked = historicalPayout();
-    const db = database({ tables: { monthly_commission_payouts: [locked], order_commission_snapshots: [historicalSnapshot('a', { commission_cents: 99_900 })] } });
-    const loaded = await loadPayrollCommissions({ commissionMonth: historicalMonth, supabase: db.client });
-    expect(loaded.rows[0]).toMatchObject({ amountOwedCents: 325, pendingInvoiceCount: 0, summary: {
-      commissionCents: 325.25, donationCogsCents: 100, grossProfitCents: 3252.5, orderCount: 1,
-      processingFeeCogsCents: 150, productCogsCents: 1000, revenueCents: 5002.5, shippingCogsCents: 500, totalCogsCents: 1750,
-    } });
-    expect(writes(db)).toEqual([]);
-    const paid = await recordPayrollCommissionPaid({ ...payRequest, commissionMonth: historicalMonth, expectedPaymentCents: 325, supabase: db.client });
-    expect(paid.payout).toEqual({ ...locked, paid_at: payRequest.now.toISOString(), paid_by: 'admin', status: 'paid', updated_at: payRequest.now.toISOString(), paid_order_ids: ['order-a'] });
-    expect(invoiceEligibility).not.toHaveBeenCalled();
+  it('pays the late invoice only in its earned month and never again in the shipment month', async () => {
+    const db = database({ tables: { order_commission_snapshots: [septemberOrder()] } });
+    const september = await recordPayrollCommissionPaid({ ...payRequest, commissionMonth: '2026-09-01', supabase: db.client });
+    expect(september.error).toBeTruthy();
+    const october = await recordPayrollCommissionPaid({ ...payRequest, supabase: db.client });
+    expect(october).toMatchObject({ paymentAmountCents: 650, payout: { commission_month: '2026-10-01', paid_order_ids: ['order-late'] } });
+    expect((await recordPayrollCommissionPaid({ ...payRequest, supabase: db.client })).alreadyPaid).toBe(true);
+    expect((await recordPayrollCommissionPaid({ ...payRequest, commissionMonth: '2026-09-01', supabase: db.client })).error).toBeTruthy();
+    expect(writes(db)).toHaveLength(1);
   });
 
-  it('does not recalculate a historical zero locked payout from older snapshots', async () => {
-    const db = database({ tables: { monthly_commission_payouts: [historicalPayout({ commission_cents: 0 })], order_commission_snapshots: [historicalSnapshot('a')] } });
-    const paid = await recordPayrollCommissionPaid({ ...payRequest, commissionMonth: historicalMonth, supabase: db.client });
-    expect(paid.error).toBeTruthy();
-    expect(writes(db)).toEqual([]);
+  it.each([null, ['order-late']])('preserves earlier recorded September payouts and excludes them from October (%j)', async (paidOrderIds) => {
+    const paid = payout({ commission_month: '2026-09-01', status: 'paid', paid_order_ids: paidOrderIds, commission_cents: 40268 });
+    invoiceEligibility.mockRejectedValue(new Error('Recorded payments must not be queried again'));
+    const db = database({ tables: { monthly_commission_payouts: [paid], order_commission_snapshots: [septemberOrder()] } });
+    const loaded = await loadPayrollCommissionMonths({ commissionMonths: ['2026-09-01', '2026-10-01'], supabase: db.client });
+    expect(loaded.error).toBeNull();
+    expect(loaded.rowsByMonth.get('2026-09-01')?.[0]).toMatchObject({ amountOwedCents: 0, summary: { commissionCents: 40268 } });
+    expect(loaded.rowsByMonth.get('2026-10-01')).toEqual([]);
     expect(invoiceEligibility).not.toHaveBeenCalled();
+    expect(writes(db)).toEqual([]);
   });
 
-  it('applies the rule at September 30 midnight Chicago, with missing or invalid shipment dates held', async () => {
-    const rows = [
-      snapshot('before', { commission_month: '2026-09-01', shipped_at: '2026-09-30T04:59:59.999Z' }),
-      snapshot('cutoff', { commission_month: '2026-09-01', shipped_at: '2026-09-30T05:00:00.000Z' }),
-      snapshot('missing', { commission_month: '2026-09-01', shipped_at: null }),
-      snapshot('invalid', { commission_month: '2026-09-01', shipped_at: 'invalid' }),
-    ];
+  it('excludes historical unpaid invoices and ignores unpaid locked totals', async () => {
     onlyPaidInvoices();
-    const db = database({ tables: { order_commission_snapshots: rows } });
+    const locked = payout({ commission_month: '2026-09-01', locked_at: '2026-09-20T12:00:00Z' });
+    const db = database({ tables: { monthly_commission_payouts: [locked], order_commission_snapshots: [septemberOrder()] } });
     const loaded = await loadPayrollCommissions({ commissionMonth: '2026-09-01', supabase: db.client });
-    expect(loaded.rows[0]).toMatchObject({ amountOwedCents: 650, eligibleOrderIds: ['order-before'], pendingInvoiceCount: 3, pendingInvoiceCents: 1950 });
-    expect(invoiceEligibility).toHaveBeenCalledWith(['order-cutoff', 'order-invalid', 'order-missing'], db.client);
-    expect(rows.map((row) => requiresInvoiceEligibility(row, null))).toEqual([false, true, true, true]);
+    expect(loaded.rows[0]).toMatchObject({ amountOwedCents: 0, pendingInvoiceCount: 0, summary: { commissionCents: 0 } });
+    expect((await recordPayrollCommissionPaid({ ...payRequest, commissionMonth: '2026-09-01', supabase: db.client })).error).toBeTruthy();
+    expect(writes(db)).toEqual([]);
   });
 
-  it('keeps the historical September lock as a base and releases post-cutoff invoices once', async () => {
-    const month = '2026-09-01';
-    const locked = historicalPayout({ commission_month: month, locked_at: '2026-09-29T12:00:00Z', updated_at: '2026-09-29T12:00:00Z' });
-    const old = historicalSnapshot('before', { commission_month: month, shipped_at: '2026-09-29T12:00:00Z', commission_cents: 99_900 });
-    const current = snapshot('cutoff', { commission_month: month, shipped_at: '2026-09-30T05:00:00Z' });
-    onlyPaidInvoices();
-    const db = database({ tables: { monthly_commission_payouts: [locked], order_commission_snapshots: [old, current] } });
-    const initial = await loadPayrollCommissions({ commissionMonth: month, supabase: db.client });
-    expect(initial.rows[0]).toMatchObject({ amountOwedCents: 325, summary: { commissionCents: 325.25, orderCount: 1 }, pendingInvoiceCount: 1 });
-    const first = await recordPayrollCommissionPaid({ ...payRequest, commissionMonth: month, supabase: db.client });
-    expect(first).toMatchObject({ paymentAmountCents: 325, payout: { commission_cents: 325.25, paid_order_ids: ['order-before'] } });
-    onlyPaidInvoices('order-cutoff');
-    const second = await recordPayrollCommissionPaid({ ...payRequest, commissionMonth: month, supabase: db.client });
-    expect(second).toMatchObject({ paymentAmountCents: 650, payout: { commission_cents: 975.25, order_count: 2, paid_order_ids: ['order-before', 'order-cutoff'] } });
-    expect(invoiceEligibility.mock.calls.every(([ids]) => ids.length === 1 && ids[0] === 'order-cutoff')).toBe(true);
-    const third = await recordPayrollCommissionPaid({ ...payRequest, commissionMonth: month, supabase: db.client });
-    expect(third.alreadyPaid).toBe(true);
-    expect(writes(db)).toHaveLength(2);
+  it('preserves global paid order tracking even if an invoice payment month later changes', async () => {
+    const paid = payout({ status: 'paid', paid_order_ids: ['order-late'], commission_cents: 650 });
+    const db = database({ tables: { monthly_commission_payouts: [paid], order_commission_snapshots: [septemberOrder()] } });
+    invoiceEligibility.mockRejectedValue(new Error('Must not re-earn an already recorded payment'));
+    const loaded = await loadPayrollCommissionMonths({ commissionMonths: ['2026-10-01', '2026-11-01'], supabase: db.client });
+    expect(loaded.error).toBeNull();
+    expect(loaded.rowsByMonth.get('2026-10-01')?.[0].amountOwedCents).toBe(0);
+    expect(loaded.rowsByMonth.get('2026-11-01')).toEqual([]);
+    expect(invoiceEligibility).not.toHaveBeenCalled();
   });
 
-  it('does not duplicate historical snapshots inside a mixed September lock created after cutoff', () => {
-    const result = buildPayrollCommissionRow({ salesProfileId: 'sales-a', payout: payout({ commission_month: '2026-09-01', commission_cents: 1300 }),
-      snapshots: [historicalSnapshot('old', { commission_month: '2026-09-01' }), snapshot('new', { commission_month: '2026-09-01' })], paidInvoiceOrderIds: new Set(['order-new']) });
-    expect(result).toMatchObject({ amountOwedCents: 1300, summary: { commissionCents: 1300, orderCount: 2 }, eligibleOrderIds: ['order-old', 'order-new'] });
+  it('does not guess a shipment month when a fully paid invoice has no verified payment month', async () => {
+    invoiceEligibility.mockResolvedValue({ paidOrderIds: new Set(['order-late']), unpaidOrderIds: new Set(), missingInvoiceOrderIds: new Set(), error: null });
+    const db = database({ tables: { order_commission_snapshots: [septemberOrder()] } });
+    expect((await loadPayrollCommissions({ commissionMonth: '2026-10-01', supabase: db.client })).error).toBeTruthy();
+    expect((await recordPayrollCommissionPaid({ ...payRequest, supabase: db.client })).error).toBeTruthy();
+    expect(writes(db)).toEqual([]);
+  });
+
+  it('can add newly earned orders to a legacy month without releasing legacy orders again', async () => {
+    const legacy = payout({ status: 'paid', commission_cents: 325 });
+    const db = database({ tables: { monthly_commission_payouts: [legacy], order_commission_snapshots: [snapshot('legacy'), septemberOrder()] } });
+    const result = await recordPayrollCommissionPaid({ ...payRequest, supabase: db.client });
+    expect(result).toMatchObject({ paymentAmountCents: 650, payout: { commission_cents: 975, paid_order_ids: ['order-legacy', 'order-late'] } });
+    expect((await recordPayrollCommissionPaid({ ...payRequest, supabase: db.client })).alreadyPaid).toBe(true);
+    expect(writes(db)).toHaveLength(1);
   });
 });
 
@@ -231,8 +239,8 @@ describe('loadPayrollCommissions', () => {
     expect(result.rows.find((row) => row.salesProfileId === 'inactive-sales')?.amountOwedCents).toBe(75);
     expect(result.rows.find((row) => row.salesProfileId === null)?.amountOwedCents).toBe(25);
     expect(result.rows.find((row) => row.salesProfileId === 'historical-sales')?.summary.commissionCents).toBe(325.25);
-    expect(db.calls.filter((call) => call.table === 'order_commission_snapshots')).toHaveLength(5);
-    expect(db.calls.every((call) => call.orders.at(-1) === 'id')).toBe(true);
+    expect(db.calls.filter((call) => call.table === 'order_commission_snapshots')).toHaveLength(6);
+    expect(db.calls.every((call) => call.orders.at(-1) === (call.table === 'admin_commission_settings' ? 'profile_id' : 'id'))).toBe(true);
     expect(writes(db)).toEqual([]);
     expect(db.calls.some((call) => call.table === 'profiles')).toBe(false);
   });
@@ -242,7 +250,7 @@ describe('loadPayrollCommissions', () => {
     onlyPaidInvoices('order-live');
     const db = database({ tables: { order_commission_snapshots: [snapshot('live'), snapshot('unpaid')], monthly_commission_payouts: [locked] } });
     const result = await loadPayrollCommissions({ commissionMonth: '2026-10-01', supabase: db.client });
-    expect(result.rows[0]).toMatchObject({ payout: locked, amountOwedCents: 650, pendingInvoiceCount: 1, pendingInvoiceCents: 650, summary: {
+    expect(result.rows[0]).toMatchObject({ payout: locked, amountOwedCents: 650, pendingInvoiceCount: 0, pendingInvoiceCents: 0, summary: {
       commissionCents: 650, donationCogsCents: 200, grossProfitCents: 6500, orderCount: 1,
       processingFeeCogsCents: 300, productCogsCents: 2000, revenueCents: 10_000, shippingCogsCents: 1000, totalCogsCents: 3500,
     } });
@@ -252,7 +260,7 @@ describe('loadPayrollCommissions', () => {
     onlyPaidInvoices('order-paid');
     const db = database({ tables: { order_commission_snapshots: [snapshot('paid'), snapshot('unpaid'), snapshot('partial'), snapshot('missing')] } });
     const result = await loadPayrollCommissions({ commissionMonth: '2026-10-01', supabase: db.client });
-    expect(result.rows[0]).toMatchObject({ amountOwedCents: 650, eligibleOrderIds: ['order-paid'], pendingInvoiceCount: 3, pendingInvoiceCents: 1950, summary: { orderCount: 1 } });
+    expect(result.rows[0]).toMatchObject({ amountOwedCents: 650, eligibleOrderIds: ['order-paid'], pendingInvoiceCount: 0, pendingInvoiceCents: 0, summary: { orderCount: 1 } });
   });
 
   it('keeps earlier paid amounts while owing only invoices paid after the first payroll payment', async () => {
@@ -260,8 +268,8 @@ describe('loadPayrollCommissions', () => {
     const paid = payout({ status: 'paid', paid_order_ids: ['order-earlier'], commission_cents: 650 });
     const db = database({ tables: { monthly_commission_payouts: [paid], order_commission_snapshots: [snapshot('earlier', { commission_cents: 9900 }), snapshot('late'), snapshot('unpaid')] } });
     const result = await loadPayrollCommissions({ commissionMonth: '2026-10-01', supabase: db.client });
-    expect(result.rows[0]).toMatchObject({ amountOwedCents: 650, eligibleOrderIds: ['order-late'], paidOrderIds: ['order-earlier'], pendingInvoiceCount: 1, summary: { commissionCents: 1300, orderCount: 2 } });
-    expect(invoiceEligibility).toHaveBeenCalledWith(['order-late', 'order-unpaid'], db.client);
+    expect(result.rows[0]).toMatchObject({ amountOwedCents: 650, eligibleOrderIds: ['order-late'], paidOrderIds: ['order-earlier'], pendingInvoiceCount: 0, summary: { commissionCents: 1300, orderCount: 2 } });
+    expect(invoiceEligibility).toHaveBeenCalledWith(['order-late', 'order-unpaid'], db.client, { includePaymentDates: true });
   });
 
   it('fails closed when live invoice status cannot be verified', async () => {
@@ -293,6 +301,114 @@ describe('loadPayrollCommissions', () => {
     const db = database();
     expect((await loadPayrollCommissions({ commissionMonth: '2026-13-01', supabase: db.client })).error).toBeTruthy();
     expect(db.calls).toEqual([]);
+  });
+});
+
+describe('monthly commissions above base hourly wages', () => {
+  const setting = { profile_id: 'sales-a', commission_percent: 10, hourly_offset_enabled: true, hourly_offset_start_month: '2026-10-01' };
+  const shift = { id: 'shift-a', profile_id: 'sales-a', clock_in_at: '2026-10-15T08:00:00-05:00', clock_out_at: '2026-10-15T16:00:00-05:00', hourly_rate_cents_snapshot: 1500, status: 'approved', work_type: 'sales' };
+  const tables = (commissionCents: number) => ({ admin_commission_settings: [setting], admin_time_entries: [shift],
+    order_commission_snapshots: [snapshot('a', { commission_cents: commissionCents })] });
+
+  it.each([5000, 12000, 20000])('keeps %s gross visible and owes only the excess above base wages', async (commissionCents) => {
+    const db = database({ tables: tables(commissionCents) });
+    const loaded = await loadPayrollCommissions({ commissionMonth: '2026-10-01', supabase: db.client, now: payRequest.now });
+    expect(loaded.error).toBeNull();
+    expect(loaded.rows[0]).toMatchObject({ summary: { commissionCents }, hourlyOffsetEnabled: true, commissionPercent: 10,
+      hourlyBaseWagesCents: 12000, netCommissionCents: Math.max(0, commissionCents - 12000), amountOwedCents: Math.max(0, commissionCents - 12000) });
+    const payment = await recordPayrollCommissionPaid({ ...payRequest, supabase: db.client });
+    if (commissionCents > 12000) expect(payment).toMatchObject({ paymentAmountCents: 8000,
+      payout: { commission_cents: 8000, gross_commission_cents: 20000, hourly_base_offset_cents: 12000 } });
+    else { expect(payment.error).toBeTruthy(); expect(writes(db)).toHaveLength(0); }
+    expect(db.calls.some((call) => call.table === 'admin_weekly_sales_spiffs')).toBe(false);
+  });
+
+  it('deducts the monthly offset only once across later invoice payments and snapshot changes', async () => {
+    onlyPaidInvoices('order-a');
+    const db = database({ tables: { ...tables(20000), order_commission_snapshots: [snapshot('a', { commission_cents: 20000 }), snapshot('b', { commission_cents: 5000 })] } });
+    const first = await recordPayrollCommissionPaid({ ...payRequest, supabase: db.client });
+    expect(first.paymentAmountCents).toBe(8000);
+    db.saved.order_commission_snapshots[0].commission_cents = 90000;
+    onlyPaidInvoices('order-a', 'order-b');
+    const second = await recordPayrollCommissionPaid({ ...payRequest, supabase: db.client });
+    expect(second).toMatchObject({ paymentAmountCents: 5000, payout: { commission_cents: 13000, gross_commission_cents: 25000, hourly_base_offset_cents: 12000 } });
+    const loaded = await loadPayrollCommissions({ commissionMonth: '2026-10-01', supabase: db.client, now: payRequest.now });
+    expect(loaded.rows[0]).toMatchObject({ summary: { commissionCents: 25000 }, amountOwedCents: 0 });
+    expect((await recordPayrollCommissionPaid({ ...payRequest, supabase: db.client })).alreadyPaid).toBe(true);
+    expect(writes(db)).toHaveLength(2);
+  });
+
+  it('releases withheld invoices once the month crosses the hourly threshold', async () => {
+    onlyPaidInvoices('order-a');
+    const db = database({ tables: { ...tables(5000), order_commission_snapshots: [snapshot('a', { commission_cents: 5000 }), snapshot('b', { commission_cents: 10000 })] } });
+    expect((await recordPayrollCommissionPaid({ ...payRequest, supabase: db.client })).error).toBeTruthy();
+    onlyPaidInvoices('order-a', 'order-b');
+    expect(await recordPayrollCommissionPaid({ ...payRequest, supabase: db.client })).toMatchObject({ paymentAmountCents: 3000,
+      payout: { gross_commission_cents: 15000, commission_cents: 3000, paid_order_ids: ['order-a', 'order-b'] } });
+  });
+
+  it.each([true, false])('retains a paid month\'s frozen wages when past shifts are unavailable (plan enabled %s)', async (enabled) => {
+    const paid = payout({ status: 'paid', paid_order_ids: ['order-a'], gross_commission_cents: 20000, commission_cents: 8000, hourly_base_offset_cents: 12000 });
+    const db = database({ tables: { ...tables(20000), admin_time_entries: [], admin_commission_settings: [{ ...setting, hourly_offset_enabled: enabled }], monthly_commission_payouts: [paid] } });
+    const loaded = await loadPayrollCommissions({ commissionMonth: '2026-10-01', supabase: db.client, now: payRequest.now });
+    expect(loaded.rows[0]).toMatchObject({ summary: { commissionCents: 20000 }, hourlyOffsetEnabled: true, hourlyBaseWagesCents: 12000,
+      netCommissionCents: 8000, amountOwedCents: 0 });
+    db.saved.order_commission_snapshots.push(snapshot('late', { commission_cents: 5000 }));
+    if (enabled) {
+      expect(loaded.rows[0].settlementBlockedReason).toContain('Review and adjust');
+      expect((await recordPayrollCommissionPaid({ ...payRequest, supabase: db.client })).error?.message).toContain('Review and adjust');
+      expect(writes(db)).toHaveLength(0);
+    } else {
+      expect(loaded.rows[0].settlementBlockedReason).toBeNull();
+      expect(await recordPayrollCommissionPaid({ ...payRequest, supabase: db.client })).toMatchObject({ paymentAmountCents: 5000,
+        payout: { commission_cents: 13000, gross_commission_cents: 25000, hourly_base_offset_cents: 12000 } });
+    }
+  });
+
+  it('requires review of a downward wage correction instead of silently retaining the old threshold', async () => {
+    const paid = payout({ status: 'paid', paid_order_ids: ['order-a'], gross_commission_cents: 20000, commission_cents: 8000, hourly_base_offset_cents: 12000 });
+    const db = database({ tables: { ...tables(20000), admin_time_entries: [{ ...shift, hourly_rate_cents_snapshot: 1000 }], monthly_commission_payouts: [paid] } });
+    const loaded = await loadPayrollCommissions({ commissionMonth: '2026-10-01', supabase: db.client, now: payRequest.now });
+    expect(loaded.rows[0]).toMatchObject({ summary: { commissionCents: 20000 }, hourlyBaseWagesCents: 12000, netCommissionCents: 8000, amountOwedCents: 0 });
+    expect(loaded.rows[0].settlementBlockedReason).toContain('Review and adjust');
+    expect((await recordPayrollCommissionPaid({ ...payRequest, supabase: db.client })).error?.message).toContain('Review and adjust');
+    expect(db.saved.monthly_commission_payouts).toEqual([paid]);
+    expect(writes(db)).toHaveLength(0);
+  });
+
+  it.each(['submitted', 'open'])('blocks settlement for %s entries but keeps earned gross visible', async (status) => {
+    const db = database({ tables: { ...tables(20000), admin_time_entries: [{ ...shift, status, clock_out_at: status === 'open' ? null : shift.clock_out_at }] } });
+    const loaded = await loadPayrollCommissions({ commissionMonth: '2026-10-01', supabase: db.client, now: payRequest.now });
+    expect(loaded.rows[0].summary.commissionCents).toBe(20000);
+    expect(loaded.rows[0].settlementBlockedReason).toBeTruthy();
+    expect((await recordPayrollCommissionPaid({ ...payRequest, supabase: db.client })).error?.message).toBe(loaded.rows[0].settlementBlockedReason);
+    expect(writes(db)).toHaveLength(0);
+  });
+
+  it('preserves plans without an offset and months before the effective date without wage reads', async () => {
+    for (const settings of [{ ...setting, hourly_offset_enabled: false }, { ...setting, hourly_offset_start_month: '2026-11-01' }]) {
+      const db = database({ tables: { ...tables(20000), admin_commission_settings: [settings] } });
+      expect((await recordPayrollCommissionPaid({ ...payRequest, supabase: db.client })).paymentAmountCents).toBe(20000);
+      expect(db.calls.some((call) => call.table === 'admin_time_entries' || call.table === 'admin_time_breaks')).toBe(false);
+    }
+  });
+
+  it('loads all shift and break pages, including shifts that started in the prior month', async () => {
+    const db = database({ cap: 1, tables: { ...tables(20000), admin_time_entries: [shift, { ...shift, id: 'overnight',
+      clock_in_at: '2026-09-30T23:00:00-05:00', clock_out_at: '2026-10-01T01:00:00-05:00' }],
+      admin_time_breaks: [{ id: 'break1', time_entry_id: 'shift-a', break_start_at: '2026-10-15T12:00:00-05:00', break_end_at: '2026-10-15T12:30:00-05:00', status: 'completed' },
+        { id: 'break2', time_entry_id: 'shift-a', break_start_at: '2026-10-15T14:00:00-05:00', break_end_at: '2026-10-15T14:30:00-05:00', status: 'completed' }] } });
+    const loaded = await loadPayrollCommissions({ commissionMonth: '2026-10-01', supabase: db.client, now: payRequest.now });
+    expect(loaded.error).toBeNull();
+    expect(loaded.rows[0].hourlyBaseWagesCents).toBe(12000);
+    expect(db.calls.filter((call) => call.table === 'admin_time_entries')).toHaveLength(3);
+    expect(db.calls.filter((call) => call.table === 'admin_time_breaks')).toHaveLength(3);
+  });
+
+  it.each(['admin_commission_settings', 'admin_time_entries', 'admin_time_breaks'])('fails closed when %s cannot be verified', async (table) => {
+    const db = database({ tables: tables(20000), intercept: (call) => call.table === table ? { data: null, error: { message: 'Wage offset read failed' } } : undefined });
+    expect((await recordPayrollCommissionPaid({ ...payRequest, supabase: db.client })).error?.message).toBe('Wage offset read failed');
+    expect(writes(db)).toHaveLength(0);
   });
 });
 
@@ -446,14 +562,13 @@ describe('recordPayrollCommissionPaid', () => {
       return { data: null, error: { code: '23505', message: 'Duplicate payout' } };
     } });
     const result = await recordPayrollCommissionPaid({ ...payRequest, supabase: db.client });
-    if (status === 'paid') expect(result).toMatchObject({ alreadyPaid: true, payout: concurrent });
-    else expect(result.error?.code).toBe('conflict');
+    expect(result.error?.code).toBe('conflict');
     expect(db.saved.monthly_commission_payouts).toEqual([concurrent]);
     expect(writes(db)).toHaveLength(1);
   });
 
   it('reloads a payout that another request paid before the conditional update', async () => {
-    const concurrent = payout({ status: 'paid', paid_at: '2026-11-01T05:00:01Z', paid_by: 'other-admin' });
+    const concurrent = payout({ status: 'paid', paid_at: '2026-11-01T05:00:01Z', paid_by: 'other-admin', paid_order_ids: ['order-a'] });
     const db = database({ tables: { monthly_commission_payouts: [payout()], order_commission_snapshots: [snapshot('a')] }, intercept: (call, tables) => {
       if (call.operation === 'update') tables.monthly_commission_payouts = [concurrent];
       return undefined;

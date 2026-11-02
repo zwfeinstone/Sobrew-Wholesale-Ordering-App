@@ -1,17 +1,22 @@
 import Link from 'next/link';
-import { ArrowRight, CalendarDays, Check, ChevronDown, ClipboardCheck, Clock3, Download, FileChartColumn, ListChecks, Users, Wallet } from 'lucide-react';
+import { CalendarDays, ChevronDown, ClipboardCheck, Download, FileChartColumn } from 'lucide-react';
 import { redirect } from 'next/navigation';
 import { revalidatePath } from 'next/cache';
+import PayrollRun, { type PayrollRunRow } from '@/components/payroll-run';
+import { recordPayrollPayments } from '@/lib/payroll-payment-actions';
 import PayrollCompensationFields from '@/components/payroll-compensation-fields';
 import PayrollMonthlyCommissions from '@/components/payroll-monthly-commissions';
+import PayrollDeferredPay, { type DeferredPayBankTransaction } from '@/components/payroll-deferred-pay';
 import './payroll.css';
 import PendingSubmitButton from '@/components/pending-submit-button';
 import StatusToast from '@/components/status-toast';
 import { recordAdminAuditLog } from '@/lib/admin-audit';
 import { adminCanEdit, requireAdminSectionEdit, requireAdminSectionView } from '@/lib/admin-permissions';
-import { commissionMonthForDate, numericPercent } from '@/lib/commissions';
+import { commissionMonthForDate, commissionMonthLabel, numericPercent } from '@/lib/commissions';
 import { isPayrollCommissionMonth, loadPayrollCommissions, recordPayrollCommissionPaid } from '@/lib/payroll-commissions';
 import { getCommissionInvoiceEligibility } from '@/lib/commission-invoice-eligibility';
+import { loadDeferredPayAccounting } from '@/lib/deferred-pay-accounting-data';
+import { isMileageReimbursement } from '@/lib/payroll-mileage';
 import { getCurrentMonthlySalaryPayrollWindow, getCurrentPayrollWeekWindow } from '@/lib/payroll-status';
 import { calculatePayrollWages, distributePayrollWages, payrollOvertimeContextRange, type PayrollEntryWages } from '@/lib/payroll-wages';
 import { supabaseAdmin } from '@/lib/supabase/admin';
@@ -120,6 +125,8 @@ type TimeSettingRow = {
 
 type CommissionSettingRow = {
   commission_percent: number | string | null;
+  hourly_offset_enabled?: boolean;
+  hourly_offset_start_month?: string | null;
   is_sales_rep: boolean | null;
   profile_id: string;
 };
@@ -217,29 +224,9 @@ type WeeklyPaymentRow = {
   unpaidWageCents: number;
 };
 
-type PayrollDayRow = {
-  completedEntryCount: number;
-  hourlyOwedCents: number;
-  lockedEntryCount: number;
-  minutes: number;
-  overtimeMinutes: number;
-  unpaidOvertimePremiumCents: number;
-  openEntryCount: number;
-  profile: AdminProfileRow | null | undefined;
-  profileId: string | null;
-  spiffOwedCents: number;
-  totalOwedCents: number;
-  unapprovedEntryCount: number;
-};
-
 const PAYROLL_TABS = [
-  { id: 'review', label: 'Review payroll', icon: ClipboardCheck },
-  { id: 'payroll-day', label: 'Pay summary', icon: ListChecks },
-  { id: 'payments', label: 'Payments', icon: Wallet },
-  { id: 'time', label: 'Time & corrections', icon: Clock3 },
+  { id: 'review', label: 'Payroll', icon: ClipboardCheck },
   { id: 'reports', label: 'Reports', icon: FileChartColumn },
-  { id: 'settings', label: 'Employee settings', icon: Users },
-  { id: 'export', label: 'Export CSV', icon: Download },
 ] as const;
 
 const OPEN_SHIFT_ALERT_MINUTES = 12 * 60;
@@ -278,7 +265,7 @@ function activeTabParam(value: string | string[] | undefined): PayrollTab {
   if (value === 'pay') return 'payments';
   if (value === 'entries' || value === 'breaks' || value === 'manual') return 'time';
   if (value === 'overview' || value === 'labor' || value === 'production' || value === 'employee' || value === 'work-type' || value === 'exceptions') return 'reports';
-  return PAYROLL_TABS.some((tab) => tab.id === value) ? value as PayrollTab : 'review';
+  return ['review', 'payroll-day', 'payments', 'time', 'reports', 'settings', 'export'].includes(String(value)) ? value as PayrollTab : 'review';
 }
 
 function settingsViewParam(value: string | string[] | undefined): PayrollSettingsView {
@@ -344,7 +331,28 @@ function payrollReportWorkTypeLabel(value: PayrollReportWorkType | string | null
 }
 
 function errorMessage(error: string) {
+  if (error === 'payroll_payment_invalid') return 'The payment details are incomplete. Refresh payroll and try again.';
+  if (error === 'payroll_payment_changed') return 'Payroll changed since this page loaded. Refresh and review the updated amounts before recording payment.';
+  if (error === 'payroll_payment_load_error') return 'Unable to verify the full payroll amount. Refresh before recording payment.';
+  if (error === 'payroll_payment_partial') return 'Some payment records may have been saved, but the batch could not be completed. Review the refreshed outstanding balances before recording the remainder; do not send the payment again.';
+  if (error === 'payroll_payment_error') return 'Unable to record payment. Refresh and review the outstanding balance before retrying.';
+  if (error === 'open_breaks') return 'Close open breaks before recording payroll payment.';
   if (error === 'write_denied') return 'You do not have edit access to Payroll.';
+  const deferredMessages: Record<string, string> = {
+    deferred_pay_permission: 'You do not have edit access to record deferred payroll payments.',
+    deferred_pay_accounting_permission: 'Accounting edit access is required to match the bank transaction. You can record the payment without a bank match.',
+    deferred_pay_amount_changed: 'The accrued amount changed. Refresh and review the current balance before recording payment.',
+    deferred_pay_already_paid: 'That deferred payment has already been recorded. Refresh to review it.',
+    deferred_pay_not_due: 'The deferred plan is still accruing or its scheduled payment date has not arrived.',
+    deferred_pay_invalid_date: 'Choose the actual payment date, on or after the scheduled payment date and no later than today.',
+    deferred_pay_open_shifts: 'Close eligible open shifts and breaks before recording the full lump-sum payment.',
+    deferred_pay_no_balance: 'There is no deferred balance available to pay.',
+    deferred_pay_already_linked: 'That deferred payment already has a matched bank transaction.',
+    deferred_pay_bank_mismatch: 'Choose a dedicated bank outflow for the exact gross payment amount and the same actual payment date.',
+    deferred_pay_bank_in_use: 'That bank transaction is already matched to another deferred payment.',
+  };
+  if (deferredMessages[error]) return deferredMessages[error];
+  if (error.startsWith('deferred_pay_')) return 'Unable to save the deferred payment. Refresh the balance and check the actual payment date and any selected bank transaction before trying again.';
   if (error === 'commission_payment_error') return 'Unable to record the commission payment. Refresh and check the monthly amount before trying again.';
   if (error === 'save_error') return 'Unable to save payroll settings.';
   if (error === 'salary_invalid') return 'Choose a valid monthly salary payment.';
@@ -362,6 +370,9 @@ function errorMessage(error: string) {
 }
 
 function successMessage(success: string) {
+  if (success === 'payroll_payment_recorded') return 'Payroll payments recorded across all included pay types. No funds were transferred.';
+  if (success === 'deferred_pay_paid') return 'Deferred lump-sum payment recorded. No funds were transferred.';
+  if (success === 'deferred_pay_linked') return 'Deferred payment matched to the bank transaction.';
   if (success === 'commission_paid') return 'Monthly commission marked paid.';
   if (success === 'commission_already_paid') return 'That monthly commission was already marked paid.';
   if (success === 'saved') return 'Payroll settings saved.';
@@ -1246,14 +1257,17 @@ async function approveCompletedWeekEntries(formData: FormData) {
       updated_at: new Date().toISOString(),
       updated_by: current.profile.id,
     })
-    .in('id', entriesToApprove.map((entry) => entry.id));
+    .in('id', entriesToApprove.map((entry) => entry.id))
+    .or('status.is.null,status.not.in.(approved,locked,void)')
+    .not('clock_out_at', 'is', null)
+    .select('id');
 
   if (!result.error) {
     await recordAdminAuditLog({
       action: 'time_clock_entries_bulk_approved',
       actorProfileId: current.profile.id,
       after: {
-        count: entriesToApprove.length,
+        count: result.data?.length ?? 0,
         lock_end_at: lockEnd.toISOString(),
         lock_start_at: lockStart.toISOString(),
         profile_id: profileId || null,
@@ -1264,6 +1278,7 @@ async function approveCompletedWeekEntries(formData: FormData) {
     });
   }
 
+  revalidatePath('/admin', 'layout');
   redirect(`${returnTo}${returnTo.includes('?') ? '&' : '?'}${result.error ? 'error=save_error' : 'success=entries_approved'}`);
 }
 
@@ -1338,7 +1353,7 @@ async function approveEntry(formData: FormData) {
   if (!entryId) redirect(`${returnTo}${returnTo.includes('?') ? '&' : '?'}error=save_error`);
 
   const before = await supabaseAdmin.from('admin_time_entries').select('*').eq('id', entryId).maybeSingle();
-  if (!before.data || before.data.status === 'void' || !before.data.clock_out_at) {
+  if (!before.data || ['void', 'locked'].includes(before.data.status) || !before.data.clock_out_at) {
     redirect(`${returnTo}${returnTo.includes('?') ? '&' : '?'}error=invalid_time`);
   }
 
@@ -1351,9 +1366,14 @@ async function approveEntry(formData: FormData) {
       updated_at: new Date().toISOString(),
       updated_by: current.profile.id,
     })
-    .eq('id', entryId);
+    .eq('id', entryId)
+    .eq('updated_at', before.data.updated_at)
+    .or('status.is.null,status.not.in.(approved,locked,void)')
+    .not('clock_out_at', 'is', null)
+    .select('id')
+    .maybeSingle();
 
-  if (!result.error) {
+  if (!result.error && result.data) {
     await recordAdminAuditLog({
       action: 'time_clock_entry_approved',
       actorProfileId: current.profile.id,
@@ -1365,7 +1385,8 @@ async function approveEntry(formData: FormData) {
     });
   }
 
-  redirect(`${returnTo}${returnTo.includes('?') ? '&' : '?'}${result.error ? 'error=save_error' : 'success=entry_approved'}`);
+  revalidatePath('/admin', 'layout');
+  redirect(`${returnTo}${returnTo.includes('?') ? '&' : '?'}${result.error || !result.data ? 'error=payroll_payment_changed' : 'success=entry_approved'}`);
 }
 
 async function voidEntry(formData: FormData) {
@@ -1641,21 +1662,6 @@ function paymentStatus(row: WeeklyPaymentRow) {
   if (row.unapprovedEntryCount) return { label: 'Needs approval', tone: 'bg-rose-50 text-rose-700 ring-rose-100' };
   if (row.completedEntryCount > 0 && row.lockedEntryCount === row.completedEntryCount) return { label: 'Paid', tone: 'bg-emerald-50 text-emerald-700 ring-emerald-100' };
   return { label: 'Ready to pay', tone: 'bg-teal-50 text-teal-800 ring-teal-100' };
-}
-
-function payrollDayStatus(row: PayrollDayRow) {
-  if (row.openEntryCount || row.unapprovedEntryCount) return { label: 'Needs review', tone: 'bg-amber-50 text-amber-800 ring-amber-100' };
-  if (row.totalOwedCents > 0) return { label: 'Ready', tone: 'bg-teal-50 text-teal-800 ring-teal-100' };
-  if (row.completedEntryCount > 0 && row.lockedEntryCount === row.completedEntryCount) return { label: 'Paid', tone: 'bg-emerald-50 text-emerald-700 ring-emerald-100' };
-  return { label: 'No pay due', tone: 'bg-slate-100 text-slate-700 ring-slate-200' };
-}
-
-function payrollDayStatusDetail(row: PayrollDayRow) {
-  const details = [];
-  if (row.openEntryCount) details.push(`${row.openEntryCount} open`);
-  if (row.unapprovedEntryCount) details.push(`${row.unapprovedEntryCount} need approval`);
-  if (row.lockedEntryCount) details.push(`${row.lockedEntryCount} paid`);
-  return details.join(' / ');
 }
 
 function buildSalaryRows({
@@ -2122,53 +2128,6 @@ function PaymentsTable({
   );
 }
 
-function PayrollDayTable({ rows }: { rows: PayrollDayRow[] }) {
-  if (!rows.length) return <EmptyState message="No employees found for this range." />;
-
-  return (
-    <div className="overflow-x-auto">
-      <table className="payroll-payment-table w-full border-separate border-spacing-y-2 text-left text-sm">
-        <thead>
-          <tr className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
-            <th className="px-4 py-2">Employee</th>
-            <th className="px-4 py-2 text-right">Hours</th>
-            <th className="px-4 py-2 text-right">Amount owed</th>
-            <th className="px-4 py-2">Status</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((row) => {
-            const status = payrollDayStatus(row);
-            const statusDetail = payrollDayStatusDetail(row);
-            return (
-              <tr key={row.profileId} className="bg-white/70 align-top">
-                <td data-label="Employee" className="rounded-l-xl px-4 py-3">
-                  <p className="font-semibold text-slate-950">{profileLabel(row.profile)}</p>
-                  <p className="mt-1 break-all text-xs text-slate-500">{row.profile?.email}</p>
-                </td>
-                <td data-label="Hours" className="px-4 py-3 text-right">
-                  <p className="font-semibold text-slate-950">{hoursLabel(row.minutes)}</p>
-                  <p className="mt-1 text-xs text-slate-500">{hoursLabel(row.minutes - row.overtimeMinutes)} regular · {hoursLabel(row.overtimeMinutes)} OT</p>
-                  <p className="mt-1 text-xs text-slate-500">{row.completedEntryCount} shift{row.completedEntryCount === 1 ? '' : 's'}</p>
-                </td>
-                <td data-label="Amount owed" className="px-4 py-3 text-right">
-                  <p className="text-lg font-semibold text-slate-950">{usd(row.totalOwedCents)}</p>
-                  <p className="mt-1 text-xs text-slate-500">Hourly {usd(row.hourlyOwedCents)} / SPIFF {usd(row.spiffOwedCents)}</p>
-                  {row.unpaidOvertimePremiumCents > 0 ? <p className="mt-1 text-xs font-medium text-teal-800">Includes {usd(row.unpaidOvertimePremiumCents)} OT premium</p> : null}
-                </td>
-                <td data-label="Status" className="rounded-r-xl px-4 py-3">
-                  <span className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ring-1 ${status.tone}`}>{status.label}</span>
-                  {statusDetail ? <p className="mt-2 text-xs text-slate-500">{statusDetail}</p> : null}
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
 export default async function PayrollPage(
   props: {
     searchParams?: Promise<Record<string, string | string[] | undefined>>;
@@ -2177,6 +2136,7 @@ export default async function PayrollPage(
   const searchParams = await props.searchParams;
   const current = await requireAdminSectionView('payroll');
   const canEditPayroll = adminCanEdit(current.access, 'payroll');
+  const canEditAccounting = adminCanEdit(current.access, 'accounting');
   const activeTab = activeTabParam(searchParams?.tab);
   const settingsView = settingsViewParam(searchParams?.settings_view);
   const success = stringParam(searchParams?.success);
@@ -2187,7 +2147,9 @@ export default async function PayrollPage(
   const commissionMonthParam = stringParam(searchParams?.commission_month);
   const commissionMonthCandidate = /^\d{4}-\d{2}$/.test(commissionMonthParam) ? `${commissionMonthParam}-01` : commissionMonthParam;
   const commissionMonth = isPayrollCommissionMonth(commissionMonthCandidate) ? commissionMonthCandidate : monthlySalaryWindow.payrollMonthInput;
-  const showMonthlyCommissions = ['review', 'payroll-day', 'payments'].includes(activeTab);
+  const isWorkspace = activeTab !== 'reports';
+  const showMonthlyCommissions = isWorkspace;
+  const showDeferredPay = showMonthlyCommissions || activeTab === 'reports';
   const defaultFrom = activeTab === 'reports' ? `${todayInput.slice(0, 8)}01` : currentPayrollWeek.weekStartInput;
   const defaultTo = activeTab === 'reports' ? todayInput : currentPayrollWeek.weekEndInput;
   const fromInput = stringParam(searchParams?.from) || defaultFrom;
@@ -2203,9 +2165,12 @@ export default async function PayrollPage(
     to: toInput,
     work_type: filterWorkType,
   };
+  const timeReturnUrl = payrollHref({ ...currentParams, tab: 'time' });
+  const settingsReturnUrl = payrollHref({ ...currentParams, settings_view: settingsView, tab: 'settings' });
+  const paymentsReturnUrl = payrollHref({ ...currentParams, tab: 'payments' });
   const currentUrl = payrollHref({
     ...currentParams,
-    settings_view: activeTab === 'settings' && settingsView === 'deactivated' ? settingsView : '',
+    settings_view: settingsView === 'deactivated' ? settingsView : '',
     tab: activeTab,
   });
 
@@ -2237,6 +2202,7 @@ export default async function PayrollPage(
     salaryPaymentsResult,
     weeklySalesSpiffsResult,
     monthlyCommissionsResult,
+    deferredPayResult,
   ] = await Promise.all([
     supabaseAdmin
       .from('profiles')
@@ -2248,7 +2214,7 @@ export default async function PayrollPage(
       .select('profile_id,hourly_rate_cents,active,compensation_type,salary_amount_cents,salary_frequency,salary_labor_work_type'),
     supabaseAdmin
       .from('admin_commission_settings')
-      .select('profile_id,commission_percent,is_sales_rep'),
+      .select('profile_id,commission_percent,is_sales_rep,hourly_offset_enabled,hourly_offset_start_month'),
     supabaseAdmin
       .from('admin_labor_tag_assignments')
       .select('profile_id,work_type'),
@@ -2272,11 +2238,42 @@ export default async function PayrollPage(
     fetchAllPages<WeeklySalesSpiffRow>((from, to) => supabaseAdmin
       .from('admin_weekly_sales_spiffs')
       .select('id,profile_id,week_start_date,week_end_date,amount_cents,paid_at,notes,first_order_id')
-      .or(`and(week_start_date.lte.${toInput},week_end_date.gte.${fromInput}),and(first_order_id.not.is.null,paid_at.is.null,week_start_date.lte.${toInput})`)
+      .or(`and(week_start_date.lte.${toInput},week_end_date.gte.${fromInput}),and(paid_at.is.null,week_start_date.lte.${toInput})`)
       .order('week_start_date', { ascending: false })
       .order('paid_at', { ascending: false })
       .order('id', { ascending: true }).range(from, to)),
     showMonthlyCommissions ? loadPayrollCommissions({ commissionMonth }) : Promise.resolve({ rows: [], error: null }),
+    showDeferredPay ? loadDeferredPayAccounting({
+      supabase: supabaseAdmin,
+      start: formatCentralDateInput(fromDate),
+      end: formatCentralDateInput(toDate),
+      profileId: selectedAdmin || undefined,
+    }) : Promise.resolve({ data: null, error: null }),
+  ]);
+
+  const bankCandidatePlans = showMonthlyCommissions && canEditPayroll && canEditAccounting
+    ? (deferredPayResult.data?.plans ?? []).filter((row) => row.plan.payout_date <= todayInput
+      && !row.plan.accounting_transaction_id
+      && ((!row.plan.paid_at && row.summary.remainingCents > 0) || row.summary.paidCents > 0))
+    : [];
+  const bankTransactionResultsPromise = Promise.all([
+    bankCandidatePlans.length ? fetchAllPages<DeferredPayBankTransaction>((from, to) => supabaseAdmin
+    .from('accounting_transactions')
+    .select('id,transaction_date,account_name,account_type,merchant_name,original_description,amount_cents,status')
+    .in('account_type', ['bank', 'debit_card'])
+    .in('status', ['needs_review', 'categorized'])
+    .in('amount_cents', [...new Set(bankCandidatePlans.map((row) => row.plan.paid_at ? row.summary.paidCents : row.summary.remainingCents))])
+    .gte('transaction_date', bankCandidatePlans.reduce((earliest, row) => row.plan.payout_date < earliest ? row.plan.payout_date : earliest, todayInput))
+    .lte('transaction_date', todayInput)
+    .order('transaction_date', { ascending: false })
+    .order('id')
+    .range(from, to)) : Promise.resolve({ data: [], error: null }),
+    bankCandidatePlans.length ? fetchAllPages<{ accounting_transaction_id: string | null }>((from, to) => supabaseAdmin
+      .from('admin_deferred_pay_plans')
+      .select('accounting_transaction_id')
+      .not('accounting_transaction_id', 'is', null)
+      .order('id')
+      .range(from, to)) : Promise.resolve({ data: [], error: null }),
   ]);
 
   const overtimeContext = payrollOvertimeContextRange(fromDate, toDate);
@@ -2290,7 +2287,11 @@ export default async function PayrollPage(
     .order('id', { ascending: false });
   if (selectedAdmin) entriesQuery = entriesQuery.eq('profile_id', selectedAdmin);
 
-  const entriesResult = await fetchAllPages<TimeEntry>((from, to) => entriesQuery.range(from, to));
+  const [entriesResult, [bankTransactionsResult, linkedBankTransactionsResult]] = await Promise.all([
+    fetchAllPages<TimeEntry>((from, to) => entriesQuery.range(from, to)),
+    bankTransactionResultsPromise,
+  ]);
+  const linkedBankTransactions = new Set(linkedBankTransactionsResult.data.map((plan) => plan.accounting_transaction_id));
   const contextEntries = entriesResult.data;
   const entries = contextEntries.filter((entry) => {
     const clockIn = new Date(entry.clock_in_at);
@@ -2298,7 +2299,7 @@ export default async function PayrollPage(
       && (!selectedAdmin || entry.profile_id === selectedAdmin)
       && (!filterWorkType || normalizeWorkType(entry.work_type) === filterWorkType);
   });
-  const entryIds = entries.map((entry) => entry.id);
+  const entryIds = (isWorkspace ? contextEntries.filter((entry) => new Date(entry.clock_in_at) >= fromDate && new Date(entry.clock_in_at) < endExclusive) : entries).map((entry) => entry.id);
   const allocationsResult = await fetchAllByIds<AllocationRow>(entryIds, (ids, from, to) => supabaseAdmin
     .from('admin_time_entry_allocations')
     .select('id,time_entry_id,work_type,production_run_id,minutes,wage_cents,notes')
@@ -2382,7 +2383,7 @@ export default async function PayrollPage(
       workType: normalizeSalaryLaborWorkType(setting.salary_labor_work_type),
     }))
     .filter((row) => row.profile?.is_active !== false)
-    .filter((row) => !filterWorkType || row.workType === filterWorkType);
+    .filter((row) => isWorkspace || !filterWorkType || row.workType === filterWorkType);
   const monthlySalaryDueRows = monthlySalaryRows.filter((row) => !row.payment?.paid_at);
   const monthlySalaryPaidRows = monthlySalaryRows.filter((row) => row.payment?.paid_at);
   const monthlySalaryDueCents = monthlySalaryDueRows.reduce((sum, row) => sum + row.salaryAmountCents, 0);
@@ -2393,9 +2394,9 @@ export default async function PayrollPage(
     .filter((payment) => !filterWorkType || normalizeSalaryLaborWorkType(payment.salary_labor_work_type) === filterWorkType);
   const selectedSalaryPaidCents = selectedSalaryPaymentRows.reduce((sum, payment) => sum + normalizeMoneyCents(payment.salary_pay_cents), 0);
   const selectedWeeklySalesSpiffs = weeklySalesSpiffs
-    .filter((spiff) => spiff.week_start_date <= toInput && (spiff.week_end_date >= fromInput || Boolean(spiff.first_order_id && !spiff.paid_at)))
+    .filter((spiff) => spiff.week_start_date <= toInput && (spiff.week_end_date >= fromInput || Boolean((spiff.first_order_id || isMileageReimbursement(spiff)) && !spiff.paid_at)))
     .filter((spiff) => !selectedAdmin || spiff.profile_id === selectedAdmin)
-    .filter(() => !filterWorkType || filterWorkType === 'sales');
+    .filter(() => isWorkspace || !filterWorkType || filterWorkType === 'sales');
   const selectedPaidWeeklySalesSpiffs = selectedWeeklySalesSpiffs.filter((spiff) => spiff.paid_at);
   const spiffInvoiceEligibility = await getCommissionInvoiceEligibility(selectedWeeklySalesSpiffs
     .filter((spiff) => !spiff.paid_at && spiff.first_order_id)
@@ -2410,50 +2411,53 @@ export default async function PayrollPage(
   applySalaryRowsToWorkTypeGroups(byWorkType, salaryRows);
   applyWeeklySalesSpiffsToEmployeeGroups(byEmployee, selectedPaidWeeklySalesSpiffs);
   applyWeeklySalesSpiffsToWorkTypeGroups(byWorkType, selectedPaidWeeklySalesSpiffs);
-  const weeklyPaymentRows = buildWeeklyPaymentRows(entries, segments, adminById);
-  const weeklyPaymentDueRows = weeklyPaymentRows.filter((row) => row.completedEntryCount > 0 && row.openEntryCount === 0 && row.unapprovedEntryCount === 0 && row.lockedEntryCount < row.completedEntryCount);
-  const weeklyPaymentPaidRows = weeklyPaymentRows.filter((row) => row.completedEntryCount > 0 && row.lockedEntryCount === row.completedEntryCount);
-  const weeklyPaymentHours = weeklyPaymentRows.reduce((sum, row) => sum + row.minutes, 0);
-  const weeklyPaymentOwedCents = weeklyPaymentDueRows.reduce((sum, row) => sum + row.unpaidWageCents, 0);
+  const paymentEntries = contextEntries.filter((entry) => new Date(entry.clock_in_at) >= fromDate && new Date(entry.clock_in_at) < endExclusive && (!selectedAdmin || entry.profile_id === selectedAdmin));
+  const paymentSegments = buildSegments(paymentEntries, allocationsByEntry, wagesByEntry);
+  const weeklyPaymentRows = buildWeeklyPaymentRows(isWorkspace ? paymentEntries : entries, isWorkspace ? paymentSegments : segments, adminById);
   const weeklyPaymentByProfile = new Map(weeklyPaymentRows.map((row) => [row.profileId, row]));
-  const unpaidSpiffsByProfile = new Map<string | null, number>();
-  for (const spiff of selectedUnpaidWeeklySalesSpiffs) {
-    unpaidSpiffsByProfile.set(spiff.profile_id, (unpaidSpiffsByProfile.get(spiff.profile_id) ?? 0) + normalizeMoneyCents(spiff.amount_cents));
-  }
-  const payrollDayProfileIds = new Set<string | null>();
-  if (selectedAdmin) {
-    payrollDayProfileIds.add(selectedAdmin);
-  } else {
-    for (const admin of activeAdmins) payrollDayProfileIds.add(admin.id);
-  }
-  for (const row of weeklyPaymentRows) payrollDayProfileIds.add(row.profileId);
-  for (const profileId of unpaidSpiffsByProfile.keys()) payrollDayProfileIds.add(profileId);
-  const payrollDayRows: PayrollDayRow[] = [...payrollDayProfileIds]
-    .map((profileId) => {
-      const payment = weeklyPaymentByProfile.get(profileId);
-      const spiffOwedCents = unpaidSpiffsByProfile.get(profileId) ?? 0;
-      const hourlyOwedCents = payment?.unpaidWageCents ?? 0;
-      return {
-        completedEntryCount: payment?.completedEntryCount ?? 0,
-        hourlyOwedCents,
-        lockedEntryCount: payment?.lockedEntryCount ?? 0,
-        minutes: payment?.minutes ?? 0,
-        overtimeMinutes: payment?.overtimeMinutes ?? 0,
-        unpaidOvertimePremiumCents: payment?.unpaidOvertimePremiumCents ?? 0,
-        openEntryCount: payment?.openEntryCount ?? 0,
-        profile: payment?.profile ?? adminById.get(profileId ?? ''),
-        profileId,
-        spiffOwedCents,
-        totalOwedCents: hourlyOwedCents + spiffOwedCents,
-        unapprovedEntryCount: payment?.unapprovedEntryCount ?? 0,
-      };
-    })
-    .sort((a, b) => profileLabel(a.profile).localeCompare(profileLabel(b.profile)));
-  const payrollDayHourlyOwedCents = payrollDayRows.reduce((sum, row) => sum + row.hourlyOwedCents, 0);
-  const payrollDaySpiffOwedCents = payrollDayRows.reduce((sum, row) => sum + row.spiffOwedCents, 0);
-  const payrollDayTotalOwedCents = payrollDayRows.reduce((sum, row) => sum + row.totalOwedCents, 0);
-  const payrollDayEmployeesWithPayDueCount = payrollDayRows.filter((row) => row.totalOwedCents > 0).length;
-  const payrollDayNeedsReviewCount = payrollDayRows.filter((row) => row.openEntryCount || row.unapprovedEntryCount).length;
+  const paymentDataError = Boolean(adminsResult.error || timeSettingsResult.error || salaryPaymentsResult.error || weeklySalesSpiffsResult.error || monthlyCommissionsResult.error || spiffInvoiceEligibility.error);
+  const salaryByProfile = new Map(monthlySalaryRows.map((row) => [row.profileId, row]));
+  const commissionByEmployee = new Map(monthlyCommissionsResult.rows.map((row) => [row.salesProfileId, row]));
+  const runProfileIds = new Set<string | null>(selectedAdmin ? [selectedAdmin] : activeAdmins.map((admin) => admin.id));
+  for (const row of weeklyPaymentRows) runProfileIds.add(row.profileId);
+  for (const row of selectedWeeklySalesSpiffs) runProfileIds.add(row.profile_id);
+  for (const row of monthlySalaryRows) runProfileIds.add(row.profileId);
+  for (const row of monthlyCommissionsResult.rows) if (!selectedAdmin || row.salesProfileId === selectedAdmin) runProfileIds.add(row.salesProfileId);
+  const runRows: PayrollRunRow[] = [...runProfileIds].map((profileId) => {
+    const payment = weeklyPaymentByProfile.get(profileId);
+    const employeeEntries = paymentEntries.filter((entry) => entry.profile_id === profileId && entry.status !== 'void');
+    const unpaidEntries = employeeEntries.filter((entry) => entry.status !== 'locked');
+    const openBreakCount = unpaidEntries.flatMap(entryBreaks).filter((entryBreak) => entryBreak.status !== 'void' && !entryBreak.break_end_at).length;
+    const spiffs = selectedUnpaidWeeklySalesSpiffs.filter((row) => row.profile_id === profileId);
+    const salary = salaryByProfile.get(profileId ?? '');
+    const commission = commissionByEmployee.get(profileId);
+    const wagesCents = Math.round(payment?.unpaidWageCents ?? 0);
+    const spiffCents = Math.round(spiffs.reduce((sum, row) => sum + normalizeMoneyCents(row.amount_cents), 0));
+    const salaryCents = Math.round(salary && !salary.payment?.paid_at ? salary.salaryAmountCents : 0);
+    const heldCommissionReason = commission?.settlementBlockedReason ?? null;
+    const commissionCents = Math.round(!heldCommissionReason && commissionMonth < commissionMonthForDate() ? commission?.amountOwedCents ?? 0 : 0);
+    const totalCents = wagesCents + spiffCents + salaryCents + commissionCents;
+    const paid = totalCents === 0 && Boolean(payment?.lockedEntryCount || salary?.payment?.paid_at || commission?.payout?.paid_at || selectedPaidWeeklySalesSpiffs.some((row) => row.profile_id === profileId));
+    return {
+      id: profileId, name: profileLabel(payment?.profile ?? adminById.get(profileId ?? '')),
+      minutes: payment?.minutes ?? 0, overtimeMinutes: payment?.overtimeMinutes ?? 0,
+      overtimePremiumCents: payment?.unpaidOvertimePremiumCents ?? 0,
+      shiftCount: payment?.completedEntryCount ?? 0,
+      wagesCents, spiffCents, salaryCents, commissionCents, totalCents, paid,
+      approvalCount: payment?.unapprovedEntryCount ?? 0, openCount: payment?.openEntryCount ?? 0, openBreakCount,
+      heldSpiffCount: selectedWeeklySalesSpiffs.filter((row) => row.profile_id === profileId && !row.paid_at && !spiffIsPayable(row)).length,
+      heldCommissionReason,
+      ready: !paymentDataError && Boolean(profileId) && !payment?.openEntryCount && !payment?.unapprovedEntryCount && !openBreakCount && (totalCents > 0 || unpaidEntries.length > 0),
+      snapshot: { profileId: profileId ?? '', entryIds: unpaidEntries.map((entry) => entry.id), spiffIds: spiffs.map((spiff) => spiff.id), wagesCents, spiffCents, salaryCents, commissionCents, payrollMonth: monthlySalaryWindow.payrollMonthInput, ...(!heldCommissionReason ? { commissionMonth } : {}) },
+      shifts: employeeEntries.length ? <div className="space-y-2">{employeeEntries.map((entry) => <div key={entry.id} className="flex flex-wrap items-center justify-between gap-3 rounded-lg bg-slate-50 p-3 text-xs">
+        <div><p className="font-medium text-slate-800">{formatCentralDateTime(entry.clock_in_at)} – {formatCentralDateTime(entry.clock_out_at, 'Still clocked in')}</p><p className="mt-1 text-slate-500">{workTypeLabel(entry.work_type)} · {hoursLabel(wagesByEntry.get(entry.id)?.minutes ?? 0)} paid hours · {hoursLabel(completedBreakMinutes(entryBreaks(entry)))} break hours · {entry.status === 'locked' ? 'Paid' : entry.status}</p>{entry.correction_request_note ? <p className="mt-1 text-amber-800">Correction request: {entry.correction_request_note}</p> : null}</div>
+        <div className="flex items-center gap-3">{canEditPayroll && entry.clock_out_at && !['approved', 'locked'].includes(entry.status ?? '') ? <form action={approveEntry}>{returnToInput(currentUrl)}<input name="entry_id" type="hidden" value={entry.id} /><PendingSubmitButton className="btn-secondary" label="Approve" pendingLabel="Approving…" /></form> : null}<Link className="font-medium text-teal-800 underline" href={`${payrollHref({ ...currentParams, admin: profileId ?? '', work_type: '', tab: 'time' })}#time-corrections`}>Manage shift</Link></div>
+      </div>)}</div> : null,
+    };
+  }).sort((a, b) => {
+    const rank = (row: PayrollRunRow) => row.openCount || row.openBreakCount || row.approvalCount ? 0 : row.ready ? 1 : row.totalCents > 0 ? 2 : 3;
+    return rank(a) - rank(b) || a.name.localeCompare(b.name);
+  });
 
   const totalPaidMinutes = segments.reduce((sum, segment) => sum + segment.minutes, 0);
   const totalOvertimeMinutes = segments.reduce((sum, segment) => sum + segment.overtimeMinutes, 0);
@@ -2519,17 +2523,17 @@ export default async function PayrollPage(
       <header className="flex flex-wrap items-center justify-between gap-4">
         <div>
           <h1 className="text-3xl font-semibold tracking-tight text-slate-950">Payroll</h1>
-          <p className="mt-1 text-sm text-slate-600">Review your team’s time, pay, and payment records.</p>
+          <p className="mt-1 text-sm text-slate-600">One place to approve shifts and record payroll.</p>
         </div>
         <div className="flex items-center gap-3">
           {!canEditPayroll ? <span className="rounded-full bg-slate-100 px-3 py-1 text-sm font-medium text-slate-600">View only</span> : null}
-          <span className="hidden sm:inline"><Link className="btn-secondary gap-2" href={tabHref('export', currentParams)}><Download size={16} aria-hidden="true" /> Export</Link></span>
+          <span className="hidden sm:inline"><Link className="btn-secondary gap-2" href={`${tabHref('export', currentParams)}#payroll-export`}><Download size={16} aria-hidden="true" /> Export</Link></span>
         </div>
       </header>
 
       <nav aria-label="Payroll sections" className="payroll-nav">
         {PAYROLL_TABS.map((tab) => (
-          <Link key={tab.id} aria-current={activeTab === tab.id ? 'page' : undefined} href={tabHref(tab.id, currentParams)}>
+          <Link key={tab.id} aria-current={(isWorkspace ? 'review' : 'reports') === tab.id ? 'page' : undefined} href={tabHref(tab.id, currentParams)}>
             <tab.icon size={17} aria-hidden="true" />
             {tab.label}
             {tab.id === 'review' && openEntries.length + unapprovedEntries.length > 0 ? <span className="payroll-count">{openEntries.length + unapprovedEntries.length}</span> : null}
@@ -2537,8 +2541,8 @@ export default async function PayrollPage(
         ))}
       </nav>
 
-      <section className="card space-y-4" aria-label={activeTab === 'settings' ? 'Employee filters' : 'Pay period and filters'}>
-        {activeTab !== 'settings' ? <div className="flex flex-wrap items-center justify-between gap-3">
+      <section className="card space-y-4" aria-label="Pay period and filters">
+        <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-3">
             <CalendarDays className="text-teal-700" size={20} aria-hidden="true" />
             <div><p className="text-xs font-semibold uppercase tracking-wider text-slate-500">{activeTab === 'reports' ? 'Report period' : 'Selected period'} · Central time</p><p className="mt-1 font-semibold text-slate-950">{formatDateInputLabel(fromInput)}{fromInput.slice(0, 4) !== toInput.slice(0, 4) ? `, ${fromInput.slice(0, 4)}` : ''} – {formatDateInputLabel(toInput)}, {toInput.slice(0, 4)}</p></div>
@@ -2547,17 +2551,17 @@ export default async function PayrollPage(
             <Link className="payroll-shortcut" href={payrollHref({ ...currentParams, tab: activeTab, from: currentPayrollWeek.weekStartInput, to: currentPayrollWeek.weekEndInput })}>Current week</Link>
             <Link className="payroll-shortcut" href={payrollHref({ ...currentParams, tab: activeTab, from: `${todayInput.slice(0, 8)}01`, to: todayInput })}>Month to date</Link>
           </div>
-        </div> : null}
-        <details className="payroll-disclosure" open={activeTab === 'settings' || Boolean(selectedAdmin || filterWorkType) || fromInput !== defaultFrom || toInput !== defaultTo}>
-          <summary className="flex cursor-pointer items-center gap-2 text-sm font-semibold text-slate-700"><ChevronDown className="payroll-chevron" size={16} aria-hidden="true" />{activeTab === 'settings' ? 'Find an employee' : 'Custom dates & employee filters'}{selectedAdmin || filterWorkType ? <span className="payroll-count">{[selectedAdmin, filterWorkType].filter(Boolean).length} active</span> : null}</summary>
-        <form className={`mt-4 grid items-end gap-3 ${activeTab === 'settings' ? 'sm:grid-cols-[minmax(0,1fr)_auto_auto]' : 'sm:grid-cols-2 xl:grid-cols-[1fr_1fr_1.25fr_1.25fr_auto_auto]'}`}>
+        </div>
+        <details className="payroll-disclosure" open={Boolean(selectedAdmin || filterWorkType) || fromInput !== defaultFrom || toInput !== defaultTo}>
+          <summary className="flex cursor-pointer items-center gap-2 text-sm font-semibold text-slate-700"><ChevronDown className="payroll-chevron" size={16} aria-hidden="true" />Custom dates & employee filters{selectedAdmin || filterWorkType ? <span className="payroll-count">{[selectedAdmin, filterWorkType].filter(Boolean).length} active</span> : null}</summary>
+        <form className="mt-4 grid items-end gap-3 sm:grid-cols-2 xl:grid-cols-5">
           <input name="tab" type="hidden" value={activeTab} />
-          {currentParams.commission_month ? <input name="commission_month" type="hidden" value={currentParams.commission_month} /> : null}
-          {activeTab === 'settings' && settingsView === 'deactivated' ? <input name="settings_view" type="hidden" value="deactivated" /> : null}
-          {activeTab === 'settings' ? <><input name="from" type="hidden" value={fromInput} /><input name="to" type="hidden" value={toInput} /><input name="work_type" type="hidden" value={filterWorkType} /></> : <>
+
+          {settingsView === 'deactivated' ? <input name="settings_view" type="hidden" value="deactivated" /> : null}
+          <>
             <label className="grid gap-1.5 text-sm font-medium text-slate-700">From<input className="input" name="from" type="date" defaultValue={fromInput} required /></label>
             <label className="grid gap-1.5 text-sm font-medium text-slate-700">To<input className="input" name="to" type="date" defaultValue={toInput} required /></label>
-          </>}
+          </>
           <label className="grid gap-1.5 text-sm font-medium text-slate-700">
             Employee
             <select className="input" name="admin" defaultValue={selectedAdmin}>
@@ -2565,35 +2569,39 @@ export default async function PayrollPage(
               {admins.map((admin) => <option key={admin.id} value={admin.id}>{profileLabel(admin)}{admin.is_active === false ? ' (inactive)' : ''}</option>)}
             </select>
           </label>
-          {activeTab !== 'settings' ? <label className="grid gap-1.5 text-sm font-medium text-slate-700">
+          <label className="grid gap-1.5 text-sm font-medium text-slate-700">
             Labor tag
             <select className="input" name="work_type" defaultValue={filterWorkType}>
               <option value="">All tags</option>
               <option value={UNASSIGNED_WORK_TYPE}>Unassigned</option>
               {SALARY_LABOR_WORK_TYPES.map((workType) => <option key={workType.value} value={workType.value}>{workType.label}</option>)}
             </select>
-          </label> : null}
+          </label>
+          {isWorkspace ? <label className="grid gap-1.5 text-sm font-medium text-slate-700">Commission month<input className="input" name="commission_month" type="month" defaultValue={commissionMonth.slice(0, 7)} max={commissionMonthForDate().slice(0, 7)} /></label> : null}
           <button className="btn-primary" type="submit">Apply filters</button>
-          <Link className="btn-secondary" href={payrollHref({ tab: activeTab, settings_view: activeTab === 'settings' ? settingsView : '', from: fromInput, to: toInput, commission_month: currentParams.commission_month })}>Reset filters</Link>
+          <Link className="btn-secondary" href={payrollHref({ tab: activeTab, settings_view: settingsView === 'deactivated' ? settingsView : '', from: fromInput, to: toInput, commission_month: currentParams.commission_month })}>Reset filters</Link>
         </form>
         </details>
-        {filterWorkType && (activeTab === 'review' || activeTab === 'payments') ? <p className="text-sm text-slate-500">Approvals, hourly payments, and week completion apply to all labor tags for the selected employee and dates.</p> : null}
+        {isWorkspace && filterWorkType ? <p className="text-xs text-slate-500">Labor tags filter time details and reports. The payment list includes all tags so its totals match the payments recorded.</p> : null}
       </section>
 
-      {activeTab !== 'settings' ? <p className="rounded-lg bg-teal-50 px-4 py-3 text-sm text-teal-900"><strong>Overtime included:</strong> paid hours over 40 per employee each Monday–Sunday week (Central time) are paid at 1.5× the shift’s hourly rate. Unpaid breaks are excluded; all labor tags count toward the weekly total.</p> : null}
+      {isWorkspace ? <PayrollRun rows={runRows} canEdit={canEditPayroll} loadError={paymentDataError}
+        from={fromInput} to={toInput} salaryPeriod={`${formatDateInputLabel(monthlySalaryWindow.periodStartInput)} – ${formatDateInputLabel(monthlySalaryWindow.periodEndInput)}, ${monthlySalaryWindow.periodEndInput.slice(0, 4)}`}
+        commissionPeriod={new Date(`${commissionMonth}T12:00:00Z`).toLocaleDateString('en-US', { month: 'long', year: 'numeric', timeZone: 'UTC' })}
+        returnTo={currentUrl} selectedAdmin={selectedAdmin} approveAction={approveCompletedWeekEntries} paymentAction={recordPayrollPayments} /> : null}
 
-      {['review', 'payroll-day', 'payments'].includes(activeTab) ? <nav aria-label="Weekly payroll workflow" className="grid gap-2 sm:grid-cols-3">
-        {[
-          { tab: 'review' as const, label: 'Review time', detail: openEntries.length + unapprovedEntries.length ? `${openEntries.length} open · ${unapprovedEntries.length} to approve` : 'Time review up to date' },
-          { tab: 'payroll-day' as const, label: 'Check pay summary', detail: `${usd(payrollDayTotalOwedCents)} hourly + SPIFFs owed` },
-          { tab: 'payments' as const, label: 'Record payments', detail: `${weeklyPaymentPaidRows.length} hourly employee${weeklyPaymentPaidRows.length === 1 ? '' : 's'} marked paid` },
-        ].map((step, index) => <Link key={step.tab} href={tabHref(step.tab, currentParams)} aria-current={activeTab === step.tab ? 'step' : undefined} className="payroll-step">
-          <span className="payroll-step-number">{index === 0 && !openEntries.length && !unapprovedEntries.length ? <Check size={16} aria-label="Reviewed" /> : index + 1}</span>
-          <span><span className="block font-semibold">{step.label}</span><span className="mt-0.5 block text-xs text-slate-500">{step.detail}</span></span>
-        </Link>)}
-      </nav> : null}
+      {showDeferredPay ? <details className="card payroll-disclosure" open={!isWorkspace || Boolean(deferredPayResult.error)}><summary className="payroll-tool-summary"><span>Deferred hourly pay <span className="ml-2 text-sm font-normal text-slate-500">{usd(deferredPayResult.data?.plans.reduce((sum, row) => sum + (row.plan.payout_date <= todayInput ? row.summary.remainingCents : 0), 0) ?? 0)} due</span></span><ChevronDown className="payroll-chevron" size={18} aria-hidden="true" /></summary><div className="mt-4"><PayrollDeferredPay
+        summary={deferredPayResult.data}
+        error={Boolean(deferredPayResult.error)}
+        canEditPayroll={canEditPayroll}
+        canEditAccounting={canEditAccounting}
+        returnTo={currentUrl}
+        mode={activeTab === 'reports' ? 'report' : 'payments'}
+        bankTransactions={bankTransactionsResult.data.filter((transaction) => !linkedBankTransactions.has(transaction.id))}
+        bankTransactionsError={Boolean(bankTransactionsResult.error || linkedBankTransactionsResult.error)}
+      /></div></details> : null}
 
-      {showMonthlyCommissions ? <PayrollMonthlyCommissions
+      {showMonthlyCommissions ? <details id="commission-details" className="card payroll-disclosure"><summary className="payroll-tool-summary"><span>Commission details & month history</span><ChevronDown className="payroll-chevron" size={18} aria-hidden="true" /></summary><div className="mt-4"><PayrollMonthlyCommissions
         action={markMonthlyCommissionPaid}
         canEdit={canEditPayroll}
         commissionMonth={commissionMonth}
@@ -2606,181 +2614,12 @@ export default async function PayrollPage(
         currentParams={currentParams}
         activeTab={activeTab}
         returnTo={currentUrl}
-      /> : null}
-
-      {activeTab === 'payroll-day' ? (
-        <section className="space-y-5">
-          <section className="payroll-metrics grid grid-cols-2 gap-3 xl:grid-cols-4">
-            <StatTile label="Hourly + SPIFFs owed" value={usd(payrollDayTotalOwedCents)} detail={`${payrollDayEmployeesWithPayDueCount} employee${payrollDayEmployeesWithPayDueCount === 1 ? '' : 's'} with pay due.`} />
-            <StatTile label="Hourly" value={usd(payrollDayHourlyOwedCents)} detail={`${hoursLabel(weeklyPaymentHours)} completed hours.`} />
-            <StatTile label="SPIFFs" value={usd(payrollDaySpiffOwedCents)} detail={`${selectedUnpaidWeeklySalesSpiffs.length} not marked paid.`} />
-            <StatTile label="Needs Review" value={String(payrollDayNeedsReviewCount)} detail="Open or unapproved time." />
-          </section>
-
-          <section className="card space-y-4">
-            <div>
-              <h2 className="text-xl font-semibold text-slate-950">Employee pay summary</h2>
-              <p className="mt-1 text-sm text-slate-500">
-                {formatDateInputLabel(fromInput)} to {formatDateInputLabel(toInput)}{selectedAdmin ? ` for ${profileLabel(adminById.get(selectedAdmin))}` : ''}.
-              </p>
-            </div>
-            <p className="text-sm text-slate-600">Includes unpaid hourly wages and sales incentives (SPIFFs). Review <Link className="font-semibold text-teal-800 underline" href={`${tabHref('review', currentParams)}#monthly-salary`}>monthly salary payments</Link> separately; salary estimates for all pay frequencies are in <Link className="font-semibold text-teal-800 underline" href={tabHref('reports', currentParams)}>Reports</Link>.</p>
-            <PayrollDayTable rows={payrollDayRows} />
-            <div className="flex justify-end"><Link className="btn-primary gap-2" href={tabHref('payments', currentParams)}>Continue to payments <ArrowRight size={16} aria-hidden="true" /></Link></div>
-          </section>
-        </section>
-      ) : null}
-
-      {activeTab === 'payments' ? (
-        <section className="space-y-5">
-          <section className="payroll-metrics grid grid-cols-2 gap-3 xl:grid-cols-5">
-            <StatTile label="Ready to pay" value={String(weeklyPaymentDueRows.length)} detail="Employees with closed and approved shifts." />
-            <StatTile label="Hours Worked" value={hoursLabel(weeklyPaymentHours)} detail="Completed, non-void paid hours in this week." />
-            <StatTile label="Approved hourly pay" value={usd(weeklyPaymentOwedCents)} detail="Ready-to-pay hourly wages only." />
-            <StatTile label="SPIFFs Due" value={usd(selectedUnpaidSalesSpiffCents)} detail={`${selectedUnpaidWeeklySalesSpiffs.length} not marked paid.`} />
-            <StatTile label="Paid" value={String(weeklyPaymentPaidRows.length)} detail="People already marked paid for this week." />
-          </section>
-
-          <section className="card space-y-5">
-            <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
-              <div>
-                <h2 className="text-xl font-semibold text-slate-950">Hourly payments</h2>
-                <p className="mt-1 text-sm text-slate-500">
-                  {formatDateInputLabel(fromInput)} to {formatDateInputLabel(toInput)}{selectedAdmin ? ` for ${profileLabel(adminById.get(selectedAdmin))}` : ''}.
-                </p>
-              </div>
-              <Link className="btn-secondary w-full lg:w-auto" href={payrollHref({ ...currentParams, tab: 'review' })}>Review approvals</Link>
-            </div>
-            <p className="text-sm text-slate-600">Mark paid after you pay each employee. This records payment and locks their shifts; it does not transfer money.</p>
-            <PaymentsTable
-              canEditPayroll={canEditPayroll}
-              fromInput={fromInput}
-              payments={weeklyPaymentRows}
-              returnTo={currentUrl}
-              toInput={toInput}
-            />
-          </section>
-          <section className="grid gap-5 xl:grid-cols-[0.85fr_1.15fr]">
-            {canEditPayroll ? (
-              <form action={addWeeklySalesSpiff} className="card space-y-4">
-                {returnToInput(currentUrl)}
-                <div>
-                  <h2 className="text-xl font-semibold text-slate-950">Add sales incentive (SPIFF)</h2>
-                  <p className="mt-1 text-sm text-slate-500">
-                    {formatDateInputLabel(fromInput)} to {formatDateInputLabel(toInput)}
-                  </p>
-                </div>
-                <label className="space-y-2 text-sm font-medium text-slate-700">
-                  Sales person
-                  <select className="input" name="profile_id" defaultValue={salesRepAdmins.some((admin) => admin.id === selectedAdmin) ? selectedAdmin : ''} required>
-                    <option value="">Choose sales rep</option>
-                    {salesRepAdmins.map((admin) => (
-                      <option key={admin.id} value={admin.id}>{profileLabel(admin)}</option>
-                    ))}
-                  </select>
-                </label>
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <label className="space-y-2 text-sm font-medium text-slate-700">
-                    Week start
-                    <input className="input" name="week_start_date" type="date" defaultValue={fromInput} required />
-                  </label>
-                  <label className="space-y-2 text-sm font-medium text-slate-700">
-                    Week end
-                    <input className="input" name="week_end_date" type="date" defaultValue={toInput} required />
-                  </label>
-                </div>
-                <label className="space-y-2 text-sm font-medium text-slate-700">
-                  Amount
-                  <input className="input" name="amount" type="number" min="0.01" step="0.01" required />
-                </label>
-                <textarea aria-label="Sales incentive note" className="input min-h-20" name="notes" placeholder="Optional note" />
-                <PendingSubmitButton
-                  className="btn-primary w-full sm:w-auto"
-                  disabled={!salesRepAdmins.length || Boolean(weeklySalesSpiffsResult.error)}
-                  disabledLabel={weeklySalesSpiffsResult.error ? 'Migration Required' : 'No Sales Reps'}
-                  label="Save SPIFF"
-                  pendingLabel="Saving..."
-                />
-              </form>
-            ) : (
-              <section className="card space-y-3">
-                <h2 className="text-xl font-semibold text-slate-950">Add sales incentive (SPIFF)</h2>
-                <p className="text-sm text-slate-500">View only</p>
-              </section>
-            )}
-
-            <section className="card space-y-4">
-              <div>
-                <h2 className="text-xl font-semibold text-slate-950">Weekly sales SPIFFs</h2>
-                <p className="mt-1 text-sm text-slate-500">
-                  {usd(selectedUnpaidSalesSpiffCents)} due and {usd(selectedPaidSalesSpiffCents)} paid. New first-order SPIFFs from September 30, 2026 require a fully paid first invoice and carry forward until paid. Existing SPIFFs keep their original rules.
-                </p>
-              </div>
-              {!selectedWeeklySalesSpiffs.length ? <EmptyState message="No weekly sales SPIFF records found for the selected filters." /> : null}
-              {selectedWeeklySalesSpiffs.length ? (
-                <div className="overflow-x-auto">
-                  <table className="w-full min-w-[56rem] border-separate border-spacing-y-2 text-left text-sm">
-                    <thead>
-                      <tr className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
-                        <th className="px-4 py-2">Sales person</th>
-                        <th className="px-4 py-2">Week</th>
-                        <th className="px-4 py-2 text-right">Amount</th>
-                        <th className="px-4 py-2">Paid</th>
-                        <th className="px-4 py-2">Notes</th>
-                        <th className="px-4 py-2">Action</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {selectedWeeklySalesSpiffs.map((spiff) => (
-                        <tr key={spiff.id} className="bg-white/70">
-                          <td className="rounded-l-xl px-4 py-3 font-semibold text-slate-950">{profileLabel(adminById.get(spiff.profile_id ?? ''))}</td>
-                          <td className="px-4 py-3 text-slate-700">{formatDateInputLabel(spiff.week_start_date)} to {formatDateInputLabel(spiff.week_end_date)}</td>
-                          <td className="px-4 py-3 text-right font-semibold text-slate-950">{usd(normalizeMoneyCents(spiff.amount_cents))}</td>
-                          <td className="px-4 py-3 text-slate-700">
-                            {spiff.paid_at ? formatCentralDateTime(spiff.paid_at) : !spiffIsPayable(spiff) ? (
-                              <span className="text-sm text-amber-800">{spiffInvoiceEligibility.error ? 'Invoice verification unavailable' : 'Awaiting invoice payment'}</span>
-                            ) : (
-                              <span className="inline-flex rounded-full bg-rose-50 px-3 py-1 text-xs font-semibold uppercase tracking-[0.12em] text-rose-700 ring-1 ring-rose-100">Not paid</span>
-                            )}
-                          </td>
-                          <td className="px-4 py-3 text-slate-600">{spiff.notes || ''}</td>
-                          <td className="rounded-r-xl px-4 py-3">
-                            {spiff.paid_at && canEditPayroll ? (
-                              <form action={markWeeklySalesSpiffUnpaid}>
-                                {returnToInput(currentUrl)}
-                                <input name="spiff_id" type="hidden" value={spiff.id} />
-                                <PendingSubmitButton className="btn-secondary w-full" label="Mark Unpaid" pendingLabel="Saving..." />
-                              </form>
-                            ) : spiff.paid_at ? (
-                              <span className="text-sm text-slate-500">Paid</span>
-                            ) : !spiffIsPayable(spiff) ? (
-                              <Link className="text-sm font-medium text-teal-800 underline" href="/admin/invoicing?view=accounts-receivable">Check invoice</Link>
-                            ) : canEditPayroll ? (
-                              <form action={markWeeklySalesSpiffPaid}>
-                                {returnToInput(currentUrl)}
-                                <input name="spiff_id" type="hidden" value={spiff.id} />
-                                <PendingSubmitButton className="btn-primary w-full" label="Mark Paid" pendingLabel="Saving..." />
-                              </form>
-                            ) : (
-                              <span className="text-sm text-slate-500">View only</span>
-                            )}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              ) : null}
-            </section>
-          </section>
-
-        </section>
-      ) : null}
+      /></div></details> : null}
 
       {activeTab === 'reports' ? (
         <section className="space-y-5">
           <div className="grid gap-4 md:grid-cols-3">
-            <StatTile label="Production Labor Paid" value={usd(productionPayrollWages)} detail="Production-tagged payroll wages." />
+            <StatTile label="Production Payroll Before Deferred Pay" value={usd(productionPayrollWages)} detail="Production-tagged payroll wages. Deferred earnings are shown separately above." />
             <StatTile label="Production Run Labor COGS" value={usd(productionRunLaborCogs)} detail={productionRunCogsDetail} />
             <StatTile label="Labor Difference" value={usd(laborDifference)} detail={laborDifferenceDetail} />
           </div>
@@ -2794,7 +2633,7 @@ export default async function PayrollPage(
             <StatTile label="Estimated Salary" value={usd(totalSalaryPay)} detail="Prorated estimate for salaried employees in range." />
             <StatTile label="Paid Salary Records" value={usd(selectedSalaryPaidCents)} detail={`${selectedSalaryPaymentRows.length} salary payment record${selectedSalaryPaymentRows.length === 1 ? '' : 's'} in range.`} />
             <StatTile label="Paid SPIFFs" value={usd(selectedPaidSalesSpiffCents)} detail={`${selectedPaidWeeklySalesSpiffs.length} paid SPIFF record${selectedPaidWeeklySalesSpiffs.length === 1 ? '' : 's'} in range.`} />
-            <StatTile label="Total Pay" value={usd(totalPay)} detail="Hourly wages, estimated salary, and paid sales SPIFFs." />
+            <StatTile label="Pay Before Deferred Accrual" value={usd(totalPay)} detail="Hourly wages, estimated salary, and paid sales SPIFFs for the selected filters. Deferred earnings above include all labor tags." />
             <StatTile label="Production Hours" value={hoursLabel(productionPaidMinutes)} detail="Hours clocked or allocated to Production." />
           </div>
         </section>
@@ -2977,113 +2816,157 @@ export default async function PayrollPage(
         </section>
       ) : null}
 
-      {activeTab === 'time' ? (
+      {isWorkspace ? <details id="time-corrections" className="card payroll-disclosure" open={activeTab === 'time'}>
+        <summary className="payroll-tool-summary"><span>Time & corrections <span className="ml-2 text-sm font-normal text-slate-500">Shifts, breaks & labor allocations</span></span><ChevronDown className="payroll-chevron" size={18} aria-hidden="true" /></summary>
+        <div className="mt-4 space-y-4">      {isWorkspace ? (
         <section className="card space-y-5">
           <div>
             <h2 className="text-xl font-semibold text-slate-950">Entries & corrections</h2>
-            <p className="mt-1 text-sm text-slate-500">Correct times, tags, rate snapshots, approve entries, void bad punches, and split labor across work types.</p>
+            <p className="mt-1 text-sm text-slate-500">Correct times, tags, rate snapshots, approve entries, void bad punches, and split labor across work types.</p><p className="mt-2 text-xs text-slate-500">Overtime included: hours over 40 per employee each Monday–Sunday week (Central time) are paid at 1.5× the shift’s hourly rate. Unpaid breaks are excluded; all labor tags count.</p>
           </div>
-          <fieldset disabled={!canEditPayroll} className="min-w-0"><EntriesTable allocationsByEntry={allocationsByEntry} entries={entries} returnTo={currentUrl} wagesByEntry={wagesByEntry} /></fieldset>
+          <fieldset disabled={!canEditPayroll} className="min-w-0"><EntriesTable allocationsByEntry={allocationsByEntry} entries={entries} returnTo={timeReturnUrl} wagesByEntry={wagesByEntry} /></fieldset>
         </section>
       ) : null}
 
-      {activeTab === 'time' ? (
+      {isWorkspace ? (
         <section className="card space-y-5">
           <div>
             <h2 className="text-xl font-semibold text-slate-950">Breaks / lunch</h2>
             <p className="mt-1 text-sm text-slate-500">Correct lunch and unpaid break records or void bad break punches.</p>
           </div>
-          <fieldset disabled={!canEditPayroll} className="min-w-0"><BreaksTable entries={entries} returnTo={currentUrl} /></fieldset>
+          <fieldset disabled={!canEditPayroll} className="min-w-0"><BreaksTable entries={entries} returnTo={timeReturnUrl} /></fieldset>
         </section>
       ) : null}
 
-      {activeTab === 'time' ? (
+      {isWorkspace ? (
         <details className="card payroll-disclosure" id="manual-time">
           <summary className="flex cursor-pointer items-center justify-between gap-3 font-semibold text-slate-950">Add a missing shift or break <ChevronDown className="payroll-chevron" size={18} aria-hidden="true" /></summary>
-          <fieldset disabled={!canEditPayroll} className="mt-4 min-w-0"><ManualEntriesPanel admins={admins} entries={entries} returnTo={currentUrl} selectedAdmin={selectedAdmin} timeByProfile={timeByProfile} /></fieldset>
+          <fieldset disabled={!canEditPayroll} className="mt-4 min-w-0"><ManualEntriesPanel admins={admins} entries={entries} returnTo={timeReturnUrl} selectedAdmin={selectedAdmin} timeByProfile={timeByProfile} /></fieldset>
         </details>
       ) : null}
 
-      {activeTab === 'review' ? (
-        <fieldset disabled={!canEditPayroll} className="min-w-0 space-y-5">
-          <section className={`card space-y-4 ${rangeHasCoveringLock ? 'border-emerald-200 bg-emerald-50/60' : 'border-amber-100 bg-amber-50/40'}`}>
-            <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-start">
-              <div>
-                <h2 className="text-xl font-semibold text-slate-950">Weekly payroll review</h2>
-                <p className="mt-1 text-sm text-slate-600">
-                  {formatDateInputLabel(fromInput)} to {formatDateInputLabel(toInput)}{selectedAdmin ? ` for ${profileLabel(adminById.get(selectedAdmin))}` : ''}.
-                </p>
-              </div>
-              <span className={`w-fit rounded-full px-3 py-1 text-sm font-semibold ${rangeHasCoveringLock ? 'bg-emerald-100 text-emerald-800' : 'bg-white text-amber-800 ring-1 ring-amber-100'}`}>
-                {rangeHasCoveringLock ? 'Completed' : !weeklyPaymentRows.length ? 'No time recorded' : openEntries.length ? 'Open shifts to resolve' : unapprovedEntries.length ? 'Approval needed' : 'Ready for payments'}
-              </span>
-            </div>
-            <div className="payroll-metrics grid grid-cols-2 gap-3 xl:grid-cols-4">
-              <StatTile label="Open Shifts" value={String(openEntries.length)} detail="Must be clocked out before completion." />
-              <StatTile label="Need Approval" value={String(unapprovedEntries.length)} detail="Completed shifts not approved or locked." />
-              <StatTile label="Paid Hours" value={hoursLabel(totalPaidMinutes)} detail={`${hoursLabel(totalOvertimeMinutes)} overtime hours included.`} />
-              <StatTile label="Estimated total pay" value={usd(totalPay)} detail="Hourly wages + prorated salary + paid SPIFFs." />
-            </div>
-            <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap">
-              <form action={approveCompletedWeekEntries}>
-                {returnToInput(currentUrl)}
-                <input name="lock_start" type="hidden" value={fromInput} />
-                <input name="lock_end" type="hidden" value={toInput} />
-                <input name="profile_id" type="hidden" value={selectedAdmin} />
+</div></details> : null}
+
+      {isWorkspace ? <details id="payment-adjustments" className="card payroll-disclosure" open={activeTab === 'payments'}>
+        <summary className="payroll-tool-summary"><span>Incentives, individual payments & history</span><ChevronDown className="payroll-chevron" size={18} aria-hidden="true" /></summary>
+        <div className="mt-4 space-y-4">
+          <section className="grid gap-5 xl:grid-cols-[0.85fr_1.15fr]">
+            {canEditPayroll ? (
+              <form action={addWeeklySalesSpiff} className="card space-y-4">
+                {returnToInput(paymentsReturnUrl)}
+                <div>
+                  <h2 className="text-xl font-semibold text-slate-950">Add sales incentive (SPIFF)</h2>
+                  <p className="mt-1 text-sm text-slate-500">
+                    {formatDateInputLabel(fromInput)} to {formatDateInputLabel(toInput)}
+                  </p>
+                </div>
+                <label className="space-y-2 text-sm font-medium text-slate-700">
+                  Sales person
+                  <select className="input" name="profile_id" defaultValue={salesRepAdmins.some((admin) => admin.id === selectedAdmin) ? selectedAdmin : ''} required>
+                    <option value="">Choose sales rep</option>
+                    {salesRepAdmins.map((admin) => (
+                      <option key={admin.id} value={admin.id}>{profileLabel(admin)}</option>
+                    ))}
+                  </select>
+                </label>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <label className="space-y-2 text-sm font-medium text-slate-700">
+                    Week start
+                    <input className="input" name="week_start_date" type="date" defaultValue={fromInput} required />
+                  </label>
+                  <label className="space-y-2 text-sm font-medium text-slate-700">
+                    Week end
+                    <input className="input" name="week_end_date" type="date" defaultValue={toInput} required />
+                  </label>
+                </div>
+                <label className="space-y-2 text-sm font-medium text-slate-700">
+                  Amount
+                  <input className="input" name="amount" type="number" min="0.01" step="0.01" required />
+                </label>
+                <textarea aria-label="Sales incentive note" className="input min-h-20" name="notes" placeholder="Optional note" />
                 <PendingSubmitButton
                   className="btn-primary w-full sm:w-auto"
-                  disabled={!unapprovedEntries.length || rangeHasCoveringLock}
-                  disabledLabel={rangeHasCoveringLock ? 'Week Completed' : 'No Shifts to Approve'}
-                  label="Approve Completed Shifts"
-                  pendingLabel="Approving..."
+                  disabled={!salesRepAdmins.length || Boolean(weeklySalesSpiffsResult.error)}
+                  disabledLabel={weeklySalesSpiffsResult.error ? 'Migration Required' : 'No Sales Reps'}
+                  label="Save SPIFF"
+                  pendingLabel="Saving..."
                 />
               </form>
-              <Link className="btn-secondary w-full sm:w-auto" href={payrollHref({ ...currentParams, tab: 'time' })}>Review time & corrections</Link>
-              <Link className="btn-secondary gap-2" href={tabHref('payroll-day', currentParams)}>Check pay summary <ArrowRight size={16} aria-hidden="true" /></Link>
-            </div>
+            ) : (
+              <section className="card space-y-3">
+                <h2 className="text-xl font-semibold text-slate-950">Add sales incentive (SPIFF)</h2>
+                <p className="text-sm text-slate-500">View only</p>
+              </section>
+            )}
+
+            <section className="card space-y-4">
+              <div>
+                <h2 className="text-xl font-semibold text-slate-950">Weekly sales SPIFFs</h2>
+                <p className="mt-1 text-sm text-slate-500">
+                  {usd(selectedUnpaidSalesSpiffCents)} due and {usd(selectedPaidSalesSpiffCents)} paid. New first-order SPIFFs from September 30, 2026 require a fully paid first invoice and carry forward until paid. Existing SPIFFs keep their original rules.
+                </p>
+              </div>
+              {!selectedWeeklySalesSpiffs.length ? <EmptyState message="No weekly sales SPIFF records found for the selected filters." /> : null}
+              {selectedWeeklySalesSpiffs.length ? (
+                <div className="overflow-x-auto">
+                  <table className="w-full min-w-[56rem] border-separate border-spacing-y-2 text-left text-sm">
+                    <thead>
+                      <tr className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+                        <th className="px-4 py-2">Sales person</th>
+                        <th className="px-4 py-2">Week</th>
+                        <th className="px-4 py-2 text-right">Amount</th>
+                        <th className="px-4 py-2">Paid</th>
+                        <th className="px-4 py-2">Notes</th>
+                        <th className="px-4 py-2">Action</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {selectedWeeklySalesSpiffs.map((spiff) => (
+                        <tr key={spiff.id} className="bg-white/70">
+                          <td className="rounded-l-xl px-4 py-3 font-semibold text-slate-950">{profileLabel(adminById.get(spiff.profile_id ?? ''))}</td>
+                          <td className="px-4 py-3 text-slate-700">{formatDateInputLabel(spiff.week_start_date)} to {formatDateInputLabel(spiff.week_end_date)}</td>
+                          <td className="px-4 py-3 text-right font-semibold text-slate-950">{usd(normalizeMoneyCents(spiff.amount_cents))}</td>
+                          <td className="px-4 py-3 text-slate-700">
+                            {spiff.paid_at ? formatCentralDateTime(spiff.paid_at) : !spiffIsPayable(spiff) ? (
+                              <span className="text-sm text-amber-800">{spiffInvoiceEligibility.error ? 'Invoice verification unavailable' : 'Awaiting invoice payment'}</span>
+                            ) : (
+                              <span className="inline-flex rounded-full bg-rose-50 px-3 py-1 text-xs font-semibold uppercase tracking-[0.12em] text-rose-700 ring-1 ring-rose-100">Not paid</span>
+                            )}
+                          </td>
+                          <td className="px-4 py-3 text-slate-600">{spiff.notes || ''}</td>
+                          <td className="rounded-r-xl px-4 py-3">
+                            {spiff.paid_at && canEditPayroll ? (
+                              <form action={markWeeklySalesSpiffUnpaid}>
+                                {returnToInput(paymentsReturnUrl)}
+                                <input name="spiff_id" type="hidden" value={spiff.id} />
+                                <PendingSubmitButton className="btn-secondary w-full" label="Mark Unpaid" pendingLabel="Saving..." />
+                              </form>
+                            ) : spiff.paid_at ? (
+                              <span className="text-sm text-slate-500">Paid</span>
+                            ) : !spiffIsPayable(spiff) ? (
+                              <Link className="text-sm font-medium text-teal-800 underline" href="/admin/invoicing?view=accounts-receivable">Check invoice</Link>
+                            ) : canEditPayroll ? (
+                              <form action={markWeeklySalesSpiffPaid}>
+                                {returnToInput(paymentsReturnUrl)}
+                                <input name="spiff_id" type="hidden" value={spiff.id} />
+                                <PendingSubmitButton className="btn-primary w-full" label="Mark Paid" pendingLabel="Saving..." />
+                              </form>
+                            ) : (
+                              <span className="text-sm text-slate-500">View only</span>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : null}
+            </section>
           </section>
 
-          {openEntries.length ? <section className="rounded-xl border border-amber-200 bg-amber-50 p-4" aria-label="Open shifts to resolve">
-            <h2 className="font-semibold text-amber-950">Close open shifts before finishing payroll</h2>
-            <div className="mt-3 space-y-3">
-              {openEntries.map((entry) => <div key={entry.id} className="flex flex-wrap items-center justify-between gap-3 text-sm">
-                <span><span className="font-semibold text-slate-900">{profileLabel(profileForEntry(entry))}</span><span className="mt-0.5 block text-slate-600">Clocked in {formatCentralDateTime(entry.clock_in_at)}</span></span>
-                <Link className="btn-secondary" href={payrollHref({ ...currentParams, admin: entry.profile_id || '', tab: 'time' })}>Review shift</Link>
-              </div>)}
-            </div>
-          </section> : null}
-
-          <section className="card space-y-4">
-            <div>
-              <h2 className="text-xl font-semibold text-slate-950">Approvals needed</h2>
-              <p className="mt-1 text-sm text-slate-500">Approve completed submitted shifts before completing the week.</p>
-            </div>
-            {!unapprovedEntries.length ? <EmptyState message="No unapproved completed shifts found for this range." /> : null}
-            <div className="space-y-2">
-              {unapprovedEntries.map((entry) => {
-                const breaks = entryBreaks(entry);
-                const lunchMinutes = completedBreakMinutes(breaks);
-                const entryPaidMinutes = paidMinutes(entry, breaks);
-                return (
-                  <div key={entry.id} className="grid gap-3 rounded-2xl border border-slate-200 bg-white/65 p-4 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
-                    <div>
-                      <p className="font-semibold text-slate-950">{profileLabel(profileForEntry(entry))}</p>
-                      <p className="mt-1 text-sm text-slate-500">
-                        {formatCentralDateTime(entry.clock_in_at)} to {formatCentralDateTime(entry.clock_out_at)} - {hoursLabel(lunchMinutes)} lunch hours - {hoursLabel(entryPaidMinutes)} paid hours
-                      </p>
-                    </div>
-                    <form action={approveEntry}>
-                      {returnToInput(currentUrl)}
-                      <input name="entry_id" type="hidden" value={entry.id} />
-                      <PendingSubmitButton className="btn-primary w-full md:w-auto" label="Approve" pendingLabel="Approving..." />
-                    </form>
-                  </div>
-                );
-              })}
-            </div>
-          </section>
-
-          <details id="monthly-salary" className="card payroll-disclosure" open={monthlySalaryDueRows.length > 0}>
+          <details className="card payroll-disclosure"><summary className="payroll-tool-summary">Hourly-only payment records<ChevronDown className="payroll-chevron" size={18} aria-hidden="true" /></summary><div className="mt-4"><PaymentsTable canEditPayroll={canEditPayroll} fromInput={fromInput} payments={weeklyPaymentRows} returnTo={paymentsReturnUrl} toInput={toInput} /></div></details>
+          <fieldset disabled={!canEditPayroll} className="min-w-0 space-y-4">
+          <details id="monthly-salary" className="card payroll-disclosure" >
             <summary className="flex cursor-pointer flex-wrap items-center justify-between gap-3">
               <span><span className="block text-lg font-semibold text-slate-950">Monthly salary payroll</span><span className="mt-1 block text-sm text-slate-500">{formatDateInputLabel(monthlySalaryWindow.periodStartInput)} – {formatDateInputLabel(monthlySalaryWindow.periodEndInput)} · Separate from the selected weekly period</span></span>
               <span className="flex items-center gap-3"><span className="text-sm font-semibold text-teal-800">{monthlySalaryDueRows.length ? `${usd(monthlySalaryDueCents)} to record` : 'Up to date'}</span><ChevronDown size={18} className="payroll-chevron" aria-hidden="true" /></span>
@@ -3123,7 +3006,7 @@ export default async function PayrollPage(
                       <p className="text-sm text-slate-500">Paid {formatCentralDateTime(row.payment.paid_at)}</p>
                     ) : canEditPayroll ? (
                       <form action={approveMonthlySalaryPayment} className="space-y-2">
-                        {returnToInput(currentUrl)}
+                        {returnToInput(paymentsReturnUrl)}
                         <input name="profile_id" type="hidden" value={row.profileId ?? ''} />
                         <input name="payroll_month" type="hidden" value={monthlySalaryWindow.payrollMonthInput} />
                         <input name="period_start_date" type="hidden" value={monthlySalaryWindow.periodStartInput} />
@@ -3160,7 +3043,7 @@ export default async function PayrollPage(
 
           <section className="grid gap-5 xl:grid-cols-[0.9fr_1.1fr]">
             <form action={lockPayrollRange} className="card space-y-4">
-              {returnToInput(currentUrl)}
+              {returnToInput(paymentsReturnUrl)}
               <div>
                 <h2 className="text-xl font-semibold text-slate-950">Complete payroll week</h2>
                 <p className="mt-1 text-sm text-slate-500">Locks all shifts in this range and marks their hourly pay as paid. Complete this after paying your team; no money is transferred here.</p>
@@ -3207,26 +3090,27 @@ export default async function PayrollPage(
               </div>
             </details>
           </section>
-        </fieldset>
-      ) : null}
+          </fieldset>
+        </div>
+      </details> : null}
 
-      {activeTab === 'settings' ? (
-        <section className="space-y-4">
+      {isWorkspace ? (
+        <details id="employee-settings" className="card payroll-disclosure" open={activeTab === 'settings'}><summary className="payroll-tool-summary"><span>Employee settings</span><ChevronDown className="payroll-chevron" size={18} aria-hidden="true" /></summary><section className="mt-4 space-y-4">
           <section className="card space-y-4">
             <div className="space-y-2">
               <h2 className="text-xl font-semibold text-slate-950">Rates, commissions, and labor tags</h2>
-              <p className="text-sm text-slate-500">Hourly rates snapshot when employees clock in. Salary pay is prorated into the selected payroll date range. Commission rates and gross profit snapshot when orders ship. Commissions earned from September 30, 2026 require a fully paid QuickBooks invoice; earlier earnings keep their original rules.</p>
+              <p className="text-sm text-slate-500">Hourly rates snapshot when employees clock in. Salary pay is prorated into the selected payroll date range. Commission rates and gross profit snapshot when orders ship. Commission is earned in the month the invoice is fully paid.</p>
             </div>
             <nav aria-label="Payroll settings account views" className="flex flex-wrap gap-2">
               <Link
                 className={`rounded-2xl border px-4 py-2 text-sm font-semibold transition-all duration-200 ${settingsView === 'active' ? 'border-teal-200 bg-teal-50 text-teal-900' : 'border-slate-200 bg-white/70 text-slate-700 hover:border-teal-100 hover:bg-white'}`}
-                href={activeSettingsHref}
+                href={`${activeSettingsHref}#employee-settings`}
               >
                 Active ({activeAdmins.length})
               </Link>
               <Link
                 className={`rounded-2xl border px-4 py-2 text-sm font-semibold transition-all duration-200 ${settingsView === 'deactivated' ? 'border-teal-200 bg-teal-50 text-teal-900' : 'border-slate-200 bg-white/70 text-slate-700 hover:border-teal-100 hover:bg-white'}`}
-                href={deactivatedSettingsHref}
+                href={`${deactivatedSettingsHref}#employee-settings`}
               >
                 Deactivated ({deactivatedAdmins.length})
               </Link>
@@ -3245,8 +3129,15 @@ export default async function PayrollPage(
                   <span className="flex items-center gap-4"><span className="text-right text-sm"><span className="block font-semibold text-slate-800">{normalizeCompensationType(timeSetting?.compensation_type) === 'salary' ? `${usd(normalizeMoneyCents(timeSetting?.salary_amount_cents))} · ${salaryPayFrequencyLabel(timeSetting?.salary_frequency)}` : `${usd(normalizeMoneyCents(timeSetting?.hourly_rate_cents))} / hour`}</span><span className="mt-1 block text-slate-500">{admin.is_active === false ? 'Inactive' : compensationTypeLabel(timeSetting?.compensation_type)}{commissionSetting?.is_sales_rep ? ' · Sales rep' : ''} · {canEditPayroll ? 'Edit settings' : 'View settings'}</span></span><ChevronDown size={18} className="payroll-chevron" aria-hidden="true" /></span>
                 </summary>
                 <form action={updatePayrollSettings} className="mt-5 border-t border-slate-200 pt-5">
-                  {returnToInput(currentUrl)}
+                  {returnToInput(settingsReturnUrl)}
                   <input type="hidden" name="profile_id" value={admin.id} />
+                  {commissionSetting?.hourly_offset_enabled ? (
+                    <p className="mb-4 rounded-xl bg-teal-50 p-3 text-sm text-teal-900">
+                      Monthly commission pays only the amount above base hourly wages for the same month
+                      {commissionSetting.hourly_offset_start_month ? `, starting ${commissionMonthLabel(commissionSetting.hourly_offset_start_month)}` : ''}.
+                      {' '}First-order SPIFFs are separate. Saving these settings preserves this rule.
+                    </p>
+                  ) : null}
                   <PayrollCompensationFields
                     key={`${timeSetting?.compensation_type}:${timeSetting?.hourly_rate_cents}:${timeSetting?.salary_amount_cents}:${timeSetting?.salary_frequency}:${timeSetting?.salary_labor_work_type}:${commissionSetting?.commission_percent}:${commissionSetting?.is_sales_rep}:${[...employeeTags].sort().join(',')}`}
                     initialCompensationType={normalizeCompensationType(timeSetting?.compensation_type)}
@@ -3263,20 +3154,23 @@ export default async function PayrollPage(
               </details>
             );
           })}
-        </section>
+        </section></details>
       ) : null}
 
-      {activeTab === 'export' ? (
-        <section className="card space-y-4">
-          <h2 className="text-xl font-semibold text-slate-950">Export payroll</h2>
-          <p className="text-sm text-slate-500">Exports include time entries, salary rows, labor tag, lunch time, paid hours, pay amount, and review metadata.</p>
-          {canEditPayroll ? <Link
+      {isWorkspace ? (
+        <details id="payroll-export" className="card payroll-disclosure" open={activeTab === 'export'}>
+          <summary className="payroll-tool-summary"><span>Export payroll</span><Download size={18} aria-hidden="true" /></summary><div className="mt-4 space-y-4">
+          <p className="text-sm text-slate-500">The time-entry export includes salary rows, labor tags, lunch time, paid hours, pay amounts, and review metadata. The deferred-pay export shows earned amounts, payments, and opening and closing liabilities for the selected employee and dates; all labor tags are included.</p>
+          {canEditPayroll ? <div className="flex flex-wrap gap-3"><Link
             className="btn-primary w-full sm:w-fit"
             href={`/api/export/time-entries?from=${encodeURIComponent(fromInput)}&to=${encodeURIComponent(toInput)}${selectedAdmin ? `&admin=${encodeURIComponent(selectedAdmin)}` : ''}${filterWorkType ? `&work_type=${encodeURIComponent(filterWorkType)}` : ''}`}
           >
             Export CSV
-          </Link> : <p className="text-sm text-slate-600">Payroll edit access is required to download exports.</p>}
-        </section>
+          </Link><Link
+            className="btn-secondary w-full sm:w-fit"
+            href={`/api/export/deferred-pay?from=${encodeURIComponent(fromInput)}&to=${encodeURIComponent(toInput)}${selectedAdmin ? `&admin=${encodeURIComponent(selectedAdmin)}` : ''}`}
+          >Export deferred pay CSV</Link></div> : <p className="text-sm text-slate-600">Payroll edit access is required to download exports.</p>}
+        </div></details>
       ) : null}
     </div>
   );

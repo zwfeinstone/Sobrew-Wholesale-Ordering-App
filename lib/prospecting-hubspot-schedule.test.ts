@@ -110,6 +110,27 @@ describe('daily sample HubSpot schedule', () => {
     expect(state.push).toHaveBeenCalledTimes(23);
   });
 
+  it('resolves Thomas’s current app email by assigned profile when the old Rob profile and other reps are present', async () => {
+    state.tables.profiles = [
+      { id: 'old-rob-profile', email: 'rob@sobrew.com' },
+      { id: 'rep-1', email: 'haskins@sobrew.com' },
+      { id: 'thomas-profile', email: 'thomas@sobrew.com' },
+    ];
+    state.tables.prospecting_leads = [
+      lead('a', { assigned_profile_id: 'thomas-profile' }),
+      lead('b', { assigned_profile_id: 'rep-1' }),
+      lead('c', { assigned_profile_id: 'old-rob-profile' }),
+    ];
+
+    expect(await pushRequestedSamplesToHubSpot(database)).toMatchObject({ exported: 3, errors: [] });
+
+    expect(state.push.mock.calls.map(([input]) => ({ leadId: input.lead.id, ownerEmail: input.ownerEmail }))).toEqual([
+      { leadId: 'a', ownerEmail: 'thomas@sobrew.com' },
+      { leadId: 'b', ownerEmail: 'haskins@sobrew.com' },
+      { leadId: 'c', ownerEmail: 'rob@sobrew.com' },
+    ]);
+  });
+
   it('continues after a failure and keeps the failed record available for retry', async () => {
     state.tables.prospecting_leads = [lead('a'), lead('b')];
     state.push.mockImplementationOnce(async () => ({ status: 'error', message: 'Missing contact email' }));

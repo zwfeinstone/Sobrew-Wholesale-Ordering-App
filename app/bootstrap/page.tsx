@@ -9,11 +9,14 @@ async function bootstrap(formData: FormData) {
   const token = String(formData.get('token') ?? '');
   const email = String(formData.get('email') ?? '').trim().toLowerCase();
   const password = String(formData.get('password') ?? '');
-  if (token !== env.bootstrapToken) redirect('/bootstrap?error=token');
+  if (!env.bootstrapToken.trim() || token !== env.bootstrapToken) redirect('/bootstrap?error=token');
+
+  const { data: settings, error: settingsError } = await supabaseAdmin.from('app_settings').select('id,bootstrap_completed').single();
+  if (settingsError || !settings || typeof settings.id !== 'string' || !settings.id.trim()) redirect('/bootstrap?error=config');
+  if (settings.bootstrap_completed === true) redirect('/login?bootstrap=done');
+  if (settings.bootstrap_completed !== false) redirect('/bootstrap?error=config');
 
   const supabase = await createClient();
-  const { data: settings } = await supabaseAdmin.from('app_settings').select('id,bootstrap_completed').single();
-  if (settings?.bootstrap_completed) redirect('/login?bootstrap=done');
 
   const existing = await supabaseAdmin.auth.admin.listUsers();
   let userId = existing.data.users.find((u) => u.email === email)?.id;
@@ -27,13 +30,20 @@ async function bootstrap(formData: FormData) {
     if (updated.error) redirect('/bootstrap?error=update');
   }
 
-  await supabaseAdmin.from('profiles').upsert({ id: userId, email, is_admin: true, is_active: true }, { onConflict: 'id' });
+  const profileSaved = await supabaseAdmin.from('profiles')
+    .upsert({ id: userId, email, is_admin: true, is_active: true }, { onConflict: 'id' })
+    .then(({ error }) => !error, () => false);
+  if (!profileSaved) redirect('/bootstrap?error=profile');
 
   const signed = await supabase.auth.signInWithPassword({ email, password });
   if (signed.error) redirect('/bootstrap?error=signin');
 
-  if (settings?.id) {
-    await supabaseAdmin.from('app_settings').update({ bootstrap_completed: true }).eq('id', settings.id);
+  const bootstrapLocked = await supabaseAdmin.from('app_settings')
+    .update({ bootstrap_completed: true }).eq('id', settings.id).select('id').single()
+    .then(({ data, error }) => !error && data?.id === settings.id, () => false);
+  if (!bootstrapLocked) {
+    await supabase.auth.signOut({ scope: 'local' }).catch(() => undefined);
+    redirect('/bootstrap?error=lock');
   }
 
   redirect('/admin');

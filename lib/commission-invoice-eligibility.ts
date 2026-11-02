@@ -12,6 +12,8 @@ export type CommissionInvoiceEligibility = {
   missingInvoiceOrderIds: Set<string>;
   paidOrderIds: Set<string>;
   unpaidOrderIds: Set<string>;
+  /** QuickBooks transaction dates are date-only; their month must not shift time zones. */
+  paidOrderMonths?: Map<string, string>;
 };
 
 function emptyEligibility(error: string | null = null): CommissionInvoiceEligibility {
@@ -31,6 +33,7 @@ function emptyEligibility(error: string | null = null): CommissionInvoiceEligibi
 export async function getCommissionInvoiceEligibility(
   orderIds: string[],
   supabase: SupabaseLike = supabaseAdmin,
+  options: { includePaymentDates?: boolean } = {},
 ): Promise<CommissionInvoiceEligibility> {
   const uniqueOrderIds = [...new Set(orderIds.map((id) => id.trim()).filter(Boolean))];
   if (!uniqueOrderIds.length) return emptyEligibility();
@@ -49,7 +52,9 @@ export async function getCommissionInvoiceEligibility(
     const orderInvoiceIds = new Map(ordersResult.data.map((order) => [order.id, order.quickbooks_invoice_id?.trim() ?? '']));
     const invoiceIds = [...new Set([...orderInvoiceIds.values()].filter(Boolean))];
     const receivables = invoiceIds.length
-      ? await getQuickBooksInvoiceReceivables(invoiceIds)
+      ? await (options.includePaymentDates
+        ? getQuickBooksInvoiceReceivables(invoiceIds, { includePaymentDates: true })
+        : getQuickBooksInvoiceReceivables(invoiceIds))
       : { error: null, invoices: [], missingIds: [] };
     if (receivables.error) {
       return emptyEligibility(`Unable to verify paid QuickBooks invoices: ${receivables.error}`);
@@ -58,6 +63,7 @@ export async function getCommissionInvoiceEligibility(
     const invoicesById = new Map(receivables.invoices.map((invoice) => [invoice.id, invoice]));
     const missingInvoiceIds = new Set(receivables.missingIds);
     const eligibility = emptyEligibility();
+    if (options.includePaymentDates) eligibility.paidOrderMonths = new Map();
     for (const orderId of uniqueOrderIds) {
       const invoiceId = orderInvoiceIds.get(orderId);
       const invoice = invoiceId ? invoicesById.get(invoiceId) : undefined;
@@ -65,6 +71,14 @@ export async function getCommissionInvoiceEligibility(
         eligibility.missingInvoiceOrderIds.add(orderId);
       } else if (invoice.status === 'paid' && invoice.balanceCents === 0 && invoice.amountCents > 0) {
         // A voided/zero-value invoice cannot release a first-order spiff.
+        if (options.includePaymentDates) {
+          const paidDate = invoice.paidDate;
+          if (!paidDate || !/^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/.test(paidDate)
+            || new Date(`${paidDate}T12:00:00Z`).toISOString().slice(0, 10) !== paidDate) {
+            return emptyEligibility('Unable to verify an invoice payment date in QuickBooks. Refresh before recording commission.');
+          }
+          eligibility.paidOrderMonths!.set(orderId, `${paidDate.slice(0, 7)}-01`);
+        }
         eligibility.paidOrderIds.add(orderId);
       } else {
         eligibility.unpaidOrderIds.add(orderId);

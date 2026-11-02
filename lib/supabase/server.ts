@@ -3,6 +3,7 @@ import { cookies } from 'next/headers';
 import { createServerClient, type CookieOptions } from '@supabase/ssr';
 import { env } from '@/lib/env';
 import { resilientSupabaseFetch } from '@/lib/supabase/resilient-jwks-fetch';
+import { createReportInvalidatingFetch } from '@/lib/supabase/report-cache-fetch';
 import type { Database } from './schema';
 
 type CookieToSet = { name: string; value: string; options: CookieOptions };
@@ -11,7 +12,7 @@ export const createClient = cache(async function createClient() {
   const cookieStore = await cookies();
 
   return createServerClient<Database>(env.supabaseUrl, env.supabaseAnon, {
-    global: { fetch: resilientSupabaseFetch },
+    global: { fetch: createReportInvalidatingFetch(resilientSupabaseFetch, env.supabaseUrl) },
     cookies: {
       getAll() {
         return cookieStore.getAll();

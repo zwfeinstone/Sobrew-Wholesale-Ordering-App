@@ -13,6 +13,7 @@ import {
   productionNeedsFallbackBoxes,
   SAMPLE_BOX_FALLBACK_BOX_SKUS,
   type ProductionMaterialComponent,
+  type ProductionMaterialFallback,
   type ProductionMaterialItem,
 } from '@/lib/production-materials';
 
@@ -42,6 +43,7 @@ type RecipeRow = {
   shipping_label_qty: number | string;
   branding_label_qty: number | string;
   product_recipe_components?: RecipeComponentRow[] | null;
+  material_fallbacks?: ProductionMaterialFallback[];
 };
 
 type ProductCategoryRow = {
@@ -68,10 +70,10 @@ export async function recordRecipeProductionRun({
   supabase: SupabaseLike;
   wasteQuantity?: number;
 }) {
-  const [recipeResult, productResult] = await Promise.all([
+  const [recipeResult, productResult, materialFallbackResult] = await Promise.all([
     supabase
       .from('product_recipes')
-      .select('id,output_qty,waste_percent,labor_minutes,labor_rate_cents,shipping_label_qty,branding_label_qty,product_recipe_components(id,inventory_item_id,quantity,unit,component_role,inventory_items(id,base_unit,sku))')
+      .select('id,output_qty,waste_percent,labor_minutes,labor_rate_cents,shipping_label_qty,branding_label_qty,product_recipe_components(id,inventory_item_id,quantity,unit,component_role,inventory_items(id,base_unit,sku,active,item_type))')
       .eq('product_id', productId)
       .single(),
     supabase
@@ -79,31 +81,46 @@ export async function recordRecipeProductionRun({
       .select('id,category')
       .eq('id', productId)
       .maybeSingle(),
+    supabase
+      .from('product_material_fallbacks')
+      .select('primary_inventory_item_id,fallback_inventory_item_id')
+      .eq('product_id', productId),
   ]);
 
-  if (recipeResult.error || !recipeResult.data || productResult.error || !Number.isFinite(quantityProduced) || quantityProduced <= 0) {
+  if (recipeResult.error || !recipeResult.data || productResult.error || materialFallbackResult.error || !Number.isFinite(quantityProduced) || quantityProduced <= 0) {
     return { error: 'recipe_error' as const };
   }
 
-  const typedRecipe = recipeResult.data as RecipeRow;
+  const typedRecipe: RecipeRow = { ...recipeResult.data, material_fallbacks: materialFallbackResult.data ?? [] };
   const product = productResult.data as ProductCategoryRow | null;
   const components = (typedRecipe.product_recipe_components ?? []) as RecipeComponentRow[];
   const shouldLoadFallbackBox = productionNeedsFallbackBoxes(typedRecipe, product?.category);
-  const fallbackBoxResult = shouldLoadFallbackBox
-    ? await supabase
+  const explicitFallbackIds = [...new Set((typedRecipe.material_fallbacks ?? [])
+    .filter((rule) => components.some((component) => component.inventory_item_id === rule.primary_inventory_item_id))
+    .map((rule) => rule.fallback_inventory_item_id))];
+  const [fallbackBoxResult, explicitFallbackResult] = await Promise.all([
+    shouldLoadFallbackBox ? supabase
         .from('inventory_items')
-        .select('id,base_unit,sku,active')
+        .select('id,base_unit,sku,active,item_type')
         .in('sku', SAMPLE_BOX_FALLBACK_BOX_SKUS)
         .eq('active', true)
-    : { data: [] as InventoryItemRow[], error: null };
+      : { data: [] as InventoryItemRow[], error: null },
+    explicitFallbackIds.length ? supabase
+      .from('inventory_items')
+      .select('id,base_unit,sku,active,item_type')
+      .in('id', explicitFallbackIds)
+      .eq('active', true)
+      : { data: [] as InventoryItemRow[], error: null },
+  ]);
 
-  if (fallbackBoxResult.error) return { error: 'recipe_error' as const };
+  if (fallbackBoxResult.error || explicitFallbackResult.error) return { error: 'recipe_error' as const };
 
-  const fallbackItems = (fallbackBoxResult.data ?? []) as InventoryItemRow[];
+  const fallbackItems = [...(fallbackBoxResult.data ?? []), ...(explicitFallbackResult.data ?? [])] as InventoryItemRow[];
   const fallbackBoxItem = preferredProductionFallbackItem(fallbackItems);
   const itemIds = [
     ...components.map((component) => component.inventory_item_id),
     ...(fallbackBoxItem ? [fallbackBoxItem.id] : []),
+    ...(explicitFallbackResult.data ?? []).map((item: InventoryItemRow) => item.id),
   ];
   const { data: lots, error: lotsError } = itemIds.length
     ? await supabase

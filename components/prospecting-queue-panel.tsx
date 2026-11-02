@@ -11,6 +11,7 @@ import {
   REP_PIPELINE_STAGES,
   US_STATE_OPTIONS,
   formatDate,
+  formatDateTime,
   missingLeadFields,
   paginationRange,
   priorityLabel,
@@ -33,6 +34,7 @@ type QueueLead = {
   stage: string | null;
   priority: string | null;
   next_follow_up_at: string | null;
+  last_activity_at: string | null;
   last_result: string | null;
 };
 type Contact = { lead_id: string; full_name: string | null; email: string | null; phone: string | null; is_primary: boolean | null };
@@ -97,14 +99,15 @@ export async function ProspectingQueuePanel({ context, currentLeadId, profileId,
   const clearContext = { ...context, listId: '', priority: '' as const, q: '', stage: '' as const, state: '' as const, page: 1 };
   const activeFilters = [context.q, context.priority, context.listId, context.state].filter(Boolean).length;
   const allToday = context.tab === 'today' && (!context.preset || context.preset === 'all');
-  const heading = context.tab === 'tasks' ? 'Follow-ups due' : context.tab === 'pipeline' ? 'Your pipeline' : context.tab === 'list' ? 'Active leads' : PROSPECTING_TODAY_PRESETS.find((preset) => preset.id === (context.preset ?? 'all'))?.label ?? 'Today';
+  const recentlyWorked = context.tab === 'recent';
+  const heading = recentlyWorked ? 'Recently worked' : context.tab === 'tasks' ? 'Follow-ups due' : context.tab === 'pipeline' ? 'Your pipeline' : context.tab === 'list' ? 'Active leads' : PROSPECTING_TODAY_PRESETS.find((preset) => preset.id === (context.preset ?? 'all'))?.label ?? 'Today';
   let previousGroup = '';
 
   const queue = <>
     {result.error ? <div role="alert" className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">Your queue could not be loaded. <Link className="font-semibold underline" href={prospectingPath(context, { includePageSize: true })}>Try again</Link></div> : null}
     {!result.error && !leads.length ? <div className="rounded-xl border border-dashed border-slate-200 bg-white p-6 text-center">
-      <p className="font-semibold text-slate-950">{total > 0 ? 'There are no leads on this page' : activeFilters ? 'No leads match these filters' : allToday ? 'You’re caught up for today' : 'No leads in this view'}</p>
-      <p className="mt-2 text-sm leading-6 text-slate-500">{total > 0 ? 'Go back to the first page of this queue.' : allToday ? 'Check Upcoming or Needs scheduling to plan your next conversations.' : 'Choose another view or adjust your filters.'}</p>
+      <p className="font-semibold text-slate-950">{total > 0 ? 'There are no leads on this page' : activeFilters ? 'No leads match these filters' : recentlyWorked ? 'No recently worked leads yet' : allToday ? 'You’re caught up for today' : 'No leads in this view'}</p>
+      <p className="mt-2 text-sm leading-6 text-slate-500">{total > 0 ? 'Go back to the first page of this queue.' : recentlyWorked && !activeFilters ? 'Leads appear here after a call, email, or note is logged, even with a future follow-up.' : allToday ? 'Check Upcoming or Needs scheduling to plan your next conversations.' : 'Choose another view or adjust your filters.'}</p>
       <div className="mt-4 flex flex-wrap justify-center gap-2">
         {total > 0 ? <Link className="btn-secondary" href={prospectingPath(context, { includePageSize: true, page: 1 })}>First page</Link> : null}
         {activeFilters ? <Link className="btn-secondary" href={prospectingPath(clearContext, { includePageSize: true })}>Clear filters</Link> : null}
@@ -141,6 +144,7 @@ export async function ProspectingQueuePanel({ context, currentLeadId, profileId,
               {lead.priority !== 'high' ? <span className="rounded-full bg-slate-50 px-2 py-0.5 text-[11px] text-slate-500">{priorityLabel(lead.priority)}</span> : null}
             </div>
             {lead.last_result ? <p className="mt-2 truncate text-xs text-slate-600">Last result: {lead.last_result}</p> : null}
+            {recentlyWorked && lead.last_activity_at ? <p className="mt-1 text-xs text-slate-600">Last worked: <time dateTime={lead.last_activity_at}>{formatDateTime(lead.last_activity_at)}</time></p> : null}
             {names.length ? <p className="mt-1 truncate text-xs text-slate-500">{names.join(' · ')}</p> : null}
             {missing.length ? <p className="mt-2 text-[11px] text-amber-800" title={missing.join(', ')}>Needs details ({missing.length})</p> : null}
           </Link>
@@ -153,6 +157,7 @@ export async function ProspectingQueuePanel({ context, currentLeadId, profileId,
   const memoryKey = prospectingPath({ ...context, runId: undefined }, { includePageSize: true });
   return <ProspectingQueueScroll memoryKey={memoryKey} compact={compact}><section aria-label="Lead queue" className="min-w-0 space-y-3">
     <ProspectingWorkspaceNav context={context} />
+    {recentlyWorked ? <p className="text-xs leading-5 text-slate-500">Latest activity first · Includes future follow-ups</p> : null}
     <form action="/admin/sales/prospecting" className="space-y-2">
       <FilterContext context={context} />
       <div className="flex gap-2">
