@@ -78,12 +78,17 @@ test('requires tracking, previews only the selected custom quote, and fits the s
 
   const boxes = page.getByRole('checkbox');
   for (let index = 0; index < await boxes.count(); index++) await boxes.nth(index).check();
-  expect(await page.getByRole('checkbox', { checked: true }).count()).toBe(11);
-  for (const category of ['Bulk Coffee (5lb bags)', 'Fraction Pack', 'Filter Pack', 'K Cups']) await expect(preview).toContainText(category);
+  expect(await page.getByRole('checkbox', { checked: true }).count()).toBe(13);
+  for (const category of ['Bulk Coffee (5lb bags)', 'Fraction Pack', 'Filter Pack', 'K Cups', 'Bag in Box Concentrate']) await expect(preview).toContainText(category);
   await expect(preview).toContainText('Specialty Fourth Dimension Medium Roast');
   const specialty = preview.locator('[data-email-quote-item="k-cups-fourth-dimension"]');
   await expect(specialty.locator('td').first()).toHaveText('50ct');
   await expect(specialty.locator('td').last()).toHaveText('$50.00');
+  for (const id of ['concentrate-regular', 'concentrate-decaf']) {
+    const concentrate = preview.locator(`[data-email-quote-item="${id}"]`);
+    await expect(concentrate.locator('td').first()).toHaveText('2 x 64oz');
+    await expect(concentrate.locator('td').last()).toHaveText('$115.00');
+  }
   await expectEmailTypography(page);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   expect(await preview.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
@@ -117,16 +122,30 @@ test('requires tracking, previews only the selected custom quote, and fits the s
   expect(await calls(page)).toHaveLength(0);
 });
 
-test('restores an unsent quote after reload and keeps it when finishing later', async ({ page }) => {
+test('restores an unsent quote from before catalog additions and keeps it when finishing later', async ({ page }) => {
   await openFixture(page);
   await bulkQuote(page);
+  await page.getByLabel('CC (optional)', { exact: true }).fill('lisa@example.test; buyer@example.test');
+  await page.evaluate(() => {
+    const key = 'prospecting-sample-quote-v1:sample-order-1';
+    const draft = JSON.parse(sessionStorage.getItem(key)!);
+    delete draft.prices['concentrate-regular'];
+    delete draft.prices['concentrate-decaf'];
+    sessionStorage.setItem(key, JSON.stringify(draft));
+  });
   page.on('dialog', dialog => dialog.accept());
   await page.reload();
-  await expect(page.getByText('Your tracking and pricing draft was restored.', { exact: true })).toBeVisible();
+  await expect(page.getByText('Your tracking and pricing draft was restored, including any CC recipients.', { exact: true })).toBeVisible();
   await expect(page.getByLabel('Tracking number', { exact: true })).toHaveValue('1Z0751H30305695303');
   await expect(page.getByRole('spinbutton').first()).toHaveValue('35.00');
   await expect(page.getByLabel('Greeting name', { exact: true })).toHaveValue('Ron and Lisa');
+  await expect(page.getByLabel('CC (optional)', { exact: true })).toHaveValue('lisa@example.test; buyer@example.test');
+  await expect(page.getByRole('region', { name: 'Email preview', exact: true })).toContainText('lisa@example.test, buyer@example.test');
   expect(await page.getByRole('checkbox', { checked: true }).count()).toBe(1);
+  const concentrateOptions = page.getByRole('group', { name: 'Bag in Box Concentrate', exact: true });
+  await expect(concentrateOptions.getByRole('spinbutton').nth(0)).toHaveValue('115.00');
+  await expect(concentrateOptions.getByRole('spinbutton').nth(1)).toHaveValue('115.00');
+  await expect(concentrateOptions.getByRole('checkbox', { checked: true })).toHaveCount(0);
   await page.getByRole('link', { name: 'Finish later', exact: true }).click();
   await expect(page.getByRole('dialog')).toContainText('Keep this email draft for later?');
   await page.getByRole('button', { name: 'Keep draft and leave', exact: true }).click();
@@ -138,33 +157,39 @@ test('restores an unsent quote after reload and keeps it when finishing later', 
 test('freezes an uncertain send and retries the identical payload', async ({ page }) => {
   await openFixture(page, 'mode=connection');
   await bulkQuote(page);
+  await page.getByLabel('CC (optional)', { exact: true }).fill('lisa@example.test');
   await page.getByRole('button', { name: 'Send samples & pricing email', exact: true }).click();
   await expect(page.getByRole('alert')).toContainText('response was interrupted');
   await expect(page.getByRole('alert')).toBeFocused();
   await expect(page.getByLabel('Tracking number', { exact: true })).toBeDisabled();
   await expect(page.getByLabel('Greeting name', { exact: true })).toBeDisabled();
+  await expect(page.getByLabel('CC (optional)', { exact: true })).toBeDisabled();
   await expect(page.getByRole('spinbutton').first()).toBeDisabled();
   await expect(page.getByRole('checkbox').first()).toBeDisabled();
   const original = (await calls(page))[0];
   expect(original.greetingName).toBe('Ron and Lisa');
+  expect(original.ccEmails).toBe('lisa@example.test');
   await page.evaluate(() => { window.sampleQuoteFixture.mode = 'success'; });
   await page.getByRole('button', { name: 'Check / retry email send', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Samples and pricing email sent', exact: true })).toBeVisible();
   expect(await calls(page)).toEqual([original, original]);
   await expect(page.getByRole('status')).toBeFocused();
+  await expect(page.getByLabel('CC (optional)', { exact: true })).toBeDisabled();
   expect(await page.evaluate(() => sessionStorage.getItem('prospecting-sample-quote-v1:sample-order-1'))).toBeNull();
 });
 
 test('blocks duplicate sends during a pending request and after success', async ({ page }) => {
   await openFixture(page, 'mode=deferred');
   await bulkQuote(page);
+  await expect(page.getByLabel('CC (optional)', { exact: true })).toHaveValue('');
   await page.locator('form').evaluate(form => {
     form.dispatchEvent(new SubmitEvent('submit', { bubbles: true, cancelable: true }));
     form.dispatchEvent(new SubmitEvent('submit', { bubbles: true, cancelable: true }));
   });
   await expect(page.getByRole('button', { name: 'Sending email…', exact: true })).toBeDisabled();
   await expect(page.getByLabel('Tracking number', { exact: true })).toBeDisabled();
-  expect(await calls(page)).toEqual([{ orderId: 'sample-order-1', greetingName: 'Ron and Lisa', trackingNumber: '1Z0751H30305695303', lines: [{ id: 'bulk-regular', priceCents: 3500 }] }]);
+  await expect(page.getByLabel('CC (optional)', { exact: true })).toBeDisabled();
+  expect(await calls(page)).toEqual([{ orderId: 'sample-order-1', greetingName: 'Ron and Lisa', ccEmails: '', trackingNumber: '1Z0751H30305695303', lines: [{ id: 'bulk-regular', priceCents: 3500 }] }]);
   await page.evaluate(() => window.sampleQuoteFixture.complete?.());
   await expect(page.getByRole('heading', { name: 'Samples and pricing email sent', exact: true })).toBeVisible();
   await expect(page.getByRole('status')).toBeFocused();
@@ -193,34 +218,83 @@ test('requires a valid greeting name before sending a selected quote', async ({ 
   expect((await calls(page))[0].greetingName).toBe('Ron and Lisa');
 });
 
-test('restores older drafts without a greeting field and preserves an uncertain send', async ({ page }) => {
+test('validates optional CCs and previews normalized recipients before sending', async ({ page }) => {
+  await openFixture(page, 'cc=lisa%40example.test');
+  await bulkQuote(page);
+  const cc = page.getByLabel('CC (optional)', { exact: true });
+  const send = page.getByRole('button', { name: 'Send samples & pricing email', exact: true });
+  const preview = page.getByRole('region', { name: 'Email preview', exact: true });
+  await expect(cc).toHaveValue('lisa@example.test');
+  await expect(cc).toHaveAttribute('name', 'cc_emails');
+  await cc.fill('lisa@example.test, not-an-email');
+  await expect(cc).toHaveAttribute('aria-invalid', 'true');
+  await expect(send).toBeDisabled();
+  const errorId = (await cc.getAttribute('aria-describedby'))?.split(' ').find(id => id.includes('error'));
+  expect(errorId).toBeTruthy();
+  await expect(page.locator(`[id="${errorId}"]`)).toBeVisible();
+  await page.locator('form').evaluate(form => form.dispatchEvent(new SubmitEvent('submit', { bubbles: true, cancelable: true })));
+  expect(await calls(page)).toHaveLength(0);
+
+  const enteredCc = '  Lisa@Example.Test, buyer@example.test; LISA@example.test\nRON@example.test  ';
+  await cc.fill(enteredCc);
+  await expect(cc).toHaveAttribute('aria-invalid', 'false');
+  await expect(send).toBeEnabled();
+  const ccRecipients = preview.locator('dt', { hasText: /^CC$/ }).locator('xpath=following-sibling::dd[1]');
+  await expect(ccRecipients).toHaveText('lisa@example.test, buyer@example.test');
+  await send.click();
+  await expect(page.getByRole('heading', { name: 'Samples and pricing email sent', exact: true })).toBeVisible();
+  expect((await calls(page))[0].ccEmails.trim()).toBe(enteredCc.trim());
+  await expect(cc).toBeDisabled();
+});
+
+test('shows saved CC recipients when another tab already sent the email', async ({ page }) => {
+  await openFixture(page, 'mode=already-sent');
+  await bulkQuote(page);
+  const cc = page.getByLabel('CC (optional)', { exact: true });
+  await cc.fill('different@example.test');
+  await page.getByRole('button', { name: 'Send samples & pricing email', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Samples and pricing email sent', exact: true })).toBeVisible();
+  expect((await calls(page))[0].ccEmails).toBe('different@example.test');
+  await expect(page.getByRole('status')).toContainText('CC: original@example.test');
+  await expect(page.getByRole('status')).not.toContainText('different@example.test');
+  await expect(cc).toHaveValue('original@example.test');
+  await expect(cc).toBeDisabled();
+  const preview = page.getByRole('region', { name: 'Email preview', exact: true });
+  await expect(preview.locator('dt', { hasText: /^CC$/ }).locator('xpath=following-sibling::dd[1]')).toHaveText('original@example.test');
+  expect(await calls(page)).toHaveLength(1);
+});
+
+test('restores older drafts without greeting or CC fields and preserves an uncertain send', async ({ page }) => {
   await openFixture(page);
   await bulkQuote(page);
-  const removeGreetingFromStoredDraft = async () => page.evaluate(() => {
+  const removeNewFieldsFromStoredDraft = async () => page.evaluate(() => {
     const key = 'prospecting-sample-quote-v1:sample-order-1';
     const stored = JSON.parse(sessionStorage.getItem(key)!);
     delete stored.greetingName;
+    delete stored.ccEmails;
     sessionStorage.setItem(key, JSON.stringify(stored));
   });
   page.on('dialog', dialog => dialog.accept());
-  await removeGreetingFromStoredDraft();
+  await removeNewFieldsFromStoredDraft();
   await page.reload();
-  await expect(page.getByText('Your tracking and pricing draft was restored.', { exact: true })).toBeVisible();
+  await expect(page.getByText('Your tracking and pricing draft was restored, including any CC recipients.', { exact: true })).toBeVisible();
   await expect(page.getByLabel('Greeting name', { exact: true })).toHaveValue('Ron');
   await expect(page.getByLabel('Greeting name', { exact: true })).toBeEnabled();
+  await expect(page.getByLabel('CC (optional)', { exact: true })).toHaveValue('');
   await expect(page.getByLabel('Tracking number', { exact: true })).toHaveValue('1Z0751H30305695303');
   await expect(page.getByRole('spinbutton').first()).toHaveValue('35.00');
   expect(await page.getByRole('checkbox', { checked: true }).count()).toBe(1);
   await page.evaluate(() => { window.sampleQuoteFixture.mode = 'connection'; });
   await page.getByRole('button', { name: 'Send samples & pricing email', exact: true }).click();
   await expect(page.getByRole('alert')).toContainText('response was interrupted');
-  await removeGreetingFromStoredDraft();
+  await removeNewFieldsFromStoredDraft();
   await page.reload();
   await expect(page.getByLabel('Greeting name', { exact: true })).toHaveValue('Ron');
   await expect(page.getByLabel('Greeting name', { exact: true })).toBeDisabled();
+  await expect(page.getByLabel('CC (optional)', { exact: true })).toBeDisabled();
   await expect(page.getByLabel('Tracking number', { exact: true })).toBeDisabled();
   await expect(page.getByRole('spinbutton').first()).toHaveValue('35.00');
   await page.getByRole('button', { name: 'Check / retry email send', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Samples and pricing email sent', exact: true })).toBeVisible();
-  expect(await calls(page)).toEqual([{ orderId: 'sample-order-1', greetingName: 'Ron', trackingNumber: '1Z0751H30305695303', lines: [{ id: 'bulk-regular', priceCents: 3500 }] }]);
+  expect(await calls(page)).toEqual([{ orderId: 'sample-order-1', greetingName: 'Ron', ccEmails: '', trackingNumber: '1Z0751H30305695303', lines: [{ id: 'bulk-regular', priceCents: 3500 }] }]);
 });

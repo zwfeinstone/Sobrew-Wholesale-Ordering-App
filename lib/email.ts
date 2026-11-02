@@ -1,5 +1,6 @@
 import 'server-only';
 
+import { randomUUID } from 'node:crypto';
 import { Resend, type Attachment } from 'resend';
 import { INVOICE_AUDIT_CC } from '@/lib/invoice-email-recipients';
 import { normalizeShipmentTrackingLines, type ShipmentTrackingLine } from '@/lib/shipment-tracking';
@@ -76,6 +77,7 @@ type ShippedEmailContext = {
 type InvoicePdfEmailPayload = {
   cc?: string | string[] | null;
   customerName: string;
+  idempotencyKey?: string;
   invoiceNumber: string;
   orderId: string;
   pdf: Buffer;
@@ -88,6 +90,7 @@ type PaymentReceiptEmailPayload = {
   amountCents: number;
   cc?: string | string[] | null;
   customerName: string;
+  idempotencyKey?: string;
   invoiceNumber: string;
   orderId: string;
   paymentMethodLabel: string;
@@ -142,18 +145,34 @@ export function invoicePdfEmailRecipients(
 
 type ResendSendResponseLike = {
   data?: { id?: string | null } | null;
-  error?: { message?: string | null } | null;
+  error?: { message?: string | null; name?: string | null } | null;
 };
+
+class ResendDeliveryError extends Error {}
 
 export function resendEmailAcceptanceError(response: ResendSendResponseLike, emailLabel = 'Email') {
   if (response.error) {
     const detail = String(response.error.message ?? '').trim();
-    return new Error(`${emailLabel} was rejected by Resend${detail ? `: ${detail}` : '.'}`);
+    return new ResendDeliveryError(`${emailLabel} was rejected by Resend${detail ? `: ${detail}` : '.'}`, { cause: response.error });
   }
   if (!String(response.data?.id ?? '').trim()) {
     return new Error(`${emailLabel} was not accepted by Resend because no email ID was returned.`);
   }
   return null;
+}
+
+function isTransientEmailDeliveryError(error: unknown) {
+  const failure = error instanceof ResendDeliveryError ? error.cause : error;
+  if (!failure || typeof failure !== 'object') return false;
+  const name = 'name' in failure ? String(failure.name ?? '') : '';
+  if (['application_error', 'internal_server_error', 'service_unavailable', 'rate_limit_exceeded', 'concurrent_idempotent_requests', 'AbortError', 'TimeoutError'].includes(name)) {
+    return true;
+  }
+  // Also recognize timeout responses that arrive without an error code.
+  // A named permanent rejection must never become retryable based on its text.
+  if (name && name !== 'Error' && name !== 'TypeError') return false;
+  const message = 'message' in failure ? String(failure.message ?? '') : '';
+  return /\b(timed out|timeout|fetch failed|network error|connection reset)\b/i.test(message);
 }
 
 async function deliverEmail(label: string, payload: {
@@ -163,23 +182,37 @@ async function deliverEmail(label: string, payload: {
   subject: string;
   text?: string;
   to: string | string[] | null | undefined;
-}): Promise<SendEmailResult> {
+}, options: { idempotencyKey?: string; retryTransientErrors?: boolean } = {}): Promise<SendEmailResult> {
   try {
     const resend = getResend();
     if (!resend) throw new Error('Resend disabled: missing RESEND_API_KEY');
     const recipients = outgoingEmailRecipients(payload.to, payload.cc);
     if (!recipients.to.length) throw new Error(`${label} skipped: missing recipient`);
-    const response = await resend.emails.send({
+    const email = {
       ...payload,
       from: RESEND_FROM,
       replyTo: REPLY_TO_EMAIL,
       to: recipients.to,
       cc: recipients.cc.length ? recipients.cc : undefined,
-    });
-    const error = resendEmailAcceptanceError(response, label);
-    if (error) throw error;
-    console.log(`${label} accepted`, { id: response.data?.id });
-    return { ok: true };
+    };
+    const { idempotencyKey } = options;
+    // A timeout can happen after acceptance. Retries must use the same key and
+    // exact payload so the provider can return the original send without duplicates.
+    const maxAttempts = options.retryTransientErrors && idempotencyKey ? 3 : 1;
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        const response = idempotencyKey
+          ? await resend.emails.send(email, { idempotencyKey })
+          : await resend.emails.send(email);
+        const error = resendEmailAcceptanceError(response, label);
+        if (error) throw error;
+        console.log(`${label} accepted`, { id: response.data?.id });
+        return { ok: true };
+      } catch (error) {
+        if (attempt >= maxAttempts || !isTransientEmailDeliveryError(error)) throw error;
+        await new Promise((resolve) => setTimeout(resolve, attempt * 1000));
+      }
+    }
   } catch (error) {
     console.error(`Failed to send ${label}`, error);
     return { error, ok: false };
@@ -283,7 +316,7 @@ export function buildCustomerWelcomeEmailContent(payload: WelcomeEmailPayload) {
             <tr>
               <td colspan="2" style="box-sizing:border-box; padding:8px 18px 16px 18px;">
                 <p style="margin:0 0 4px 0; color:#73675c; font-size:12px; font-weight:700; text-transform:uppercase;">Password</p>
-                <p style="margin:0; color:#241a12; font-size:15px; font-weight:700; overflow-wrap:anywhere; word-break:break-all; word-wrap:break-word;">${safePassword}</p>
+                <p style="margin:0; color:#241a12; font-family:monospace; font-size:15px; font-weight:700; white-space:pre-wrap; overflow-wrap:anywhere; word-break:break-all; word-wrap:break-word;">${safePassword}</p>
               </td>
             </tr>
             <tr>
@@ -724,7 +757,7 @@ export async function sendCustomerWelcomeEmail(payload: WelcomeEmailPayload): Pr
     to: payload.email,
     cc: WELCOME_EMAIL_CC,
     subject: 'Welcome to Sobrew Wholesale Ordering',
-  });
+  }, { idempotencyKey: `customer-welcome/${randomUUID()}`, retryTransientErrors: true });
 }
 
 export async function sendAdminNotificationEmail(payload: OrderEmailPayload) {
@@ -1155,7 +1188,7 @@ export async function sendInvoicePdfEmail(payload: InvoicePdfEmailPayload): Prom
     attachments: invoiceAttachments(payload.pdf, payload.invoiceNumber, payload.orderId, 'Invoice'),
     ...recipients,
     subject: `Sobrew Invoice ${payload.invoiceNumber}`,
-  });
+  }, { idempotencyKey: payload.idempotencyKey });
 }
 
 export async function sendPaymentReceiptEmail(payload: PaymentReceiptEmailPayload): Promise<SendEmailResult> {
@@ -1165,5 +1198,5 @@ export async function sendPaymentReceiptEmail(payload: PaymentReceiptEmailPayloa
     attachments: invoiceAttachments(payload.pdf, payload.invoiceNumber, payload.orderId, 'Receipt'),
     ...recipients,
     subject: `Sobrew Receipt ${payload.invoiceNumber}`,
-  });
+  }, { idempotencyKey: payload.idempotencyKey });
 }

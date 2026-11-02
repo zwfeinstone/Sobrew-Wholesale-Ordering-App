@@ -60,6 +60,27 @@ try {
   const beforePayouts = (await db.query('select * from monthly_commission_payouts order by id')).rows;
   const beforeReceipts = (await db.query('select * from private.customer_first_order_spiffs order by center_id')).rows;
 
+  // A commission-only repair can precede this broader migration. Verify that
+  // later application preserves both legacy nulls and payments already tracked.
+  // Roll back this scenario so the original clean-install checks still run.
+  await db.exec('begin');
+  try {
+    await db.exec(await migration('20261001125344_repair_commission_paid_order_tracking.sql'));
+    await db.query(`insert into monthly_commission_payouts(
+      sales_profile_id, commission_month, status, commission_cents, paid_at, paid_order_ids
+    ) values ($1, '2026-10-01', 'paid', 27182, '2026-11-01 12:00:00+00', $2)`, [actor, [paidOrder, unpaidOrder]]);
+    const repairedPayouts = (await db.query('select * from monthly_commission_payouts order by id')).rows;
+    await db.exec(await migration('20260930170646_paid_invoice_sales_compensation.sql'));
+    assert.deepEqual((await db.query('select * from monthly_commission_payouts order by id')).rows, repairedPayouts);
+    const repairedSpiffs = (await db.query('select * from admin_weekly_sales_spiffs order by id')).rows;
+    assert.deepEqual(repairedSpiffs.map(({ first_order_id, ...row }) => row), beforeSpiffs);
+    assert.ok(repairedSpiffs.every(row => row.first_order_id === null));
+    assert.deepEqual((await db.query('select * from private.customer_first_order_spiffs order by center_id')).rows, beforeReceipts);
+  } finally {
+    await db.exec('rollback');
+  }
+  console.log('PASS broader migration after commission-only repair preserves tracked payments and legacy history');
+
   await db.exec(await migration('20260930170646_paid_invoice_sales_compensation.sql'));
   const afterSpiffs = (await db.query('select * from admin_weekly_sales_spiffs order by id')).rows;
   assert.deepEqual(afterSpiffs.map(({ first_order_id, ...row }) => row), beforeSpiffs);
@@ -122,6 +143,11 @@ try {
 
   await db.query('update monthly_commission_payouts set paid_order_ids = $1', [[paidOrder, unpaidOrder]]);
   assert.deepEqual((await db.query('select paid_order_ids from monthly_commission_payouts')).rows[0].paid_order_ids, [paidOrder, unpaidOrder]);
+  const trackedPayouts = (await db.query('select * from monthly_commission_payouts order by id')).rows;
+  await db.exec(await migration('20261001125344_repair_commission_paid_order_tracking.sql'));
+  await db.exec(await migration('20261001125344_repair_commission_paid_order_tracking.sql'));
+  assert.deepEqual((await db.query('select * from monthly_commission_payouts order by id')).rows, trackedPayouts);
+  console.log('PASS commission repair after broader migration and repeated repair preserve tracked payments');
   for (const role of ['anon', 'authenticated', 'service_role']) {
     const result = await db.query(`select has_function_privilege($1,
       'private.award_first_order_sales_spiff(uuid,uuid,timestamptz)', 'EXECUTE') allowed`, [role]);

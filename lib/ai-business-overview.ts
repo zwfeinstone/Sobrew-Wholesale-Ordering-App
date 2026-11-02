@@ -664,6 +664,7 @@ export function buildBusinessHealthSnapshot({
   const dataCoverageNotes: string[] = [
     `As-of date is treated as the end of ${formatDateInput(asOfStart)} in Central time.`,
     'Sales and margin are built from saved order and order-item COGS snapshots where available.',
+    'Shipped-order gross margin does not include separately accrued deferred payroll expense or its unpaid liability. Employee compensation, deferred balances, and settlement amounts are not included in this shared snapshot; consult Accounting and authorized payroll reports for those amounts. A deferred payroll payout settles the liability and is not a second expense.',
   ];
   const missingData: string[] = [];
 

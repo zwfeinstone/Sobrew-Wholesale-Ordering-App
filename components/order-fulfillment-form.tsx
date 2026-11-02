@@ -3,9 +3,9 @@
 import { useState, type ReactNode } from 'react';
 import ShipOrderSubmitButton from '@/components/ship-order-submit-button';
 
-export default function OrderFulfillmentForm({ action, orderId, hasRequiredBoxLines, children }: {
+export default function OrderFulfillmentForm({ action, orderId, hasRequiredBoxLines, prepaidShopify = false, children }: {
   action: (data: FormData) => Promise<void>; orderId: string;
-  hasRequiredBoxLines: boolean; children: ReactNode;
+  hasRequiredBoxLines: boolean; prepaidShopify?: boolean; children: ReactNode;
 }) {
   const [method, setMethod] = useState('carrier');
   const carrier = method === 'carrier';
@@ -17,6 +17,7 @@ export default function OrderFulfillmentForm({ action, orderId, hasRequiredBoxLi
       <label><input name="fulfillment_method" type="radio" value="local_delivery" checked={!carrier} onChange={() => setMethod('local_delivery')} /> Local delivery / pickup</label>
     </fieldset>
     <label className="block text-sm font-medium">Shipping cost ($)<input className="input mt-2" name="shipping_cost" type="number" min={carrier ? '0.01' : '0'} step="0.01" required /></label>
+    {prepaidShopify ? <p className="text-sm text-slate-500">Already paid through Shopify. Shipping cost is an internal expense. Marking shipped updates Shopify fulfillment{carrier ? ' and tracking' : ''}. No invoice is created.</p> : null}
     {carrier ? <label className="block text-sm font-medium">Tracking numbers<textarea className="input mt-2" name="tracking_numbers" required rows={3} /></label> : <label className="flex gap-2 text-sm"><input name="local_delivery_zero_confirm" type="checkbox" /> Confirm $0 shipping for local delivery or pickup</label>}
     {children}
     <div className="fulfillment-submit"><ShipOrderSubmitButton className="btn-primary w-full" hasRequiredBoxLines={hasRequiredBoxLines} label="Mark shipped" /></div>

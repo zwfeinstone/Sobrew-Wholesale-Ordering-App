@@ -49,7 +49,7 @@ export function dataNeedsForReport(report: AdminReportId): ReportDataNeeds {
   return {
     coreCommerce: !prospecting && !sampleSpend && !aiReport && !inventoryAdjustments,
     inventoryAdjustments,
-    inventoryValuation: inventoryAdjustments || inventory || margin || simulator || salesDashboard,
+    inventoryValuation: inventory || margin || simulator || salesDashboard,
     laborPaidGpm,
     nonInventoryExpenses: inventory,
     productionInputs: production,

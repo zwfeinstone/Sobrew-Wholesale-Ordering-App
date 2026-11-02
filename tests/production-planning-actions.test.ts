@@ -54,6 +54,13 @@ describe('production completion', () => {
 });
 
 describe('planning navigation and targets', () => {
+  it('preserves the selected summary tab and validates unknown tab values', () => {
+    const view = planningView({ tab: 'summary', q: 'House', category: 'fraction_packs' });
+    expect(planningViewHref(view)).toBe('/admin/planning?tab=summary&q=House&category=fraction_packs');
+    expect(planningReturnHref(form('1', '/admin/planning?tab=summary'), 'production_recorded')).toBe('/admin/planning?tab=summary&toast=production_recorded');
+    expect(planningViewHref(planningView({ tab: 'unknown' }))).toBe('/admin/planning');
+  });
+
   it.each(['https://example.com/admin/planning?q=bad', '//example.com/admin/planning', '/admin/planning-other', 'http://['])('rejects a foreign or invalid return location %s', (returnTo) => {
     expect(planningReturnHref(form('1', returnTo), 'production_recorded')).toBe('/admin/planning?toast=production_recorded');
   });

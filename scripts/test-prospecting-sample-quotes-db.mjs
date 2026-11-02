@@ -10,6 +10,7 @@ const { PGlite } = await import(pathToFileURL(modulePath).href);
 const db = new PGlite();
 const migration = await readFile(new URL('../db/migrations/20260930192343_prospecting_sample_quote_emails.sql', import.meta.url), 'utf8');
 const greetingMigration = await readFile(new URL('../db/migrations/20260930210128_prospecting_sample_quote_greeting.sql', import.meta.url), 'utf8');
+const ccMigration = await readFile(new URL('../db/migrations/20261016145956_prospecting_sample_quote_cc.sql', import.meta.url), 'utf8');
 const firstOrder = '10000000-0000-0000-0000-000000000001';
 const secondOrder = '10000000-0000-0000-0000-000000000002';
 const lead = '20000000-0000-0000-0000-000000000001';
@@ -91,6 +92,23 @@ try {
   assert.equal(custom.recipient_name, base.recipient_name);
   await rejectSql(db.query("update public.prospecting_sample_quotes set greeting_name = 'Someone else' where id = $1", [custom.id]), '42501');
   console.log('PASS greeting migration preserves old snapshots, stores custom names separately, rejects invalid names, and prevents greeting edits');
+
+  await db.exec('reset role');
+  await db.exec(ccMigration);
+  await db.exec('set role service_role');
+  const withoutCc = (await db.query('select * from public.prospecting_sample_quotes where id = $1', [saved.id])).rows[0];
+  assert.deepEqual(withoutCc, { ...saved, cc_emails: [] });
+  saved = withoutCc;
+  for (const cc_emails of [Array.from({ length: 21 }, (_, index) => `cc${index}@example.com`), [null], [['cc@example.com']]]) {
+    await rejectSql(insertQuote({ order_id: secondOrder, cc_emails }), '23514', 'prospecting_sample_quotes_cc_emails_check');
+  }
+  await rejectSql(insertQuote({ order_id: secondOrder, cc_emails: null }), '23502');
+  const copied = (await insertQuote({ order_id: '10000000-0000-0000-0000-000000000003', cc_emails: ['cc@example.com', 'owner@example.com'] })).rows[0];
+  assert.deepEqual(copied.cc_emails, ['cc@example.com', 'owner@example.com']);
+  await rejectSql(db.query('update public.prospecting_sample_quotes set cc_emails = $1 where id = $2', [['changed@example.com'], copied.id]), '42501');
+  const maxCopies = Array.from({ length: 20 }, (_, index) => `cc${index}@example.com`);
+  assert.deepEqual((await insertQuote({ order_id: '10000000-0000-0000-0000-000000000004', cc_emails: maxCopies })).rows[0].cc_emails, maxCopies);
+  console.log('PASS CC migration preserves old recipients, stores up to 20 immutable carbon copies, and rejects null, oversized, or multidimensional lists');
 
   for (const tracking_number of ['', ' ', '\t\n', 'A'.repeat(121)]) {
     await rejectSql(insertQuote({ order_id: secondOrder, tracking_number }), '23514', 'prospecting_sample_quotes_tracking_check');

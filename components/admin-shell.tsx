@@ -3,6 +3,7 @@ import Link from 'next/link';
 import { ReactNode } from 'react';
 import { ArrowUpRight, Archive, Boxes, Building2, CalendarClock, ChartColumn, ClipboardList, Clock, Factory, FileText, Inbox, Landmark, LayoutDashboard, Megaphone, Package, PackagePlus, Repeat2, Settings2, Shield, Target, Trash2, Users, Wallet } from 'lucide-react';
 import { ActiveNavLink } from '@/components/active-nav-link';
+import { AdminNavigationContent, AdminNavigationProvider, AdminNavigationStatus } from '@/components/admin-navigation';
 import { AdminNavigationDrawer, AdminNavGroup } from '@/components/admin-navigation-drawer';
 import { AdminReadOnlyGuard } from '@/components/admin-read-only-guard';
 import { AdminRealtimeSync } from '@/components/admin-realtime-sync';
@@ -33,7 +34,7 @@ export function AdminShell({ access, children, isOwner, newOrders, payrollBadgeC
   const orderBadgeSection = ['orders', 'production', 'planning'].find((section) => links.some((link) => link.sectionKey === section));
   const renderLink = ({ name, href, exact, sectionKey }: (typeof links)[number], child = false) => {
     const Icon = icons[sectionKey] ?? FileText;
-    return <ActiveNavLink key={href} className={`sidebar-link${child ? ' sidebar-child' : ''}`} exact={exact} href={href} prefetch={false}>
+    return <ActiveNavLink key={href} className={`sidebar-link${child ? ' sidebar-child' : ''}`} exact={exact} href={href} label={name === 'Centers' ? 'Customers' : name} prefetch={false}>
       <Icon aria-hidden="true" /><span>{name === 'Centers' ? 'Customers' : name}</span>
       {sectionKey === orderBadgeSection && newOrders > 0 ? <span className="admin-nav-count">{newOrders}</span> : null}
       {sectionKey === 'payroll' && payrollBadgeCount > 0 ? <span className="admin-nav-count">{payrollBadgeCount}</span> : null}
@@ -42,7 +43,7 @@ export function AdminShell({ access, children, isOwner, newOrders, payrollBadgeC
   const orderChildren = links.filter((link) => ['archived_orders', 'order_form'].includes(link.sectionKey));
   const recurringChildren = links.filter((link) => link.sectionKey === 'canceled_recurring_orders');
   return (
-    <div className="admin-shell" data-admin-can-write={isOwner ? 'true' : 'false'}>
+    <AdminNavigationProvider><div className="admin-shell" data-admin-can-write={isOwner ? 'true' : 'false'}>
       <AdminRealtimeSync enabled={Boolean(orderBadgeSection)} />
       <AdminReadOnlyGuard editableSections={editableSections} isOwner={isOwner} />
       <AdminNavigationDrawer>
@@ -57,7 +58,7 @@ export function AdminShell({ access, children, isOwner, newOrders, payrollBadgeC
                 {renderLink(link)}
                 {link.sectionKey === 'orders' ? <AdminNavGroup label="Order history & tools" paths={[...orderChildren.map((child) => child.href), '/admin/orders/trash']}>
                   {orderChildren.map((child) => renderLink(child, true))}
-                  {access.orders.canEdit ? <ActiveNavLink href="/admin/orders/trash" className="sidebar-link sidebar-child" prefetch={false}><Trash2 aria-hidden="true" /><span>Recently deleted</span></ActiveNavLink> : null}
+                  {access.orders.canEdit ? <ActiveNavLink href="/admin/orders/trash" label="Recently deleted" className="sidebar-link sidebar-child" prefetch={false}><Trash2 aria-hidden="true" /><span>Recently deleted</span></ActiveNavLink> : null}
                 </AdminNavGroup> : null}
                 {link.sectionKey === 'recurring_orders' && recurringChildren.length ? <AdminNavGroup label="Recurring history" paths={recurringChildren.map((child) => child.href)}>{recurringChildren.map((child) => renderLink(child, true))}</AdminNavGroup> : null}
               </div>)}
@@ -70,8 +71,9 @@ export function AdminShell({ access, children, isOwner, newOrders, payrollBadgeC
       </AdminNavigationDrawer>
       <main className="admin-main" id="main-content">
         <div className="admin-topbar"><span>Workspace</span><Link href="/portal" prefetch={false}>Customer portal <ArrowUpRight aria-hidden="true" /></Link></div>
-        <div className="admin-page-content">{children}</div>
+        <AdminNavigationStatus />
+        <AdminNavigationContent>{children}</AdminNavigationContent>
       </main>
-    </div>
+    </div></AdminNavigationProvider>
   );
 }

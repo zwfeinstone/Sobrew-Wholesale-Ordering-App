@@ -9,8 +9,9 @@ comment on column public.admin_weekly_sales_spiffs.first_order_id is
 -- New payout writes track orders already settled, allowing later-paid invoices
 -- from the same shipment month to be paid once. Preserve legacy payout totals:
 -- null on an existing paid payout means its entire historical month is settled.
+-- The column may already exist from the standalone commission-payment repair.
 alter table public.monthly_commission_payouts
-  add column paid_order_ids uuid[];
+  add column if not exists paid_order_ids uuid[];
 comment on column public.monthly_commission_payouts.paid_order_ids is
   'Cumulative order IDs included in commission payouts. Null on a legacy paid row means its month was settled before per-invoice payment tracking.';
 

@@ -3,7 +3,9 @@ import type {
   PortalRecurringSummary,
   PortalRestockProduct,
 } from '@/components/portal-restock-workspace';
+import { reconcileCartItems } from '@/lib/cart';
 import { nextRecurringOrderDate } from '@/lib/recurring';
+import type { CustomerStockBalance } from '@/lib/customer-stock';
 import { formatAppDate, usd } from '@/lib/utils';
 
 export type PortalProductRow = {
@@ -50,11 +52,14 @@ export function buildPortalRestockData({
   productRows,
   recentOrder,
   recurringOrderRows,
+  customerStockBalances = [],
 }: {
   productRows: PortalProductRow[];
   recentOrder: RecentOrderRow | null;
   recurringOrderRows: RecurringOrderRow[];
+  customerStockBalances?: CustomerStockBalance[];
 }): PortalRestockData {
+  const stockByProductId = new Map(customerStockBalances.map((balance) => [balance.product_id, balance]));
   const products: PortalRestockProduct[] = productRows.map((product) => ({
     product_id: product.product_id,
     name: product.name,
@@ -62,22 +67,25 @@ export function buildPortalRestockData({
     image_url: product.image_url,
     category: product.category,
     price_cents: product.current_price_cents,
+    ...(stockByProductId.has(product.product_id) ? { customer_stock: stockByProductId.get(product.product_id) } : {}),
   }));
   const currentProductMap = new Map(productRows.map((product) => [product.product_id, product]));
 
   const validOrderItems = (recentOrder?.order_items ?? []).filter(
     (item) => Number.isInteger(item.qty) && item.qty > 0
   );
-  const availableItems = validOrderItems.flatMap((item) => {
+  const availableItems = reconcileCartItems(validOrderItems.flatMap((item) => {
     const product = currentProductMap.get(item.product_id);
     if (!product) return [];
+    const qty = item.qty;
+    if (qty <= 0) return [];
     return [{
       product_id: item.product_id,
       name: product.name,
       price_cents: product.current_price_cents,
-      qty: item.qty,
+      qty,
     }];
-  });
+  }), products).items;
   const availableItemCount = availableItems.reduce((sum, item) => sum + item.qty, 0);
   const originalItemCount = validOrderItems.reduce((sum, item) => sum + item.qty, 0);
   const reorderSubtotalCents = availableItems.reduce(

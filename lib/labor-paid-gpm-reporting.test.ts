@@ -28,6 +28,47 @@ function totals(overrides: Partial<ProfitabilityTotals>): ProfitabilityTotals {
 }
 
 describe('buildLaborPaidGpmSummary', () => {
+  it('adds earned deferred production pay only to the accrual comparison and preserves base payroll and shipped COGS', () => {
+    const input = {
+      allocations: [],
+      current: totals({}),
+      entries: [{
+        id: 'production', profile_id: 'employee', status: 'approved', work_type: 'production',
+        clock_in_at: '2026-10-07T13:00:00Z', clock_out_at: '2026-10-07T21:00:00Z',
+        hourly_rate_cents_snapshot: 1500, admin_time_breaks: [],
+      }],
+      productionRuns: [], salaryPayments: [],
+    };
+    const base = buildLaborPaidGpmSummary(input);
+    const summary = buildLaborPaidGpmSummary({ ...input, deferredProductionAccruedCents: 4000 });
+    expect(summary.actualLaborPaidCents).toBe(12000);
+    expect(summary.actualLaborPaidCents).toBe(base.actualLaborPaidCents);
+    expect(summary.shippedTotalCogsCents).toBe(base.shippedTotalCogsCents);
+    expect(summary.actualTotalCogsCents).toBe(base.actualTotalCogsCents);
+    expect(summary).toMatchObject({
+      deferredProductionAccruedCents: 4000, accruedLaborCostCents: 16000,
+      accrualTotalCogsCents: 36000, accrualGrossProfitCents: 64000, accrualGpmPercent: 64,
+    });
+  });
+
+  it('leaves the comparison unchanged when the period has no new deferred production expense', () => {
+    const summary = buildLaborPaidGpmSummary({ allocations: [], current: totals({}), entries: [], productionRuns: [], salaryPayments: [] });
+    expect(summary.deferredProductionAccruedCents).toBe(0);
+    expect(summary.accrualTotalCogsCents).toBe(summary.actualTotalCogsCents);
+    expect(summary.accrualGpmPercent).toBe(summary.actualLaborGpmPercent);
+  });
+
+  it('preserves a negative cent of period category rounding so the comparison reconciles to Accounting', () => {
+    const summary = buildLaborPaidGpmSummary({
+      allocations: [], current: totals({}), entries: [], productionRuns: [], salaryPayments: [],
+      deferredProductionAccruedCents: -1,
+    });
+    expect(summary.deferredProductionAccruedCents).toBe(-1);
+    expect(summary.accruedLaborCostCents).toBe(-1);
+    expect(summary.accrualTotalCogsCents).toBe(summary.actualTotalCogsCents - 1);
+    expect(summary.accrualGrossProfitCents).toBe(summary.actualGrossProfitCents + 1);
+  });
+
   it.each(['profile-1', null])('preserves production payroll labor with profile %s', (profileId) => {
     const summary = buildLaborPaidGpmSummary({
       allocations: [],

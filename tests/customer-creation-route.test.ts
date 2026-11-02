@@ -76,6 +76,13 @@ afterEach(() => {
 });
 
 describe('new customer creation', () => {
+  it.each(['  Keep  My Spaces!  ', 'Snow☃<&\"\' 123', ' abcdef '])('preserves the exact password for Auth and the welcome email: %j', async (password) => {
+    const response = await POST(request({ password }));
+    expect(response.headers.get('location')).toContain('success=center_created');
+    expect(mocks.createUser).toHaveBeenCalledWith({ email: 'buyer@example.com', password, email_confirm: true });
+    expect(mocks.welcome).toHaveBeenCalledWith(expect.objectContaining({ password }));
+  });
+
   it.each<Record<string, string>>([
     { address1: '' }, { address1: '  ' }, { city: '' }, { city: '  ' }, { state: '' }, { state: 'ZZ' }, { zip: '' }, { zip: '123' }, { zip: 'abcde' },
   ])('rejects an incomplete/invalid address before database, auth, QuickBooks, or welcome: %j', async (changes) => {
@@ -216,6 +223,18 @@ describe('new customer creation', () => {
     expect(mocks.deleteUser).not.toHaveBeenCalled();
     expect(operations.some((row) => row.operation === 'delete')).toBe(false);
     expect(mocks.welcome).toHaveBeenCalledOnce();
+  });
+
+  it('keeps the completed customer, login, and QuickBooks link when welcome delivery fails', async () => {
+    mocks.welcome.mockResolvedValue({ ok: false, error: new Error('Operation timed out. Please try again later.') });
+    const response = await POST(request());
+
+    expect(response.headers.get('location')).toBe('https://portal.example.test/admin/users/center-1?success=center_created&warning=welcome_email_failed');
+    expect(mocks.sync).toHaveBeenCalledExactlyOnceWith('center-1');
+    expect(mocks.createUser).toHaveBeenCalledOnce();
+    expect(mocks.welcome).toHaveBeenCalledOnce();
+    expect(mocks.deleteUser).not.toHaveBeenCalled();
+    expect(operations.some((row) => row.operation === 'delete')).toBe(false);
   });
 
   it('reports both QuickBooks and welcome failures on the saved customer', async () => {

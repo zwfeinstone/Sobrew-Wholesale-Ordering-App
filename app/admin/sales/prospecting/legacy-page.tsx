@@ -39,7 +39,7 @@ import {
 function prospectingQueueContextFromParams(source: Parameters<typeof currentQueueContextFromParams>[0]) {
   const context = currentQueueContextFromParams(source);
   // Direct links and forms opened before a rollout toggle keep the legacy List view.
-  return context.tab === 'today' ? { ...context, tab: 'list' as const, preset: undefined } : context;
+  return context.tab === 'today' || context.tab === 'recent' ? { ...context, tab: 'list' as const, preset: undefined } : context;
 }
 
 type SearchParams = Record<string, string | string[] | undefined>;
@@ -487,7 +487,7 @@ export default async function ProspectingPage(props: { searchParams?: Promise<Se
 
       <section className="card space-y-4">
         <nav className="grid gap-2 sm:grid-cols-3">
-          {REP_PROSPECTING_TABS.filter((item) => item.id !== 'today').map((item) => (
+          {REP_PROSPECTING_TABS.filter((item) => item.id !== 'today' && item.id !== 'recent').map((item) => (
             <Link
               key={item.id}
               className={`rounded-lg border px-3 py-2 text-center text-sm font-semibold ${tab === item.id ? 'border-teal-200 bg-teal-50 text-teal-900' : 'border-slate-200 bg-white/70 text-slate-700'}`}

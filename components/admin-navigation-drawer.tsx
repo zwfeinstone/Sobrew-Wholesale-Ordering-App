@@ -10,6 +10,11 @@ export function AdminNavigationDrawer({ children }: { children: ReactNode }) {
   const trigger = useRef<HTMLButtonElement>(null);
   const pathname = usePathname();
   useEffect(() => { dialog.current?.close(); }, [pathname]);
+  useEffect(() => {
+    const close = () => dialog.current?.close();
+    window.addEventListener('admin:navigation-start', close);
+    return () => window.removeEventListener('admin:navigation-start', close);
+  }, []);
   return <>
     <aside className="admin-sidebar admin-sidebar-desktop">{children}</aside>
     <header className="admin-mobile-header"><span className="flex items-center gap-2.5"><Image src="/sobrew-logo.png" alt="" width={32} height={32} /><strong>Sobrew</strong></span><button ref={trigger} type="button" className="icon-button" aria-label="Open navigation" onClick={() => dialog.current?.showModal()}><Menu aria-hidden="true" /></button></header>

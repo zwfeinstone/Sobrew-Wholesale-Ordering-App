@@ -70,6 +70,9 @@ function ProductCard({ row, section, data, canEdit, returnTo, today }: { row: Ro
   const cardMaterialQty = section === 'upcoming' ? row.outlookQty : row.materialQty;
   const preview = section === 'upcoming' ? buildProductionMaterialPreview({ recipe, productCategory: row.product.category, quantity: cardMaterialQty, onHandByItemId: new Map(Object.entries(data.materialStockByItemId)), fallbackItems: data.items }) : row.preview;
   const componentItemIds = new Set(recipe?.product_recipe_components?.map((component) => component.inventory_item_id));
+  for (const rule of recipe?.material_fallbacks ?? []) {
+    if (componentItemIds.has(rule.primary_inventory_item_id)) componentItemIds.add(rule.fallback_inventory_item_id);
+  }
   const materialItems = data.items.filter((item) => componentItemIds.has(item.id) || (row.product.category === 'sample_boxes' && SAMPLE_BOX_FALLBACK_BOX_SKUS.includes(item.sku ?? '')));
   const materialStockByItemId = Object.fromEntries(materialItems.map((item) => [item.id, data.materialStockByItemId[item.id] ?? 0]));
   const reason = section === 'now' ? row.makeNowReason : section === 'replenishment' ? `Based on ${row.explicitReplenishmentQty > 0 ? 'saved customer stock targets' : 'the remaining weekly shipment estimate'}: ${units(row.replenishmentTargetQty)} total target, with ${units(row.onHand + row.makeNowQty)} already covered. Additional production is rounded up to whole units.` : section === 'upcoming' ? 'Later recurring requirements after allocating recorded stock to earlier customer work.' : 'Recorded stock covers the current recommendations for this product.';
@@ -116,7 +119,7 @@ function ProductCard({ row, section, data, canEdit, returnTo, today }: { row: Ro
       </div>
     </details>
     {section === 'upcoming' && row.makeNowQty > 0 ? <p className="text-sm text-slate-600">This product also has work in <a href={`#now-${row.product.id}`} className="font-semibold text-teal-800 underline">Make now</a>. Record completed production there before reassessing later shortages.</p> : null}
-    {actionable && canEdit ? <ProductionForm key={`${section}-${row.product.id}-${baseQty}-${row.replenishmentQty}`} productId={row.product.id} quantity={baseQty} optionalQty={section === 'now' ? row.actionableReplenishmentQty : 0} reviewQty={row.reviewReplenishmentQty} returnTo={returnTo} disabled={invalidRecipe} action={producePlannedInventory} recipe={recipe ? { output_qty: recipe.output_qty, waste_percent: recipe.waste_percent, product_recipe_components: recipe.product_recipe_components } : null} productCategory={row.product.category ?? null} materialStockByItemId={materialStockByItemId} materialItems={materialItems} /> : null}
+    {actionable && canEdit ? <ProductionForm key={`${section}-${row.product.id}-${baseQty}-${row.replenishmentQty}`} productId={row.product.id} quantity={baseQty} optionalQty={section === 'now' ? row.actionableReplenishmentQty : 0} reviewQty={row.reviewReplenishmentQty} returnTo={returnTo} disabled={invalidRecipe} action={producePlannedInventory} recipe={recipe ? { output_qty: recipe.output_qty, waste_percent: recipe.waste_percent, product_recipe_components: recipe.product_recipe_components, material_fallbacks: recipe.material_fallbacks } : null} productCategory={row.product.category ?? null} materialStockByItemId={materialStockByItemId} materialItems={materialItems} /> : null}
   </article>;
 }
 

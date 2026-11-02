@@ -13,16 +13,20 @@ async function submitQuote(orderId: string, expectedRecipientEmail: string, expe
   if (data.get('order_id') !== orderId) return { error: 'The sample order changed. Reload before sending.' };
   const greetingName = data.get('greeting_name');
   if (greetingName !== null && typeof greetingName !== 'string') return { error: 'Enter a valid greeting name before sending.' };
+  const ccEmails = data.get('cc_emails');
+  if (ccEmails !== null && typeof ccEmails !== 'string') return { error: 'Enter CC recipients as plain email addresses.' };
   let lines: unknown;
   try { lines = JSON.parse(String(data.get('lines') ?? '')); }
   catch { return { error: 'The selected quote items could not be read. Please review the quote and try again.' }; }
   const result = await sendSampleQuote({ orderId, expectedRecipientEmail, expectedSenderEmail,
     trackingNumber: String(data.get('tracking_number') ?? ''), lines, greetingName: greetingName ?? undefined,
+    ccEmails: ccEmails ?? undefined,
     actorId: current.profile.id, isOwner: current.isOwner, workspaceEnabled: isProspectingWorkspaceEnabled(),
   });
   if (result.sentAt) {
     revalidatePath(`/admin/sales/prospecting/sample-order/${orderId}/quote`);
     revalidatePath('/admin/sales/prospecting/admin');
+    revalidatePath('/admin/center-pricing', 'layout');
   }
   return result;
 }
@@ -45,11 +49,13 @@ export default async function SampleQuotePage({ params, searchParams }: { params
       <h1 className="page-title">Samples tracking &amp; pricing</h1>
       <p className="page-subtitle">The sample order for {context.companyName} is saved. Add tracking, choose the pricing to include, and send the email from the lead owner.</p>
       <Link className="text-sm font-semibold text-teal-800 underline" href={`/admin/orders/${orderId}`}>View sample order</Link>
+      {context.quote?.sent_at ? <Link className="text-sm font-semibold text-teal-800 underline" prefetch={false} href={`/admin/center-pricing/${context.leadId}`}>View center pricing history</Link> : null}
     </section>
     {context.sendBlockedReason ? <p className="rounded-lg bg-amber-50 p-4 text-amber-900" role="alert">{context.sendBlockedReason}</p> : null}
     <ProspectingSampleQuoteForm orderId={orderId} action={submitQuote.bind(null, orderId, context.contactEmail, context.senderEmail)}
       contactName={context.contactName} contactEmail={context.contactEmail} senderName={context.senderName} senderEmail={context.senderEmail}
       initialGreetingName={context.quote?.greeting_name ?? getSampleQuoteGreetingName(context.contactName)}
+      initialCcEmails={context.quote?.cc_emails ?? []}
       initialTrackingNumber={initial?.ok ? initial.trackingNumber : undefined} initialLines={initial?.ok ? initial.lines : undefined}
       savedEmail={context.quote ? { subject: context.quote.subject, html: context.quote.body_html } : undefined}
       canEdit={(current.isOwner || adminCanEdit(current.access, 'prospecting')) && !context.sendBlockedReason}

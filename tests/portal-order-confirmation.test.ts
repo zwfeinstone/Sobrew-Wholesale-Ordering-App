@@ -10,6 +10,7 @@ const fixture = vi.hoisted(() => ({
   queries: [] as Array<{ table: string; filters: Record<string, unknown> }>,
   clearCart: vi.fn(),
   reorder: vi.fn(),
+  stockRpc: vi.fn(),
 }));
 
 vi.mock('next/navigation', () => ({
@@ -68,7 +69,7 @@ class Query {
   then(resolve: (result: ReturnType<Query['result']>) => unknown) { return Promise.resolve(this.result()).then(resolve); }
 }
 
-const database = { from: (table: string) => new Query(table) };
+const database = { from: (table: string) => new Query(table), rpc: fixture.stockRpc };
 
 beforeEach(() => {
   fixture.centerId = 'customer-center';
@@ -91,6 +92,7 @@ beforeEach(() => {
   fixture.queries = [];
   fixture.clearCart.mockReset();
   fixture.reorder.mockReset();
+  fixture.stockRpc.mockReset().mockResolvedValue({ data: [], error: null });
 });
 
 async function renderOrder(toast?: string | string[]) {
@@ -120,6 +122,7 @@ describe('customer order confirmation', () => {
     expect(html).toContain('href="/portal/orders"');
     expect(html).not.toContain('Reorder &amp; review');
     expect(fixture.reorder).not.toHaveBeenCalled();
+    expect(fixture.stockRpc).not.toHaveBeenCalled();
     expect(fixture.clearCart).toHaveBeenCalledExactlyOnceWith('sobrew-cart:customer-user');
 
     if (toast === 'order_placed_recurring_error') {
@@ -151,10 +154,17 @@ describe('customer order confirmation', () => {
     expect(html).toContain('Reorder &amp; review');
     expect(fixture.clearCart).not.toHaveBeenCalled();
     expect(fixture.reorder).toHaveBeenCalledOnce();
+    expect(fixture.stockRpc).toHaveBeenCalledExactlyOnceWith('get_customer_stock_balances', { p_center_id: 'customer-center' });
     expect(fixture.reorder.mock.calls[0][0]).toMatchObject({
       storageKey: 'sobrew-cart:customer-user',
       items: [{ product_id: productId, name: catalogProducts[0].name, price_cents: 4500, qty: 4 }],
     });
+  });
+
+  it('keeps the saved receipt available without querying current stock', async () => {
+    fixture.stockRpc.mockRejectedValue(new Error('Inventory temporarily unavailable'));
+    expect(await renderOrder('order_placed')).toContain('Your order is placed.');
+    expect(fixture.stockRpc).not.toHaveBeenCalled();
   });
 
   it('does not show a confirmation or clear the cart for another center’s order', async () => {

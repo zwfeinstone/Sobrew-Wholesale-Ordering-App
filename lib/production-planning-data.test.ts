@@ -1,6 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { describe, expect, it } from 'vitest';
 import { loadProductionPlanningData } from '@/lib/production-planning-data';
+import { buildProductionMaterialPreview } from '@/lib/production-materials';
 import type { Database } from '@/lib/supabase/schema';
 
 type Row = Record<string, string | number | boolean | null>;
@@ -91,11 +92,61 @@ function fixtures(): Record<string, Row[]> {
     inventory_movements: [{ id: 'deficit', inventory_item_id: 'finished', quantity_change: -7, movement_type: 'shipment_consume', lot_id: null }],
     product_recipes: [{ id: 'recipe', product_id: 'coffee', output_qty: 1, waste_percent: 0, labor_minutes: 2, labor_rate_cents: 2000, shipping_label_qty: 0, branding_label_qty: 1 }],
     product_recipe_components: [{ id: 'component', recipe_id: 'recipe', inventory_item_id: 'bean', quantity: 2, unit: 'lb', component_role: 'coffee' }],
+    product_material_fallbacks: [],
     inventory_center_par_levels: [{ center_id: 'customer', product_id: 'coffee', par_qty: 10, minimum_qty: 2, notes: 'Weekly shelf target' }],
   };
 }
 
 describe('complete production planning snapshot', () => {
+  it('excludes finite customer-owned batches from production replenishment', async () => {
+    const tables = fixtures();
+    tables.customer_stock_product_allocations = [{ product_id: 'coffee' }];
+    const result = await loadProductionPlanningData(new PlanningDatabase(tables).client(), NOW);
+    expect(result.error).toBeNull();
+    expect(result.data?.input.products).toEqual([]);
+  });
+
+  it('excludes every variant of a shared customer batch while retaining ordinary products', async () => {
+    const tables = fixtures();
+    tables.products.push(
+      { id: 'coffee-whole-bean', name: 'Custom whole bean', sku: 'CUSTOM-WB', category: 'coffee', active: true },
+      { id: 'ordinary', name: 'Ordinary coffee', sku: 'REGULAR', category: 'coffee', active: true },
+    );
+    tables.customer_stock_product_allocations = ['coffee', 'coffee-whole-bean'].map(product_id => ({
+      product_id, allocation_id: 'shared-batch', inventory_product_id: 'coffee',
+    }));
+    tables.order_items.push({ id: 'whole-bean-line', order_id: 'open', product_id: 'coffee-whole-bean', qty: 100 });
+    tables.inventory_center_par_levels.push({ center_id: 'customer', product_id: 'coffee-whole-bean', par_qty: 100, minimum_qty: 50 });
+    const result = await loadProductionPlanningData(new PlanningDatabase(tables).client(), NOW);
+    expect(result.error).toBeNull();
+    expect(result.data?.input.products.map(product => product.id)).toEqual(['ordinary']);
+  });
+
+  it('fails closed when shared customer stock mappings cannot be loaded', async () => {
+    const database = new PlanningDatabase(fixtures());
+    database.fail = call => call.table === 'customer_stock_product_allocations';
+    const result = await loadProductionPlanningData(database.client(), NOW);
+    expect(result.data).toBeNull();
+    expect(result.error?.message).toContain('customer held inventory');
+  });
+  it.each([
+    [{ shipping_company: 'Shopify Cafe', shipping_name: 'Sam Buyer' }, 'Shopify Cafe'],
+    [{ shipping_company: ' ', shipping_name: 'Sam Buyer' }, 'Sam Buyer'],
+    [{ shipping_company: null, shipping_name: null }, 'Shopify #1001'],
+  ] as const)('keeps imported orders in demand planning with their delivery identity: %j', async (shipping, expectedName) => {
+    const tables = fixtures();
+    tables.orders.push(order('shopify-order', {
+      center_id: null, user_id: null, order_source: 'shopify', shopify_order_name: '#1001', ...shipping,
+    }));
+    tables.order_items.push({ id: 'shopify-line', order_id: 'shopify-order', product_id: 'coffee', qty: 7 });
+    const result = await loadProductionPlanningData(new PlanningDatabase(tables).client(), NOW);
+    expect(result.error).toBeNull();
+    expect(result.data?.input.orders.find((row) => row.id === 'shopify-order')).toMatchObject({
+      center_id: null, customer_name: expectedName, order_items: [{ product_id: 'coffee', qty: 7 }],
+    });
+    expect(result.data?.input.orders.find((row) => row.id === 'open')?.customer_name).toBe('Northside Cafe');
+  });
+
   it('paginates parent and child datasets even when the server enforces a small cap', async () => {
     const tables = fixtures();
     tables.products = Array.from({ length: 1005 }, (_, index) => ({
@@ -150,6 +201,33 @@ describe('complete production planning snapshot', () => {
     expect(result.data?.input.orders.find((row) => row.id === 'open')?.customer_name).toBe('Northside Cafe');
   });
 
+  it('attaches complete product-specific fallback rules for the shared planning preview', async () => {
+    const tables = fixtures();
+    tables.product_recipe_components = [{ id: 'bags', recipe_id: 'recipe', inventory_item_id: 'roll', quantity: 100, unit: 'each', component_role: 'fraction_bag' }];
+    tables.product_material_fallbacks = [
+      { product_id: 'coffee', primary_inventory_item_id: 'roll', fallback_inventory_item_id: 'regular' },
+      { product_id: 'another-product', primary_inventory_item_id: 'roll', fallback_inventory_item_id: 'six-oz' },
+    ];
+    tables.inventory_items.push(...['roll', 'regular', 'six-oz'].map((id) => ({ id, product_id: null, name: id, sku: id, base_unit: 'each', item_type: 'material_supply', active: true })));
+    tables.inventory_lots.push(
+      { id: 'roll-lot', inventory_item_id: 'roll', quantity_remaining: 40 },
+      { id: 'regular-lot', inventory_item_id: 'regular', quantity_remaining: 100 },
+      { id: 'six-oz-lot', inventory_item_id: 'six-oz', quantity_remaining: 100 },
+    );
+    const database = new PlanningDatabase(tables);
+    database.pageSize = 1;
+    const result = await loadProductionPlanningData(database.client(), NOW);
+    expect(result.error).toBeNull();
+    expect(result.data?.recipes[0].material_fallbacks).toEqual([{ product_id: 'coffee', primary_inventory_item_id: 'roll', fallback_inventory_item_id: 'regular' }]);
+    const preview = buildProductionMaterialPreview({
+      recipe: result.data!.recipes[0], quantity: 1, fallbackItems: result.data!.items,
+      onHandByItemId: new Map(Object.entries(result.data!.materialStockByItemId)),
+    });
+    expect(preview.components.map((line) => [line.inventory_item_id, line.quantity_used])).toEqual([['roll', 40], ['regular', 60]]);
+    expect(preview.hasShortages).toBe(false);
+    expect(database.calls.some((call) => call.table === 'product_material_fallbacks' && call.from === 1)).toBe(true);
+  });
+
   it('separates net finished stock from consumable material lots and flags inactive customers', async () => {
     const tables = fixtures();
     tables.centers.push({ id: 'inactive', name: 'Closed Cafe', is_active: false });
@@ -188,4 +266,12 @@ describe('complete production planning snapshot', () => {
       expect(result.error?.message).toContain('could not load complete');
       expect(result.error?.message).toContain(`${table} unavailable`);
     });
+
+  it('rejects a snapshot with unreadable fallback rules instead of reporting false material shortages', async () => {
+    const database = new PlanningDatabase(fixtures());
+    database.fail = (call) => call.table === 'product_material_fallbacks';
+    const result = await loadProductionPlanningData(database.client(), NOW);
+    expect(result.data).toBeNull();
+    expect(result.error?.message).toContain('material fallback rules');
+  });
 });

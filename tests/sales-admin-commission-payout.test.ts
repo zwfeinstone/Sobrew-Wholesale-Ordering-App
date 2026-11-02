@@ -66,14 +66,15 @@ function mutationStub({
   fail?: (read: SupabaseRead) => string | undefined;
   insertError?: { code: string; message: string } | null;
 } = {}) {
-  const readStub = supabaseReadStub({ tables, fail, maxRows: 1 });
+  const normalizedTables = Object.fromEntries(Object.entries(tables).map(([table, rows]) => [table, rows.map((row) => ({ ...(['order_commission_snapshots', 'monthly_commission_payouts'].includes(table) ? { sales_profile_id: 'rep', commission_month: '2026-08-01' } : {}), ...row }))]));
+  const readStub = supabaseReadStub({ tables: normalizedTables, fail, maxRows: 1 });
   const insert = vi.fn(async (_payload: unknown) => ({ data: null, error: insertError }));
   state.client = { from: (table) => ({ ...readStub.client.from(table), insert }) };
   return { ...readStub, insert };
 }
 
 beforeEach(() => {
-  state.eligibility.mockReset().mockImplementation(async (ids: string[]) => ({ paidOrderIds: new Set(ids), unpaidOrderIds: new Set(), missingInvoiceOrderIds: new Set(), error: null }));
+  state.eligibility.mockReset().mockImplementation(async (ids: string[]) => ({ paidOrderIds: new Set(ids), paidOrderMonths: new Map(ids.map((id) => [id, '2026-08-01'])), unpaidOrderIds: new Set(), missingInvoiceOrderIds: new Set(), error: null }));
   state.audit.mockReset();
   state.recordPaid.mockReset();
   state.revalidate.mockReset();
@@ -81,6 +82,49 @@ beforeEach(() => {
 });
 
 describe('Sales Admin commission payout protection', () => {
+  it('locks the extra commission after hourly wages and preserves its gross calculation', async () => {
+    const action = await payoutAction();
+    const stub = mutationStub({ tables: {
+      admin_commission_settings: [{ profile_id: 'rep', is_sales_rep: true, commission_percent: 10, hourly_offset_enabled: true, hourly_offset_start_month: '2026-08-01' }],
+      admin_time_entries: [{ id: 'shift', profile_id: 'rep', clock_in_at: '2026-08-20T12:00:00Z', clock_out_at: '2026-08-20T22:00:00Z', hourly_rate_cents_snapshot: 1500, status: 'approved', work_type: 'sales' }],
+      order_commission_snapshots: [{ id: 'paid', order_id: 'order-paid', commission_cents: 30000, revenue_cents: 600000 }],
+    } });
+
+    await expect(action(form('locked'))).rejects.toThrow('toast=payout_locked');
+    expect(stub.insert).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      commission_cents: 15000, gross_commission_cents: 30000, hourly_base_offset_cents: 15000,
+    }));
+  });
+
+  it('does not lock a positive gross commission when hourly wages leave no extra payment', async () => {
+    const action = await payoutAction();
+    const stub = mutationStub({ tables: {
+      admin_commission_settings: [{ profile_id: 'rep', is_sales_rep: true, commission_percent: 10, hourly_offset_enabled: true, hourly_offset_start_month: '2026-08-01' }],
+      admin_time_entries: [{ id: 'shift', profile_id: 'rep', clock_in_at: '2026-08-20T12:00:00Z', clock_out_at: '2026-08-20T22:00:00Z', hourly_rate_cents_snapshot: 1500, status: 'approved', work_type: 'sales' }],
+      order_commission_snapshots: [{ id: 'paid', order_id: 'order-paid', commission_cents: 10000, revenue_cents: 200000 }],
+    } });
+
+    await expect(action(form('locked'))).rejects.toThrow('toast=payout_error');
+    expect(stub.insert).not.toHaveBeenCalled();
+    expect(state.audit).not.toHaveBeenCalled();
+  });
+
+  it('does not freeze an hourly-offset commission before the month closes', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-25T12:00:00Z'));
+    try {
+      const action = await payoutAction();
+      const stub = mutationStub({ tables: {
+        admin_commission_settings: [{ profile_id: 'rep', is_sales_rep: true, commission_percent: 10, hourly_offset_enabled: true, hourly_offset_start_month: '2026-08-01' }],
+        order_commission_snapshots: [{ id: 'paid', order_id: 'order-paid', commission_cents: 30000 }],
+      } });
+      await expect(action(form('locked'))).rejects.toThrow('toast=payout_error');
+      expect(stub.insert).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it.each([
     ['locked', null, 'payout_locked'],
     ['paid', null, 'payout_paid'],
@@ -105,7 +149,7 @@ describe('Sales Admin commission payout protection', () => {
     expect(state.audit).not.toHaveBeenCalled();
   });
 
-  it('locks all pages of shipment snapshots once and audits the frozen total', async () => {
+  it('locks all paid-invoice earnings pages once and audits the frozen total', async () => {
     const action = await payoutAction();
     const stub = mutationStub({ tables: { order_commission_snapshots: [
       { id: 'first', order_id: 'order-first', commission_cents: 100.25, revenue_cents: 1000 },
@@ -122,7 +166,6 @@ describe('Sales Admin commission payout protection', () => {
     expect(reads.every((read) => read.orders.at(-1)?.column === 'id')).toBe(true);
     expect(reads[0].filters).toEqual([
       { operator: 'eq', column: 'sales_profile_id', value: 'rep' },
-      { operator: 'eq', column: 'commission_month', value: '2026-08-01' },
     ]);
     expect(state.audit).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
       action: 'monthly_commission_locked', before: null, sectionKey: 'sales_admin',
@@ -137,7 +180,7 @@ describe('Sales Admin commission payout protection', () => {
       { id: 'first', order_id: 'paid-order', shipped_at: '2026-09-30T05:00:00Z', commission_cents: 100, revenue_cents: 1000 },
       { id: 'second', order_id: 'unpaid-order', shipped_at: '2026-09-30T05:00:00Z', commission_cents: 900, revenue_cents: 9000 },
     ] } });
-    state.eligibility.mockResolvedValue({ paidOrderIds: new Set(['paid-order']), error: null });
+    state.eligibility.mockResolvedValue({ paidOrderIds: new Set(['paid-order']), paidOrderMonths: new Map([['paid-order', '2026-08-01']]), error: null });
     await expect(action(form('locked'))).rejects.toThrow('toast=payout_locked');
     expect(stub.insert).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ commission_cents: 100, order_count: 1, revenue_cents: 1000 }));
   });
@@ -153,15 +196,25 @@ describe('Sales Admin commission payout protection', () => {
     expect(state.audit).not.toHaveBeenCalled();
   });
 
-  it('keeps earlier unpaid invoice commissions eligible without a QuickBooks check', async () => {
+  it('excludes older unpaid invoices instead of grandfathering their commission', async () => {
     const action = await payoutAction();
     const stub = mutationStub({ tables: { order_commission_snapshots: [
       { id: 'historical', order_id: 'unpaid-old-order', shipped_at: '2026-09-30T04:59:59Z', commission_cents: 450, revenue_cents: 4500 },
     ] } });
-    state.eligibility.mockClear().mockResolvedValue({ paidOrderIds: new Set(), error: 'QuickBooks unavailable' });
+    state.eligibility.mockClear().mockResolvedValue({ paidOrderIds: new Set(), paidOrderMonths: new Map(), error: null });
+    await expect(action(form('locked'))).rejects.toThrow('toast=payout_error');
+    expect(state.eligibility).toHaveBeenCalled();
+    expect(stub.insert).not.toHaveBeenCalled();
+  });
+
+  it('locks an earlier shipment only in the month its invoice is fully paid', async () => {
+    const action = await payoutAction();
+    const stub = mutationStub({ tables: { order_commission_snapshots: [
+      { id: 'historical', order_id: 'july-order', commission_month: '2026-07-01', shipped_at: '2026-07-15T12:00:00Z', commission_cents: 450, revenue_cents: 4500 },
+    ] } });
+    state.eligibility.mockResolvedValue({ paidOrderIds: new Set(['july-order']), paidOrderMonths: new Map([['july-order', '2026-08-01']]), error: null });
     await expect(action(form('locked'))).rejects.toThrow('toast=payout_locked');
-    expect(state.eligibility).not.toHaveBeenCalled();
-    expect(stub.insert).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ commission_cents: 450, order_count: 1, revenue_cents: 4500 }));
+    expect(stub.insert).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ commission_month: '2026-08-01', commission_cents: 450, order_count: 1, revenue_cents: 4500 }));
   });
 
   it('does not lock partial data when a later snapshot page fails', async () => {

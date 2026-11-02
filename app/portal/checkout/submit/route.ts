@@ -74,5 +74,9 @@ export async function POST(request: NextRequest) {
     return redirectWithRefreshedCookies('/portal/checkout?toast=location_required');
   }
 
+  if (result.type === 'stock_unavailable') {
+    return redirectWithRefreshedCookies('/portal/checkout?toast=stock_unavailable');
+  }
+
   return redirectWithRefreshedCookies(result.location);
 }

@@ -14,6 +14,8 @@ export type ProductBoxRequiredLine = {
 
 type ProductBoxUsageRow = {
   id: string;
+  inventoryItemId?: string;
+  quantity?: number;
 };
 
 function makeRowId(index: number) {
@@ -22,15 +24,19 @@ function makeRowId(index: number) {
 
 export function ProductBoxUsageFields({
   boxItems,
+  initialUsages = [],
   recipeBoxCoveredLabels = [],
   requiredLines,
 }: {
   boxItems: ProductBoxInventoryOption[];
+  initialUsages?: Array<{ inventoryItemId: string; quantity: number }>;
   recipeBoxCoveredLabels?: string[];
   requiredLines: ProductBoxRequiredLine[];
 }) {
-  const [rows, setRows] = useState<ProductBoxUsageRow[]>(() => [{ id: makeRowId(0) }]);
-  const nextRowIndex = useRef(1);
+  const [rows, setRows] = useState<ProductBoxUsageRow[]>(() => initialUsages.length
+    ? initialUsages.map((usage, index) => ({ id: makeRowId(index), ...usage }))
+    : [{ id: makeRowId(0) }]);
+  const nextRowIndex = useRef(Math.max(1, initialUsages.length));
 
   function addRow() {
     const rowIndex = nextRowIndex.current;
@@ -87,7 +93,7 @@ export function ProductBoxUsageFields({
             <div key={row.id} className="product-box-usage-row grid min-w-0 grid-cols-1 items-end gap-3">
               <label className="flex min-w-0 flex-col gap-2 text-sm font-medium text-slate-700">
                 Box size
-                <select className="input min-w-0" disabled={!boxItems.length} name="box_inventory_item_id">
+                <select className="input min-w-0" disabled={!boxItems.length} name="box_inventory_item_id" defaultValue={row.inventoryItemId ?? ''}>
                   <option value="">Select box</option>
                   {boxItems.map((item) => (
                     <option key={item.id} value={item.id}>{item.label}</option>
@@ -101,6 +107,7 @@ export function ProductBoxUsageFields({
                   disabled={!boxItems.length}
                   min="0"
                   name="box_quantity"
+                  defaultValue={row.quantity ?? ''}
                   placeholder="0"
                   step="1"
                   type="number"

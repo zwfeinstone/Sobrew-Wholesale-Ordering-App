@@ -1429,6 +1429,32 @@ body::before {
   border-bottom: 0;
 }
 
+.restock-product-row > .customer-stock-summary {
+  grid-column: 1 / -1;
+  margin-top: 0;
+}
+
+@media (max-width: 1023px) {
+  .restock-product-row.has-customer-stock {
+    grid-template-columns: 3.6rem minmax(0, 1fr);
+  }
+
+  .has-customer-stock .restock-product-image {
+    width: 3.6rem;
+    height: 3.6rem;
+    grid-row: span 2;
+  }
+
+  .has-customer-stock .restock-product-price {
+    grid-column: 2;
+  }
+
+  .has-customer-stock .catalog-row-control {
+    grid-column: 1 / -1;
+    justify-content: flex-start;
+  }
+}
+
 .restock-product-image {
   width: 4.75rem;
   height: 4.75rem;

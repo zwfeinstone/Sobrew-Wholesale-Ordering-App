@@ -39,6 +39,7 @@ export default function PayrollMonthlyCommissions({
     .sort((a, b) => label(a.salesProfileId).localeCompare(label(b.salesProfileId)));
   const unpaidCents = visibleRows.reduce((sum, row) => sum + row.amountOwedCents, 0);
   const paidCents = visibleRows.reduce((sum, row) => sum + (row.payout?.status === 'paid' || row.payout?.paid_at ? Math.round(Number(row.payout.commission_cents)) : 0), 0);
+  const hasHourlyOffset = visibleRows.some((row) => row.hourlyOffsetEnabled);
   const monthHref = (month: string) => `/admin/payroll?${new URLSearchParams({ ...currentParams, tab: activeTab, commission_month: month.slice(0, 7) })}#monthly-commissions`;
 
   return (
@@ -46,8 +47,9 @@ export default function PayrollMonthlyCommissions({
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div className="min-w-0 flex-1 basis-80">
           <h2 id="monthly-commissions-heading" className="text-xl font-semibold text-slate-950">Monthly commissions</h2>
-          <p className="mt-1 text-sm text-slate-600">{commissionMonthLabel(commissionMonth)} sales · Pay on {dueDateLabel}</p>
-          <p className="mt-1 text-sm text-slate-500">Commissions earned from September 30, 2026 require a fully paid QuickBooks invoice and are payable from the first of the following month. Earlier earnings keep their original rules. Later invoice payments stay in the original shipment month.</p>
+          <p className="mt-1 text-sm text-slate-600">{commissionMonthLabel(commissionMonth)} earnings · Pay on {dueDateLabel}</p>
+          <p className="mt-1 text-sm text-slate-500">Commission is earned in the month the invoice is fully paid. Pay on the first of the following month.</p>
+          {hasHourlyOffset ? <p className="mt-1 text-sm text-slate-500">For reps with an hourly wage deduction, only commission above that month’s hourly wages is paid as extra commission. First-order SPIFFs remain separate.</p> : null}
         </div>
         {!error ? <div className="sm:text-right">
           <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">{isDue ? 'Commissions owed' : 'Accrued commissions'}</p>
@@ -72,18 +74,24 @@ export default function PayrollMonthlyCommissions({
         {visibleRows.length ? <div className="overflow-x-auto">
           <table className="payroll-payment-table payroll-commission-table w-full border-separate border-spacing-y-2 text-left text-sm">
             <thead><tr className="text-xs font-semibold uppercase tracking-wider text-slate-500">
-              <th className="px-4 py-2">Salesperson</th><th className="px-4 py-2 text-right">Commission</th><th className="px-4 py-2">Status</th><th className="px-4 py-2">Payment</th>
+              <th className="px-4 py-2">Salesperson</th><th className="px-4 py-2 text-right">{hasHourlyOffset ? 'Net commission' : 'Commission'}</th><th className="px-4 py-2">Status</th><th className="px-4 py-2">Payment</th>
             </tr></thead>
             <tbody>{visibleRows.map((row) => {
               const profile = profiles.get(row.salesProfileId ?? '');
               const isPaid = row.payout?.status === 'paid' || Boolean(row.payout?.paid_at);
-              const payable = isDue && row.amountOwedCents > 0 && Boolean(row.salesProfileId);
-              const status = row.amountOwedCents > 0 ? !isDue ? 'Accruing' : isPaid ? 'Additional commission due' : 'Due' : row.pendingInvoiceCount > 0 ? 'Awaiting invoice payment' : isPaid ? 'Paid' : 'No commission due';
+              const payable = isDue && row.amountOwedCents > 0 && Boolean(row.salesProfileId) && !row.settlementBlockedReason;
+              const status = row.settlementBlockedReason ? 'Needs review' : row.amountOwedCents > 0 ? isDue ? 'Due' : 'Accruing' : isPaid ? 'Paid' : 'No commission due';
+              const netCommissionCents = row.netCommissionCents ?? row.summary.commissionCents;
               return <tr key={row.salesProfileId ?? 'former'} className="bg-white/70 align-top">
                 <td data-label="Salesperson" className="rounded-l-xl px-4 py-3"><p className="font-semibold text-slate-950">{label(row.salesProfileId)}</p><p className="mt-1 break-all text-xs text-slate-500">{profile?.email}</p>{profile?.is_active === false ? <p className="mt-1 text-xs text-slate-500">Inactive employee</p> : null}</td>
-                <td data-label="Commission" className="px-4 py-3 text-right"><p className="font-semibold tabular-nums text-slate-950">{usd(Math.round(row.summary.commissionCents))}</p><p className="mt-1 text-xs text-slate-500">{row.summary.orderCount} eligible order{row.summary.orderCount === 1 ? '' : 's'}</p><details className="mt-2 text-xs text-slate-600"><summary className="cursor-pointer text-teal-800">Calculation details</summary><p className="mt-2">Sales: {usd(Math.round(row.summary.revenueCents))}</p><p>Gross profit: {usd(Math.round(row.summary.grossProfitCents))}</p><p className="mt-1">Uses the commission rate recorded for each shipped order. The paid-invoice requirement applies to earnings from September 30, 2026.</p>{row.cogsEstimated ? <p className="mt-1 text-amber-800">Some order costs are estimated. Review before paying.</p> : null}</details></td>
-                <td data-label="Status" className="px-4 py-3"><span className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ${isPaid ? 'bg-emerald-50 text-emerald-800' : payable ? 'bg-amber-50 text-amber-800' : 'bg-slate-100 text-slate-600'}`}>{status}</span>{isPaid && row.payout?.paid_at ? <p className="mt-2 text-xs text-slate-500">{formatCentralDateTime(row.payout.paid_at)}</p> : null}{row.amountOwedCents > 0 ? <p className="mt-2 text-xs text-slate-500">{usd(row.amountOwedCents)} payable</p> : null}{row.pendingInvoiceCount > 0 ? <p className="mt-2 text-xs text-amber-800">{usd(Math.round(row.pendingInvoiceCents))} on hold · {row.pendingInvoiceCount} invoice{row.pendingInvoiceCount === 1 ? '' : 's'}</p> : null}</td>
-                <td data-label="Payment" className="rounded-r-xl px-4 py-3">{payable && canEdit ? <form action={action}><input type="hidden" name="return_to" value={returnTo} /><input type="hidden" name="sales_profile_id" value={row.salesProfileId ?? ''} /><input type="hidden" name="commission_month" value={commissionMonth} /><input type="hidden" name="payment_amount_cents" value={row.amountOwedCents} /><PendingSubmitButton className="btn-primary w-full" label="Mark commission paid" pendingLabel="Saving..." /></form> : <span className="text-sm text-slate-500">{isPaid ? 'Payment recorded' : !row.salesProfileId ? 'Historical record' : !isDue && row.amountOwedCents > 0 ? `Pay on ${dueDateLabel}` : !canEdit ? 'View only' : 'Nothing to pay'}</span>}</td>
+                <td data-label={hasHourlyOffset ? 'Net commission' : 'Commission'} className="px-4 py-3 text-right">
+                  <p className="font-semibold tabular-nums text-slate-950">{usd(Math.round(netCommissionCents))}</p>
+                  <p className="mt-1 text-xs text-slate-500">{row.summary.orderCount} eligible order{row.summary.orderCount === 1 ? '' : 's'}</p>
+                  {row.hourlyOffsetEnabled ? <div className="mt-2 space-y-1 text-xs text-slate-500"><p>{Number(row.commissionPercent ?? 0).toLocaleString('en-US', { maximumFractionDigits: 2 })}% of gross profit</p><p>Gross commission: {usd(Math.round(row.summary.commissionCents))}</p><p>Monthly hourly wages: {usd(Math.round(row.hourlyBaseWagesCents ?? 0))}</p><p>Extra commission: {usd(Math.round(netCommissionCents))}</p></div> : null}
+                  <details className="mt-2 text-xs text-slate-600"><summary className="cursor-pointer text-teal-800">Calculation details</summary><p className="mt-2">Sales: {usd(Math.round(row.summary.revenueCents))}</p><p>Gross profit: {usd(Math.round(row.summary.grossProfitCents))}</p><p className="mt-1">Uses the commission rate recorded for each order. Commission is earned in the month the invoice is fully paid.</p>{row.hourlyOffsetEnabled ? <p className="mt-1">Extra commission = gross commission minus monthly hourly wages, with a minimum of $0. Finalize after the month closes.</p> : null}{row.cogsEstimated ? <p className="mt-1 text-amber-800">Some order costs are estimated. Review before paying.</p> : null}</details>
+                </td>
+                <td data-label="Status" className="px-4 py-3"><span className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ${isPaid && row.amountOwedCents === 0 ? 'bg-emerald-50 text-emerald-800' : payable ? 'bg-amber-50 text-amber-800' : 'bg-slate-100 text-slate-600'}`}>{status}</span>{isPaid && row.payout?.paid_at ? <p className="mt-2 text-xs text-slate-500">{formatCentralDateTime(row.payout.paid_at)}</p> : null}{row.amountOwedCents > 0 ? <p className="mt-2 text-xs text-slate-500">{usd(row.amountOwedCents)} {row.settlementBlockedReason ? 'pending review' : isDue ? 'payable' : 'accrued'}</p> : null}{row.settlementBlockedReason ? <p className="mt-2 text-xs text-amber-800">{row.settlementBlockedReason}</p> : null}</td>
+                <td data-label="Payment" className="rounded-r-xl px-4 py-3">{payable && canEdit ? <form action={action}><input type="hidden" name="return_to" value={returnTo} /><input type="hidden" name="sales_profile_id" value={row.salesProfileId ?? ''} /><input type="hidden" name="commission_month" value={commissionMonth} /><input type="hidden" name="payment_amount_cents" value={row.amountOwedCents} /><PendingSubmitButton className="btn-primary w-full" label="Mark commission paid" pendingLabel="Saving..." /></form> : <span className="text-sm text-slate-500">{row.settlementBlockedReason ? 'Resolve time entries before payment' : isPaid ? 'Payment recorded' : !row.salesProfileId ? 'Historical record' : !isDue && row.amountOwedCents > 0 ? `Pay on ${dueDateLabel}` : !canEdit ? 'View only' : 'Nothing to pay'}</span>}</td>
               </tr>;
             })}</tbody>
           </table>

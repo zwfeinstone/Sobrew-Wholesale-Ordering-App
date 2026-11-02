@@ -549,6 +549,85 @@ export type Database = {
           },
         ]
       }
+      admin_deferred_pay_plans: {
+        Row: {
+          accounting_transaction_id: string | null
+          accrual_rate_cents: number
+          created_at: string
+          end_date: string
+          id: string
+          label: string
+          paid_amount_cents: number | null
+          paid_at: string | null
+          paid_by: string | null
+          paid_eligible_milliseconds: number | null
+          payment_notes: string | null
+          payout_date: string
+          profile_id: string
+          start_date: string
+          updated_at: string
+          weekly_rate_cents: number
+        }
+        Insert: {
+          accounting_transaction_id?: string | null
+          accrual_rate_cents: number
+          created_at?: string
+          end_date: string
+          id?: string
+          label: string
+          paid_amount_cents?: number | null
+          paid_at?: string | null
+          paid_by?: string | null
+          paid_eligible_milliseconds?: number | null
+          payment_notes?: string | null
+          payout_date: string
+          profile_id: string
+          start_date: string
+          updated_at?: string
+          weekly_rate_cents: number
+        }
+        Update: {
+          accounting_transaction_id?: string | null
+          accrual_rate_cents?: number
+          created_at?: string
+          end_date?: string
+          id?: string
+          label?: string
+          paid_amount_cents?: number | null
+          paid_at?: string | null
+          paid_by?: string | null
+          paid_eligible_milliseconds?: number | null
+          payment_notes?: string | null
+          payout_date?: string
+          profile_id?: string
+          start_date?: string
+          updated_at?: string
+          weekly_rate_cents?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "admin_deferred_pay_plans_accounting_transaction_id_fkey"
+            columns: ["accounting_transaction_id"]
+            isOneToOne: false
+            referencedRelation: "accounting_transactions"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "admin_deferred_pay_plans_paid_by_fkey"
+            columns: ["paid_by"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "admin_deferred_pay_plans_profile_id_fkey"
+            columns: ["profile_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       admin_labor_tag_assignments: {
         Row: {
           assigned_at: string
@@ -4410,6 +4489,18 @@ export type Database = {
         }
         Returns: Json
       }
+      settle_deferred_hourly_pay: {
+        Args: {
+          p_accounting_transaction_id?: string
+          p_actor_id: string
+          p_expected_amount_cents: number
+          p_link_only?: boolean
+          p_paid_date?: string
+          p_payment_notes?: string
+          p_plan_id: string
+        }
+        Returns: Json
+      }
       touch_profile_last_seen: { Args: never; Returns: string }
       void_inventory_production_run: {
         Args: {
@@ -4551,4 +4642,3 @@ export const Constants = {
     Enums: {},
   },
 } as const
-

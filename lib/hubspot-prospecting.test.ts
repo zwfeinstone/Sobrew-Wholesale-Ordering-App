@@ -191,6 +191,43 @@ describe('HubSpot prospecting push', () => {
     expect(calls[0].url).toBe('https://api.hubapi.com/crm/owners/2026-03?email=maya%40example.com&limit=1&archived=false');
   });
 
+  it('assigns Thomas’s exported records to his active owner ID instead of his user ID or old Rob account', async () => {
+    const { calls, fetchImpl } = mockHubSpotFetch([
+      { results: [
+        { archived: false, email: 'rob@sobrew.com', firstName: 'Thomas', lastName: 'Sheddan', id: 'old-rob-owner', userId: 100 },
+        { archived: true, email: 'thomas@sobrew.com', id: 'archived-thomas-owner', userId: 200 },
+        { archived: false, email: 'thomas@sobrew.com', id: 'active-thomas-owner', userId: 300 },
+      ] },
+      { results: [{ id: 'company-1', properties: { domain: 'sobrew.example', hubspot_owner_id: 'old-rob-owner' } }] },
+      { id: 'company-1' },
+      { results: [{ id: 'contact-1', properties: { email: 'buyer@example.com', hubspot_owner_id: 'old-rob-owner' } }] },
+      { id: 'contact-1' },
+      {},
+      { id: 'deal-1' },
+      { id: 'activity-note-1' },
+    ]);
+
+    const result = await pushProspectingLeadToHubSpot({
+      accessToken: 'token',
+      activities: [{ id: 'sample-activity', activity_type: 'call', result: 'Sample requested', next_stage: 'sample_requested' }],
+      contacts: [{ email: 'buyer@example.com', full_name: 'Sample Buyer', is_primary: true }],
+      dealPipeline: 'default', dealStage: 'appointmentscheduled', fetchImpl, lead,
+      ownerEmail: ' Thomas@Sobrew.com ',
+    });
+
+    expect(result).toMatchObject({ status: 'exported', companyId: 'company-1', contactId: 'contact-1', dealId: 'deal-1', activityNoteIds: { 'sample-activity': 'activity-note-1' } });
+    expect(calls[0].url).toBe('https://api.hubapi.com/crm/owners/2026-03?email=thomas%40sobrew.com&limit=1&archived=false');
+    for (const [method, path] of [
+      ['PATCH', '/crm/v3/objects/companies/company-1'],
+      ['PATCH', '/crm/v3/objects/contacts/contact-1'],
+      ['POST', '/crm/v3/objects/deals'],
+      ['POST', '/crm/v3/objects/notes'],
+    ]) {
+      expect(calls.find((call) => call.method === method && call.url.endsWith(path))?.body)
+        .toMatchObject({ properties: { hubspot_owner_id: 'active-thomas-owner' } });
+    }
+  });
+
   it('updates existing company and contact records, then associates them', async () => {
     const { calls, fetchImpl } = mockHubSpotFetch([
       { results: [{ archived: false, email: 'maya@example.com', id: 'owner-1' }] },

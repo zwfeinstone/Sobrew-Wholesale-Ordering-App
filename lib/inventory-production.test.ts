@@ -6,7 +6,7 @@ const PRODUCT_ID = 'sample-product-1';
 const OLD_BOX_ID = 'box-12x7x4';
 const NEW_BOX_ID = 'box-12x6x4';
 
-type TableName = 'inventory_items' | 'inventory_lots' | 'product_recipes' | 'products';
+type TableName = 'inventory_items' | 'inventory_lots' | 'product_recipes' | 'products' | 'product_material_fallbacks';
 type Row = Record<string, any>;
 
 class Query {
@@ -77,6 +77,7 @@ class FakeSupabase {
     ],
     inventory_lots: [],
     product_recipes: [],
+    product_material_fallbacks: [],
     products: [{ category: 'sample_boxes', id: PRODUCT_ID }],
   };
 
@@ -188,6 +189,54 @@ describe('recordRecipeProductionRun sample box fallback boxes', () => {
     expect(productionComponents(supabase)).toEqual([
       { inventory_item_id: OLD_BOX_ID, quantity_expected: 2, quantity_used: 2, unit: 'each' },
     ]);
+  });
+});
+
+describe('recordRecipeProductionRun explicit material fallback loading', () => {
+  function bagDatabase(primary = 40, fallbackActive = true) {
+    return new FakeSupabase({
+      products: [{ id: PRODUCT_ID, category: 'fraction_packs' }],
+      product_recipes: [{ ...sampleBoxRecipe(), product_recipe_components: [
+        { id: 'bags', component_role: 'fraction_bag', inventory_item_id: 'roll', inventory_items: { id: 'roll', base_unit: 'each', sku: 'MAT-BAG-FRAC-ROLL', active: true, item_type: 'material_supply' }, quantity: 100, unit: 'each' },
+      ] }],
+      product_material_fallbacks: [
+        { product_id: PRODUCT_ID, primary_inventory_item_id: 'roll', fallback_inventory_item_id: 'regular' },
+        { product_id: 'another-product', primary_inventory_item_id: 'roll', fallback_inventory_item_id: 'six-oz' },
+      ],
+      inventory_items: [
+        { id: 'regular', base_unit: 'each', active: fallbackActive, item_type: 'material_supply' },
+        { id: 'six-oz', base_unit: 'each', active: true, item_type: 'material_supply' },
+      ],
+      inventory_lots: [
+        { inventory_item_id: 'roll', quantity_remaining: primary, unit_cost_cents: 6 },
+        { inventory_item_id: 'regular', quantity_remaining: 200, unit_cost_cents: 12 },
+        { inventory_item_id: 'six-oz', quantity_remaining: 200, unit_cost_cents: 15 },
+      ],
+    });
+  }
+
+  it.each([
+    { primary: 100, expected: [['roll', 100]], cost: 600 },
+    { primary: 40, expected: [['roll', 40], ['regular', 60]], cost: 960 },
+    { primary: 0, expected: [['regular', 100]], cost: 1200 },
+  ])('loads the designated bag and its cost with $primary primary bags', async ({ primary, expected, cost }) => {
+    const supabase = bagDatabase(primary);
+    expect(await recordRecipeProductionRun({ productId: PRODUCT_ID, quantityProduced: 1, supabase })).toEqual({ error: null });
+    expect(productionComponents(supabase).map((line) => [line.inventory_item_id, line.quantity_used])).toEqual(expected);
+    expect(supabase.rpcCalls[0].args.p_estimated_unit_cost_cents).toBe(cost);
+  });
+
+  it.each([0, 100])('rejects an inactive configured fallback with %d primary bags instead of submitting a run', async (primary) => {
+    const supabase = bagDatabase(primary, false);
+    expect(await recordRecipeProductionRun({ productId: PRODUCT_ID, quantityProduced: 1, supabase })).toEqual({ error: 'recipe_error' });
+    expect(supabase.rpcCalls).toHaveLength(0);
+  });
+
+  it.each(['product_material_fallbacks', 'inventory_items'] as const)('does not silently omit configured fallbacks when %s fails', async (table) => {
+    const supabase = bagDatabase();
+    supabase.errors[table] = 'Fallback unavailable';
+    expect(await recordRecipeProductionRun({ productId: PRODUCT_ID, quantityProduced: 1, supabase })).toEqual({ error: 'recipe_error' });
+    expect(supabase.rpcCalls).toHaveLength(0);
   });
 });
 

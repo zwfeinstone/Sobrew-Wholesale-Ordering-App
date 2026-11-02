@@ -1,5 +1,6 @@
 import {
   convertInventoryQuantity,
+  FIXED_TAPE_COST_CENTS,
   fixedRecipeCostBreakdownCents,
   isWholeCountPackagingComponentRole,
   laborCostCents,
@@ -8,10 +9,11 @@ import {
   roundWholeCountQuantity,
   type InventoryUnit,
 } from '@/lib/inventory';
-import { processingFeeCentsForRevenue } from '@/lib/order-fees';
+import { processingFeeCentsForRevenue, shopifyDonationCogsCentsForBags } from '@/lib/order-fees';
 
 type SupabaseLike = {
   from: (table: string) => any;
+  rpc?: (...args: any[]) => any;
 };
 
 type CogsSource = 'actual_fifo' | 'partial_estimate' | 'estimated_latest_production' | 'estimated_recipe' | 'missing_cost';
@@ -434,19 +436,34 @@ async function consumeShippingBoxUsages({
   if (usagesError) return { error: 'shipping_box_usage_error' as const };
 
   const usageRows = (usages ?? []) as ShippingBoxUsageRow[];
-  const costByOrderItemId = new Map<string, { costCents: number; estimated: boolean }>();
+  const costByOrderItemId = new Map<string, { costCents: number; tapeCents: number; estimated: boolean }>();
   if (!usageRows.length) return { costByOrderItemId, error: null };
 
-  function addUsageCost(orderItemId: string, costCents: number, estimated: boolean) {
-    const current = costByOrderItemId.get(orderItemId) ?? { costCents: 0, estimated: false };
+  function addUsageCost(orderItemId: string, costCents: number, tapeCents: number, estimated: boolean) {
+    const current = costByOrderItemId.get(orderItemId) ?? { costCents: 0, tapeCents: 0, estimated: false };
     current.costCents += costCents;
+    current.tapeCents += tapeCents;
     current.estimated = current.estimated || estimated;
     costByOrderItemId.set(orderItemId, current);
   }
 
+  function addOrderLevelUsageCost(costCents: number, tapeCents: number, estimated: boolean) {
+    const boxAllocations = allocateByRevenue(orderItems, costCents);
+    const tapeAllocations = allocateByRevenue(orderItems, tapeCents);
+    for (const item of orderItems) {
+      addUsageCost(item.id, boxAllocations.get(item.id) ?? 0, tapeAllocations.get(item.id) ?? 0, estimated);
+    }
+  }
+
   for (const usage of usageRows) {
     if (!usage.consumed_at) continue;
-    addUsageCost(usage.order_item_id, normalizeInventoryNumber(usage.total_cost_cents), Boolean(usage.cogs_estimated));
+    // Stored rows attach order-wide boxes to one line. Reuse the same allocation
+    // on a partial snapshot retry, without consuming boxes or their tape again.
+    addOrderLevelUsageCost(
+      normalizeInventoryNumber(usage.total_cost_cents),
+      Math.max(0, normalizeInventoryNumber(usage.quantity)) * FIXED_TAPE_COST_CENTS,
+      Boolean(usage.cogs_estimated),
+    );
   }
 
   const unconsumedRows = usageRows.filter((usage) => !usage.consumed_at);
@@ -495,13 +512,6 @@ async function consumeShippingBoxUsages({
     const unitCost = normalizeInventoryNumber(lot.unit_cost_cents);
     if (unitCost > 0 && !latestCostByItemId.has(lot.inventory_item_id)) {
       latestCostByItemId.set(lot.inventory_item_id, unitCost);
-    }
-  }
-
-  function addOrderLevelUsageCost(costCents: number, estimated: boolean) {
-    const allocations = allocateByRevenue(orderItems, costCents);
-    for (const item of orderItems) {
-      addUsageCost(item.id, allocations.get(item.id) ?? 0, estimated);
     }
   }
 
@@ -588,7 +598,7 @@ async function consumeShippingBoxUsages({
       if (updateResult.error) return { error: 'shipping_box_usage_update_error' as const };
     }
 
-    addOrderLevelUsageCost(totalCostCents, estimated);
+    addOrderLevelUsageCost(totalCostCents, quantity * FIXED_TAPE_COST_CENTS, estimated);
   }
 
   return { costByOrderItemId, error: null };
@@ -597,12 +607,14 @@ async function consumeShippingBoxUsages({
 export async function snapshotOrderCogsForShipment({
   donationCogsCents = 0,
   orderId,
+  orderSource,
   processingFeeCents,
   shippingCostCents,
   supabase,
 }: {
   donationCogsCents?: number;
   orderId: string;
+  orderSource?: string | null;
   processingFeeCents?: number;
   shippingCostCents: number;
   supabase: SupabaseLike;
@@ -620,22 +632,35 @@ export async function snapshotOrderCogsForShipment({
   }
 
   const productIds = [...new Set(orderItems.map((item) => item.product_id).filter(Boolean) as string[])];
+  const { data: stockAllocations, error: stockError } = productIds.length
+    ? await supabase.from('customer_stock_product_allocations').select('product_id,initial_order_id').in('product_id', productIds)
+    : { data: [], error: null };
+  if (stockError) return { error: 'customer_stock_lookup_error' as const };
+  if ((stockAllocations ?? []).some((allocation: { initial_order_id: string }) => allocation.initial_order_id === orderId)) {
+    // The original billed-and-held sale has a fixed, reviewed batch snapshot.
+    // It must never pass through physical shipment consumption.
+    return { error: 'held_stock_sale_requires_cost_snapshot' as const };
+  }
+  const heldProductIds = new Set<string>((stockAllocations ?? []).map((allocation: { product_id: string }) => allocation.product_id));
+  const onlyHeldStock = orderItems.every(item => item.product_id && heldProductIds.has(item.product_id));
+  // Held variants share the allocation's canonical inventory; the RPC owns consumption.
+  const ordinaryProductIds = productIds.filter(productId => !heldProductIds.has(productId));
   const [{ data: finishedItems }, { data: productionRuns }, { data: recipes }] = await Promise.all([
-    productIds.length
-      ? supabase.from('inventory_items').select('id,product_id,base_unit').eq('item_type', 'finished_good').in('product_id', productIds)
+    ordinaryProductIds.length
+      ? supabase.from('inventory_items').select('id,product_id,base_unit').eq('item_type', 'finished_good').in('product_id', ordinaryProductIds)
       : { data: [] },
-    productIds.length
+    ordinaryProductIds.length
       ? supabase
           .from('production_runs')
           .select('id,product_id,quantity_produced,quantity_voided,status,actual_unit_cost_cents,actual_labor_cost_cents,fixed_cost_cents,fixed_tape_cost_cents,fixed_shipping_label_cost_cents,fixed_branding_label_cost_cents,fixed_other_cost_cents,produced_at')
-          .in('product_id', productIds)
+          .in('product_id', ordinaryProductIds)
           .order('produced_at', { ascending: false })
       : { data: [] },
-    productIds.length
+    ordinaryProductIds.length
       ? supabase
           .from('product_recipes')
           .select('product_id,output_qty,waste_percent,labor_minutes,labor_rate_cents,shipping_label_qty,branding_label_qty,product_recipe_components(inventory_item_id,quantity,unit,component_role,inventory_items(id,base_unit,sku))')
-          .in('product_id', productIds)
+          .in('product_id', ordinaryProductIds)
       : { data: [] },
   ]);
 
@@ -646,7 +671,7 @@ export async function snapshotOrderCogsForShipment({
   );
   const ensureFinishedItemsResult = await ensureFinishedItemsForProducts({
     existingByProductId: finishedItemByProductId,
-    productIds,
+    productIds: ordinaryProductIds,
     supabase,
   });
   if (ensureFinishedItemsResult.error) return { error: ensureFinishedItemsResult.error };
@@ -704,12 +729,25 @@ export async function snapshotOrderCogsForShipment({
   }
 
   const orderRevenueCents = orderItems.reduce((sum, item) => sum + Math.max(0, lineRevenueCents(item)), 0);
-  const safeProcessingFeeCents = Math.max(0, processingFeeCents ?? processingFeeCentsForRevenue(orderRevenueCents));
-  const safeDonationCogsCents = Math.max(0, donationCogsCents);
+  const safeProcessingFeeCents = onlyHeldStock && orderRevenueCents === 0 ? 0 : Math.max(0, processingFeeCents ?? processingFeeCentsForRevenue(orderRevenueCents));
+  const safeDonationCogsCents = onlyHeldStock && orderRevenueCents === 0 ? 0 : Math.max(0, donationCogsCents);
   const shippingAllocationByItemId = allocateShipping(orderItems, Math.max(0, shippingCostCents));
   const processingFeeAllocationByItemId = allocateByRevenue(orderItems, safeProcessingFeeCents);
-  const donationAllocationByItemId = allocateByRevenue(orderItems, safeDonationCogsCents);
+  const donationAllocationByItemId = orderSource === 'shopify'
+    ? new Map(orderItems.map((item) => [item.id,
+      item.product_id && heldProductIds.has(item.product_id) ? 0 : shopifyDonationCogsCentsForBags(item.qty)]))
+    : allocateByRevenue(orderItems, safeDonationCogsCents);
   const snapshotAt = new Date().toISOString();
+  // The held-stock transaction records its bags AND order-wide boxes together.
+  // The generic cost allocator below only reads their saved box snapshots.
+  for (const item of orderItems) {
+    if (item.cogs_snapshot_at || !item.product_id || !heldProductIds.has(item.product_id)) continue;
+    if (!supabase.rpc) return { error: 'customer_stock_consumption_unavailable' as const };
+    const consumed = await supabase.rpc('consume_customer_stock_for_order_item', {
+      p_order_item_id: item.id, p_shipping_cost_cents: shippingCostCents,
+    });
+    if (consumed.error || Number(consumed.data) !== Number(item.qty)) return { error: 'customer_stock_consumption_error' as const };
+  }
   const shippingBoxUsageResult = await consumeShippingBoxUsages({ orderId, orderItems, snapshotAt, supabase });
   if (shippingBoxUsageResult.error) return { error: shippingBoxUsageResult.error };
   const shippingBoxCostByOrderItemId = shippingBoxUsageResult.costByOrderItemId;
@@ -725,7 +763,12 @@ export async function snapshotOrderCogsForShipment({
     let estimatedQty = 0;
     let fallbackSource: CogsSource = 'missing_cost';
 
-    if (finishedItem) {
+    const heldStockRelease = Boolean(productId && heldProductIds.has(productId));
+    if (heldStockRelease) {
+      // Production costs belong to the original sale. This RPC removes the
+      // zero-value customer-owned units exactly once, including on retries.
+      actualQty = qty;
+    } else if (finishedItem) {
       const lotQueue = lotQueuesByItemId.get(finishedItem.id) ?? [];
       let remainingQty = qty;
 
@@ -831,10 +874,14 @@ export async function snapshotOrderCogsForShipment({
     const processingFeeCentsForLine = processingFeeAllocationByItemId.get(item.id) ?? 0;
     const donationCents = donationAllocationByItemId.get(item.id) ?? 0;
     const shippingBoxCost = shippingBoxCostByOrderItemId.get(item.id);
-    if (shippingBoxCost?.costCents) {
-      lineBreakdown.fixedCents += shippingBoxCost.costCents;
+    if (shippingBoxCost) {
+      // Shipment-entered boxes are additional to recipe packaging. Keep their
+      // tape separate from the box cost, including boxes with no known unit cost.
+      const tapeCents = heldStockRelease ? 0 : shippingBoxCost.tapeCents;
+      lineBreakdown.fixedCents += shippingBoxCost.costCents + tapeCents;
       lineBreakdown.fixedOtherCents += shippingBoxCost.costCents;
-      lineBreakdown.totalCents += shippingBoxCost.costCents;
+      lineBreakdown.tapeCents += tapeCents;
+      lineBreakdown.totalCents += shippingBoxCost.costCents + tapeCents;
     }
     const finalCogsSource: CogsSource = shippingBoxCost?.estimated && cogsSource === 'actual_fifo' ? 'partial_estimate' : cogsSource;
     const productCogsCents = lineBreakdown.materialCents + lineBreakdown.laborCents + lineBreakdown.fixedCents;

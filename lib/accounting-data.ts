@@ -10,10 +10,13 @@ import type {
 } from '@/lib/accounting-pnl-statement';
 import { fetchAllPages } from '@/lib/supabase/pagination';
 import { payrollOvertimeContextRange } from '@/lib/payroll-wages';
+import { loadDeferredPayAccounting } from '@/lib/deferred-pay-accounting-data';
+import type { DeferredPayAccountingSummary } from '@/lib/deferred-pay-accounting';
 
 type AccountingClient = Pick<SupabaseClient<Database>, 'from'>;
 
 export type AccountingPnlInputs = {
+  deferredPay: DeferredPayAccountingSummary | null;
   categories: AccountingCategoryRow[];
   payrollAllocations: AccountingPayrollAllocationRow[];
   payrollSalaryPayments: AccountingSalaryPaymentRow[];
@@ -58,7 +61,7 @@ export async function loadAccountingPnlInputs({
   const payrollEndMs = Date.parse(payrollEnd);
   const overtimeContext = payrollOvertimeContextRange(new Date(payrollStart), new Date(`${end}T23:59:59.999Z`));
   const empty = <T>() => ({ data: [] as T[], error: null });
-  const [categories, transactions, productionRuns, payrollTimeEntries, payrollSalaryPayments, payrollAllocations] = await Promise.all([
+  const [categories, transactions, productionRuns, payrollTimeEntries, payrollSalaryPayments, payrollAllocations, deferredPay] = await Promise.all([
     loadAccountingCategories(supabase),
     fetchAllPages<AccountingPnlTransactionRow>(async (from, to) => {
       const result = await supabase
@@ -108,14 +111,18 @@ export async function loadAccountingPnlInputs({
         .order('id', { ascending: true })
         .range(from, to))
       : empty<AccountingPayrollAllocationRow>(),
+    payrollSupabase
+      ? loadDeferredPayAccounting({ supabase: payrollSupabase, start, end })
+      : { data: null, error: null },
   ]);
 
-  const error = [categories, transactions, productionRuns, payrollTimeEntries, payrollSalaryPayments, payrollAllocations]
+  const error = [categories, transactions, productionRuns, payrollTimeEntries, payrollSalaryPayments, payrollAllocations, deferredPay]
     .find((result) => result.error)?.error;
   if (error) return { data: null, error };
 
   return {
     data: {
+      deferredPay: deferredPay.data,
       categories: categories.data ?? [],
       payrollAllocations: payrollAllocations.data ?? [],
       payrollSalaryPayments: payrollSalaryPayments.data ?? [],

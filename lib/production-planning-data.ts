@@ -54,7 +54,7 @@ export type ProductionPlanningDataResult =
   | { data: ProductionPlanningData; error: null }
   | { data: null; error: QueryError };
 
-const ORDER_SELECT = 'id,center_id,status,created_at,shipped_at,archived_at,recurring_order_id,recurring_scheduled_for';
+const ORDER_SELECT = 'id,center_id,status,created_at,shipped_at,archived_at,recurring_order_id,recurring_scheduled_for,shipping_company,shipping_name,shopify_order_name';
 
 function loadError(results: Array<{ name: string; error: QueryError | null }>): QueryError | null {
   const failures = results.filter((result) => result.error);
@@ -87,7 +87,7 @@ export async function loadProductionPlanningData(
   now: Date = new Date(),
 ): Promise<ProductionPlanningDataResult> {
   const window = productionPlanningQueryWindow(now);
-  const [products, items, lots, recipes, openOrders, shippedOrders, legacyShippedOrders, schedules, centers, pars, deficits] = await Promise.all([
+  const [products, items, lots, recipes, openOrders, shippedOrders, legacyShippedOrders, schedules, centers, pars, deficits, heldStock] = await Promise.all([
     fetchAllPages((from, to) => supabase.from('products')
       .select('id,name,sku,category,active').order('name').order('id').range(from, to)),
     fetchAllPages((from, to) => supabase.from('inventory_items')
@@ -118,6 +118,8 @@ export async function loadProductionPlanningData(
       .select('id,inventory_item_id,quantity_change')
       .in('movement_type', ['shipment_consume', 'sample_box_consume']).is('lot_id', null)
       .order('id').range(from, to)),
+    fetchAllPages((from, to) => supabase.from('customer_stock_product_allocations')
+      .select('product_id').order('product_id').range(from, to)),
   ]);
   const parentError = loadError([
     { name: 'products', error: products.error }, { name: 'inventory items', error: items.error },
@@ -126,12 +128,15 @@ export async function loadProductionPlanningData(
     { name: 'legacy shipped orders', error: legacyShippedOrders.error }, { name: 'recurring schedules', error: schedules.error },
     { name: 'customers', error: centers.error }, { name: 'stock targets', error: pars.error },
     { name: 'inventory deficits', error: deficits.error },
+    { name: 'customer held inventory', error: heldStock.error },
   ]);
   if (parentError) return { data: null, error: parentError };
+  // Finite customer-owned batches cannot be replenished from forecasts or pars.
+  const heldProductIds = new Set(heldStock.data.map(row => row.product_id));
 
   const orders = [...new Map([...openOrders.data, ...shippedOrders.data, ...legacyShippedOrders.data]
     .map((order) => [order.id, order])).values()];
-  const [orderItems, scheduleItems, recipeComponents, generatedOccurrences] = await Promise.all([
+  const [orderItems, scheduleItems, recipeComponents, materialFallbacks, generatedOccurrences] = await Promise.all([
     fetchAllByIds(orders.map((order) => order.id), (ids, from, to) => supabase.from('order_items')
       .select('id,order_id,product_id,qty').in('order_id', ids).order('id').range(from, to)),
     fetchAllByIds(schedules.data.map((schedule) => schedule.id), (ids, from, to) => supabase.from('recurring_order_items')
@@ -139,6 +144,9 @@ export async function loadProductionPlanningData(
     fetchAllByIds(recipes.data.map((recipe) => recipe.id), (ids, from, to) => supabase.from('product_recipe_components')
       .select('id,recipe_id,inventory_item_id,quantity,unit,component_role')
       .in('recipe_id', ids).order('id').range(from, to)),
+    fetchAllByIds(recipes.data.map((recipe) => recipe.product_id), (ids, from, to) => supabase.from('product_material_fallbacks')
+      .select('product_id,primary_inventory_item_id,fallback_inventory_item_id')
+      .in('product_id', ids).order('product_id').order('primary_inventory_item_id').range(from, to)),
     // All statuses matter: an occurrence already shipped/canceled must never be
     // projected again. Keep older keys so missed-cycle review can also dedupe.
     fetchAllByIds(schedules.data.map((schedule) => schedule.id), (ids, from, to) => supabase.from('orders')
@@ -149,6 +157,7 @@ export async function loadProductionPlanningData(
   const childError = loadError([
     { name: 'order items', error: orderItems.error }, { name: 'recurring items', error: scheduleItems.error },
     { name: 'recipe components', error: recipeComponents.error }, { name: 'generated recurring occurrences', error: generatedOccurrences.error },
+    { name: 'material fallback rules', error: materialFallbacks.error },
   ]);
   if (childError) return { data: null, error: childError };
 
@@ -158,6 +167,7 @@ export async function loadProductionPlanningData(
   const itemsByOrder = groupRows(orderItems.data, (item) => item.order_id);
   const itemsBySchedule = groupRows(scheduleItems.data, (item) => item.recurring_order_id);
   const componentsByRecipe = groupRows(recipeComponents.data, (component) => component.recipe_id);
+  const fallbacksByProduct = groupRows(materialFallbacks.data, (rule) => rule.product_id);
   const onHandByItemId: Record<string, number> = {};
   const materialStockByItemId: Record<string, number> = {};
   for (const lot of lots.data) {
@@ -183,11 +193,13 @@ export async function loadProductionPlanningData(
     data: {
       input: {
         now,
-        products: products.data,
+        products: products.data.filter(product => !heldProductIds.has(product.id)),
         stockByProductId,
         orders: orders.map((order) => ({
           ...order,
-          customer_name: centerById.get(order.center_id ?? '')?.name || 'Unknown customer',
+          customer_name: centerById.get(order.center_id ?? '')?.name
+            || order.shipping_company?.trim() || order.shipping_name?.trim()
+            || (order.shopify_order_name ? `Shopify ${order.shopify_order_name}` : 'Unknown customer'),
           order_items: itemsByOrder.get(order.id) ?? [],
         })),
         schedules: schedules.data.map((schedule) => ({
@@ -205,6 +217,7 @@ export async function loadProductionPlanningData(
       items: inventoryItems,
       recipes: recipes.data.map((recipe) => ({
         ...recipe,
+        material_fallbacks: fallbacksByProduct.get(recipe.product_id) ?? [],
         product_recipe_components: (componentsByRecipe.get(recipe.id) ?? []).map((component) => ({
           ...component,
           unit: component.unit as InventoryUnit,

@@ -46,6 +46,20 @@ async function advanceToReview(page: Page) {
   await expect(page.getByRole('heading', { name: 'Step 4: Review & Create', exact: true })).toBeVisible();
 }
 
+test('preserves an eight-character password including its surrounding spaces through review and submission', async ({ page }) => {
+  await openFixture(page);
+  await fillLogin(page);
+  await fillInvoiceEmail(page);
+  await fillAddress(page);
+  const password = ' abcdef ';
+  await page.getByLabel('Temporary password', { exact: true }).fill(password);
+  await advanceToReview(page);
+  await page.getByRole('button', { name: 'Create customer & send welcome', exact: true }).click();
+  const submissions = await page.evaluate(() => window.customerWizardFixture.submissions);
+  expect(submissions).toHaveLength(1);
+  expect(submissions[0].password).toBe(password);
+});
+
 test('requires a complete address, preserves input, and shows billing/delivery details on review', async ({ page }, testInfo) => {
   await openFixture(page);
   await fillLogin(page);

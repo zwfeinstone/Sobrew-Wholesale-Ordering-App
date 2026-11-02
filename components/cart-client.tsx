@@ -4,10 +4,14 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import StatusToast from '@/components/status-toast';
+import { CustomerStockSummary } from '@/components/customer-stock-summary';
 import { trackProductEvent } from '@/lib/analytics';
 import {
   LEGACY_CART_STORAGE_KEY,
   applyReorderItems,
+  cartProductQuantityLimit,
+  cartCustomerStockGroups,
+  reconcileCartItems,
   normalizeCartItems,
   setCartItemQuantity,
   type CartItem,
@@ -111,22 +115,22 @@ function useCartQuantity(storageKey: string, productId: string) {
   return useSyncExternalStore(subscribe, getSnapshot, () => 0);
 }
 
-function useSetCartQuantity(storageKey: string) {
+function useSetCartQuantity(storageKey: string, products?: CartProductSnapshot[]) {
   return useCallback((product: CartProductSnapshot, quantity: number) => {
-    saveCartItems(storageKey, setCartItemQuantity(readCartItems(storageKey), product, quantity));
-  }, [storageKey]);
+    saveCartItems(storageKey, setCartItemQuantity(readCartItems(storageKey), product, quantity, products));
+  }, [storageKey, products]);
 }
 
-export function useCart(storageKey: string) {
+export function useCart(storageKey: string, products?: CartProductSnapshot[]) {
   const store = getCartStore(storageKey);
   const { items, itemCount, subtotalCents } = useSyncExternalStore(store.subscribe, store.getSnapshot, getServerCartSnapshot);
-  const setQuantity = useSetCartQuantity(storageKey);
+  const setQuantity = useSetCartQuantity(storageKey, products);
 
   const addReorderItems = useCallback((incoming: Item[], mode: ReorderMode) => {
     // Reorder is an explicit new order intent, even when its quantities match the old cart.
     resetCheckoutSubmission(localStorage, storageKey);
-    saveCartItems(storageKey, applyReorderItems(readCartItems(storageKey), incoming, mode));
-  }, [storageKey]);
+    saveCartItems(storageKey, applyReorderItems(readCartItems(storageKey), incoming, mode, products));
+  }, [storageKey, products]);
 
   const clear = useCallback(() => clearCartItems(storageKey), [storageKey]);
 
@@ -140,36 +144,16 @@ export function useCart(storageKey: string) {
   };
 }
 
-function reconcileCartItems(items: Item[], products: CartProductSnapshot[]) {
-  const productMap = new Map(products.map((product) => [product.product_id, product]));
-  let changed = false;
-  const next: Item[] = [];
-
-  for (const item of items) {
-    const product = productMap.get(item.product_id);
-    if (!product) {
-      changed = true;
-      continue;
-    }
-
-    const syncedItem = { ...item, name: product.name, price_cents: product.price_cents };
-    if (syncedItem.name !== item.name || syncedItem.price_cents !== item.price_cents) changed = true;
-    next.push(syncedItem);
-  }
-
-  return { items: next, changed, removedCount: items.length - next.length };
-}
-
 export function CartCatalogSync({ products, storageKey }: { products: CartProductSnapshot[]; storageKey: string }) {
   const [syncMessage, setSyncMessage] = useState('');
   const productSignature = useMemo(
-    () => products.map((product) => `${product.product_id}:${product.price_cents}:${product.name}`).join('|'),
+    () => products.map((product) => `${product.product_id}:${product.price_cents}:${product.name}:${product.customer_stock?.allocation_id ?? ''}:${cartProductQuantityLimit(product)}`).join('|'),
     [products]
   );
 
   useEffect(() => {
     const current = readCartItems(storageKey);
-    if (!current.length || !products.length) return;
+    if (!current.length) return;
 
     const reconciled = reconcileCartItems(current, products);
     if (!reconciled.changed) return;
@@ -178,7 +162,7 @@ export function CartCatalogSync({ products, storageKey }: { products: CartProduc
     setSyncMessage(
       reconciled.removedCount > 0
         ? 'Your cart was updated to remove unavailable products and refresh current pricing.'
-        : 'Your cart pricing was refreshed.'
+        : 'Your cart was updated to match current pricing and available quantities.'
     );
   }, [productSignature, products, storageKey]);
 
@@ -188,19 +172,25 @@ export function CartCatalogSync({ products, storageKey }: { products: CartProduc
 export function CatalogQuantityControl({
   compact = false,
   product,
+  products,
   storageKey,
 }: {
   compact?: boolean;
   product: CartProductSnapshot;
+  products?: CartProductSnapshot[];
   storageKey: string;
 }) {
   const qty = useCartQuantity(storageKey, product.product_id);
-  const setQuantity = useSetCartQuantity(storageKey);
+  const setQuantity = useSetCartQuantity(storageKey, products);
   const [announcement, setAnnouncement] = useState('');
+  const store = getCartStore(storageKey);
+  const getLimit = useCallback(() => cartProductQuantityLimit(product, store.getSnapshot().items, products), [product, products, store]);
+  const getServerLimit = useCallback(() => cartProductQuantityLimit(product), [product]);
+  const quantityLimit = useSyncExternalStore(store.subscribe, getLimit, getServerLimit);
 
   const updateQuantity = (nextQty: number) => {
     setQuantity(product, nextQty);
-    const normalizedQty = Math.max(0, Math.trunc(nextQty));
+    const normalizedQty = Math.min(quantityLimit, Math.max(0, Math.trunc(nextQty)));
     if (normalizedQty > qty) {
       trackProductEvent('portal_item_added', {
         quantity: normalizedQty - qty,
@@ -221,9 +211,10 @@ export function CatalogQuantityControl({
         <button
           className="btn-primary catalog-add-button"
           type="button"
+          disabled={quantityLimit === 0}
           onClick={() => updateQuantity(1)}
         >
-          Add
+          {quantityLimit === 0 ? 'Fully allocated' : 'Add'}
           <span className="sr-only"> {product.name} to order</span>
         </button>
       </div>
@@ -247,6 +238,7 @@ export function CatalogQuantityControl({
           aria-label={`Increase ${product.name} quantity`}
           className="quantity-stepper-button is-positive"
           type="button"
+          disabled={qty >= quantityLimit}
           onClick={() => updateQuantity(qty + 1)}
         >
           <span aria-hidden="true">+</span>
@@ -261,15 +253,18 @@ export function ReorderButton({
   className = 'btn-secondary w-full sm:w-auto',
   items,
   label = 'Reorder & review',
+  products,
   storageKey,
 }: {
   className?: string;
   items: Item[];
+  products?: CartProductSnapshot[];
   label?: string;
   storageKey: string;
 }) {
   const router = useRouter();
-  const { addReorderItems, itemCount } = useCart(storageKey);
+  const { addReorderItems, itemCount } = useCart(storageKey, products);
+  const reorderItems = products ? reconcileCartItems(items, products).items : items;
   const [dialogOpen, setDialogOpen] = useState(false);
   const [isReordering, setIsReordering] = useState(false);
   const reorderingRef = useRef(false);
@@ -316,7 +311,7 @@ export function ReorderButton({
     if (reorderingRef.current) return;
     reorderingRef.current = true;
     setIsReordering(true);
-    addReorderItems(items, mode);
+    addReorderItems(reorderItems, mode);
     trackProductEvent('portal_reorder_added', {
       item_count: items.length,
       quantity: items.reduce((sum, item) => sum + item.qty, 0),
@@ -342,7 +337,7 @@ export function ReorderButton({
         aria-haspopup="dialog"
         className={className}
         type="button"
-        disabled={!items.length || isReordering}
+        disabled={!reorderItems.length || isReordering}
         onClick={startReorder}
       >
         {isReordering ? 'Opening cart...' : label}
@@ -385,9 +380,11 @@ export function ReorderButton({
 function CartQuantityInput({
   item,
   onCommit,
+  quantityLimit,
 }: {
   item: Item;
   onCommit: (item: Item, quantity: number) => void;
+  quantityLimit: number;
 }) {
   const [draftQuantity, setDraftQuantity] = useState(String(item.qty));
   const cancelCommitRef = useRef(false);
@@ -407,7 +404,7 @@ function CartQuantityInput({
       return;
     }
 
-    const nextQuantity = Math.min(9999, Math.max(1, Math.trunc(parsedQuantity)));
+    const nextQuantity = Math.min(quantityLimit, Math.max(1, Math.trunc(parsedQuantity)));
     setDraftQuantity(String(nextQuantity));
     if (nextQuantity !== item.qty) onCommit(item, nextQuantity);
   };
@@ -417,7 +414,7 @@ function CartQuantityInput({
       id={`cart-qty-${item.product_id}`}
       className="quantity-stepper-input"
       inputMode="numeric"
-      max={9999}
+      max={quantityLimit}
       min={1}
       step={1}
       type="number"
@@ -436,17 +433,20 @@ function CartQuantityInput({
   );
 }
 
-export function CartTable({ storageKey }: { storageKey: string }) {
-  const { clear, itemCount, items, setQuantity, subtotalCents } = useCart(storageKey);
+export function CartTable({ storageKey, products = [] }: { storageKey: string; products?: CartProductSnapshot[] }) {
+  const { clear, itemCount, items, setQuantity, subtotalCents } = useCart(storageKey, products);
   const [clearedItems, setClearedItems] = useState<Item[] | null>(null);
   const [announcement, setAnnouncement] = useState('');
+  const productMap = useMemo(() => new Map(products.map((product) => [product.product_id, product])), [products]);
 
   const updateQuantity = (item: Item, quantity: number) => {
     setClearedItems(null);
-    setQuantity(item, quantity);
+    const product = productMap.get(item.product_id) ?? item;
+    const normalizedQuantity = Math.min(quantity, cartProductQuantityLimit(product, items, products));
+    setQuantity(product, normalizedQuantity);
     setAnnouncement(
-      quantity > 0
-        ? `${item.name} quantity is now ${quantity}.`
+      normalizedQuantity > 0
+        ? `${item.name} quantity is now ${normalizedQuantity}.`
         : `${item.name} removed from your order.`
     );
   };
@@ -459,9 +459,10 @@ export function CartTable({ storageKey }: { storageKey: string }) {
 
   const undoClear = () => {
     if (!clearedItems) return;
-    saveCartItems(storageKey, clearedItems);
+    const restored = products.length ? reconcileCartItems(clearedItems, products).items : clearedItems;
+    saveCartItems(storageKey, restored);
     setClearedItems(null);
-    setAnnouncement('Your order was restored.');
+    setAnnouncement('Your order was restored with currently available quantities.');
   };
 
   return (
@@ -486,7 +487,10 @@ export function CartTable({ storageKey }: { storageKey: string }) {
             <button className="cart-clear-button" type="button" onClick={clearOrder}>Clear order</button>
           </div>
           <div className="cart-review-list">
-            {items.map((item) => (
+            {items.map((item) => {
+              const product = productMap.get(item.product_id) ?? item;
+              const quantityLimit = cartProductQuantityLimit(product, items, products);
+              return (
               <article key={item.product_id} className="cart-review-row">
                 <div className="min-w-0">
                   <h2 className="font-semibold text-slate-950">{item.name}</h2>
@@ -503,12 +507,12 @@ export function CartTable({ storageKey }: { storageKey: string }) {
                       <span aria-hidden="true">−</span>
                     </button>
                     <label className="sr-only" htmlFor={`cart-qty-${item.product_id}`}>Quantity for {item.name}</label>
-                    <CartQuantityInput item={item} onCommit={updateQuantity} />
+                    <CartQuantityInput item={item} onCommit={updateQuantity} quantityLimit={quantityLimit} />
                     <button
                       aria-label={`Increase ${item.name} quantity`}
                       className="quantity-stepper-button is-positive"
                       type="button"
-                      disabled={item.qty >= 9999}
+                      disabled={item.qty >= quantityLimit}
                       onClick={() => updateQuantity(item, Math.min(9999, item.qty + 1))}
                     >
                       <span aria-hidden="true">+</span>
@@ -517,8 +521,12 @@ export function CartTable({ storageKey }: { storageKey: string }) {
                   <button className="cart-remove-button" type="button" onClick={() => updateQuantity(item, 0)}>Remove</button>
                 </div>
               </article>
-            ))}
+              );
+            })}
           </div>
+          {cartCustomerStockGroups(items, products).map(({ balance, quantity, productName }) => (
+            <CustomerStockSummary key={balance.allocation_id} balance={balance} productName={productName} requestedQuantity={quantity} />
+          ))}
           <div className="cart-summary-bar">
             <div>
               <p className="text-sm uppercase tracking-[0.18em] text-slate-500">Subtotal</p>

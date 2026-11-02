@@ -229,6 +229,9 @@ export async function middleware(request: NextRequest) {
       return redirectWithRefreshedCookies(new URL('/login', request.url));
     }
 
+    if (process.env.NODE_ENV === 'development' || process.env.PORTAL_PERFORMANCE_TIMINGS === '1') {
+      response.headers.set('Server-Timing', `middleware_auth;dur=${Math.max(0, performance.now() - startedAt).toFixed(1)}`);
+    }
     return applyPrivateNoStore(response);
   } catch (error) {
     const reason = error instanceof AuthDeadlineExceededError || authDeadline.didTimeout() ? 'deadline' : 'unexpected_error';

@@ -87,6 +87,7 @@ export const ADMIN_NAV_LINKS: Array<{
   { name: 'Reports', href: '/admin/reports', sectionKey: 'reports' },
   { name: 'Marketing', href: '/admin/marketing', sectionKey: 'marketing' },
   { name: 'Prospecting', href: '/admin/sales/prospecting', child: true, sectionKey: 'prospecting' },
+  { name: 'Center Pricing', href: '/admin/center-pricing', sectionKey: 'prospecting' },
   { name: 'Orders', href: '/admin/orders', sectionKey: 'orders' },
   { name: 'Archived Orders', href: '/admin/archived-orders', sectionKey: 'archived_orders' },
   { name: 'Recurring Orders', href: '/admin/recurring-orders', sectionKey: 'recurring_orders' },
@@ -275,6 +276,7 @@ export function adminSectionForPath(pathname: string): AdminPermissionKey | null
   if (pathname === '/admin/accounting' || pathname.startsWith('/admin/accounting/')) return 'accounting';
   if (pathname === '/admin/invoicing' || pathname.startsWith('/admin/invoicing/')) return 'invoicing';
   if (pathname === '/admin/marketing' || pathname.startsWith('/admin/marketing/')) return 'marketing';
+  if (pathname === '/admin/center-pricing' || pathname.startsWith('/admin/center-pricing/')) return 'prospecting';
   if (pathname === '/admin/sales/prospecting' || pathname.startsWith('/admin/sales/prospecting/')) return 'prospecting';
   if (pathname === '/admin/sales' || pathname.startsWith('/admin/sales/')) return 'sales';
   if (pathname === '/admin/reports' || pathname.startsWith('/admin/reports/')) return 'reports';

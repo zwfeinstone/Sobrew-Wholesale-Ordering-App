@@ -15,6 +15,7 @@ import {
   quickBooksDuplicateDocNumberError,
   quickBooksSavedPaymentMethodLabel,
   scoreQuickBooksCustomerMatch,
+  shouldCollectQuickBooksSalesTax,
 } from '@/lib/quickbooks';
 
 describe('quickbooks duplicate invoice numbers', () => {
@@ -61,6 +62,15 @@ describe('quickbooks duplicate invoice numbers', () => {
 });
 
 describe('quickbooks invoice payload', () => {
+  it('exempts only a flagged held-stock sale without changing the customer tax status', () => {
+    const centers = { name: 'Momentum Recovery', customer_tax_status: 'for_profit' };
+    const order = { centers, shipping_state: 'TN' };
+    expect(shouldCollectQuickBooksSalesTax(order, ['TN'])).toBe(true);
+    expect(shouldCollectQuickBooksSalesTax({ ...order, held_stock_sales: { invoice_only: true, tax_exempt: true } }, ['TN'])).toBe(false);
+    expect(shouldCollectQuickBooksSalesTax({ ...order, held_stock_sales: [{ invoice_only: true, tax_exempt: false }] }, ['TN'])).toBe(true);
+    expect(centers.customer_tax_status).toBe('for_profit');
+  });
+
   it('maps Sobrew order lines into QuickBooks invoice lines', () => {
     const payload = buildQuickBooksInvoicePayload(
       {
@@ -354,7 +364,7 @@ describe('QuickBooks invoice customer recipient exceptions', () => {
     BillEmailCc: { Address: 'qbo-cc@example.com' },
   };
 
-  it.each(['CooperRiis', 'Cooper Riis', ' COOPERRIIS '])('sends %s invoices to the ordering login and keeps configured CC', (name) => {
+  it.each(['CooperRiis', 'Cooper Riis', ' COOPERRIIS ', 'CooperRiis Healing Community'])('sends %s invoices to the ordering login and keeps configured CC', (name) => {
     const recipients = buildQuickBooksInvoiceEmailRecipients({ ...order, centers: { ...order.centers, name } }, customer);
 
     expect(recipients.to).toEqual(['ordering-login@example.com']);

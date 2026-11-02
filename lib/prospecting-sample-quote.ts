@@ -8,17 +8,19 @@ export type SampleQuoteItem = {
 };
 
 export const SAMPLE_QUOTE_ITEMS: readonly SampleQuoteItem[] = [
-  { id: 'bulk-regular', category: 'Bulk Coffee (5lb bags)', description: 'Medium or Dark Roast (Ground)', packLabel: 'per bag', defaultPriceCents: 4000, pounds: 5 },
-  { id: 'bulk-decaf', category: 'Bulk Coffee (5lb bags)', description: 'Decaf Dark Roast', packLabel: 'per bag', defaultPriceCents: 4800, pounds: 5 },
-  { id: 'fraction-1-5oz', category: 'Fraction Pack', description: 'Medium, Dark, Espresso, or French Roast (Ground)', packLabel: '100 x 1.5oz', defaultPriceCents: 9000 },
-  { id: 'fraction-2oz', category: 'Fraction Pack', description: 'Medium, Dark, Espresso, or French Roast (Ground)', packLabel: '100 x 2oz', defaultPriceCents: 11500 },
-  { id: 'fraction-2-5oz', category: 'Fraction Pack', description: 'Medium, Dark, Espresso, or French Roast (Ground)', packLabel: '100 x 2.5oz', defaultPriceCents: 14000 },
-  { id: 'fraction-3oz', category: 'Fraction Pack', description: 'Medium, Dark, Espresso, or French Roast (Ground)', packLabel: '100 x 3oz', defaultPriceCents: 17000 },
-  { id: 'fraction-decaf', category: 'Fraction Pack', description: 'Decaf Roast', packLabel: '100 x 1.5oz', defaultPriceCents: 11500 },
-  { id: 'filter-1-5oz', category: 'Filter Pack', description: 'Medium, Dark, Espresso, or French Roast (Ground)', packLabel: '40 x 1.5oz', defaultPriceCents: 4900 },
+  { id: 'bulk-regular', category: 'Bulk Coffee (5lb bags)', description: 'Medium or Dark Roast (Ground)', packLabel: 'per bag', defaultPriceCents: 4250, pounds: 5 },
+  { id: 'bulk-decaf', category: 'Bulk Coffee (5lb bags)', description: 'Decaf Dark Roast', packLabel: 'per bag', defaultPriceCents: 6000, pounds: 5 },
+  { id: 'fraction-1-5oz', category: 'Fraction Pack', description: 'Medium, Dark, Espresso, or French Roast (Ground)', packLabel: '100 x 1.5oz', defaultPriceCents: 10000 },
+  { id: 'fraction-2oz', category: 'Fraction Pack', description: 'Medium, Dark, Espresso, or French Roast (Ground)', packLabel: '100 x 2oz', defaultPriceCents: 12500 },
+  { id: 'fraction-2-5oz', category: 'Fraction Pack', description: 'Medium, Dark, Espresso, or French Roast (Ground)', packLabel: '100 x 2.5oz', defaultPriceCents: 14500 },
+  { id: 'fraction-3oz', category: 'Fraction Pack', description: 'Medium, Dark, Espresso, or French Roast (Ground)', packLabel: '100 x 3oz', defaultPriceCents: 18000 },
+  { id: 'fraction-decaf', category: 'Fraction Pack', description: 'Decaf Roast', packLabel: '100 x 1.5oz', defaultPriceCents: 13000 },
+  { id: 'filter-1-5oz', category: 'Filter Pack', description: 'Medium, Dark, Espresso, or French Roast (Ground)', packLabel: '40 x 1.5oz', defaultPriceCents: 4200 },
   { id: 'filter-2oz', category: 'Filter Pack', description: 'Medium, Dark, Espresso, or French Roast (Ground)', packLabel: '40 x 2oz', defaultPriceCents: 5500 },
-  { id: 'k-cups-regular', category: 'K Cups', description: 'Medium, Dark, Espresso, or French Roast', packLabel: '50ct', defaultPriceCents: 4000 },
+  { id: 'k-cups-regular', category: 'K Cups', description: 'Medium, Dark, Espresso, or French Roast', packLabel: '50ct', defaultPriceCents: 3800 },
   { id: 'k-cups-fourth-dimension', category: 'K Cups', description: 'Specialty Fourth Dimension Medium Roast', packLabel: '50ct', defaultPriceCents: 5000 },
+  { id: 'concentrate-regular', category: 'Bag in Box Concentrate', description: 'Regular', packLabel: '2 x 64oz', defaultPriceCents: 11500 },
+  { id: 'concentrate-decaf', category: 'Bag in Box Concentrate', description: 'Decaf', packLabel: '2 x 64oz', defaultPriceCents: 11500 },
 ];
 
 export type SampleQuoteLine = { id: string; priceCents: number };
@@ -72,6 +74,10 @@ export function getSampleQuoteGreetingName(contactName: string): string {
   return contactName.trim().split(/\s+/)[0] || '';
 }
 
+export function formatSampleQuoteSenderName(senderName: string): string {
+  return senderName.trim().replace(/^(zach|haskins)(?=\s|$)/i, name => name.toLowerCase() === 'zach' ? 'Zach' : 'Haskins');
+}
+
 export function validateSampleQuoteGreetingName(value: unknown): { ok: true; greetingName: string } | { ok: false; error: string } {
   if (typeof value !== 'string' || /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/.test(value)) {
     return { ok: false, error: 'Enter a greeting name without control characters or line breaks.' };
@@ -119,7 +125,7 @@ export function buildSampleQuoteEmail(input: {
   if (providedGreeting && !providedGreeting.ok) throw new Error(providedGreeting.error);
   const greetingName = providedGreeting?.ok ? providedGreeting.greetingName : getSampleQuoteGreetingName(input.contactName);
   const greeting = greetingName ? `Hi ${greetingName}!` : 'Hi!';
-  const senderName = input.senderName.trim() || 'The Sobrew Coffee Team';
+  const senderName = formatSampleQuoteSenderName(input.senderName) || 'The Sobrew Coffee Team';
   const introduction = 'Thanks for your interest in Sobrew Coffee! Looking forward to y’all trying the coffee.';
   const pricingIntroduction = 'Please find your coffee pricing below.';
   const mission = 'A portion of every order goes back to helping recovery and mental health-focused organizations!';
@@ -217,9 +223,13 @@ export function buildSampleQuoteEmail(input: {
     emailRow(escapeHtml(closing)),
     emailRow(`Best,<br />${emailStrong(senderName, 15, 24, EMAIL_COLORS.green)}`, 0, emailTextStyle(15, 24, EMAIL_COLORS.green)),
   ]);
-  const html = `<div data-sample-quote-email="brand" class="sobrew-sample-email" style="${emailTextStyle()}width:100%;max-width:700px;background-color:${EMAIL_COLORS.warm};"><style>@media only screen and (max-width:480px){.sobrew-sample-email .sobrew-email-inset{padding-left:21px!important;padding-right:21px!important;}.sobrew-sample-email .sobrew-email-benefit{max-width:100%!important;}.sobrew-sample-email .sobrew-email-masthead-cell{display:block!important;width:100%!important;text-align:left!important;padding-bottom:14px!important;}}</style>${emailTable([
+  const emailContent = `<div data-sample-quote-email="brand" class="sobrew-sample-email" style="${emailTextStyle()}width:100%;max-width:700px;margin:0 auto;text-align:left;background-color:${EMAIL_COLORS.warm};"><style>@media only screen and (max-width:480px){.sobrew-sample-email .sobrew-email-inset{padding-left:21px!important;padding-right:21px!important;}.sobrew-sample-email .sobrew-email-benefit{max-width:100%!important;}.sobrew-sample-email .sobrew-email-masthead-cell{display:block!important;width:100%!important;text-align:left!important;padding-bottom:14px!important;}}</style>${emailTable([
     `<tr><td data-email-section="header" class="sobrew-email-inset" bgcolor="${EMAIL_COLORS.forest}" style="${EMAIL_CELL_STYLE}padding:26px 32px 27px;background-color:${EMAIL_COLORS.forest};">${header}</td></tr>`,
     `<tr><td class="sobrew-email-inset" bgcolor="${EMAIL_COLORS.warm}" style="${EMAIL_CELL_STYLE}padding:26px 32px 30px;background-color:${EMAIL_COLORS.warm};">${body}</td></tr>`,
   ])}</div>`;
+  // Center the bounded body in wide inboxes; Outlook desktop needs an explicit-width table.
+  const html = emailTable([
+    `<tr><td align="center" style="${EMAIL_CELL_STYLE}text-align:center;"><!--[if mso]><table role="presentation" align="center" cellpadding="0" cellspacing="0" border="0" width="700" style="border:0;border-collapse:collapse;width:700px;margin:0 auto;"><tr><td style="${EMAIL_CELL_STYLE}"><![endif]-->${emailContent}<!--[if mso]></td></tr></table><![endif]--></td></tr>`,
+  ]);
   return { subject: 'Sobrew Coffee Samples, Pricing, and Ordering Process', text, html };
 }

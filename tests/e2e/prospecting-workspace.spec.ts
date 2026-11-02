@@ -27,7 +27,7 @@ async function beginSample(page: Page) {
 test('logs outreach with Keep follow-up and advances only after success', async ({ page }) => {
   await openFixture(page);
   await page.getByRole('button', { name: 'Log call', exact: true }).click();
-  await page.getByRole('combobox', { name: 'Outcome', exact: true }).selectOption('No answer');
+  await page.getByRole('button', { name: 'No answer', exact: true }).click();
   await page.getByRole('textbox', { name: 'What happened?', exact: true }).fill('Left a concise message for purchasing.');
   await page.getByRole('button', { name: 'Save and next', exact: true }).click();
   await expect.poll(async () => (await calls(page)).length).toBe(1);
@@ -37,11 +37,90 @@ test('logs outreach with Keep follow-up and advances only after success', async 
   await expect.poll(() => page.evaluate(() => window.prospectingFixture.navigation)).toContain('next-lead');
 });
 
+test('quick call outcomes select one result, toggle off, and preserve a future follow-up until Save', async ({ page }) => {
+  await openFixture(page);
+  const outcome = page.getByRole('group', { name: 'Outcome', exact: true });
+  const stage = page.getByRole('combobox', { name: 'Stage after saving', exact: true });
+  const followUp = page.getByLabel('Follow-up date', { exact: true });
+  await page.getByRole('button', { name: 'In one week', exact: true }).click();
+  await expect(followUp).toHaveValue('2026-10-01');
+  await expect(outcome.getByRole('button')).toHaveCount(4);
+  await expect(page.getByRole('combobox', { name: 'Outcome', exact: true })).toHaveCount(0);
+  for (const [result, inferredStage] of [['No answer', 'follow_up'], ['Left voicemail', 'follow_up'], ['Reached gatekeeper', 'working']] as const) {
+    const button = outcome.getByRole('button', { name: result, exact: true });
+    await button.click();
+    await expect(button).toHaveAttribute('aria-pressed', 'true');
+    await expect(outcome.getByRole('button', { pressed: true })).toHaveCount(1);
+    await expect(stage).toHaveValue(inferredStage);
+    await expect(followUp).toHaveValue('2026-10-01');
+    expect(await calls(page)).toHaveLength(0);
+  }
+  await outcome.getByRole('button', { name: 'Reached gatekeeper', exact: true }).click();
+  await expect(outcome.getByRole('button', { pressed: true })).toHaveCount(0);
+  await outcome.getByRole('button', { name: 'No answer', exact: true }).click();
+  await expect(stage).toHaveValue('follow_up');
+  await outcome.getByRole('button', { name: 'No answer', exact: true }).click();
+  await expect(outcome.getByRole('button', { pressed: true })).toHaveCount(0);
+  await expect(stage).toHaveValue('working');
+  await outcome.getByRole('button', { name: 'Left voicemail', exact: true }).click();
+  expect(await calls(page)).toHaveLength(0);
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect.poll(async () => (await calls(page)).length).toBe(1);
+  const [input] = await calls(page);
+  expect(input.draft.activity).toMatchObject({ type: 'call', result: 'Left voicemail' });
+  expect(input.draft.lead.stage).toBe('follow_up');
+  expect(input.draft.followUp).toEqual({ mode: 'reschedule', date: '2026-10-01' });
+});
+
+test('More call outcomes selects and clears less common results without saving the form', async ({ page }) => {
+  await openFixture(page);
+  const outcome = page.getByRole('group', { name: 'Outcome', exact: true });
+  const options = page.getByRole('group', { name: 'More call outcomes', exact: true });
+  const stage = page.getByRole('combobox', { name: 'Stage after saving', exact: true });
+  await expect(outcome.getByRole('button', { name: 'More', exact: true })).toHaveAttribute('aria-expanded', 'false');
+  await expect(options).not.toBeVisible();
+  await outcome.getByRole('button', { name: 'More', exact: true }).click();
+  await expect(outcome.getByRole('button', { name: 'More', exact: true })).toHaveAttribute('aria-expanded', 'true');
+  await page.keyboard.press('Escape');
+  await expect(options).not.toBeVisible();
+  await expect(outcome.getByRole('button', { name: 'More', exact: true })).toBeFocused();
+  await outcome.getByRole('button', { name: 'More', exact: true }).click();
+  await options.getByRole('button', { name: 'Interested', exact: true }).click();
+  await expect(options).not.toBeVisible();
+  await expect(outcome.getByRole('button', { name: 'More outcomes: Interested', exact: true })).toHaveAttribute('aria-expanded', 'false');
+  await expect(stage).toHaveValue('interested');
+  expect(await calls(page)).toHaveLength(0);
+  await outcome.getByRole('button', { name: 'More outcomes: Interested', exact: true }).click();
+  await options.getByRole('button', { name: 'No outcome recorded', exact: true }).click();
+  await expect(outcome.getByRole('button', { name: 'More', exact: true })).toHaveAttribute('aria-expanded', 'false');
+  await expect(stage).toHaveValue('working');
+  await expect(outcome.getByRole('button', { pressed: true })).toHaveCount(0);
+  await outcome.getByRole('button', { name: 'More', exact: true }).click();
+  await options.getByRole('button', { name: 'Interested', exact: true }).click();
+  expect(await calls(page)).toHaveLength(0);
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect.poll(async () => (await calls(page)).length).toBe(1);
+  const [input] = await calls(page);
+  expect(input.draft.activity).toMatchObject({ type: 'call', result: 'Interested' });
+  expect(input.draft.lead.stage).toBe('interested');
+  expect(input.draft.followUp).toEqual({ mode: 'keep', date: '2026-09-24' });
+});
+
 test('clears incompatible outcomes when switching channels without losing notes', async ({ page }) => {
   await openFixture(page);
   await page.getByRole('button', { name: 'Log call', exact: true }).click();
-  await page.getByRole('combobox', { name: 'Outcome', exact: true }).selectOption('Interested');
+  await page.getByRole('button', { name: 'More', exact: true }).click();
+  await page.getByRole('group', { name: 'More call outcomes', exact: true }).getByRole('button', { name: 'Interested', exact: true }).click();
   await page.getByRole('textbox', { name: 'What happened?', exact: true }).fill('Buyer asked for more information.');
+  await page.getByRole('button', { name: 'Log email', exact: true }).click();
+  await expect(page.getByRole('combobox', { name: 'Outcome', exact: true })).toHaveValue('');
+  await expect(page.getByRole('textbox', { name: 'What happened?', exact: true })).toHaveValue('Buyer asked for more information.');
+  await expect(page.getByRole('group', { name: 'Outcome', exact: true })).toHaveCount(0);
+  await page.getByRole('combobox', { name: 'Outcome', exact: true }).selectOption('Intro sent');
+  await page.getByRole('button', { name: 'Log call', exact: true }).click();
+  await expect(page.getByRole('group', { name: 'Outcome', exact: true }).getByRole('button', { pressed: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'More', exact: true })).toHaveAttribute('aria-expanded', 'false');
+  await expect(page.getByRole('combobox', { name: 'Stage after saving', exact: true })).toHaveValue('working');
   await page.getByRole('button', { name: 'Log email', exact: true }).click();
   await expect(page.getByRole('combobox', { name: 'Outcome', exact: true })).toHaveValue('');
   await expect(page.getByRole('textbox', { name: 'What happened?', exact: true })).toHaveValue('Buyer asked for more information.');
@@ -138,6 +217,70 @@ test('moving a lead to Sample Requested continues from contact and shipment conf
   await expect(page.getByRole('dialog', { name: 'Sample order created' })).not.toBeVisible();
 });
 
+test('sample handoff identifies an invalid record field and preserves the shipment while it is corrected', async ({ page }) => {
+  await openFixture(page);
+  await page.getByText('Company details & ownership', { exact: true }).click();
+  await page.getByRole('textbox', { name: 'Company email', exact: true }).fill('invalid email');
+  await page.getByText('Company details & ownership', { exact: true }).click();
+  const dialog = await beginSample(page);
+  await dialog.getByRole('textbox', { name: 'Shipping address 1', exact: true }).fill('99 Alternate Avenue');
+  await dialog.getByRole('spinbutton', { name: 'Coffee sample box', exact: true }).fill('2');
+  await dialog.getByRole('button', { name: 'Continue', exact: true }).click();
+  await dialog.getByRole('button', { name: 'Save order & continue', exact: true }).click();
+  await expect(dialog.getByRole('alert')).toContainText('Company email');
+  expect(await calls(page)).toHaveLength(0);
+  await dialog.getByRole('button', { name: 'Review record fields', exact: true }).click();
+  await expect(dialog).not.toBeVisible();
+  await expect(page.getByRole('textbox', { name: 'Company email', exact: true })).toBeFocused();
+  await page.getByRole('textbox', { name: 'Company email', exact: true }).fill('company@example.test');
+  await beginSample(page);
+  await expect(dialog.getByRole('textbox', { name: 'Shipping address 1', exact: true })).toHaveValue('99 Alternate Avenue');
+  await expect(dialog.getByRole('spinbutton', { name: 'Coffee sample box', exact: true })).toHaveValue('2');
+  await dialog.getByRole('button', { name: 'Continue', exact: true }).click();
+  await dialog.getByRole('button', { name: 'Save order & continue', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => window.prospectingFixture.navigation)).toContain('/sample-order/sample-order-1/quote?back=');
+  expect(await calls(page)).toHaveLength(1);
+});
+
+test('sample handoff displays an interrupted response and retries the same submission', async ({ page }) => {
+  await openFixture(page, 'mode=connection');
+  const dialog = await beginSample(page);
+  await dialog.getByRole('spinbutton', { name: 'Coffee sample box', exact: true }).fill('1');
+  await dialog.getByRole('button', { name: 'Continue', exact: true }).click();
+  await dialog.getByRole('button', { name: 'Save order & continue', exact: true }).click();
+  await expect(dialog.getByRole('alert')).toContainText('response was interrupted');
+  const first = (await calls(page))[0];
+  expect(await page.evaluate(() => window.prospectingFixture.navigation)).toBe('');
+  await page.evaluate(() => { window.prospectingFixture.mode = 'success'; });
+  await dialog.getByRole('button', { name: 'Save order & continue', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => window.prospectingFixture.navigation)).toContain('/sample-order/sample-order-1/quote?back=');
+  const inputs = await calls(page);
+  expect(inputs).toHaveLength(2);
+  expect(inputs[1]).toEqual(first);
+});
+
+test('sample handoff reveals a required pending note before saving the note and shipment together', async ({ page }) => {
+  await openFixture(page);
+  await page.getByRole('button', { name: 'Add note', exact: true }).click();
+  const dialog = await beginSample(page);
+  await dialog.getByRole('spinbutton', { name: 'Coffee sample box', exact: true }).fill('1');
+  await dialog.getByRole('button', { name: 'Continue', exact: true }).click();
+  await dialog.getByRole('button', { name: 'Save order & continue', exact: true }).click();
+  await expect(dialog.getByRole('alert')).toContainText('Note');
+  expect(await calls(page)).toHaveLength(0);
+  await dialog.getByRole('button', { name: 'Review record fields', exact: true }).click();
+  await expect(page.getByRole('textbox', { name: 'Note', exact: true })).toBeFocused();
+  await page.getByRole('textbox', { name: 'Note', exact: true }).fill('Buyer requested a sample.');
+  await beginSample(page);
+  await expect(dialog.getByRole('spinbutton', { name: 'Coffee sample box', exact: true })).toHaveValue('1');
+  await dialog.getByRole('button', { name: 'Continue', exact: true }).click();
+  await dialog.getByRole('button', { name: 'Save order & continue', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => window.prospectingFixture.navigation)).toContain('/sample-order/sample-order-1/quote?back=');
+  const inputs = await calls(page);
+  expect(inputs).toHaveLength(1);
+  expect(inputs[0].draft.activity).toMatchObject({ type: 'note', body: 'Buyer requested a sample.' });
+});
+
 test('requesting manager fulfillment retains the request handoff without opening an order quote', async ({ page }) => {
   await openFixture(page);
   const dialog = await beginSample(page);
@@ -179,14 +322,19 @@ test('read-only access exposes the record without enabling writes', async ({ pag
   await expect(page.getByRole('button', { name: 'Save', exact: true })).toBeDisabled();
   await expect(page.getByRole('button', { name: 'Request samples', exact: true })).toBeDisabled();
   await expect(page.getByRole('button', { name: 'Log call', exact: true })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'No answer', exact: true })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'More', exact: true })).toBeDisabled();
   expect(await calls(page)).toHaveLength(0);
 });
 
 test('fits each viewport and passes serious accessibility checks, including the sample dialog', async ({ page }) => {
   await openFixture(page);
+  await page.getByRole('button', { name: 'More', exact: true }).click();
+  await expect(page.getByRole('group', { name: 'More call outcomes', exact: true })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   const pageAudit = await new AxeBuilder({ page }).include('[data-testid="prospecting-record-editor"]').withTags(['wcag2a', 'wcag2aa']).analyze();
   expect(pageAudit.violations.filter((issue) => issue.impact === 'serious' || issue.impact === 'critical')).toEqual([]);
+  await page.getByRole('button', { name: 'More', exact: true }).click();
   const dialog = await beginSample(page);
   const bounds = await dialog.boundingBox();
   expect(bounds!.width).toBeLessThanOrEqual(page.viewportSize()!.width);
@@ -405,7 +553,7 @@ test.describe('lead pane navigation', () => {
   test('Save and next navigates once after saving without refreshing the old lead', async ({ page }) => {
     const pane = page.getByRole('region', { name: 'Lead details' });
     await pane.getByRole('button', { name: 'Log call', exact: true }).click();
-    await pane.getByRole('combobox', { name: 'Outcome', exact: true }).selectOption('Left voicemail');
+    await pane.getByRole('button', { name: 'Left voicemail', exact: true }).click();
     await pane.getByRole('textbox', { name: 'What happened?', exact: true }).fill('Follow up next week.');
     await pane.getByRole('button', { name: 'Save and next', exact: true }).click();
     await expect(pane.getByRole('heading', { name: 'Riverside Recovery', exact: true })).toBeVisible();

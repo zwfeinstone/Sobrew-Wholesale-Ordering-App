@@ -6,6 +6,8 @@ import { recordAdminAuditLog } from '@/lib/admin-audit';
 import {
   addCommissionMonths,
   commissionMonthLabel,
+  commissionMonthForDate,
+  emptyCommissionSummary,
   monthInputValue,
   normalizeCommissionMonth,
   numericCents,
@@ -14,9 +16,7 @@ import {
   type CommissionSnapshotRow,
 } from '@/lib/commissions';
 import { adminCanEdit, requireAdminSectionView } from '@/lib/admin-permissions';
-import { buildPayrollCommissionRow, requiresInvoiceEligibility, type PayrollCommissionPayout } from '@/lib/payroll-commissions';
-import { getCommissionInvoiceEligibility } from '@/lib/commission-invoice-eligibility';
-import { fetchAllPages } from '@/lib/supabase/pagination';
+import { loadPayrollCommissionMonths, type PayrollCommissionRow } from '@/lib/payroll-commissions';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { formatAppDate, usd } from '@/lib/utils';
 
@@ -172,17 +172,8 @@ export default async function CommissionPage(
     : current.profile.id;
   const selectedAdmin = adminRows.find((admin) => admin.id === selectedProfileId);
 
-  const [{ data: snapshots, error: snapshotsError }, { data: payouts, error: payoutsError }, { data: assignments }, { data: centers }] = await Promise.all([
-    fetchAllPages<CommissionSnapshotRow>((from, to) => supabaseAdmin
-      .from('order_commission_snapshots')
-      .select('id,order_id,center_id,sales_profile_id,shipped_at,commission_month,revenue_cents,product_cogs_cents,shipping_cogs_cents,processing_fee_cogs_cents,donation_cogs_cents,total_cogs_cents,gross_profit_cents,commission_percent,commission_cents,cogs_estimated')
-      .eq('sales_profile_id', selectedProfileId)
-      .in('commission_month', historyMonths).order('id', { ascending: true }).range(from, to)),
-    fetchAllPages<PayrollCommissionPayout>((from, to) => supabaseAdmin
-      .from('monthly_commission_payouts')
-      .select('*')
-      .eq('sales_profile_id', selectedProfileId)
-      .in('commission_month', historyMonths).order('id', { ascending: true }).range(from, to)),
+  const [commissions, { data: assignments }, { data: centers }] = await Promise.all([
+    loadPayrollCommissionMonths({ commissionMonths: historyMonths, salesProfileId: selectedProfileId, supabase: supabaseAdmin }),
     supabaseAdmin
       .from('center_sales_assignments')
       .select('center_id,sales_profile_id')
@@ -193,40 +184,30 @@ export default async function CommissionPage(
   ]);
 
   const centerById = new Map(((centers ?? []) as CenterRow[]).map((center) => [center.id, center]));
-  const snapshotsByMonth = new Map<string, CommissionSnapshotRow[]>();
-  for (const snapshot of (snapshots ?? []) as CommissionSnapshotRow[]) {
-    const rows = snapshotsByMonth.get(snapshot.commission_month) ?? [];
-    rows.push(snapshot);
-    snapshotsByMonth.set(snapshot.commission_month, rows);
-  }
-  const payoutByMonth = new Map(((payouts ?? []) as PayrollCommissionPayout[]).map((payout) => [payout.commission_month, payout]));
-
-  const eligibility = await getCommissionInvoiceEligibility(snapshots.filter((snapshot) => {
-    const payout = payoutByMonth.get(snapshot.commission_month) ?? null;
-    return requiresInvoiceEligibility(snapshot, payout);
-  }).map((snapshot) => snapshot.order_id));
-  const commissionError = snapshotsError || payoutsError || eligibility.error;
-  function rowForMonth(month: string) {
-    return buildPayrollCommissionRow({
-      salesProfileId: selectedProfileId,
-      snapshots: snapshotsByMonth.get(month) ?? [],
-      payout: payoutByMonth.get(month) ?? null,
-      paidInvoiceOrderIds: eligibility.paidOrderIds,
-    });
+  const { snapshotsByMonth, rowsByMonth, error: commissionError } = commissions;
+  function rowForMonth(month: string): PayrollCommissionRow {
+    return rowsByMonth.get(month)?.find((row) => row.salesProfileId === selectedProfileId)
+      ?? { salesProfileId: selectedProfileId, summary: emptyCommissionSummary(), payout: null, amountOwedCents: 0, cogsEstimated: false, eligibleOrderIds: [], paidOrderIds: [], pendingInvoiceOrderIds: [], pendingInvoiceCount: 0, pendingInvoiceCents: 0 };
   }
   function summaryForMonth(month: string) { return rowForMonth(month).summary; }
+  function statusForMonth(month: string) {
+    const row = rowForMonth(month);
+    if (row.settlementBlockedReason) return 'Needs review';
+    if (row.amountOwedCents > 0) return month < commissionMonthForDate() ? 'Due' : 'Accruing';
+    return row.payout?.status === 'paid' || row.payout?.paid_at ? 'Paid' : 'No commission due';
+  }
 
   const currentSummary = summaryForMonth(commissionMonth);
   const previousSummary = summaryForMonth(previousMonth);
   const priorYearSummary = summaryForMonth(priorYearMonth);
   const currentSnapshots = snapshotsByMonth.get(commissionMonth) ?? [];
   const currentCommissionRow = rowForMonth(commissionMonth);
-  const creditedOrderIds = new Set([...(currentCommissionRow.paidOrderIds ?? currentSnapshots.map((snapshot) => snapshot.order_id)), ...currentCommissionRow.eligibleOrderIds]);
-  const creditedSnapshots = currentSnapshots.filter((snapshot) => creditedOrderIds.has(snapshot.order_id));
-  const currentPayout = payoutByMonth.get(commissionMonth);
+  const currentPayout = currentCommissionRow.payout;
+  const hourlyOffsetEnabled = Boolean(currentCommissionRow.hourlyOffsetEnabled);
+  const netCommissionCents = currentCommissionRow.netCommissionCents ?? currentSummary.commissionCents;
 
   const centerSummaries = Array.from(
-    creditedSnapshots.reduce<Map<string, CommissionSnapshotRow[]>>((map, snapshot) => {
+    currentSnapshots.reduce<Map<string, CommissionSnapshotRow[]>>((map, snapshot) => {
       const centerId = snapshot.center_id ?? 'unknown';
       const rows = map.get(centerId) ?? [];
       rows.push(snapshot);
@@ -238,13 +219,14 @@ export default async function CommissionPage(
   const assignedCenters = ((assignments ?? []) as Array<{ center_id: string; sales_profile_id: string }>).map((assignment) => centerById.get(assignment.center_id)).filter(Boolean) as CenterRow[];
   const historyRows = historyMonths.map((month) => ({
     month,
-    payout: payoutByMonth.get(month),
-    summary: summaryForMonth(month),
+    status: statusForMonth(month),
+    ...rowForMonth(month),
   }));
+  const hasHourlyOffsetHistory = historyRows.some((row) => row.hourlyOffsetEnabled);
 
   return (
     <div className="space-y-6">
-      {commissionError ? <StatusToast message="Invoice payment verification is unavailable. Commission totals may be incomplete; payouts are on hold." tone="error" /> : null}
+      {commissionError ? <StatusToast message="Commission totals could not be loaded. Refresh before recording a payment." tone="error" /> : null}
       {toast === 'sync_saved' ? <StatusToast message="Commission snapshots synced." tone="success" /> : null}
       {toast === 'sync_none' ? <StatusToast message="No missing shipped orders found for this month." tone="success" /> : null}
       {toast === 'sync_locked' ? <StatusToast message="That commission month is locked or paid, so it was not changed." tone="error" /> : null}
@@ -253,7 +235,7 @@ export default async function CommissionPage(
       <section className="panel">
         <span className="eyebrow">Commission</span>
         <h1 className="page-title mt-4">Monthly commission</h1>
-        <p className="page-subtitle mt-3">Commissions earned from September 30, 2026 require a fully paid QuickBooks invoice. Earlier earnings keep their original payout rules.</p>
+        <p className="page-subtitle mt-3">Commission is earned in the month the invoice is fully paid.</p>
       </section>
 
       <form className="card grid gap-3 md:grid-cols-[minmax(0,1fr)_14rem_auto] md:items-end">
@@ -286,14 +268,14 @@ export default async function CommissionPage(
             <h2 className="mt-2 text-xl font-semibold tracking-tight text-slate-950">{profileLabel(selectedAdmin)} - {commissionMonthLabel(commissionMonth)}</h2>
           </div>
           <span className="w-fit rounded-full border border-teal-100 bg-teal-50 px-3 py-1 text-xs font-semibold uppercase tracking-[0.16em] text-teal-800">
-            {currentCommissionRow.amountOwedCents > 0 && currentPayout?.paid_at ? 'Additional commission due' : currentPayout?.status ?? 'Open'}
+            {statusForMonth(commissionMonth)}
           </span>
         </div>
         {!currentPayout ? (
           <form action={syncMissingCommissionSnapshots} className="mt-4 flex flex-col gap-3 rounded-2xl border border-slate-200 bg-white/60 p-4 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <p className="font-semibold text-slate-950">Missing revenue after assignment?</p>
-              <p className="mt-1 text-sm text-slate-500">Sync or refresh shipped orders from currently assigned centers. Orders without product COGS stay at $0 commission.</p>
+              <p className="mt-1 text-sm text-slate-500">Sync or refresh orders shipped in the selected month from currently assigned centers. Commission appears in the month the invoice is fully paid.</p>
             </div>
             <input name="sales_profile_id" type="hidden" value={selectedProfileId} />
             <input name="month" type="hidden" value={monthInputValue(commissionMonth)} />
@@ -302,19 +284,33 @@ export default async function CommissionPage(
         ) : null}
       </section>
 
-      <p className="text-sm text-slate-600">{money(currentCommissionRow.amountOwedCents)} payable · {money(currentCommissionRow.pendingInvoiceCents)} awaiting invoice payment. Later payments remain in the original shipment month.</p>
+      {currentCommissionRow.settlementBlockedReason ? <p role="alert" className="rounded-xl bg-amber-50 p-4 text-sm text-amber-800">{currentCommissionRow.settlementBlockedReason}</p> : null}
+      <p className="text-sm text-slate-600">{money(currentCommissionRow.amountOwedCents)} {currentCommissionRow.settlementBlockedReason ? 'pending review' : commissionMonth < commissionMonthForDate() ? 'payable' : 'accrued'}. Pay on the first of the following month.</p>
       <section className="grid gap-4 lg:grid-cols-4">
-        <StatTile label="Revenue" value={money(currentSummary.revenueCents)} detail={`${currentSummary.orderCount.toLocaleString()} eligible shipped order(s).`} />
+        <StatTile label="Revenue" value={money(currentSummary.revenueCents)} detail={`${currentSummary.orderCount.toLocaleString()} credited order(s).`} />
         <StatTile label="Gross profit" value={money(currentSummary.grossProfitCents)} detail="Revenue less product, shipping, processing, and donation COGS." />
-        <StatTile label="Commission" value={money(currentSummary.commissionCents)} detail={`MoM ${percent(percentChange(currentSummary.commissionCents, previousSummary.commissionCents))}.`} />
-        <StatTile label="YoY commission" value={percent(percentChange(currentSummary.commissionCents, priorYearSummary.commissionCents))} detail={`Compared with ${commissionMonthLabel(priorYearMonth)}.`} />
+        <StatTile label={hourlyOffsetEnabled ? 'Gross commission' : 'Commission'} value={money(currentSummary.commissionCents)} detail={`MoM ${percent(percentChange(currentSummary.commissionCents, previousSummary.commissionCents))}.`} />
+        <StatTile label={hourlyOffsetEnabled ? 'YoY gross commission' : 'YoY commission'} value={percent(percentChange(currentSummary.commissionCents, priorYearSummary.commissionCents))} detail={`Compared with ${commissionMonthLabel(priorYearMonth)}.`} />
       </section>
+
+      {hourlyOffsetEnabled ? <section className="card space-y-4" aria-labelledby="hourly-offset-heading">
+        <div>
+          <h2 id="hourly-offset-heading" className="text-xl font-semibold text-slate-950">Commission above hourly wages</h2>
+          <p className="mt-1 text-sm text-slate-600">Your commission rate is {Number(currentCommissionRow.commissionPercent ?? 0).toLocaleString('en-US', { maximumFractionDigits: 2 })}% of gross profit. Only the amount above your hourly wages for the same month is paid as extra commission.</p>
+        </div>
+        <dl className="grid gap-4 sm:grid-cols-3">
+          <div><dt className="text-sm text-slate-500">Gross commission</dt><dd className="mt-1 text-xl font-semibold tabular-nums text-slate-950">{money(currentSummary.commissionCents)}</dd></div>
+          <div><dt className="text-sm text-slate-500">Monthly hourly wages</dt><dd className="mt-1 text-xl font-semibold tabular-nums text-slate-950">{money(currentCommissionRow.hourlyBaseWagesCents)}</dd></div>
+          <div><dt className="text-sm text-slate-500">Extra commission</dt><dd className="mt-1 text-xl font-semibold tabular-nums text-teal-900">{money(netCommissionCents)}</dd></div>
+        </dl>
+        <p className="text-sm text-slate-500">Extra commission = gross commission minus monthly hourly wages, with a minimum of $0. It is finalized after the month closes and paid on the first of the following month. First-order SPIFFs remain separate and are payable after the customer’s first order is fully paid.</p>
+      </section> : null}
 
       <section className="grid gap-4 lg:grid-cols-2">
         <div className="card space-y-4">
           <div>
             <h2 className="text-xl font-semibold text-slate-950">Assigned centers</h2>
-            <p className="mt-1 text-sm text-slate-500">Assignments and rates are recorded at shipment. Starting September 30, 2026, new commissions require a fully paid invoice.</p>
+            <p className="mt-1 text-sm text-slate-500">Assignments and rates are recorded at shipment. Commission is earned in the month the invoice is fully paid.</p>
           </div>
           {!assignedCenters.length ? <div className="rounded-2xl border border-slate-200 bg-white/60 p-4 text-sm text-slate-600">No centers are currently assigned.</div> : null}
           <div className="space-y-2">
@@ -330,7 +326,7 @@ export default async function CommissionPage(
         <div className="card space-y-4">
           <div>
             <h2 className="text-xl font-semibold text-slate-950">Center totals</h2>
-            <p className="mt-1 text-sm text-slate-500">Current month commission grouped by customer.</p>
+            <p className="mt-1 text-sm text-slate-500">{hourlyOffsetEnabled ? 'Gross commission before the monthly hourly wage deduction, grouped by customer.' : 'Current month commission grouped by customer.'}</p>
           </div>
           {!centerSummaries.length ? <div className="rounded-2xl border border-slate-200 bg-white/60 p-4 text-sm text-slate-600">No commission snapshots for this month.</div> : null}
           <div className="space-y-2">
@@ -363,7 +359,8 @@ export default async function CommissionPage(
                 <th className="px-4 py-2 text-right">Orders</th>
                 <th className="px-4 py-2 text-right">Revenue</th>
                 <th className="px-4 py-2 text-right">Gross profit</th>
-                <th className="px-4 py-2 text-right">Commission</th>
+                <th className="px-4 py-2 text-right">{hasHourlyOffsetHistory ? 'Gross commission' : 'Commission'}</th>
+                {hasHourlyOffsetHistory ? <><th className="px-4 py-2 text-right">Hourly wages</th><th className="px-4 py-2 text-right">Net commission</th></> : null}
                 <th className="px-4 py-2">Status</th>
               </tr>
             </thead>
@@ -375,7 +372,8 @@ export default async function CommissionPage(
                   <td className="px-4 py-3 text-right text-slate-700">{money(row.summary.revenueCents)}</td>
                   <td className="px-4 py-3 text-right text-slate-700">{money(row.summary.grossProfitCents)}</td>
                   <td className="px-4 py-3 text-right font-semibold text-slate-950">{money(row.summary.commissionCents)}</td>
-                  <td className="rounded-r-xl px-4 py-3 text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">{row.payout?.status ?? 'Open'}</td>
+                  {hasHourlyOffsetHistory ? <><td className="px-4 py-3 text-right text-slate-700">{row.hourlyOffsetEnabled ? money(row.hourlyBaseWagesCents) : '—'}</td><td className="px-4 py-3 text-right font-semibold text-slate-950">{money(row.netCommissionCents ?? row.summary.commissionCents)}</td></> : null}
+                  <td className="rounded-r-xl px-4 py-3 text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">{row.status}</td>
                 </tr>
               ))}
             </tbody>
@@ -386,9 +384,9 @@ export default async function CommissionPage(
       <section className="card space-y-4">
         <div>
           <h2 className="text-xl font-semibold text-slate-950">Order detail</h2>
-          <p className="mt-1 text-sm text-slate-500">Commission snapshots for {commissionMonthLabel(commissionMonth)}.</p>
+          <p className="mt-1 text-sm text-slate-500">Orders credited to {commissionMonthLabel(commissionMonth)} earnings.</p>
         </div>
-        {!currentSnapshots.length ? <div className="rounded-2xl border border-slate-200 bg-white/60 p-4 text-sm text-slate-600">No shipped orders credited this month. If centers were assigned after shipment, use the sync button above.</div> : null}
+        {!currentSnapshots.length ? <div className="rounded-2xl border border-slate-200 bg-white/60 p-4 text-sm text-slate-600">No paid invoices credited this month.</div> : null}
         <div className="space-y-2">
           {currentSnapshots.map((snapshot) => {
             const center = snapshot.center_id ? centerById.get(snapshot.center_id) : null;
@@ -397,11 +395,10 @@ export default async function CommissionPage(
                 <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
                   <div>
                     <p className="font-semibold text-slate-950">{center?.name || 'Unknown center'}</p>
-                    <p className="mt-1 text-sm text-slate-500">{formatAppDate(snapshot.shipped_at, 'Unknown ship date')}</p>
+                    <p className="mt-1 text-sm text-slate-500">Shipped {formatAppDate(snapshot.shipped_at, 'Unknown ship date')}</p>
                   </div>
                   <div className="text-sm sm:text-right">
-                    <p className="font-semibold text-slate-950">{money(snapshot.commission_cents)} {creditedOrderIds.has(snapshot.order_id) ? 'commission' : 'on hold'}</p>
-                    {!creditedOrderIds.has(snapshot.order_id) ? <p className="mt-1 text-amber-800">Awaiting invoice payment</p> : null}
+                    <p className="font-semibold text-slate-950">{money(snapshot.commission_cents)} {hourlyOffsetEnabled ? 'gross commission' : 'commission'}</p>
                     <p className="mt-1 text-slate-500">{money(snapshot.gross_profit_cents)} gross profit at {Number(snapshot.commission_percent ?? 0).toFixed(2)}%</p>
                   </div>
                 </div>

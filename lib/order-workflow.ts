@@ -6,6 +6,7 @@ export type OrderAddress = {
   shipping_city?: string | null;
   shipping_state?: string | null;
   shipping_zip?: string | null;
+  shipping_country?: string | null;
 };
 
 export function missingOrderAddressFields(order: OrderAddress): string[] {
@@ -17,7 +18,7 @@ export function missingOrderAddressFields(order: OrderAddress): string[] {
 }
 
 export function orderAddressLabel(order: OrderAddress) {
-  return [order.shipping_address1, order.shipping_address2, order.shipping_city, order.shipping_state, order.shipping_zip]
+  return [order.shipping_address1, order.shipping_address2, order.shipping_city, order.shipping_state, order.shipping_zip, order.shipping_country]
     .map((value) => value?.trim()).filter(Boolean).join(', ');
 }
 

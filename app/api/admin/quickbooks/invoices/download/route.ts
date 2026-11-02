@@ -106,11 +106,12 @@ export async function POST(request: Request) {
   const supabase = getSupabaseAdmin();
   const { data: order, error: readError } = await supabase
     .from('orders')
-    .select('id,order_kind,status,archived_at,created_at,quickbooks_invoice_id,quickbooks_invoice_doc_number,quickbooks_invoice_url,invoice_status,centers(quickbooks_customer_id),order_items(line_total_cents,product_name_snapshot,products(name,quickbooks_item_id))')
+    .select('id,order_source,order_kind,status,archived_at,created_at,quickbooks_invoice_id,quickbooks_invoice_doc_number,quickbooks_invoice_url,invoice_status,centers(quickbooks_customer_id),order_items(line_total_cents,product_name_snapshot,products(name,quickbooks_item_id))')
     .eq('id', orderId)
     .single();
 
   if (readError || !order) return invoicingRedirect(request, 'invoice_download_failed', returnView);
+  if (order.order_source === 'shopify') return invoicingRedirect(request, 'invoice_not_ready', returnView);
 
   if ((order as any).quickbooks_invoice_id) {
     try {
@@ -145,6 +146,7 @@ export async function POST(request: Request) {
     .update({ invoice_error: null, invoice_status: 'invoicing' })
     .eq('id', orderId)
     .eq('status', 'Shipped')
+    .eq('order_source', 'portal')
     .neq('order_kind', PROSPECTING_SAMPLE_ORDER_KIND)
     .is('quickbooks_invoice_id', null)
     .in('invoice_status', ['not_invoiced', 'invoice_error'])

@@ -3,12 +3,14 @@ import StatusToast from '@/components/status-toast';
 import PendingSubmitButton from '@/components/pending-submit-button';
 import { adminCanEdit, requireAdminSectionView } from '@/lib/admin-permissions';
 import { buildProductionPlan } from '@/lib/production-planning';
+import { buildMachineBagSummary } from '@/lib/machine-bag-summary';
 import { loadProductionPlanningData } from '@/lib/production-planning-data';
 import { planningView, planningViewHref } from '@/lib/production-planning-view';
 import { createClient } from '@/lib/supabase/server';
 import { updateCenterParLevel } from './actions';
 import PlanningRefreshButton from './refresh-button';
 import ProductionPlanningWorkspace from './workspace';
+import MachineRunSummary from './machine-summary';
 
 const TOASTS: Record<string, { message: string; tone: 'success' | 'error' }> = {
   production_recorded: { message: 'Completed production recorded. Inventory and the production plan are updated.', tone: 'success' },
@@ -26,11 +28,13 @@ export default async function PlanningPage({ searchParams }: { searchParams?: Pr
   const params = await searchParams ?? {};
   const access = await requireAdminSectionView('planning');
   const canEdit = adminCanEdit(access.access, 'planning');
+  const canRecordProduction = adminCanEdit(access.access, 'production');
   const view = planningView(params);
   const returnTo = planningViewHref(view);
   const now = new Date();
   const result = await loadProductionPlanningData(await createClient(), now);
   const toast = typeof params.toast === 'string' ? TOASTS[params.toast] : undefined;
+  const plan = result.error ? null : buildProductionPlan(result.data.input);
 
   return <div className="space-y-6">
     {toast ? <StatusToast {...toast} /> : null}
@@ -38,22 +42,30 @@ export default async function PlanningPage({ searchParams }: { searchParams?: Pr
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <span className="eyebrow">Your production compass</span>
-          <h1 className="page-title mt-3">What to make next</h1>
-          <p className="page-subtitle mt-3 max-w-3xl">Work through customer needs first. Prepare recurring products two business days before their scheduled order, then consider replenishment.</p>
+          <h1 className="page-title mt-3">{view.tab === 'summary' ? 'Machine-run planning' : 'What to make next'}</h1>
+          <p className="page-subtitle mt-3 max-w-3xl">{view.tab === 'summary' ? 'Prepare the next two weeks of fraction, filter, and sample bags by size and roast, then assemble your boxed inventory.' : 'Work through customer needs first. Prepare recurring products two business days before their scheduled order, then consider replenishment.'}</p>
         </div>
         <div className="shrink-0 space-y-2 sm:text-right">
           <PlanningRefreshButton />
           {!result.error ? <p className="text-xs text-slate-600">Updated at <time dateTime={now.toISOString()}>{now.toLocaleString('en-US', { timeZone: 'America/Chicago', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}</time> CT</p> : null}
         </div>
       </div>
-      {!canEdit ? <p className="mt-4 rounded-lg bg-slate-100 p-3 text-sm text-slate-700">View only. A team member with Planning edit access can record completed production and change stock targets.</p> : null}
+      {!canEdit && view.tab === 'plan' ? <p className="mt-4 rounded-lg bg-slate-100 p-3 text-sm text-slate-700">View only. A team member with Planning edit access can record completed production and change stock targets.</p> : null}
     </section>
+    <nav aria-label="Planning views" className="flex flex-wrap gap-2">
+      {([['plan', 'Production plan'], ['summary', 'Summary']] as const).map(([tab, label]) => <Link
+        key={tab}
+        href={planningViewHref({ ...view, tab })}
+        aria-current={view.tab === tab ? 'page' : undefined}
+        className={view.tab === tab ? 'btn-primary' : 'btn-secondary'}
+      >{label}</Link>)}
+    </nav>
     {result.error ? <section className="card border-rose-200" role="alert">
       <h2 className="text-xl font-semibold text-rose-950">Unable to load a complete production plan</h2>
       <p className="mt-2 text-sm text-slate-700">Recommendations are unavailable until all order, schedule, recipe, and inventory data can be loaded. Refresh to try again.</p>
       <details className="mt-3 text-sm text-slate-600"><summary className="cursor-pointer font-medium">What failed</summary><p className="mt-2">{result.error.message}</p></details>
-    </section> : <>
-      <ProductionPlanningWorkspace data={result.data} plan={buildProductionPlan(result.data.input)} view={view} canEdit={canEdit} returnTo={returnTo} />
+    </section> : view.tab === 'summary' ? <MachineRunSummary summary={buildMachineBagSummary(result.data, plan!)} canRecordProduction={canRecordProduction} /> : <>
+      <ProductionPlanningWorkspace data={result.data} plan={plan!} view={view} canEdit={canEdit} returnTo={returnTo} />
       <details className="card">
         <summary className="cursor-pointer text-lg font-semibold text-slate-950">Customer stock targets</summary>
         <p className="mt-3 max-w-3xl text-sm text-slate-600">Targets overlap customer demand. A target of 10 units with orders for 8 means 10 total units before those orders go out, leaving 2 afterward. Planning uses the larger of the combined par and minimum targets.</p>

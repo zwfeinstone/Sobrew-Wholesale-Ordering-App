@@ -315,6 +315,42 @@ describe('recent order GPM rows', () => {
 });
 
 describe('item profitability', () => {
+  it('preserves bag-based Shopify and percentage-based wholesale donation snapshots', () => {
+    const dashboard = buildProfitabilityDashboard({
+      centers: [{ id: 'center-1', name: 'Center 1' }],
+      inventoryItems: [],
+      inventoryLots: [],
+      nonInventoryExpenses: [],
+      orderItems: [
+        {
+          ...shippedLine({ grossProfitCents: 2600, id: 'shopify-line', orderId: 'shopify-order', productId: 'coffee', productName: 'Coffee', revenueCents: 3600 }),
+          qty: 2,
+          unit_price_cents: 1800,
+          cogs_donation_cents: 200,
+          cogs_total_cents: 1200,
+        },
+        {
+          ...shippedLine({ grossProfitCents: 6000, id: 'wholesale-line', orderId: 'wholesale-order', productId: 'coffee', productName: 'Coffee', revenueCents: 10000 }),
+          cogs_donation_cents: 100,
+          cogs_total_cents: 4100,
+        },
+      ],
+      orders: [
+        { ...shippedOrder('shopify-order', '2026-07-02T12:00:00.000Z'), center_id: null },
+        shippedOrder('wholesale-order', '2026-07-02T12:00:00.000Z'),
+      ],
+      productionRunInputs: [],
+      productionRuns: [],
+      products: [{ id: 'coffee', name: 'Coffee', sku: 'COFFEE' }],
+      rangeEndExclusive: new Date('2026-07-08T00:00:00.000Z'),
+      rangeStart: new Date('2026-07-01T00:00:00.000Z'),
+      shortageMovements: [],
+    });
+
+    expect(dashboard.current).toMatchObject({ donationCogsCents: 300, totalCogsCents: 5300, grossProfitCents: 8300 });
+    expect(dashboard.itemRows[0]).toMatchObject({ donationCogsCents: 300, grossProfitAfterShippingCents: 8300 });
+  });
+
   it('calculates average item price per raw coffee pound sold', () => {
     const dashboard = buildProfitabilityDashboard({
       centers: [{ id: 'center-1', name: 'Center 1' }],

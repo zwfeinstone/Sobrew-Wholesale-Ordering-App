@@ -17,7 +17,8 @@ export async function POST(request: Request) {
   const centerNotes = String(formData.get('center_notes') ?? '');
   const email = String(formData.get('login_email') ?? '').trim().toLowerCase();
   const full_name = String(formData.get('login_name') ?? '').trim();
-  const password = String(formData.get('password') ?? '').trim();
+  // Passwords must reach Auth and the welcome email exactly as entered.
+  const password = String(formData.get('password') ?? '');
   const address = normalizeCustomerAddress({
     address1: String(formData.get('address1') ?? ''),
     address2: String(formData.get('address2') ?? ''),

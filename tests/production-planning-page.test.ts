@@ -7,13 +7,14 @@ import type { ProductionPlanningData } from '@/lib/production-planning-data';
 
 const state = vi.hoisted(() => ({
   canEdit: true,
+  canEditProduction: true,
   load: vi.fn(),
   requireView: vi.fn(async () => ({ access: {} })),
   production: vi.fn(async () => undefined),
   target: vi.fn(async () => undefined),
   refresh: vi.fn(),
 }));
-vi.mock('@/lib/admin-permissions', () => ({ requireAdminSectionView: state.requireView, adminCanEdit: () => state.canEdit }));
+vi.mock('@/lib/admin-permissions', () => ({ requireAdminSectionView: state.requireView, adminCanEdit: (_access: unknown, section: string) => section === 'production' ? state.canEditProduction : state.canEdit }));
 vi.mock('@/lib/supabase/server', () => ({ createClient: async () => ({ planningClient: true }) }));
 vi.mock('@/lib/production-planning-data', () => ({ loadProductionPlanningData: state.load }));
 vi.mock('@/app/admin/planning/actions', () => ({ producePlannedInventory: state.production, updateCenterParLevel: state.target }));
@@ -144,6 +145,7 @@ beforeEach(() => {
   vi.useFakeTimers();
   vi.setSystemTime(NOW);
   state.canEdit = true;
+  state.canEditProduction = true;
   state.load.mockReset().mockResolvedValue({ data: fixture(), error: null });
   state.requireView.mockClear();
   state.production.mockClear();
@@ -152,6 +154,70 @@ beforeEach(() => {
 afterEach(() => { vi.useRealTimers(); });
 
 describe('production planning page access and loading', () => {
+  it('opens a complete machine summary regardless of production-plan filters, without recording stock', async () => {
+    const data = fixture();
+    data.input.products = [
+      product('fraction', 'Dark Roast 100 x 2 oz', 'fraction_packs', 'FR-DARK'),
+      product('filter', 'Medium Roast 50 x 1.5 oz', 'filter_packs', 'FLT-MEDIUM'),
+      product('sample', 'Whole Bean Sample Box', 'sample_boxes', 'SAMPLE'),
+    ];
+    data.input.orders = [
+      openOrder('a', 'fraction', 10, NOW.toISOString()),
+      openOrder('b', 'filter', 4, NOW.toISOString()),
+      openOrder('c', 'sample', 2, NOW.toISOString()),
+    ];
+    data.input.schedules = [];
+    data.input.pars = [];
+    data.input.stockByProductId = { fraction: 2 };
+    data.recipes = data.input.products.filter((p) => p.id !== 'sample').map((p) => ({
+      id: `recipe-${p.id}`, product_id: p.id, output_qty: 1, waste_percent: 5,
+      labor_minutes: 0, labor_rate_cents: 0, shipping_label_qty: 0, branding_label_qty: 0,
+      product_recipe_components: [
+        { id: `coffee-${p.id}`, inventory_item_id: `coffee-${p.id}`, quantity: p.id === 'fraction' ? 200 : 75, unit: 'oz', component_role: 'raw_coffee', inventory_items: { id: `coffee-${p.id}`, name: p.id === 'fraction' ? 'Dark Roast' : 'Medium Roast', base_unit: 'lb' } },
+        { id: `bags-${p.id}`, inventory_item_id: `bags-${p.id}`, quantity: p.id === 'fraction' ? 100 : 50, unit: 'each', component_role: p.id === 'fraction' ? 'fraction_bag' : 'filter_pack', inventory_items: { id: `bags-${p.id}`, name: 'Bags', base_unit: 'each' } },
+      ],
+    }));
+    state.load.mockResolvedValueOnce({ data, error: null });
+    const markup = renderToStaticMarkup(await PlanningPage({ searchParams: Promise.resolve({ tab: 'summary', q: 'nothing-matches', category: 'whole_bean' }) }));
+    expect(markup).toContain('Summary of all machine-run bags');
+    expect(markup).toContain('Total coffee to grind');
+    expect(markup).toContain('120.25');
+    expect(markup).not.toContain('1,004');
+    expect(markup).toContain('800');
+    expect(markup).toContain('200');
+    expect(markup).toContain('Sample');
+    expect(markup).toContain('6 oz');
+    expect(markup).toContain('Dark Roast');
+    expect(markup).toContain('Medium Roast');
+    expect(markup).toContain('Create boxed inventory');
+    expect(markup).toContain('aria-current="page"');
+    expect(markup).not.toContain('name="quantity_produced"');
+    expect(markup).not.toContain('name="par_qty"');
+    expect(state.production).not.toHaveBeenCalled();
+    expect(state.target).not.toHaveBeenCalled();
+    const previewPath = process.env.MACHINE_SUMMARY_PREVIEW_HTML;
+    if (previewPath) {
+      if (!previewPath.startsWith('/tmp/') && !previewPath.startsWith('/private/tmp/')) throw new Error('Planning previews must stay in the temporary directory.');
+      const css = process.env.PLANNING_PREVIEW_CSS ? await readFile(process.env.PLANNING_PREVIEW_CSS, 'utf8') : '';
+      await writeFile(previewPath, `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Machine summary verification</title><style>${css}</style></head><body><main class="mx-auto max-w-7xl px-4 py-8 sm:px-6">${markup}</main></body></html>`);
+    }
+  });
+
+  it('withholds machine totals when planning data is incomplete', async () => {
+    state.load.mockResolvedValueOnce({ data: null, error: { message: 'Recipe components failed.' } });
+    const markup = renderToStaticMarkup(await PlanningPage({ searchParams: Promise.resolve({ tab: 'summary' }) }));
+    expect(markup).toContain('Unable to load a complete production plan');
+    expect(markup).not.toContain('Summary of all machine-run bags');
+  });
+
+  it('does not offer production links to Planning-only editors', async () => {
+    state.canEditProduction = false;
+    const markup = renderToStaticMarkup(await PlanningPage({ searchParams: Promise.resolve({ tab: 'summary' }) }));
+    expect(markup).toContain('Production edit access');
+    expect(markup).not.toContain('Create boxed inventory');
+    expect(markup).not.toContain('Record after boxing');
+  });
+
   it('renders editable production and stock-target forms with a current snapshot', async () => {
     const markup = renderToStaticMarkup(await PlanningPage({ searchParams: Promise.resolve({}) }));
     expect(productionForms(markup, 'alpha')).toHaveLength(1);

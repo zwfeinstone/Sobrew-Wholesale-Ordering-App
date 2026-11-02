@@ -172,6 +172,7 @@ async function reactivateRecurringOrderAndCreateOrder({
     .insert({
       center_id: recurringOrder.center_id,
       center_location_id: shippingSource?.center_location_id ?? null,
+      recurring_order_id: recurringOrder.id,
       user_id: user.id,
       shipping_name: shippingSource?.shipping_name ?? profile.center?.name ?? profile.full_name ?? profile.email ?? user.email ?? '',
       shipping_address1: shippingSource?.shipping_address1 ?? '',

@@ -18,7 +18,15 @@ import {
   type InventoryUnit,
 } from '@/lib/inventory';
 import { recordRecipeProductionRun } from '@/lib/inventory-production';
+import {
+  buildProductionMaterialPreview,
+  preferredProductionFallbackItem,
+  productionNeedsFallbackBoxes,
+  SAMPLE_BOX_FALLBACK_BOX_SKUS,
+  type ProductionMaterialFallback,
+} from '@/lib/production-materials';
 import { createClient } from '@/lib/supabase/server';
+import { fetchAllByIds } from '@/lib/supabase/pagination';
 import { usd } from '@/lib/utils';
 
 type ProductRow = {
@@ -26,6 +34,7 @@ type ProductRow = {
   name: string | null;
   sku: string | null;
   active: boolean | null;
+  category: string | null;
 };
 
 type InventoryItemRow = {
@@ -34,6 +43,7 @@ type InventoryItemRow = {
   sku: string | null;
   item_type: string;
   base_unit: InventoryUnit;
+  active?: boolean | null;
 };
 
 type InventoryLotRow = {
@@ -62,6 +72,7 @@ type RecipeRow = {
   shipping_label_qty: number | string;
   branding_label_qty: number | string;
   product_recipe_components?: RecipeComponentRow[] | null;
+  material_fallbacks?: ProductionMaterialFallback[];
 };
 
 type ProductionRunRow = {
@@ -241,8 +252,8 @@ export default async function ProductionPage(
   const produceProductId = typeof searchParams?.produce_product === 'string' ? searchParams.produce_product : '';
   const produceQty = typeof searchParams?.produce_qty === 'string' ? searchParams.produce_qty : '';
   const [{ data: products }, { data: recipes }, { data: lots }, { data: runs }] = await Promise.all([
-    supabase.from('products').select('id,name,sku,active').eq('active', true).order('name', { ascending: true }),
-    supabase.from('product_recipes').select('id,product_id,output_qty,waste_percent,labor_minutes,labor_rate_cents,shipping_label_qty,branding_label_qty,product_recipe_components(id,inventory_item_id,quantity,unit,component_role,inventory_items(id,name,sku,item_type,base_unit))'),
+    supabase.from('products').select('id,name,sku,active,category').eq('active', true).order('name', { ascending: true }),
+    supabase.from('product_recipes').select('id,product_id,output_qty,waste_percent,labor_minutes,labor_rate_cents,shipping_label_qty,branding_label_qty,product_recipe_components(id,inventory_item_id,quantity,unit,component_role,inventory_items(id,name,sku,item_type,base_unit,active))'),
     supabase.from('inventory_lots').select('id,inventory_item_id,quantity_remaining,unit_cost_cents').limit(50000),
     supabase.from('production_runs').select('id,product_id,finished_lot_id,quantity_produced,quantity_voided,status,actual_unit_cost_cents,actual_labor_cost_cents,fixed_cost_cents,fixed_tape_cost_cents,fixed_shipping_label_cost_cents,fixed_branding_label_cost_cents,fixed_other_cost_cents,produced_at,voided_at,void_reason,products(name)').order('produced_at', { ascending: false }).limit(10),
   ]);
@@ -271,18 +282,46 @@ export default async function ProductionPage(
   const productionRecipe = recipeRows.find((recipe) => recipe.product_id === productionProductId);
   const productionQty = Math.max(0, Number.parseFloat(produceQty || '0'));
   const components = (productionRecipe?.product_recipe_components ?? []).sort((a, b) => (a.component_role ?? '').localeCompare(b.component_role ?? ''));
+  const productionCategory = productById.get(productionProductId)?.category;
+  const [{ data: materialFallbacks, error: fallbackError }, { data: fallbackBoxes, error: fallbackBoxError }] = await Promise.all([
+    productionRecipe
+      ? supabase.from('product_material_fallbacks').select('primary_inventory_item_id,fallback_inventory_item_id').eq('product_id', productionProductId)
+      : Promise.resolve({ data: [], error: null }),
+    productionRecipe && productionNeedsFallbackBoxes(productionRecipe, productionCategory)
+      ? supabase.from('inventory_items').select('id,name,sku,item_type,base_unit,active').in('sku', SAMPLE_BOX_FALLBACK_BOX_SKUS).eq('active', true)
+      : Promise.resolve({ data: [], error: null }),
+  ]);
+  const componentItemIds = new Set(components.map((component) => component.inventory_item_id));
+  const fallbackRules = (materialFallbacks ?? []) as ProductionMaterialFallback[];
+  const fallbackItemIds = [...new Set(fallbackRules.filter((rule) => componentItemIds.has(rule.primary_inventory_item_id)).map((rule) => rule.fallback_inventory_item_id))];
+  const { data: explicitFallbackItems, error: fallbackItemError } = fallbackItemIds.length
+    ? await supabase.from('inventory_items').select('id,name,sku,item_type,base_unit,active').in('id', fallbackItemIds)
+    : { data: [], error: null };
+  const fallbackItems = [...(fallbackBoxes ?? []), ...(explicitFallbackItems ?? [])] as InventoryItemRow[];
+  const fallbackBox = preferredProductionFallbackItem(fallbackItems);
+  const materialById = new Map([
+    ...components.flatMap((component) => relatedOne(component.inventory_items) ?? []),
+    ...fallbackItems,
+  ].map((item) => [item.id, item]));
 
-  const lotSummaryByItem = new Map<string, { remaining: number; avgCostCents: number }>();
-  for (const lot of lotRows) {
-    const existing = lotSummaryByItem.get(lot.inventory_item_id) ?? { remaining: 0, avgCostCents: 0 };
-    existing.remaining += normalizeInventoryNumber(lot.quantity_remaining);
-    lotSummaryByItem.set(lot.inventory_item_id, existing);
+  const materialLots = await fetchAllByIds([...materialById.keys()], (ids, from, to) => supabase
+    .from('inventory_lots').select('id,inventory_item_id,quantity_remaining').in('inventory_item_id', ids)
+    .gt('quantity_remaining', 0).order('id', { ascending: true }).range(from, to));
+  const materialLoadError = Boolean(fallbackError || fallbackBoxError || fallbackItemError || materialLots.error);
+  const materialStock = new Map<string, number>();
+  for (const lot of materialLots.data) {
+    materialStock.set(lot.inventory_item_id, (materialStock.get(lot.inventory_item_id) ?? 0) + normalizeInventoryNumber(lot.quantity_remaining));
   }
-  for (const [itemId, summary] of lotSummaryByItem.entries()) {
-    const itemLots = lotRows.filter((lot) => lot.inventory_item_id === itemId);
-    const value = itemLots.reduce((sum, lot) => sum + normalizeInventoryNumber(lot.quantity_remaining) * normalizeInventoryNumber(lot.unit_cost_cents), 0);
-    summary.avgCostCents = summary.remaining > 0 ? value / summary.remaining : 0;
-  }
+  const materialPreview = productionRecipe && productionQty > 0 && !materialLoadError
+    ? buildProductionMaterialPreview({
+      recipe: { ...productionRecipe, material_fallbacks: fallbackRules },
+      productCategory: productionCategory,
+      quantity: productionQty,
+      onHandByItemId: materialStock,
+      fallbackItems,
+    })
+    : null;
+  const invalidMaterialPreview = materialLoadError || materialPreview?.invalidRecipe || materialPreview?.invalidUnit;
 
   const outputQty = normalizeInventoryNumber(productionRecipe?.output_qty) || 1;
   const boxQty = components.filter(isBoxComponent).reduce((sum, component) => sum + normalizeInventoryNumber(component.quantity), 0);
@@ -354,6 +393,14 @@ export default async function ProductionPage(
                 <p className="mt-1 text-teal-800">{usd(Math.round(expectedLaborCost))}</p>
               </div>
             </div>
+            <div className={`rounded-xl border p-4 text-sm ${invalidMaterialPreview ? 'border-amber-200 bg-amber-50 text-amber-950' : materialPreview?.hasShortages ? 'border-rose-200 bg-rose-50 text-rose-950' : 'border-teal-100 bg-teal-50/60 text-teal-950'}`}>
+              <p className="font-semibold">{invalidMaterialPreview ? 'Material estimate unavailable. Reload or check the recipe and packaging fallback settings.' : materialPreview?.hasShortages ? 'Materials are short for this run.' : 'Materials cover the expected run.'}</p>
+              {!invalidMaterialPreview && materialPreview ? <ul className="mt-2 space-y-2">{materialPreview.lines.map((line) => <li key={line.inventoryItemId} className="flex flex-wrap justify-between gap-2">
+                <span>{itemDisplayName(materialById.get(line.inventoryItemId))}</span>
+                <span>Need {formatInventoryQuantity(line.requiredQty, line.unit)} · On hand {formatInventoryQuantity(line.availableQty, line.unit)}{line.shortageQty > 0 ? ` · Short ${formatInventoryQuantity(line.shortageQty, line.unit)}` : ''}</span>
+              </li>)}</ul> : null}
+              <p className="mt-2 text-xs">Estimate uses expected quantities and current stock. Enter total actual usage below; recording checks inventory again and uses primary packaging before its fallback.</p>
+            </div>
             <div className="space-y-3">
               {components.map((component) => {
                 const item = relatedOne(component.inventory_items);
@@ -364,14 +411,18 @@ export default async function ProductionPage(
                   ? roundWholeCountQuantity(rawExpected)
                   : rawExpected;
                 const quantityStep = isWholeCountPackagingComponentRole(component.component_role) && item?.base_unit === 'each' ? '1' : '0.0001';
-                const summary = lotSummaryByItem.get(component.inventory_item_id);
+                const fallbackRule = fallbackRules.find((rule) => rule.primary_inventory_item_id === component.inventory_item_id);
+                const fallbackItem = fallbackRule
+                  ? materialById.get(fallbackRule.fallback_inventory_item_id)
+                  : productionRecipe && productionNeedsFallbackBoxes({ ...productionRecipe, product_recipe_components: [component] }, productionCategory) ? fallbackBox : null;
                 return (
                   <div key={component.id} className="grid gap-3 rounded-2xl border border-slate-200 bg-white/70 p-4 md:grid-cols-[minmax(0,1fr)_10rem_7rem] md:items-center">
                     <div>
                       <p className="font-semibold text-slate-950">{itemDisplayName(item)}</p>
                       <p className="mt-1 text-sm text-slate-500">
-                        Expected {formatInventoryQuantity(expected, component.unit)} - Available {formatInventoryQuantity(summary?.remaining ?? 0, item?.base_unit)}
+                        Expected total {formatInventoryQuantity(expected, component.unit)}
                       </p>
+                      {fallbackItem ? <p className="mt-1 text-xs text-slate-500">Use {item?.name ?? 'the primary material'} first, then {fallbackItem.name} for the remainder.{fallbackItem.active === false ? ' This fallback is inactive.' : ''}</p> : null}
                     </div>
                     <label className="space-y-1 text-sm font-medium text-slate-700">
                       Actual used
@@ -400,7 +451,7 @@ export default async function ProductionPage(
                 <input className="input" name="notes" placeholder="Run notes" />
               </label>
             </div>
-            <PendingSubmitButton className="btn-primary w-full sm:w-auto" label="Record production run" pendingLabel="Recording..." />
+            <PendingSubmitButton className="btn-primary w-full sm:w-auto" label="Record production run" pendingLabel="Recording..." disabled={Boolean(invalidMaterialPreview)} />
           </form>
         ) : (
           <div className="rounded-2xl border border-slate-200 bg-white/60 p-4 text-sm text-slate-600">

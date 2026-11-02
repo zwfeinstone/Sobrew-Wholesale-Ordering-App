@@ -1,6 +1,7 @@
 import 'server-only';
 
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { loadCustomerStockBalances } from '@/lib/customer-stock';
 import {
   buildPortalRestockData,
   type PortalProductRow,
@@ -63,7 +64,7 @@ async function loadLegacyCatalog(supabase: SupabaseClient, centerId: string): Pr
 }
 
 export async function loadPortalRestockData(supabase: SupabaseClient, centerId: string) {
-  const [catalogResult, recentOrderResult, recurringOrdersResult] = await Promise.all([
+  const [catalogResult, recentOrderResult, recurringOrdersResult, customerStockBalances] = await Promise.all([
     supabase
       .from('portal_catalog')
       .select('product_id,name,description,image_url,category,current_price_cents'),
@@ -80,6 +81,7 @@ export async function loadPortalRestockData(supabase: SupabaseClient, centerId: 
       .eq('status', 'active')
       .order('created_at', { ascending: false })
       .limit(1000),
+    loadCustomerStockBalances(supabase, centerId),
   ]);
 
   throwForQueryError('recent order', recentOrderResult.error);
@@ -98,5 +100,6 @@ export async function loadPortalRestockData(supabase: SupabaseClient, centerId: 
     productRows,
     recentOrder: ((recentOrderResult.data ?? [])[0] ?? null) as RecentOrderRow | null,
     recurringOrderRows: (recurringOrdersResult.data ?? []) as RecurringOrderRow[],
+    customerStockBalances,
   });
 }

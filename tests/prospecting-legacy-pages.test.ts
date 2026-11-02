@@ -25,17 +25,19 @@ class Query {
 const database = { from: (table: string) => new Query(table) };
 
 describe('rollout-off legacy navigation', () => {
-  it.each([{}, { tab: 'today', preset: 'overdue' }, { tab: 'invalid' }])('keeps the legacy main view on List for %j', async (searchParams) => {
+  it.each([{}, { tab: 'today', preset: 'overdue' }, { tab: 'recent' }, { tab: 'invalid' }])('keeps the legacy main view on List for %j', async (searchParams) => {
     const Page = (await import('@/app/admin/sales/prospecting/legacy-page')).default;
     const html = renderToStaticMarkup(await Page({ searchParams: Promise.resolve(searchParams) }));
     expect(html).toContain('name="tab" value="list"');
     expect(html).not.toContain('name="tab" value="today"');
     expect(html).not.toContain('>All today<');
+    expect(html).not.toContain('Recently worked');
   });
 
   it.each([
     { params: {}, expected: 'list' },
     { params: { tab: 'today', preset: 'new' }, expected: 'list' },
+    { params: { tab: 'recent' }, expected: 'list' },
     { params: { tab: 'tasks', state: 'IL' }, expected: 'tasks' },
     { params: { tab: 'pipeline', stage: 'interested' }, expected: 'pipeline' },
   ])('preserves legacy record and sample contexts for $expected', async ({ params, expected }) => {

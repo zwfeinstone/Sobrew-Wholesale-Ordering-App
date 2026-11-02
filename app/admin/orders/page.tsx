@@ -1,9 +1,12 @@
+import { createPagePerformance } from '@/lib/page-performance';
+import { PagePerformanceMarker } from '@/components/page-performance';
 import { Archive, Download, ClipboardList, Trash2 } from 'lucide-react';
 import Link from 'next/link';
 import { AdminOrderWorkspace, type AdminOrderRow } from '@/components/admin-order-workspace';
 import StatusToast from '@/components/status-toast';
 import { requireAdminSectionView } from '@/lib/admin-permissions';
 import { createClient } from '@/lib/supabase/server';
+import { getSupabaseAdmin } from '@/lib/supabase/admin';
 import { fetchAllByIds } from '@/lib/supabase/pagination';
 import { formatAppDateTime } from '@/lib/utils';
 
@@ -12,7 +15,10 @@ const messages: Record<string, { message: string; tone: 'success' | 'error' }> =
   status_updated: { message: 'Order status updated.', tone: 'success' },
   status_error: { message: 'Order status could not be updated. Try again.', tone: 'error' },
   archive_success: { message: 'Selected orders archived.', tone: 'success' },
-  archive_error: { message: 'Orders could not be archived. Only processing or shipped orders can be archived.', tone: 'error' },
+  archive_error: { message: 'Orders could not be archived. Refresh the list and try again.', tone: 'error' },
+  archive_unavailable: { message: 'None of the selected orders are available to archive. Only active processing or shipped orders can be archived.', tone: 'error' },
+  archive_selection_required: { message: 'Select at least one order to archive.', tone: 'error' },
+  archive_selection_limit: { message: 'Select no more than 1,000 orders to archive at a time.', tone: 'error' },
   archive_denied: { message: 'Only superadmins can archive orders.', tone: 'error' },
   trash_error: { message: 'The order could not be moved. It has not been removed; try again.', tone: 'error' },
   trash_reason_required: { message: 'Enter a reason before removing an order.', tone: 'error' },
@@ -23,15 +29,20 @@ const messages: Record<string, { message: string; tone: 'success' | 'error' }> =
 export default async function AdminOrdersPage(
   props: { searchParams: Promise<Record<string, string | string[] | undefined>> }
 ) {
+  const timing = createPagePerformance('admin_orders');
   const searchParams = await props.searchParams;
   const current = await requireAdminSectionView('orders');
+  timing.checkpoint('authentication');
   const supabase = await createClient();
   const statuses = ['New', 'Processing', 'Shipped'];
   const toast = typeof searchParams.toast === 'string' ? searchParams.toast : '';
-  const [ordersResult, ...countResults] = await Promise.all([
-    supabase.from('orders').select('id,status,order_kind,shipping_company,shipping_name,created_at,subtotal_cents,notes,profiles(email),centers(name)').is('archived_at', null).order('created_at', { ascending: false }).limit(1000),
+  timing.checkpoint('preparation');
+  const [shopifyImports, ordersResult, ...countResults] = await Promise.all([
+    getSupabaseAdmin().from('shopify_order_imports').select('id', { count: 'exact', head: true }).in('status', ['pending', 'error']),
+    supabase.from('orders').select('id,status,order_source,shopify_order_name,shopify_email,shopify_sync_status,order_kind,shipping_company,shipping_name,created_at,subtotal_cents,notes,profiles(email),centers(name)').is('archived_at', null).order('created_at', { ascending: false }).limit(1000),
     ...statuses.map((status) => supabase.from('orders').select('id', { count: 'exact', head: true }).is('archived_at', null).eq('status', status)),
   ]);
+  timing.checkpoint('orders_and_counts');
   if (ordersResult.error || countResults.some((result) => result.error)) throw new Error('Order queue could not be loaded.');
   const baseOrders = ordersResult.data ?? [];
   const ids = baseOrders.map((order) => order.id);
@@ -39,6 +50,7 @@ export default async function AdminOrdersPage(
     fetchAllByIds(ids, (batch, from, to) => supabase.from('order_items').select('order_id,product_name_snapshot,qty,products(name)').in('order_id', batch).order('id').range(from, to)),
     fetchAllByIds(ids, (batch, from, to) => supabase.from('recurring_orders').select('source_order_id').in('source_order_id', batch).order('id').range(from, to)),
   ]) : [{ data: [], error: null }, { data: [], error: null }];
+  timing.checkpoint('items_and_recurring');
   if (itemsResult.error || recurringResult.error) throw new Error('Order details could not be loaded.');
   const itemLabels = new Map<string, string[]>();
   for (const item of itemsResult.data ?? []) {
@@ -50,22 +62,29 @@ export default async function AdminOrdersPage(
   const counts = Object.fromEntries(statuses.map((status, index) => [status, countResults[index].count ?? 0]));
   const rows: AdminOrderRow[] = baseOrders.map((order) => ({
     id: order.id, customerName: relatedOne(order.centers)?.name || order.shipping_company || order.shipping_name || 'Unknown customer',
-    email: relatedOne(order.profiles)?.email || '', status: order.status || 'New', kind: order.order_kind,
+    email: order.shopify_email || relatedOne(order.profiles)?.email || '', status: order.status || 'New', kind: order.order_kind,
     createdAt: order.created_at || '', placedLabel: formatAppDateTime(order.created_at), subtotal: order.subtotal_cents,
+    source: order.order_source, shopifyOrderName: order.shopify_order_name, shopifySyncStatus: order.shopify_sync_status,
     notes: order.notes?.trim() || '', items: itemLabels.get(order.id) ?? ['No items'], hasRecurring: recurring.has(order.id),
   }));
   const message = messages[toast];
   const removed = ['order_trashed', 'delete_success', 'delete_success_with_recurring'].includes(toast);
-  return <div className="order-workspace">
+  timing.checkpoint('calculations');
+  const content = <div className="order-workspace">
     {message ? <StatusToast {...message} /> : null}
     {removed ? <StatusToast message="Order moved to Recently deleted. Its notes and history are recoverable." tone="success" actionHref="/admin/orders/trash" actionLabel="View & restore" persistent /> : null}
     <header className="workspace-page-heading"><div><h1 className="page-title">Orders</h1><p>{counts.New + counts.Processing} open orders</p></div><div className="workspace-heading-actions">
+      <Link className="btn-secondary" href="/admin/orders/shopify" prefetch={false}>Shopify imports</Link>
       <a className="icon-button" href="/api/export/orders" aria-label="Export orders as CSV" title="Export orders as CSV"><Download aria-hidden="true" /></a>
       {current.access.archived_orders.canView ? <Link className="btn-secondary" href="/admin/archived-orders" prefetch={false}><Archive aria-hidden="true" /><span>Archived</span></Link> : null}
       {current.access.orders.canEdit ? <Link className="icon-button" href="/admin/orders/trash" aria-label="Recently deleted orders" title="Recently deleted orders" prefetch={false}><Trash2 aria-hidden="true" /></Link> : null}
       {current.access.order_form.canView ? <Link className="btn-primary" href="/admin/order-form" prefetch={false}><ClipboardList aria-hidden="true" />Order form</Link> : null}
     </div></header>
     {baseOrders.length >= 1000 ? <p className="workspace-notice" role="status">Showing the latest 1,000 active orders. Export orders for the complete list.</p> : null}
+    {shopifyImports.error ? <p className="workspace-notice warning">Shopify import status is unavailable. <Link href="/admin/orders/shopify" className="workspace-text-link">Review Shopify setup</Link></p> : (shopifyImports.count ?? 0) > 0 ? <p className="workspace-notice warning">{shopifyImports.count} Shopify import{shopifyImports.count === 1 ? '' : 's'} need attention. <Link href="/admin/orders/shopify" className="workspace-text-link">Review imports</Link></p> : null}
     <AdminOrderWorkspace orders={rows} counts={counts} canArchive={current.isOwner} canEdit={current.access.orders.canEdit} initialQuery={typeof searchParams.q === 'string' ? searchParams.q : ''} initialStatus={typeof searchParams.status === 'string' && statuses.includes(searchParams.status) ? searchParams.status : ''} />
   </div>;
+  timing.checkpoint('jsx_build');
+  const sample = timing.finish({ orders: rows.length, items: itemsResult.data?.length ?? 0 });
+  return <>{sample ? <PagePerformanceMarker sample={sample} /> : null}{content}</>;
 }

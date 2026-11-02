@@ -64,6 +64,17 @@ function baseInput(overrides: Partial<BuildBusinessHealthSnapshotInput> = {}): B
 }
 
 describe('buildBusinessHealthSnapshot', () => {
+  it('discloses deferred payroll coverage without adding private payroll amounts to shared AI snapshots', () => {
+    const snapshot = buildBusinessHealthSnapshot(baseInput());
+    const note = snapshot.data_coverage_notes.find((value) => value.includes('separately accrued deferred payroll'));
+    expect(note).toContain('unpaid liability');
+    expect(note).toContain('not a second expense');
+    expect(note).toContain('not included in this shared snapshot');
+    expect(snapshot).not.toHaveProperty('deferred_payroll');
+    expect(snapshot).not.toHaveProperty('payroll');
+    expect(JSON.stringify(snapshot)).not.toContain('haskins');
+  });
+
   it('builds month-to-date, trailing 8-week, and prior equal ranges from the selected as-of date', () => {
     const snapshot = buildBusinessHealthSnapshot(baseInput());
 

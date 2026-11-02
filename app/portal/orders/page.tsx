@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { ReorderButton } from '@/components/cart-client';
 import { OrderStatusBadge } from '@/components/order-status';
 import { requireUser } from '@/lib/auth';
+import { getCenterCartProducts } from '@/lib/center-cart-products';
 import { cartStorageKeyForUser } from '@/lib/cart';
 import { createClient } from '@/lib/supabase/server';
 import { formatAppDateTime, usd } from '@/lib/utils';
@@ -38,17 +39,12 @@ export default async function OrdersPage(
   const hasNextPage = (orderRows?.length ?? 0) > PAGE_SIZE;
 
   const orderIds = (orders ?? []).map((order) => order.id);
-  const { data: items } = orderIds.length
-    ? await supabase.from('order_items').select('order_id,product_id,product_name_snapshot,qty,unit_price_cents').in('order_id', orderIds)
-    : { data: [] as any[] };
-
-  const productIds = [...new Set((items ?? []).map((item: any) => item.product_id))];
-  const { data: catalogProducts } = productIds.length
-    ? await supabase
-        .from('portal_catalog')
-        .select('product_id,name,current_price_cents')
-        .in('product_id', productIds)
-    : { data: [] as any[] };
+  const [{ data: items }, catalogProducts] = await Promise.all([
+    orderIds.length
+      ? supabase.from('order_items').select('order_id,product_id,product_name_snapshot,qty,unit_price_cents').in('order_id', orderIds)
+      : Promise.resolve({ data: [] as any[] }),
+    orderIds.length ? getCenterCartProducts(supabase, centerId) : Promise.resolve([]),
+  ]);
   const catalogProductById = new Map((catalogProducts ?? []).map((product) => [product.product_id, product]));
 
   const lineItemsByOrderId = new Map<string, string[]>();
@@ -66,7 +62,7 @@ export default async function OrdersPage(
       reorderItems.push({
         product_id: item.product_id,
         name: catalogProduct.name,
-        price_cents: catalogProduct.current_price_cents,
+        price_cents: catalogProduct.price_cents,
         qty: item.qty,
       });
     }
@@ -105,6 +101,7 @@ export default async function OrdersPage(
               <OrderStatusBadge status={order.status} />
               <span className="text-lg font-semibold text-slate-950">{usd(order.subtotal_cents)}</span>
               <ReorderButton
+                products={catalogProducts}
                 items={reorderItemsByOrderId.get(order.id) ?? []}
                 storageKey={cartStorageKey}
                 label="Reorder & review"

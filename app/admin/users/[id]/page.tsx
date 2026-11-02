@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import CenterCatalogEditor from '@/components/center-catalog-editor';
 import CustomerWorkspaceTabs from '@/components/customer-workspace-tabs';
+import CustomerLoginForms from '@/components/customer-login-forms';
 import { parseCenterCatalog } from '@/lib/customer-pricing';
 import { orderActivityLabel } from '@/lib/order-workflow';
 import { notFound, redirect } from 'next/navigation';
@@ -15,6 +16,7 @@ import { requireAdminWriteAccess } from '@/lib/admin-write-access';
 import { sendCustomerWelcomeEmail } from '@/lib/email';
 import { productCategoryLabel } from '@/lib/product-categories';
 import { retryCustomerQuickBooksSync } from './quickbooks-actions';
+import { resetCenterLoginPassword } from './login-actions';
 import { createClient } from '@/lib/supabase/server';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { formatAppDateTime, usd } from '@/lib/utils';
@@ -75,6 +77,10 @@ function adminActionErrorMessage(error: string) {
   if (error === 'admin_permission_denied') return 'Only superadmins can manage admin accounts and permissions.';
   if (error === 'admin_save_failed') return 'The admin account could not be saved.';
   if (error === 'admin_permissions_failed') return 'The admin permissions could not be saved.';
+  if (error === 'login_password_invalid') return 'Enter a password of at least 8 characters. The login was not changed.';
+  if (error === 'login_save_failed') return 'The login could not be saved. Please try again.';
+  if (error === 'login_password_mismatch') return 'The password confirmation did not match. The password was not changed.';
+  if (error === 'login_password_failed') return 'We could not confirm the password reset. Please try again before sharing the new password.';
   return `Could not complete that action (${error}).`;
 }
 
@@ -116,6 +122,7 @@ async function updateCenter(formData: FormData) {
         notes: String(formData.get('notes') ?? ''),
         customer_tax_note: String(formData.get('customer_tax_note') ?? '').trim() || null,
         customer_tax_status: customerTaxStatusFromForm(formData),
+        automatic_invoice_only: formData.get('automatic_invoice_only') === 'on',
         is_active: formData.get('is_active') === 'on',
       })
       .eq('id', centerId);
@@ -221,11 +228,12 @@ async function addCenterLogin(formData: FormData) {
 
   const email = String(formData.get('email') ?? '').trim().toLowerCase();
   const full_name = String(formData.get('full_name') ?? '').trim();
-  const password = String(formData.get('password') ?? '').trim();
+  const password = String(formData.get('password') ?? '');
 
   if (!centerId || !email || !password) {
     redirect(`/admin/users/${centerId}?error=login_missing`);
   }
+  if (password.length < 8) redirect(`/admin/users/${centerId}?error=login_password_invalid`);
 
   const { data: welcomeCenter } = await supabaseAdmin
     .from('centers')
@@ -276,7 +284,9 @@ async function updateCenterLogin(formData: FormData) {
   if (!centerId || !memberId) redirect('/admin/users');
   await requireCenterAccess(centerId, adminUserDeniedHref(centerId));
 
-  await supabaseAdmin
+  // Ordinary profile edits must never reset a password, even if autofill or an
+  // older form submits a password field. Resets use their own confirmed action.
+  const profileResult = await supabaseAdmin
     .from('profiles')
     .update({
       full_name: String(formData.get('full_name') ?? '').trim(),
@@ -284,11 +294,12 @@ async function updateCenterLogin(formData: FormData) {
     })
     .eq('id', memberId)
     .eq('center_id', centerId)
-    .eq('is_admin', false);
+    .eq('is_admin', false)
+    .select('id')
+    .maybeSingle();
 
-  const password = String(formData.get('password') ?? '').trim();
-  if (password) {
-    await supabaseAdmin.auth.admin.updateUserById(memberId, { password });
+  if (profileResult.error || !profileResult.data) {
+    redirect(`/admin/users/${centerId}?error=login_save_failed`);
   }
 
   redirect(`/admin/users/${centerId}?success=login_saved`);
@@ -461,6 +472,8 @@ export default async function UserDetailPage(
         {success === 'center_saved' ? <div className="card text-sm text-green-700">Center settings saved.</div> : null}
         {success === 'login_added' ? <div className="card text-sm text-green-700">Login added to center.</div> : null}
         {success === 'login_saved' ? <div className="card text-sm text-green-700">Login updated.</div> : null}
+        {success === 'login_password_reset' ? <div className="card text-sm text-green-700" role="status">Password reset successfully. Share the new password with the customer.</div> : null}
+        {warning === 'password_audit_failed' ? <div className="card text-sm text-amber-700" role="alert">The password was reset, but the admin activity record could not be saved.</div> : null}
         {success === 'login_removed' ? <div className="card text-sm text-green-700">Login removed from center.</div> : null}
         {success === 'location_added' ? <div className="card text-sm text-green-700">Delivery location added.</div> : null}
         {success === 'location_saved' ? <div className="card text-sm text-green-700">Delivery location updated.</div> : null}
@@ -517,9 +530,16 @@ export default async function UserDetailPage(
                 <input className="input" name="customer_tax_note" defaultValue={center.customer_tax_note ?? ''} aria-label="Exemption certificate, resale note, or review detail" placeholder="Exemption certificate, resale note, or review detail" />
               </label>
             </div>
+            <div className="rounded-2xl border border-slate-200 bg-white/60 px-4 py-3">
+              <label className="flex items-center gap-3 text-sm font-medium text-slate-700">
+                <input type="checkbox" name="automatic_invoice_only" defaultChecked={center.automatic_invoice_only} disabled={!currentAccess.access.centers.canEdit} aria-describedby="automatic-invoice-only-help" />
+                Send PDF invoices only
+              </label>
+              <p id="automatic-invoice-only-help" className="mt-2 text-sm text-slate-500">When an order ships, send the QuickBooks PDF invoice without automatically charging saved payment methods. The customer&apos;s invoice email and CC rules still apply.</p>
+            </div>
           </section>
 
-          <PendingSubmitButton className="btn-primary" label="Save customer" pendingLabel="Saving..." />
+          <PendingSubmitButton className="btn-primary" label="Save customer" pendingLabel="Saving..." disabled={!currentAccess.access.centers.canEdit} />
         </form></>,
         locations: <>        <section className="card space-y-5">
           <div>
@@ -611,22 +631,7 @@ export default async function UserDetailPage(
                 <p className="text-lg font-semibold text-slate-950">{member.full_name || member.email}</p>
                 <p className="mt-1 break-all text-sm text-slate-500">{member.email}</p>
               </div>
-              <form action={updateCenterLogin} className="grid gap-3 md:grid-cols-[1.2fr_1fr_auto_auto] md:items-center">
-                <input type="hidden" name="center_id" value={center.id} />
-                <input type="hidden" name="member_id" value={member.id} />
-                <input className="input" name="full_name" defaultValue={member.full_name ?? ''} aria-label="Login name" placeholder="Login name" />
-                <input className="input" name="password" type="password" minLength={8} aria-label="Leave blank to keep password" placeholder="Leave blank to keep password" autoComplete="new-password" />
-                <label className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-white/60 px-4 py-3 text-sm font-medium text-slate-700">
-                  <input type="checkbox" name="is_active" defaultChecked={member.is_active} />
-                  Active
-                </label>
-                <PendingSubmitButton className="btn-primary w-full md:w-auto" label="Save Login" pendingLabel="Saving..." />
-              </form>
-              <form action={removeCenterLogin} className="w-full md:w-auto">
-                <input type="hidden" name="center_id" value={center.id} />
-                <input type="hidden" name="member_id" value={member.id} />
-                <PendingSubmitButton className="btn-secondary w-full md:w-auto" label="Remove Login" pendingLabel="Removing..." />
-              </form>
+              <CustomerLoginForms centerId={center.id} member={member} saveAction={updateCenterLogin} resetAction={resetCenterLoginPassword} removeAction={removeCenterLogin} />
             </div>
           ))}
         </section>

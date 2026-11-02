@@ -1,11 +1,19 @@
+import { createPagePerformance } from '@/lib/page-performance';
+import { PagePerformanceMarker } from '@/components/page-performance';
 import DetailRowLimitNotice from '@/components/report-detail-pagination';
 import { fetchAllPages, fetchAllByIds } from '@/lib/supabase/pagination';
 import { loadReportCommerce } from '@/lib/admin-report-commerce';
+import { loadReportSalesReps } from '@/lib/admin-report-lookups';
+import { createReportDataCache } from '@/lib/admin-report-cache';
+import { loadReportProductionRuns } from '@/lib/admin-report-preload';
+import { AdminNavigationForm, AdminNavigationLink, AdminNavigationRetry, AdminNavigationSubmit } from '@/components/admin-navigation';
+import { refreshReportData } from './actions';
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import type { ReactNode } from 'react';
 import PendingSubmitButton from '@/components/pending-submit-button';
 import ReportDateRangeFields from '@/components/report-date-range-fields';
+import { loadDeferredPayAccounting } from '@/lib/deferred-pay-accounting-data';
 import { getSalesScopedCenterIdsForAdmin, scopeCenterRelatedQueryForAdmin, scopeCentersForAdmin } from '@/lib/admin-center-scope';
 import { adminCanView, requireAdminSectionView } from '@/lib/admin-permissions';
 import { dataNeedsForReport, type AdminReportId } from '@/lib/admin-report-data-needs';
@@ -101,7 +109,7 @@ const REPORTS = [
   { id: 'items', label: 'Item Profitability' },
   { id: 'margin', label: 'Margin Health' },
   { id: 'recent_order_gpm', label: 'Recent Order GPM' },
-  { id: 'labor_paid_gpm', label: 'Labor Paid GPM' },
+  { id: 'labor_paid_gpm', label: 'Payroll Labor GPM' },
   { id: 'ai_qa', label: 'AI Q/A About Business' },
   { id: 'ai_overview', label: 'AI Overview' },
   { id: 'simulator', label: 'Gross Profit Simulator' },
@@ -1495,9 +1503,12 @@ function ReportNav({
           const params = new URLSearchParams(searchParams);
           params.set('report', report.id);
           return (
-            <Link
+            <AdminNavigationLink
               key={report.id}
+              label={report.label}
+              aria-current={activeReport === report.id ? 'page' : undefined}
               href={`/admin/reports?${params.toString()}`}
+              prefetch={false}
               className={`rounded-xl border px-4 py-3 text-sm font-semibold transition-all duration-200 ${
                 activeReport === report.id
                   ? 'border-teal-200 bg-teal-50 text-teal-900'
@@ -1505,7 +1516,7 @@ function ReportNav({
               }`}
             >
               {report.label}
-            </Link>
+            </AdminNavigationLink>
           );
         })}
       </div>
@@ -1655,7 +1666,7 @@ function CogsSplitGrid({ current }: { current: ReturnType<typeof buildProfitabil
       <StatTile label="Fixed Packaging" value={money(current.fixedCents)} detail="Tape, labels, and legacy fixed recipe costs." />
       <StatTile label="Shipping COGS" value={money(current.shippingCogsCents)} detail="Required shipping cost allocated from shipped orders." />
       <StatTile label="Processing Fees" value={money(current.processingFeeCogsCents)} detail="2.99% plus 30 cents per shipped order." />
-      <StatTile label="Donation COGS" value={money(current.donationCogsCents)} detail="Fixed 1% of shipped order revenue." />
+      <StatTile label="Donation COGS" value={money(current.donationCogsCents)} detail="Shopify: $1 per bag. Wholesale: 1% of shipped order revenue." />
     </div>
   );
 }
@@ -2179,7 +2190,7 @@ function LaborDifferenceTrendChart({ points }: { points: LaborDifferenceTrendPoi
         <div>
           <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Labor difference trend</p>
           <h2 className="mt-2 text-xl font-semibold text-slate-950">Labor difference over time</h2>
-          <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-500">Production labor paid minus production run labor COGS, bucketed across the selected range.</p>
+          <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-500">Completed production payroll minus production run labor COGS, before deferred pay accrual, bucketed across the selected range.</p>
         </div>
         <div className="grid w-full gap-3 sm:grid-cols-3 xl:w-auto xl:min-w-[36rem]">
           <div className="min-w-0 rounded-xl border border-slate-200/70 bg-white/60 px-4 py-3">
@@ -2254,54 +2265,66 @@ function LaborPaidGpmReport({
       label: 'Revenue',
       shipped: money(summary.revenueCents),
       actual: money(summary.revenueCents),
+      accrued: money(summary.revenueCents),
     },
     {
       label: 'COGS before labor',
       shipped: money(summary.totalCogsBeforeLaborCents),
       actual: money(summary.totalCogsBeforeLaborCents),
+      accrued: money(summary.totalCogsBeforeLaborCents),
     },
     {
       label: 'Labor',
       shipped: money(summary.shippedLaborCogsCents),
       actual: money(summary.actualLaborPaidCents),
+      accrued: money(summary.accruedLaborCostCents),
     },
     {
       label: 'Total COGS',
       shipped: money(summary.shippedTotalCogsCents),
       actual: money(summary.actualTotalCogsCents),
+      accrued: money(summary.accrualTotalCogsCents),
     },
     {
       label: 'Gross profit',
       shipped: money(summary.shippedGrossProfitCents),
       actual: money(summary.actualGrossProfitCents),
+      accrued: money(summary.accrualGrossProfitCents),
     },
     {
       label: 'GPM',
       shipped: `${number(summary.shippedGpmPercent, 1)}%`,
       actual: `${number(summary.actualLaborGpmPercent, 1)}%`,
+      accrued: `${number(summary.accrualGpmPercent, 1)}%`,
     },
   ];
 
   return (
     <section className="space-y-6">
       <SectionHeading
-        eyebrow="Labor paid GPM"
-        title="Actual labor paid margin"
-        subtitle="Compares normal shipped-order GPM with a version that replaces shipped labor COGS with Production-tagged payroll labor paid in the selected range."
+        eyebrow="Payroll labor GPM"
+        title="Production payroll margin"
+        subtitle="Compares shipped-order GPM with completed Production-tagged hourly payroll and recorded salary for the selected work period. Completed wages include shifts awaiting approval or payment."
       />
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <StatTile label="Revenue" value={money(summary.revenueCents)} detail="Shipped order revenue in the selected range." />
         <StatTile label="Shipped-COGS GPM" value={`${number(summary.shippedGpmPercent, 1)}%`} detail={`${money(summary.shippedGrossProfitCents)} gross profit using order-line COGS.`} />
-        <StatTile label="Labor-Paid GPM" value={`${number(summary.actualLaborGpmPercent, 1)}%`} detail={`${gpmDeltaLabel} points versus shipped-COGS GPM.`} />
-        <StatTile label="Actual Labor Paid" value={money(summary.actualLaborPaidCents)} detail={`${money(summary.hourlyLaborPaidCents)} hourly and ${money(summary.salaryLaborPaidCents)} salary.`} />
+        <StatTile label="Payroll GPM Before Deferred Pay" value={`${number(summary.actualLaborGpmPercent, 1)}%`} detail={`${gpmDeltaLabel} points versus shipped-COGS GPM.`} />
+        <StatTile label="Completed Payroll Labor" value={money(summary.actualLaborPaidCents)} detail={`${money(summary.hourlyLaborPaidCents)} hourly and ${money(summary.salaryLaborPaidCents)} recorded salary. This is a work-period cost, not confirmed cash paid.`} />
       </div>
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <StatTile label="Shipped Labor COGS" value={money(summary.shippedLaborCogsCents)} detail="Labor already recognized on shipped order lines." />
-        <StatTile label="Labor Difference" value={signedMoney(summary.laborDifferenceCents)} detail="Production labor paid minus production run labor COGS." />
+        <StatTile label="Labor Difference Before Deferred Pay" value={signedMoney(summary.laborDifferenceCents)} detail="Completed production payroll minus production run labor COGS." />
         <StatTile label="Production Hours" value={`${number(summary.productionHours, 2)} hrs`} detail={`${number(summary.hourlyEntryCount)} completed Production-tagged time entr${summary.hourlyEntryCount === 1 ? 'y' : 'ies'}.`} />
         <StatTile label="Production Run Labor COGS" value={money(summary.productionRunLaborCogsCents)} detail="Actual labor stored on production runs in the range." />
+      </div>
+
+      <div className="grid gap-4 md:grid-cols-3">
+        <StatTile label="Deferred Production Pay Earned" value={money(summary.deferredProductionAccruedCents)} detail="Additional production compensation earned in this period, regardless of payout date." />
+        <StatTile label="Production Labor Including Deferred Pay" value={money(summary.accruedLaborCostCents)} detail="Completed payroll plus deferred production expense. Other labor tags remain operating expenses in Accounting." />
+        <StatTile label="GPM Including Deferred Production Pay" value={`${number(summary.accrualGpmPercent, 1)}%`} detail={`${money(summary.accrualGrossProfitCents)} gross profit in this labor-cost comparison. Deferred payouts settle the payable without adding another expense.`} />
       </div>
 
       <LaborDifferenceTrendChart points={trend} />
@@ -2322,7 +2345,8 @@ function LaborPaidGpmReport({
               <tr className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
                 <th className="px-4 py-2">Line</th>
                 <th className="px-4 py-2 text-right">Normal reports GPM</th>
-                <th className="px-4 py-2 text-right">Labor paid GPM</th>
+                <th className="px-4 py-2 text-right">Completed payroll</th>
+                <th className="px-4 py-2 text-right">Including deferred production pay</th>
               </tr>
             </thead>
             <tbody>
@@ -2330,7 +2354,8 @@ function LaborPaidGpmReport({
                 <tr key={row.label} className="bg-white/70">
                   <td className="rounded-l-xl px-4 py-3 font-semibold text-slate-950">{row.label}</td>
                   <td className="px-4 py-3 text-right text-slate-700">{row.shipped}</td>
-                  <td className="rounded-r-xl px-4 py-3 text-right font-semibold text-slate-950">{row.actual}</td>
+                  <td className="px-4 py-3 text-right text-slate-700">{row.actual}</td>
+                  <td className="rounded-r-xl px-4 py-3 text-right font-semibold text-slate-950">{row.accrued}</td>
                 </tr>
               ))}
             </tbody>
@@ -3242,7 +3267,7 @@ function ProspectingReport({
         <SectionHeading
           eyebrow="Rep performance"
           title="Prospecting by sales rep"
-          subtitle="Activity is credited to its creator; new leads use the current assignee; sample boxes use their saved sales profile."
+          subtitle="Lead wins are credited to the assigned rep; losses use the rep assigned before closure. Calls and sample requests are credited to the person who logged them."
         />
         <ProspectingRepTable rows={summary.reps} profilesById={profilesById} />
       </section>
@@ -3254,6 +3279,7 @@ function ProspectingReport({
         </summary>
         <p className="text-sm leading-6 text-slate-500">
           Legacy daily blocks and newer lead-level activity remain separate and are added once. They cannot be deduplicated across systems because legacy rows do not identify individual leads.
+          {' '}Legacy blocks use their creator, new leads use the current assignee, and sample boxes use their saved sales profile. Each lead location counts separately, including locations with the same decision maker.
         </p>
         <ProspectingSourceTable rows={summary.sources} />
       </details>
@@ -3331,9 +3357,10 @@ function CriticalReportError({ message }: { message: string }) {
         <h1 className="page-title mt-4">Reporting dashboard</h1>
         <p className="page-subtitle mt-3">The report data could not be loaded.</p>
       </section>
-      <section className="card border-rose-200 bg-rose-50/70 text-sm leading-6 text-rose-800">
+      <section role="alert" className="card border-rose-200 bg-rose-50/70 text-sm leading-6 text-rose-800">
         <p className="font-semibold">Unable to load reporting data.</p>
         <p className="mt-1">{message}</p>
+        <AdminNavigationRetry />
       </section>
     </div>
   );
@@ -3344,13 +3371,16 @@ export default async function AdminReportsPage(
     searchParams?: Promise<Record<string, string | string[] | undefined>>;
   }
 ) {
+  const timing = createPagePerformance('admin_report');
   const searchParams = await props.searchParams;
   const reportStartedAt = performance.now();
   const currentAccess = await requireAdminSectionView('reports');
+  timing.checkpoint('authentication');
   const supabase = await createClient();
   const canViewSalesReports = adminCanView(currentAccess.access, 'reports_sales');
   const canViewProfitabilityReports = adminCanView(currentAccess.access, 'reports_profitability');
-  const canViewLaborPaidGpmReport = canViewProfitabilityReports && adminCanView(currentAccess.access, 'payroll');
+  const canViewPayroll = adminCanView(currentAccess.access, 'payroll');
+  const canViewLaborPaidGpmReport = canViewProfitabilityReports && canViewPayroll;
   const allowedReports = REPORTS.filter((report) => {
     if (report.id === 'labor_paid_gpm') return canViewLaborPaidGpmReport;
     return reportIsProfitability(report.id) ? canViewProfitabilityReports : canViewSalesReports;
@@ -3370,31 +3400,34 @@ export default async function AdminReportsPage(
   const dataNeeds = dataNeedsForReport(activeReport);
   const detailPage = Number(stringParam(searchParams?.detail_page) || 1);
 
-  const salesRepSettingsResult = currentAccess.isOwner
-    ? await fetchAllPages((from, to) => supabase.from('admin_commission_settings').select('profile_id').eq('is_sales_rep', true).order('profile_id').range(from, to))
-    : { data: [], error: null };
-  if (salesRepSettingsResult.error) {
-    return <CriticalReportError message={salesRepSettingsResult.error.message} />;
-  }
-  const salesRepProfileIds = [...new Set((salesRepSettingsResult.data ?? []).map((row: { profile_id: string | null }) => row.profile_id).filter(Boolean))] as string[];
-  const salesRepsResult = currentAccess.isOwner && salesRepProfileIds.length
-    ? await fetchAllByIds(salesRepProfileIds, (profileIds, from, to) => supabase
-      .from('profiles')
-      .select('id,email,full_name,is_active')
-      .in('id', profileIds)
-      .eq('is_admin', true)
-      .order('full_name', { ascending: true }).order('id').range(from, to))
-    : { data: [], error: null };
-  if (salesRepsResult.error) {
-    return <CriticalReportError message={salesRepsResult.error.message} />;
-  }
-  const salesRepRows = (salesRepsResult.data ?? []) as AdminRow[];
-  const salesReps = (activeReport === 'prospecting' ? filterProspectingSalesRepProfiles(salesRepRows) : salesRepRows)
-    .sort((a, b) => adminLabel(a).localeCompare(adminLabel(b)));
+  timing.checkpoint('preparation');
   const requestedSalesRepId = stringParam(searchParams?.sales_rep);
-  const selectedSalesRepId = currentAccess.isOwner && activeReport !== 'labor_paid_gpm' && salesReps.some((admin) => admin.id === requestedSalesRepId) ? requestedSalesRepId : '';
+  const needsSalesReps = currentAccess.isOwner && activeReport !== 'labor_paid_gpm'
+    && (!['ai_overview', 'ai_qa'].includes(activeReport) || Boolean(requestedSalesRepId));
+  // Rep membership selects the authorized data scope, so validate a requested
+  // rep against the database on every visit, even when display data is cached.
+  const selectedRepQuery = needsSalesReps && requestedSalesRepId
+    ? timing.measure('sales_reps', loadReportSalesReps(supabase)) : null;
+  let selectedSalesRepId = '';
+  // Only a requested rep filter depends on this lookup. Unfiltered report data
+  // can load alongside the dropdown, with errors still checked before rendering.
+  if (selectedRepQuery) {
+    const result = await selectedRepQuery;
+    if (result.error) return <CriticalReportError message={result.error.message} />;
+    const rows = result.data as AdminRow[];
+    const eligibleReps = activeReport === 'prospecting' ? filterProspectingSalesRepProfiles(rows) : rows;
+    if (eligibleReps.some((admin) => admin.id === requestedSalesRepId)) selectedSalesRepId = requestedSalesRepId;
+  }
+  timing.checkpoint('rep_selection');
   const centerScope = await getSalesScopedCenterIdsForAdmin({ current: currentAccess, selectedSalesProfileId: selectedSalesRepId, supabase });
 
+  // Only raw query data is shared. Authentication, report permissions and the
+  // effective center scope above are resolved afresh before every cache read.
+  const reportData = createReportDataCache(currentAccess, centerScope);
+  const salesRepsQuery = selectedRepQuery ?? timing.measure('sales_reps', needsSalesReps
+    ? reportData.read('sales_reps', null, () => loadReportSalesReps(supabase)) : skippedReportQuery());
+
+  timing.checkpoint('scope');
   const now = new Date();
   const selectedMonth = parseMonthInput(searchParams?.month, now);
   const defaultRange = defaultRangeForMonth(selectedMonth);
@@ -3419,17 +3452,52 @@ export default async function AdminReportsPage(
 
   const baseline = buildBaselineRanges(rangeStart, rangeEndExclusive);
   const comparisonStart = new Date(Math.min(baseline.previousStart.getTime(), baseline.trailingStart.getTime()));
-  const commerceQuery = dataNeeds.coreCommerce
-    ? loadReportCommerce(supabase, {
+  timing.checkpoint('range_preparation');
+  const centersQuery = dataNeeds.coreCommerce ? reportData.read('centers', null, () => fetchAllPages((from, to) => scopeCentersForAdmin(
+    supabase.from('centers').select('id,name,is_active,created_at').order('name', { ascending: true }).order('id').range(from, to),
+    centerScope
+  ))) : skippedReportQuery();
+  const productsQuery = dataNeeds.coreCommerce
+    ? reportData.read('products', null, () => fetchAllPages((from, to) => supabase.from('products').select('id,name,sku,category,active').order('name', { ascending: true }).order('id').range(from, to)))
+    : skippedReportQuery();
+  const requestedProductId = stringParam(searchParams?.product);
+  const requestedCenterId = stringParam(searchParams?.center);
+  const loadCommerce = (recentFilters: { productId?: string; centerId?: string } = {}) => {
+    const options = {
       centerScope,
       shippedRange: dataNeeds.salesDashboard || activeReport === 'recent_order_gpm'
         ? undefined : { start: comparisonStart, endExclusive: rangeEndExclusive },
-    })
-    : Promise.resolve({ orders: { data: [], error: null }, orderItems: { data: [], error: null } });
-  const centersQuery = dataNeeds.coreCommerce ? fetchAllPages((from, to) => scopeCentersForAdmin(
-    supabase.from('centers').select('id,name,is_active,created_at').order('name', { ascending: true }).order('id').range(from, to),
-    centerScope
-  )) : skippedReportQuery();
+      recentOrders: activeReport === 'recent_order_gpm' ? { limit: 10, ...recentFilters } : undefined,
+    };
+    // Overview and Center Profitability share the same source window. Product
+    // and customer display filters are reapplied to these rows on every render;
+    // recent-order filters are part of the database query and its cache key.
+    return reportData.read('commerce', {
+      shippedRange: options.shippedRange, recentOrders: options.recentOrders, selectedSalesRepId,
+    }, () => loadReportCommerce(supabase, options));
+  };
+  const commerceQuery = !dataNeeds.coreCommerce
+    ? Promise.resolve({ orders: { data: [], error: null }, orderItems: { data: [], error: null } })
+    : activeReport === 'recent_order_gpm' && (requestedProductId || requestedCenterId)
+      // Preserve existing behavior: unknown or inaccessible filter IDs are ignored.
+      ? Promise.all([productsQuery, centersQuery]).then(([products, centers]) => loadCommerce({
+        productId: products.data?.some((row) => row.id === requestedProductId) ? requestedProductId : undefined,
+        centerId: centers.data?.some((row) => row.id === requestedCenterId) ? requestedCenterId : undefined,
+      }))
+      : loadCommerce();
+  const productionRunsQuery = !dataNeeds.productionRuns ? skippedReportQuery()
+    : activeReport === 'recent_order_gpm'
+      ? commerceQuery.then(({ orderItems }) => {
+        const fallbackProductIds = [...new Set(orderItems.data
+          .filter((item) => !item.cogs_snapshot_at && Number(item.qty) > 0 && item.product_id)
+          .map((item) => item.product_id!))].sort();
+        // Keep all historical runs for fallback products. A newer void/zero-cost
+        // run must not hide an older viable cost, regardless of report dates.
+        return timing.measure('production_runs', fallbackProductIds.length
+          ? reportData.read('production_runs', { productIds: fallbackProductIds }, () => loadReportProductionRuns(supabase, fallbackProductIds))
+          : skippedReportQuery());
+      })
+      : timing.measure('production_runs', reportData.read('production_runs', { productIds: null }, () => loadReportProductionRuns(supabase)));
   const prospectingReportStartedAt = performance.now();
   const prospectingReportQuery = dataNeeds.prospecting
     ? getSupabaseAdmin().rpc('admin_prospecting_report_v1', {
@@ -3457,12 +3525,12 @@ export default async function AdminReportsPage(
     recipeResult,
     shippingBoxUsagesResult,
     prospectingReportResult,
+    deferredPayResult,
+    salesRepsResult,
   ] = await Promise.all([
-    commerceQuery,
-    dataNeeds.coreCommerce ? centersQuery : skippedReportQuery(),
-    dataNeeds.coreCommerce
-      ? fetchAllPages((from, to) => supabase.from('products').select('id,name,sku,category,active').order('name', { ascending: true }).order('id').range(from, to))
-      : skippedReportQuery(),
+    timing.measure('commerce', commerceQuery),
+    timing.measure('centers', dataNeeds.coreCommerce ? centersQuery : skippedReportQuery()),
+    productsQuery,
     dataNeeds.inventoryValuation
       ? fetchAllPages((from, to) => supabase.from('inventory_items').select('id,name,sku,item_type,base_unit,product_id,active').order('name', { ascending: true }).order('id').range(from, to))
       : skippedReportQuery(),
@@ -3476,9 +3544,7 @@ export default async function AdminReportsPage(
     dataNeeds.reorderSettings
       ? fetchAllPages((from, to) => supabase.from('inventory_reorder_settings').select('inventory_item_id,reorder_point,target_stock,lead_time_days').order('inventory_item_id').range(from, to))
       : skippedReportQuery(),
-    dataNeeds.productionRuns
-      ? fetchAllPages((from, to) => supabase.from('production_runs').select('id,product_id,quantity_produced,quantity_voided,status,estimated_unit_cost_cents,actual_unit_cost_cents,actual_labor_cost_cents,fixed_cost_cents,fixed_tape_cost_cents,fixed_shipping_label_cost_cents,fixed_branding_label_cost_cents,fixed_other_cost_cents,produced_at').order('produced_at', { ascending: false }).order('id').range(from, to))
-      : skippedReportQuery(),
+    productionRunsQuery,
     dataNeeds.productionInputs
       ? fetchAllPages((from, to) => supabase.from('production_run_inputs').select('production_run_id,quantity_expected,quantity_used,cost_cents').order('id').range(from, to))
       : skippedReportQuery(),
@@ -3521,7 +3587,25 @@ export default async function AdminReportsPage(
         .lt('consumed_at', rangeEndExclusive.toISOString()).order('id').range(from, to))
       : skippedReportQuery(),
     prospectingReportQuery,
+    dataNeeds.laborPaidGpm && canViewPayroll
+      ? loadDeferredPayAccounting({
+        supabase: getSupabaseAdmin(),
+        start: formatDateInput(rangeStart),
+        end: formatDateInput(addDays(rangeEndExclusive, -1)),
+        now,
+      })
+      : Promise.resolve({ data: null, error: null }),
+    salesRepsQuery,
   ]);
+
+  timing.checkpoint('main_data');
+  if (salesRepsResult.error) return <CriticalReportError message={salesRepsResult.error.message} />;
+  const salesRepRows = (salesRepsResult.data ?? []) as AdminRow[];
+  const salesReps = (activeReport === 'prospecting' ? filterProspectingSalesRepProfiles(salesRepRows) : salesRepRows)
+    .sort((a, b) => adminLabel(a).localeCompare(adminLabel(b)));
+  if (deferredPayResult.error) {
+    return <CriticalReportError message="Deferred payroll expense and liability could not be loaded. Refresh the report before using its totals." />;
+  }
 
   const { orders: ordersResult, orderItems: orderItemsResult } = commerceResult;
   let sampleOrders: SampleOrderReportRow[] = [];
@@ -3606,7 +3690,7 @@ export default async function AdminReportsPage(
     ]);
 
     if (timeEntriesResult.error || salaryPaymentsResult.error) {
-      laborPaidLoadError = 'The Labor Paid GPM report could not load payroll records.';
+      laborPaidLoadError = 'The Payroll Labor GPM report could not load payroll records.';
     } else {
       laborPaidOvertimeContextEntries = (timeEntriesResult.data ?? []) as LaborPaidGpmTimeEntryRow[];
       laborPaidTimeEntries = laborPaidOvertimeContextEntries.filter((entry) => dateInRange(entry.clock_in_at, rangeStart, rangeEndExclusive));
@@ -3618,7 +3702,7 @@ export default async function AdminReportsPage(
           .select('time_entry_id,work_type,minutes,wage_cents')
           .in('time_entry_id', ids).order('id').range(from, to));
         if (allocationsResult.error) {
-          laborPaidLoadError = 'The Labor Paid GPM report could not load payroll allocations.';
+          laborPaidLoadError = 'The Payroll Labor GPM report could not load payroll allocations.';
         } else {
           laborPaidAllocations = (allocationsResult.data ?? []) as LaborPaidGpmAllocationRow[];
         }
@@ -3626,6 +3710,7 @@ export default async function AdminReportsPage(
     }
   }
 
+  timing.checkpoint('extra_data');
   if (laborPaidLoadError) {
     return <CriticalReportError message={laborPaidLoadError} />;
   }
@@ -3709,6 +3794,7 @@ export default async function AdminReportsPage(
   const laborPaidGpmSummary = buildLaborPaidGpmSummary({
     allocations: dataNeeds.laborPaidGpm ? laborPaidAllocations : [],
     current: profitabilityDashboard.current,
+    deferredProductionAccruedCents: dataNeeds.laborPaidGpm ? deferredPayResult.data?.productionAccruedCents ?? 0 : 0,
     entries: dataNeeds.laborPaidGpm ? laborPaidTimeEntries : [],
     overtimeContextEntries: dataNeeds.laborPaidGpm ? laborPaidOvertimeContextEntries : [],
     productionRunLaborCogsCents: profitabilityDashboard.productionSummary.laborCostCents,
@@ -3868,6 +3954,7 @@ export default async function AdminReportsPage(
       total_leads: prospectingSummary.pipeline_snapshot.total_leads,
     });
   }
+  timing.checkpoint('calculations');
   const aiOverviewReportResult = activeReport === 'ai_overview'
     ? await supabase
       .from('admin_ai_business_reports')
@@ -3929,12 +4016,13 @@ export default async function AdminReportsPage(
     ? 'Start with margin by center and item, then drill into production costs, inventory value, expenses, and customer sales history.'
     : 'Track revenue, order pace, product movement, customer activity, reorder timing, and demand planning.';
 
+  timing.checkpoint('saved_ai_and_presentation');
   logServerTiming('admin_report', reportStartedAt, {
     report: activeReport,
     detail_limit: REPORT_DETAIL_ROW_LIMIT,
   });
 
-  return (
+  const content = (
     <div className="space-y-6">
       <section className="panel">
         <div className="grid gap-6 lg:grid-cols-[1.15fr_0.85fr] lg:items-end">
@@ -3942,8 +4030,12 @@ export default async function AdminReportsPage(
             <span className="eyebrow">Reports</span>
             <h1 className="page-title mt-4">{reportsTitle}</h1>
             <p className="page-subtitle mt-3">{reportsSubtitle}</p>
+            <form action={refreshReportData} className="mt-4 flex flex-wrap items-center gap-3">
+              <PendingSubmitButton className="btn-secondary" label="Refresh data" pendingLabel="Refreshing..." />
+              <p className="text-sm text-slate-500">Each visit reuses data for up to 30 seconds. Refresh for the latest totals.</p>
+            </form>
           </div>
-          <form className={activeReport === 'ai_overview' || activeReport === 'ai_qa' ? 'hidden' : 'rounded-xl border border-slate-200/70 bg-white/60 p-4'}>
+          <AdminNavigationForm key={navParams.toString()} className={activeReport === 'ai_overview' || activeReport === 'ai_qa' ? 'hidden' : 'rounded-xl border border-slate-200/70 bg-white/60 p-4'}>
             <input type="hidden" name="report" value={activeReport} />
             <div className="grid gap-3 sm:grid-cols-2">
               <ReportDateRangeFields
@@ -3986,8 +4078,8 @@ export default async function AdminReportsPage(
               ) : null}
             </div>
             <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center">
-              <PendingSubmitButton className="btn-primary w-full sm:w-auto" label="Update reports" pendingLabel="Updating..." />
-              <Link href={`/admin/reports?report=${activeReport}`} className="btn-secondary w-full sm:w-auto">Reset</Link>
+              <AdminNavigationSubmit className="btn-primary w-full sm:w-auto" />
+              <AdminNavigationLink href={`/admin/reports?report=${activeReport}`} label="reset reports" className="btn-secondary w-full sm:w-auto">Reset</AdminNavigationLink>
             </div>
             <p className="mt-3 text-sm leading-6 text-slate-500">
               {activeReport === 'prospecting'
@@ -4004,12 +4096,11 @@ export default async function AdminReportsPage(
                   ? `${REPORTS.find((report) => report.id === activeReport)?.label}. Using ${dateLabel(rangeStart)} through ${dateLabel(addDays(rangeEndExclusive, -1))}; normalized against trailing 8 weeks and the previous equal-length range.`
                   : `${REPORTS.find((report) => report.id === activeReport)?.label}. Using ${dateLabel(rangeStart)} through ${dateLabel(addDays(rangeEndExclusive, -1))}; sales comparisons still compare ${monthLabel(selectedMonth)} with ${monthLabel(dashboard.previousMonthStart)}.`}
             </p>
-          </form>
+          </AdminNavigationForm>
         </div>
       </section>
 
       <ReportNav activeReport={activeReport} reports={allowedReports} searchParams={navParams} />
-
 
       {dataNeeds.coreCommerce && !hasCommerceOrders ? (
         <section className="card">
@@ -4208,7 +4299,7 @@ export default async function AdminReportsPage(
             <StatTile label="Product COGS" value={money(profitabilityDashboard.current.productCogsCents)} detail="Material, labor, and fixed production COGS." />
             <StatTile label="Shipping COGS" value={money(profitabilityDashboard.current.shippingCogsCents)} detail="Order shipping cost allocated to lines." />
             <StatTile label="Processing Fees" value={money(profitabilityDashboard.current.processingFeeCogsCents)} detail="Payment processing COGS on shipped orders." />
-            <StatTile label="Donation COGS" value={money(profitabilityDashboard.current.donationCogsCents)} detail="Fixed 1% of shipped order revenue." />
+            <StatTile label="Donation COGS" value={money(profitabilityDashboard.current.donationCogsCents)} detail="Shopify: $1 per bag. Wholesale: 1% of shipped order revenue." />
             <StatTile label="Gross Profit" value={money(profitabilityDashboard.current.grossProfitCents)} detail={`${profitabilityDashboard.current.estimatedLineCount} estimated line${profitabilityDashboard.current.estimatedLineCount === 1 ? '' : 's'} in this range.`} />
             <StatTile label="Margin" value={`${percent(profitabilityDashboard.current.marginPercent).replace('+', '')}`} detail={`${signedMoney(profitabilityDashboard.current.grossProfitCents - profitabilityDashboard.previous.grossProfitCents)} vs previous range.`} />
           </section>
@@ -4619,4 +4710,7 @@ export default async function AdminReportsPage(
       ) : null}
     </div>
   );
+  timing.checkpoint('jsx_build');
+  const sample = timing.finish({ orders: ordersResult.data?.length ?? 0, items: orderItemsResult.data?.length ?? 0, production_runs: productionRunsResult.data?.length ?? 0, production_inputs: productionRunInputsResult.data?.length ?? 0, cache_hits: reportData.stats.hits, cache_misses: reportData.stats.misses });
+  return <>{sample ? <PagePerformanceMarker sample={sample} /> : null}{content}</>;
 }

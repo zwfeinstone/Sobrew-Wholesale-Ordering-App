@@ -2,6 +2,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { describe, expect, it } from 'vitest';
 import { loadReportCommerce } from './admin-report-commerce';
 import type { Database } from './supabase/schema';
+import { buildRecentOrderGpmRows } from './profitability-reporting';
 
 type Row = Record<string, string | number | null>;
 type Table = 'orders' | 'order_items';
@@ -25,13 +26,38 @@ class CommerceDatabase {
 
 class CommerceQuery {
   private filters: Array<(row: Row) => boolean> = [];
+  private itemFilters: Array<(row: Row) => boolean> = [];
+  private innerItems = false;
   private ordering: Array<{ column: string; ascending: boolean }> = [];
   private columns: string[] = [];
 
   constructor(private readonly database: CommerceDatabase, private readonly table: Table) {}
 
-  select(columns: string) { this.columns = columns.split(','); return this; }
-  eq(column: string, value: string) { this.filters.push((row) => row[column] === value); return this; }
+  select(columns: string) {
+    this.innerItems = columns.includes('order_items!inner(id)');
+    this.columns = columns.replace(',order_items!inner(id)', '').split(',');
+    return this;
+  }
+  eq(column: string, value: string) {
+    if (column.startsWith('order_items.')) this.itemFilters.push((row) => row[column.slice('order_items.'.length)] === value);
+    else this.filters.push((row) => row[column] === value);
+    return this;
+  }
+  gt(column: string, value: number) {
+    if (!column.startsWith('order_items.')) throw new Error(`Unsupported test filter: ${column}`);
+    this.itemFilters.push((row) => Number(row[column.slice('order_items.'.length)]) > value);
+    return this;
+  }
+  is(column: string, value: null) { this.filters.push((row) => row[column] === value); return this; }
+  not(column: string, operator: string, value: null) {
+    if (operator !== 'is') throw new Error(`Unsupported test filter: ${operator}`);
+    this.filters.push((row) => row[column] !== value);
+    return this;
+  }
+  limit(count: number, options: { referencedTable: string }) {
+    if (count !== 1 || options.referencedTable !== 'order_items') throw new Error('Unexpected embedded limit.');
+    return this;
+  }
   neq(column: string, value: string) { this.filters.push((row) => row[column] !== null && row[column] !== value); return this; }
   in(column: string, values: string[]) {
     this.filters.push((row) => typeof row[column] === 'string' && values.includes(row[column]));
@@ -59,6 +85,7 @@ class CommerceQuery {
   async range(from: number, to: number) {
     const matches = this.database.tables[this.table]
       .filter((row) => this.filters.every((filter) => filter(row)))
+      .filter((row) => !this.innerItems || this.database.tables.order_items.some((item) => item.order_id === row.id && this.itemFilters.every((filter) => filter(item))))
       .sort((left, right) => {
         for (const { column, ascending } of this.ordering) {
           const comparison = String(left[column] ?? '').localeCompare(String(right[column] ?? ''));
@@ -171,5 +198,121 @@ describe('complete report commerce data', () => {
     expect(result.orders.data).toHaveLength(405);
     expect(result.orderItems.data).toEqual([]);
     expect(result.orderItems.error?.code).toBe('TEST_FAILURE');
+  });
+});
+
+describe('bounded recent order commerce', () => {
+  it('loads only ten eligible orders and their complete items from more than 1,000 historical orders', async () => {
+    const orders = Array.from({ length: 1205 }, (_, index) => order(`order-${String(index).padStart(4, '0')}`));
+    const database = new CommerceDatabase({ orders, order_items: itemsFor(orders, 6) });
+    const result = await loadReportCommerce(database.client(), { centerScope: null, recentOrders: { limit: 10 } });
+    expect(result.orders.error).toBeNull();
+    expect(result.orderItems.error).toBeNull();
+    expect(result.orders.data.map((row) => row.id)).toEqual(orders.slice(-10).reverse().map((row) => row.id));
+    expect(result.orderItems.data).toHaveLength(60);
+    expect(database.calls.filter((call) => call.table === 'orders').flatMap((call) => call.ids)).toHaveLength(10);
+    expect(new Set(database.calls.filter((call) => call.table === 'order_items').flatMap((call) => call.ids)).size).toBe(60);
+  });
+
+  it('merges shipment dates and legacy creation dates with descending ID ties, independent of order creation order', async () => {
+    const orders = [
+      order('created-newest-shipped-oldest', { created_at: '2026-10-14T00:00:00.000Z', shipped_at: '2026-09-01T00:00:00.000Z' }),
+      order('created-oldest-shipped-newest', { created_at: '2020-01-01T00:00:00.000Z', shipped_at: '2026-10-15T00:00:00.000Z' }),
+      order('legacy-z', { created_at: '2026-10-14T00:00:00.000Z', shipped_at: null }),
+      order('shipment-a', { shipped_at: '2026-10-14T00:00:00.000Z' }),
+      order('legacy-older', { created_at: '2026-08-01T00:00:00.000Z', shipped_at: null }),
+      order('no-valid-date', { created_at: null, shipped_at: null }),
+    ];
+    const database = new CommerceDatabase({ orders, order_items: itemsFor(orders) });
+    const result = await loadReportCommerce(database.client(), { centerScope: null, recentOrders: { limit: 3 } });
+    expect(result.orders.data.map((row) => row.id)).toEqual(['created-oldest-shipped-newest', 'shipment-a', 'legacy-z']);
+    expect(new Set(result.orderItems.data.map((row) => row.order_id))).toEqual(new Set(['created-oldest-shipped-newest', 'shipment-a', 'legacy-z']));
+  });
+
+  it('applies permissions, selected center, shipment status and positive product eligibility before limiting', async () => {
+    const orders = [
+      order('z-denied', { center_id: 'denied' }),
+      order('y-other-allowed-center', { center_id: 'other-allowed' }),
+      order('x-sample', { order_kind: 'prospecting_sample' }),
+      order('w-unshipped', { status: 'New' }),
+      order('v-no-lines'), order('u-zero'), order('t-negative'), order('s-other-product'),
+      order('r-zero-selected-product'), order('b-eligible'), order('a-eligible'),
+    ];
+    const items = itemsFor(orders).filter((item) => item.order_id !== 'v-no-lines').map((item) => ({
+      ...item,
+      qty: item.order_id === 'u-zero' || item.order_id === 'r-zero-selected-product' ? 0 : item.order_id === 't-negative' ? -1 : 1,
+      product_id: item.order_id === 's-other-product' ? 'product-2' : item.product_id,
+    }));
+    items.push({ id: 'positive-sibling', order_id: 'r-zero-selected-product', product_id: 'product-2', qty: 1, line_total_cents: 100 });
+    const database = new CommerceDatabase({ orders, order_items: items });
+    const result = await loadReportCommerce(database.client(), {
+      centerScope: ['allowed', 'other-allowed'], recentOrders: { limit: 2, centerId: 'allowed', productId: 'product-1' },
+    });
+    expect(result.orders.data.map((row) => row.id)).toEqual(['b-eligible', 'a-eligible']);
+    const denied = await loadReportCommerce(database.client(), { centerScope: ['allowed'], recentOrders: { limit: 10, centerId: 'denied' } });
+    expect(denied.orders.data).toEqual([]);
+  });
+
+  it('retains sibling lines and historical cost fallbacks so product-filtered financial rows match the complete-history result', async () => {
+    const orders = Array.from({ length: 12 }, (_, index) => order(`order-${String(index).padStart(2, '0')}`, {
+      subtotal_cents: 1000, shipping_cost_cents: 100, processing_fee_cents: 0, donation_cogs_cents: 0,
+    }));
+    const items = orders.flatMap((row) => [
+      { id: `coffee-${row.id}`, order_id: row.id, product_id: 'coffee', qty: 1, line_total_cents: 600, shipping_boxes_used: 1 },
+      { id: `tea-${row.id}`, order_id: row.id, product_id: 'tea', qty: 1, line_total_cents: 400, shipping_boxes_used: 1 },
+    ]);
+    const database = new CommerceDatabase({ orders, order_items: items });
+    const complete = await loadReportCommerce(database.client(), { centerScope: null });
+    const recent = await loadReportCommerce(database.client(), { centerScope: null, recentOrders: { limit: 10, productId: 'coffee' } });
+    const common = {
+      centers: [{ id: 'allowed', name: 'Allowed' }], products: [{ id: 'coffee', name: 'Coffee', sku: 'COFFEE' }], productId: 'coffee',
+      productionRuns: [{ id: 'old-run', product_id: 'coffee', produced_at: '2020-01-01T00:00:00Z', quantity_produced: 10,
+        quantity_voided: 0, status: 'completed', actual_unit_cost_cents: 200, estimated_unit_cost_cents: 200, actual_labor_cost_cents: 0, fixed_cost_cents: 0 }],
+    };
+    const expected = buildRecentOrderGpmRows({ ...common, orders: complete.orders.data, orderItems: complete.orderItems.data.map((item) => ({ ...item, order_id: item.order_id! })) });
+    const actual = buildRecentOrderGpmRows({ ...common, orders: recent.orders.data, orderItems: recent.orderItems.data.map((item) => ({ ...item, order_id: item.order_id! })) });
+    expect(recent.orderItems.data).toHaveLength(20);
+    expect(actual).toEqual(expected);
+    expect(actual[0]).toMatchObject({ lineCount: 1, revenueCents: 600, totalCogsCents: 250, grossProfitCents: 350, estimatedLineCount: 1 });
+  });
+
+  it('continues capped pages until the requested count, including every line-item page', async () => {
+    const orders = Array.from({ length: 15 }, (_, index) => order(`order-${String(index).padStart(2, '0')}`));
+    const database = new CommerceDatabase({ orders, order_items: itemsFor(orders, 6) });
+    database.serverPageSize = 3;
+    const result = await loadReportCommerce(database.client(), { centerScope: null, recentOrders: { limit: 10 } });
+    expect(result.orders.data).toHaveLength(10);
+    expect(result.orderItems.data).toHaveLength(60);
+    expect(database.calls.filter((call) => call.table === 'orders' && call.ids.length).map((call) => [call.from, call.to])).toEqual([[0, 9], [3, 9], [6, 9], [9, 9]]);
+  });
+
+  it.each(['orders', 'order_items'] as const)('does not return partial %s after a capped later page fails', async (table) => {
+    const orders = Array.from({ length: 15 }, (_, index) => order(`order-${index}`));
+    const database = new CommerceDatabase({ orders, order_items: itemsFor(orders, 2) });
+    database.serverPageSize = 3;
+    database.fail = (call) => call.table === table && call.from > 0;
+    const result = await loadReportCommerce(database.client(), { centerScope: null, recentOrders: { limit: 10 } });
+    const failed = table === 'orders' ? result.orders : result.orderItems;
+    expect(failed.data).toEqual([]);
+    expect(failed.error?.code).toBe('TEST_FAILURE');
+    if (table === 'orders') expect(database.calls.every((call) => call.table === 'orders')).toBe(true);
+  });
+
+  it('discards the successful timestamp stream if the other stream fails', async () => {
+    const orders = [order('shipped'), order('legacy', { shipped_at: null })];
+    const database = new CommerceDatabase({ orders, order_items: itemsFor(orders) });
+    database.fail = (call) => call.ids.includes('legacy');
+    const result = await loadReportCommerce(database.client(), { centerScope: null, recentOrders: { limit: 10 } });
+    expect(result.orders.data).toEqual([]);
+    expect(result.orders.error?.code).toBe('TEST_FAILURE');
+    expect(database.calls.every((call) => call.table === 'orders')).toBe(true);
+  });
+
+  it('makes no requests for an empty permission scope or a zero limit', async () => {
+    const database = new CommerceDatabase({ orders: [order('denied')], order_items: [] });
+    for (const options of [{ centerScope: [], recentOrders: { limit: 10 } }, { centerScope: null, recentOrders: { limit: 0 } }]) {
+      expect(await loadReportCommerce(database.client(), options)).toEqual({ orders: { data: [], error: null }, orderItems: { data: [], error: null } });
+    }
+    expect(database.calls).toEqual([]);
   });
 });
