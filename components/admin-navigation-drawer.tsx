@@ -17,7 +17,7 @@ export function AdminNavigationDrawer({ children }: { children: ReactNode }) {
   </>;
 }
 
-export function AdminNavGroup({ label, paths, initialOpen = false, children }: { label: string; paths: string[]; initialOpen?: boolean; children: ReactNode }) {
+export function AdminNavGroup({ label, paths, initialOpen = true, children }: { label: string; paths: string[]; initialOpen?: boolean; children: ReactNode }) {
   const pathname = usePathname();
   const active = paths.some((path) => pathname === path || (path !== '/admin' && pathname.startsWith(`${path}/`)));
   const [open, setOpen] = useState(initialOpen || active);
