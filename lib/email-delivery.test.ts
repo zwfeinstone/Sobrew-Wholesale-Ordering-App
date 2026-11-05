@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { send } = vi.hoisted(() => ({ send: vi.fn() }));
+const { send, from } = vi.hoisted(() => ({ send: vi.fn(), from: vi.fn() }));
 vi.mock('resend', () => ({ Resend: class { emails = { send }; } }));
-vi.mock('@/lib/supabase/admin', () => ({ supabaseAdmin: {} }));
+vi.mock('@/lib/supabase/admin', () => ({ supabaseAdmin: { from } }));
 
 import {
   loadAdminOrderCcByCenter,
@@ -270,7 +270,7 @@ describe('order email sales CC lookup', () => {
     const query = {
       select: vi.fn().mockReturnThis(),
       in: vi.fn(async (_column: string, ids: string[]) => ({
-        data: ids.map((id) => ({ center_id: id, sales_profile: { email: id === 'center-1' ? 'HASKINS@SOBREW.COM' : id === 'center-2' ? 'ROB@SOBREW.COM' : 'other@sobrew.com' } })),
+        data: ids.map((id) => ({ center_id: id, sales_profile: { email: id === 'center-1' ? 'HASKINS@SOBREW.COM' : id === 'center-2' ? 'ROB@SOBREW.COM' : id === 'center-3' ? 'THOMAS@SOBREW.COM' : 'other@sobrew.com' } })),
         error: null,
       })),
     };
@@ -280,6 +280,26 @@ describe('order email sales CC lookup', () => {
     expect(query.in.mock.calls.map((call) => call[1].length)).toEqual([200, 1]);
     expect(cc.get('center-1')).toEqual(['haskins@sobrew.com']);
     expect(cc.get('center-2')).toEqual(['rob@sobrew.com']);
-    expect(cc.get('center-3')).toEqual([]);
+    expect(cc.get('center-3')).toEqual(['thomas@sobrew.com']);
+    expect(cc.get('center-4')).toEqual([]);
+  });
+
+  it('copies Thomas on the admin notification for his assigned customer', async () => {
+    const assignmentQuery = {
+      select: vi.fn().mockReturnThis(),
+      in: vi.fn().mockResolvedValue({
+        data: [{ center_id: 'thomas-center', sales_profile: { email: 'thomas@sobrew.com' } }],
+        error: null,
+      }),
+    };
+    from.mockReturnValue(assignmentQuery);
+
+    expect(await sendOrderEmails({ ...order, adminCc: undefined, centerId: 'thomas-center' })).toEqual({ ok: true });
+    expect(assignmentQuery.in).toHaveBeenCalledExactlyOnceWith('center_id', ['thomas-center']);
+    expect(send).toHaveBeenCalledTimes(2);
+    const adminEmail = send.mock.calls.find(([payload]) => payload.subject === `New Order ${order.orderId}`)?.[0];
+    const customerEmail = send.mock.calls.find(([payload]) => payload.subject === 'Thank You For Your Order!')?.[0];
+    expect(adminEmail).toMatchObject({ to: ['hello@sobrew.com'], cc: ['thomas@sobrew.com'] });
+    expect(customerEmail).toMatchObject({ to: [order.customerEmail], cc: undefined });
   });
 });

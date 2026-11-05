@@ -190,11 +190,13 @@ describe('buildCustomerOrderEmailContent', () => {
 });
 
 describe('adminOrderCcForAssignedSalesEmail', () => {
-  it('copies the assigned rep when it is Haskins or Rob Hyde', () => {
+  it('copies the assigned rep when it is Haskins, Rob Hyde, or Thomas', () => {
     expect(adminOrderCcForAssignedSalesEmail('haskins@sobrew.com')).toEqual(['haskins@sobrew.com']);
     expect(adminOrderCcForAssignedSalesEmail('HASKINS@SOBREW.COM')).toEqual(['haskins@sobrew.com']);
     expect(adminOrderCcForAssignedSalesEmail('rob@sobrew.com')).toEqual(['rob@sobrew.com']);
     expect(adminOrderCcForAssignedSalesEmail(' ROB@SOBREW.COM ')).toEqual(['rob@sobrew.com']);
+    expect(adminOrderCcForAssignedSalesEmail('thomas@sobrew.com')).toEqual(['thomas@sobrew.com']);
+    expect(adminOrderCcForAssignedSalesEmail(' THOMAS@SOBREW.COM ')).toEqual(['thomas@sobrew.com']);
     expect(adminOrderCcForAssignedSalesEmail('another@sobrew.com')).toEqual([]);
     expect(adminOrderCcForAssignedSalesEmail(null)).toEqual([]);
   });

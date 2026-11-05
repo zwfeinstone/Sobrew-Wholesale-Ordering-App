@@ -10,7 +10,7 @@ import { usd } from '@/lib/utils';
 const RESEND_FROM = 'Sobrew Wholesale <orders@orders.sobrew.com>';
 const REPLY_TO_EMAIL = 'hello@sobrew.com';
 const ADMIN_EMAIL = 'hello@sobrew.com';
-const ORDER_EMAIL_CC_REPS = new Set(['haskins@sobrew.com', 'rob@sobrew.com']);
+const ORDER_EMAIL_CC_REPS = new Set(['haskins@sobrew.com', 'rob@sobrew.com', 'thomas@sobrew.com']);
 const PORTAL_URL = 'https://app.sobrew.com';
 const WEBSITE_URL = 'https://sobrew.com';
 const INSTAGRAM_URL = 'https://www.instagram.com/sobrew_official';
