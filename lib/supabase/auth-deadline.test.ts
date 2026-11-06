@@ -58,4 +58,24 @@ describe('Supabase auth deadline', () => {
     expect(deadline.diagnostics()).toEqual({ phase: 'token_refresh', upstreamStatus: null });
     deadline.dispose();
   });
+
+  it('preserves recovery rate-limit codes and retry hints when normalization is disabled', async () => {
+    const upstream = new Response(JSON.stringify({ code: 'over_email_send_rate_limit' }), {
+      status: 429,
+      headers: { 'Content-Type': 'application/json', 'Retry-After': '60' },
+    });
+    const deadline = createAuthDeadline(4_000, vi.fn().mockResolvedValue(upstream), {
+      normalizeTransientStatuses: false,
+    });
+    try {
+      const response = await deadline.fetch('https://project.supabase.co/auth/v1/recover');
+      expect(response).toBe(upstream);
+      expect(response.status).toBe(429);
+      expect(response.headers.get('Retry-After')).toBe('60');
+      expect(await response.json()).toEqual({ code: 'over_email_send_rate_limit' });
+      expect(deadline.diagnostics().upstreamStatus).toBe(429);
+    } finally {
+      deadline.dispose();
+    }
+  });
 });

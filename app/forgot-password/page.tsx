@@ -12,7 +12,7 @@ export const metadata: Metadata = {
 
 const errorMessages = new Map([
   ['email', 'Enter a valid email address.'],
-  ['unavailable', 'We couldn’t send a reset link right now. Please try again in a few minutes.'],
+  ['unavailable', 'We couldn’t confirm your reset request. Check your inbox, or try again in a few minutes.'],
   ['rate_limit', 'Please wait a few minutes before requesting another reset link.'],
 ]);
 
