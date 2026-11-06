@@ -10,6 +10,15 @@ declare global {
 
 window.customerWizardFixture = { submissions: [] };
 
+const products = new URLSearchParams(window.location.search).has('catalog') ? [
+  { id: 'medium-2', name: 'Meeting Medium Roast Fraction Pack 100 x 2 oz', category: 'fraction_packs', sku: 'MED-2' },
+  { id: 'dark-filter', name: 'Meeting Dark Roast Filter Pack 40 x 1.5 oz', category: 'filter_packs', sku: 'DARK-FILTER' },
+  { id: 'medium-1-5-filters', name: 'Meeting Medium Roast Fraction Pack 100 x 1.5 oz with Filters', category: 'fraction_packs', sku: 'MED-15-F' },
+  { id: 'dark-3', name: 'Meeting Dark Roast Fraction Pack 100 x 3 oz', category: 'fraction_packs', sku: 'DARK-3' },
+  { id: 'medium-1-5', name: 'Meeting Medium Roast Fraction Pack 100 x 1.5 oz', category: 'fraction_packs', sku: 'MED-15' },
+  { id: 'k-cups', name: 'Meeting K-Cups', category: 'k_cups', sku: 'K-CUPS' },
+] : [];
+
 // React's root handler runs first, so record only submissions it permits. Every
 // native POST is prevented here; no customer, email, or QuickBooks API is called.
 document.addEventListener('submit', (event) => {
@@ -27,6 +36,6 @@ createRoot(document.getElementById('fixture-root')!).render(
       <h1 className="page-title mt-4">Create center wizard</h1>
       <p className="page-subtitle mt-3">Add the customer’s address, first login, and invoice recipients, choose their order guide, and connect them to QuickBooks.</p>
     </section>
-    <UserWizard products={[]} />
+    <UserWizard products={products} />
   </main>,
 );

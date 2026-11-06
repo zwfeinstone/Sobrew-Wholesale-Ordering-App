@@ -3,9 +3,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { parseBillingEmail, parseBillingEmailCc } from '@/lib/billing-email';
 import { customerAddressError, US_ADDRESS_STATES, type CustomerAddress } from '@/lib/customer-address';
-import { productCategoryLabel, groupProductsByCategory } from '@/lib/product-categories';
+import { productCategoryGroupKey, productCategoryLabel } from '@/lib/product-categories';
+import { CATALOG_ROAST_OPTIONS, compareCatalogProducts, getProductPackInfo, groupCatalogProducts, isPackCategory, matchesCatalogSearch } from '@/lib/product-catalog';
 
-type Product = { id: string; name: string | null; category?: string | null };
+type Product = { id: string; name: string | null; category?: string | null; sku?: string | null };
 
 type WizardState = CustomerAddress & {
   center_name: string;
@@ -22,6 +23,17 @@ function productDisplayName(product: Product) {
   return product.name?.trim() || 'Unnamed product';
 }
 
+function PackDetails({ product }: { product: Product }) {
+  if (!isPackCategory(product.category)) return null;
+  const { sizeOz, count, withFilters } = getProductPackInfo(product);
+  if (sizeOz === null && count === null && !withFilters) return null;
+  return <span className="mt-1 flex flex-wrap gap-1.5 text-xs font-medium text-slate-600">
+    {sizeOz !== null ? <span className="rounded bg-slate-100 px-2 py-0.5">{sizeOz} oz / pack</span> : null}
+    {count !== null ? <span className="rounded bg-slate-100 px-2 py-0.5">{count} / case</span> : null}
+    {withFilters ? <span className="rounded bg-amber-50 px-2 py-0.5 text-amber-800">With filters</span> : null}
+  </span>;
+}
+
 
 export function UserWizard({ products }: { products: Product[] }) {
   const [step, setStep] = useState(1);
@@ -31,6 +43,11 @@ export function UserWizard({ products }: { products: Product[] }) {
   const formRef = useRef<HTMLFormElement>(null);
   const [selected, setSelected] = useState<Record<string, boolean>>({});
   const [prices, setPrices] = useState<Record<string, string>>({});
+  const [productQuery, setProductQuery] = useState('');
+  const [categoryFilter, setCategoryFilter] = useState('');
+  const [roastFilter, setRoastFilter] = useState('');
+  const [selectedOnly, setSelectedOnly] = useState(false);
+  const [expandedCategories, setExpandedCategories] = useState<Record<string, boolean>>({});
   const [state, setState] = useState<WizardState>({
     center_name: '',
     center_notes: '',
@@ -45,8 +62,26 @@ export function UserWizard({ products }: { products: Product[] }) {
     state: '',
     zip: '',
   });
-  const selectedProducts = useMemo(() => products.filter((product) => selected[product.id]), [products, selected]);
-  const groupedProducts = useMemo(() => groupProductsByCategory(products), [products]);
+  const selectedProducts = useMemo(() => products.filter((product) => selected[product.id]).sort(compareCatalogProducts), [products, selected]);
+  const allGroupedProducts = useMemo(() => groupCatalogProducts(products), [products]);
+  const selectedGroups = useMemo(() => groupCatalogProducts(selectedProducts), [selectedProducts]);
+  const visibleProducts = useMemo(() => products.filter((product) =>
+    matchesCatalogSearch(product, productQuery)
+    && (!categoryFilter || productCategoryGroupKey(product.category) === categoryFilter)
+    && (!roastFilter || isPackCategory(product.category) && (getProductPackInfo(product).roast ?? 'Other') === roastFilter)
+    && (!selectedOnly || selected[product.id]),
+  ), [products, productQuery, categoryFilter, roastFilter, selectedOnly, selected]);
+  const groupedProducts = useMemo(() => groupCatalogProducts(visibleProducts), [visibleProducts]);
+  const hasProductFilters = Boolean(productQuery.trim() || categoryFilter || roastFilter || selectedOnly);
+  const selectedCategoryCounts = useMemo(() => new Map(selectedGroups.map((group) => [group.category, group.products.length])), [selectedGroups]);
+
+  function resetProductFilters() {
+    setProductQuery('');
+    setCategoryFilter('');
+    setRoastFilter('');
+    setSelectedOnly(false);
+    setExpandedCategories({});
+  }
   const billingEmail = useMemo(() => {
     try {
       return { recipient: parseBillingEmail(state.billing_email), error: '' };
@@ -259,18 +294,48 @@ export function UserWizard({ products }: { products: Product[] }) {
             <h2 className="text-xl font-semibold">Step 2: Assign products</h2>
             <p className="mt-1 text-sm text-slate-500">Choose which products everyone at this center should see in their shared catalog.</p>
           </div>
-          {!groupedProducts.length ? <div className="rounded-2xl border border-slate-200 bg-white/70 px-4 py-3 text-sm text-slate-600">No active products found.</div> : null}
-          {groupedProducts.map((group) => (
-            <div key={group.category} className="space-y-3">
-              <h3 className="border-b border-slate-200 pb-2 text-sm font-semibold uppercase tracking-[0.18em] text-slate-500">{productCategoryLabel(group.category)}</h3>
-              {group.products.map((product) => (
-                <label key={product.id} className="flex items-start justify-between gap-3 rounded-2xl border border-slate-200 bg-white/70 px-4 py-3 sm:items-center">
-                  <span className="font-medium text-slate-900">{productDisplayName(product)}</span>
-                  <input type="checkbox" checked={!!selected[product.id]} onChange={(event) => setSelected({ ...selected, [product.id]: event.target.checked })} />
-                </label>
-              ))}
+          <div className="space-y-3 rounded-2xl border border-slate-200 bg-slate-50/60 p-4">
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-[minmax(0,1fr)_12rem_12rem]">
+              <label className="space-y-1 text-sm font-medium text-slate-700 sm:col-span-2 lg:col-span-1">Search products
+                <input type="search" className="input" placeholder="Name, size, or SKU" value={productQuery} onChange={(event) => { setProductQuery(event.target.value); setExpandedCategories({}); }} />
+              </label>
+              <label className="space-y-1 text-sm font-medium text-slate-700">Category
+                <select className="input" value={categoryFilter} onChange={(event) => { setCategoryFilter(event.target.value); setExpandedCategories({}); }}>
+                  <option value="">All categories</option>
+                  {allGroupedProducts.map((group) => <option key={group.category} value={group.category}>{productCategoryLabel(group.category)}</option>)}
+                </select>
+              </label>
+              <label className="space-y-1 text-sm font-medium text-slate-700">Roast
+                <select className="input" value={roastFilter} onChange={(event) => { setRoastFilter(event.target.value); setExpandedCategories({}); }}>
+                  <option value="">All roasts</option>
+                  {CATALOG_ROAST_OPTIONS.map((roast) => <option key={roast} value={roast}>{roast}</option>)}
+                </select>
+              </label>
             </div>
-          ))}
+            <div className="flex flex-wrap items-center justify-between gap-3 text-sm">
+              <label className="flex min-h-9 items-center gap-2 font-medium text-slate-700"><input type="checkbox" checked={selectedOnly} onChange={(event) => { setSelectedOnly(event.target.checked); setExpandedCategories({}); }} />Selected only ({selectedProducts.length})</label>
+              <div className="flex flex-wrap items-center gap-3"><span className="text-slate-500" role="status">{visibleProducts.length} of {products.length} products · {selectedProducts.length} selected</span>{hasProductFilters ? <button type="button" className="text-sm font-semibold text-teal-800 underline" onClick={resetProductFilters}>Clear filters</button> : null}</div>
+            </div>
+          </div>
+          {!groupedProducts.length ? <div className="rounded-2xl border border-slate-200 bg-white/70 px-4 py-5 text-sm text-slate-600">{!products.length ? 'No active products found.' : selectedOnly && !selectedProducts.length ? 'No products selected yet. Clear filters to browse the catalog.' : 'No products match these filters. Try another search or clear filters.'}</div> : null}
+          {groupedProducts.map((group) => {
+            const expanded = expandedCategories[group.category] ?? (hasProductFilters || allGroupedProducts.length === 1);
+            return <section key={group.category} className="overflow-hidden rounded-2xl border border-slate-200 bg-white/70">
+              <h3><button type="button" className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left hover:bg-slate-50" aria-expanded={expanded} aria-controls={`assign-category-${group.category}`} onClick={() => setExpandedCategories((previous) => ({ ...previous, [group.category]: !expanded }))}>
+                <span className="font-semibold text-slate-900">{productCategoryLabel(group.category)}<span className="ml-2 text-sm font-normal text-slate-500">{group.products.length} products · {selectedCategoryCounts.get(group.category) ?? 0} selected</span></span>
+                <span aria-hidden="true" className="text-xl text-slate-500">{expanded ? '−' : '+'}</span>
+              </button></h3>
+              <div id={`assign-category-${group.category}`} hidden={!expanded} className="border-t border-slate-200">
+                {group.roasts.map((roastGroup) => <div key={roastGroup.label ?? 'all'}>
+                  {roastGroup.label ? <h4 className="bg-slate-50 px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-600">{roastGroup.label}</h4> : null}
+                  <div className="divide-y divide-slate-100">{roastGroup.products.map((product) => <label key={product.id} className={`flex cursor-pointer items-start gap-3 px-4 py-3 ${selected[product.id] ? 'bg-teal-50/60' : 'hover:bg-slate-50'}`}>
+                    <input className="mt-1 h-4 w-4 shrink-0 accent-teal-700" type="checkbox" aria-label={productDisplayName(product)} checked={!!selected[product.id]} onChange={(event) => setSelected((previous) => ({ ...previous, [product.id]: event.target.checked }))} />
+                    <span className="min-w-0 break-words"><span className="text-sm font-medium text-slate-900">{productDisplayName(product)}</span><PackDetails product={product} /></span>
+                  </label>)}</div>
+                </div>)}
+              </div>
+            </section>;
+          })}
           <div className="flex flex-col gap-3 sm:flex-row">
             <button type="button" className="btn-secondary w-full sm:w-auto" onClick={() => setStep(1)}>Back</button>
             <button type="button" className="btn-primary w-full sm:w-auto" onClick={nextStep}>Next</button>
@@ -283,21 +348,19 @@ export function UserWizard({ products }: { products: Product[] }) {
             <h2 className="text-xl font-semibold">Step 3: Set prices</h2>
             <p className="mt-1 text-sm text-slate-500">Set shared pricing for the selected center catalog.</p>
           </div>
-          {selectedProducts.map((product) => (
-            <div key={product.id} className="rounded-2xl border border-slate-200 bg-white/70 p-4">
-              <label className="mb-2 block font-medium text-slate-900">{productDisplayName(product)}</label>
-              <input
-                className="input"
-                name={`price_${product.id}`}
-                type="number"
-                min="0"
-                step="0.01"
-                required
-                value={prices[product.id] ?? '0.00'}
-                onChange={(event) => setPrices({ ...prices, [product.id]: event.target.value })}
-              />
-            </div>
-          ))}
+          {!selectedProducts.length ? <p className="rounded-xl bg-slate-50 p-4 text-sm text-slate-600">No products selected. You can go back to add products or create a blank order guide.</p> : null}
+          {selectedGroups.map((group) => <section key={group.category} className="overflow-hidden rounded-2xl border border-slate-200 bg-white/70">
+            <h3 className="border-b border-slate-200 px-4 py-3 font-semibold text-slate-900">{productCategoryLabel(group.category)} <span className="text-sm font-normal text-slate-500">{group.products.length} selected</span></h3>
+            {group.roasts.map((roastGroup) => <div key={roastGroup.label ?? 'all'}>
+              {roastGroup.label ? <h4 className="bg-slate-50 px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-600">{roastGroup.label}</h4> : null}
+              <div className="divide-y divide-slate-100">{roastGroup.products.map((product) => <div key={product.id} className="grid items-center gap-3 px-4 py-3 sm:grid-cols-[minmax(0,1fr)_10rem]">
+                <div className="min-w-0 break-words"><p className="text-sm font-medium text-slate-900">{productDisplayName(product)}</p><PackDetails product={product} /></div>
+                <label className="space-y-1 text-xs font-medium text-slate-600">Price ($)<span className="sr-only"> for {productDisplayName(product)}</span>
+                  <input className="input" name={`price_${product.id}`} type="number" min="0" step="0.01" required value={prices[product.id] ?? '0.00'} onChange={(event) => setPrices((previous) => ({ ...previous, [product.id]: event.target.value }))} />
+                </label>
+              </div>)}</div>
+            </div>)}
+          </section>)}
           <div className="flex flex-col gap-3 sm:flex-row">
             <button type="button" className="btn-secondary w-full sm:w-auto" onClick={() => setStep(2)}>Back</button>
             <button type="button" className="btn-primary w-full sm:w-auto" onClick={nextStep}>Next</button>
@@ -347,7 +410,18 @@ export function UserWizard({ products }: { products: Product[] }) {
             <div className="rounded-2xl border border-slate-200 bg-white/70 p-4 md:col-span-2">
               <p className="text-xs uppercase tracking-[0.18em] text-slate-500">Assigned products</p>
               <p className="mt-2 font-semibold text-slate-950">{selectedProducts.length} selected</p>
-              <p className="mt-1 text-sm text-slate-500">{selectedProducts.map(productDisplayName).join(', ') || 'Blank order guide. Products can be added later.'}</p>
+              {!selectedProducts.length ? <p className="mt-1 text-sm text-slate-500">Blank order guide. Products can be added later.</p> : <div className="mt-4 space-y-4">
+                {selectedGroups.map((group) => <section key={group.category}>
+                  <h3 className="border-b border-slate-200 pb-2 text-sm font-semibold text-slate-900">{productCategoryLabel(group.category)}</h3>
+                  {group.roasts.map((roastGroup) => <div key={roastGroup.label ?? 'all'}>
+                    {roastGroup.label ? <h4 className="pt-3 text-xs font-semibold uppercase tracking-wide text-slate-500">{roastGroup.label}</h4> : null}
+                    <ul className="divide-y divide-slate-100">{roastGroup.products.map((product) => <li key={product.id} className="flex items-start justify-between gap-4 py-3 text-sm">
+                      <span className="min-w-0 break-words text-slate-700">{productDisplayName(product)}<PackDetails product={product} /></span>
+                      <span className="shrink-0 font-semibold text-slate-900">${Number(prices[product.id] ?? '0.00').toFixed(2)}</span>
+                    </li>)}</ul>
+                  </div>)}
+                </section>)}
+              </div>}
             </div>
           </div>
           <div className="flex flex-col gap-3 sm:flex-row">

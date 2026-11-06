@@ -10,7 +10,7 @@ export default async function NewUserWizardPage(
   const searchParams = await props.searchParams;
   await requireAdminSectionView('centers');
   const supabase = await createClient();
-  const { data: products } = await supabase.from('products').select('id,name,category').eq('active', true).order('name', { ascending: true });
+  const { data: products } = await supabase.from('products').select('id,name,category,sku').eq('active', true).order('name', { ascending: true });
   const error = typeof searchParams?.error === 'string' ? searchParams.error : '';
 
   return (

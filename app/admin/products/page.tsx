@@ -18,9 +18,9 @@ import {
   isProductCategory,
   productCategoryGroupKey,
   productCategoryLabel,
-  groupProductsByCategory,
   type ProductCategoryGroup
 } from '@/lib/product-categories';
+import { CATALOG_ROAST_OPTIONS, getProductPackInfo, groupCatalogProducts, isPackCategory, matchesCatalogSearch } from '@/lib/product-catalog';
 import { createClient } from '@/lib/supabase/server';
 import { fetchAllPages } from '@/lib/supabase/pagination';
 import { supabaseAdmin } from '@/lib/supabase/admin';
@@ -55,24 +55,17 @@ function productDisplayName(product: ProductRow) {
   return product.name?.trim() || 'Unnamed product';
 }
 
-function productMatchesSearch(product: ProductRow, search: string) {
-  if (!search) return true;
-  const normalizedSearch = search.toLocaleLowerCase('en-US');
-  return [product.name, product.sku]
-    .filter(Boolean)
-    .some((value) => String(value).toLocaleLowerCase('en-US').includes(normalizedSearch));
-}
-
 function productMatchesCategory(product: ProductRow, categoryFilter: ProductCategoryGroup | 'all') {
   return categoryFilter === 'all' || productCategoryGroupKey(product.category) === categoryFilter;
 }
 
 
 
-function buildProductsHref(category: ProductCategoryGroup | 'all', search: string) {
+function buildProductsHref(category: ProductCategoryGroup | 'all', search: string, roast = 'all') {
   const params = new URLSearchParams();
   if (category !== 'all') params.set('category', category);
   if (search) params.set('q', search);
+  if (roast !== 'all' && (category === 'all' || isPackCategory(category))) params.set('roast', roast);
   const query = params.toString();
   return query ? `/admin/products?${query}` : '/admin/products';
 }
@@ -243,11 +236,16 @@ export default async function ProductsPage(
   const products = (data ?? []) as ProductRow[];
   const categoryFilter = normalizeCategoryFilter(searchParams?.category);
   const search = typeof searchParams?.q === 'string' ? searchParams.q.trim() : '';
+  const requestedRoast = typeof searchParams?.roast === 'string' ? searchParams.roast : '';
+  const showRoastFilter = categoryFilter === 'all' || isPackCategory(categoryFilter);
+  const roastFilter = showRoastFilter && CATALOG_ROAST_OPTIONS.some((roast) => roast === requestedRoast) ? requestedRoast : 'all';
   const toast = typeof searchParams?.toast === 'string' ? searchParams.toast : '';
   const adjustedCount = typeof searchParams?.count === 'string' ? Number.parseInt(searchParams.count, 10) : 0;
-  const currentHref = buildProductsHref(categoryFilter, search);
-  const filteredProducts = products.filter((product) => productMatchesCategory(product, categoryFilter) && productMatchesSearch(product, search));
-  const groupedProducts = groupProductsByCategory(filteredProducts);
+  const currentHref = buildProductsHref(categoryFilter, search, roastFilter);
+  const filteredProducts = products.filter((product) => productMatchesCategory(product, categoryFilter)
+    && matchesCatalogSearch(product, search)
+    && (roastFilter === 'all' || (isPackCategory(product.category) && (getProductPackInfo(product).roast ?? 'Other') === roastFilter)));
+  const groupedProducts = groupCatalogProducts(filteredProducts);
   const activeUnmappedQuickBooksCount = products.filter((product) => product.active !== false && !product.quickbooks_item_id).length;
   const quickBooksErrorCount = products.filter((product) => product.quickbooks_sync_status === 'sync_error').length;
   const uncategorizedCount = products.filter((product) => productCategoryGroupKey(product.category) === UNCATEGORIZED_PRODUCT_CATEGORY).length;
@@ -288,17 +286,28 @@ export default async function ProductsPage(
         <div>
           <span className="eyebrow">Catalog Admin</span>
           <h1 className="page-title mt-4">Products</h1>
+          <p className="page-subtitle mt-2">Browse by category. Frac and filter packs are grouped by roast, then smallest pack size first.</p>
         </div>
         <div className="flex flex-wrap gap-3"><Link href="/admin/products/shopify" className="btn-secondary">Shopify products &amp; COGS</Link><Link href="/admin/products/new" className="btn-primary w-full sm:w-auto">New product</Link></div>
       </div>
 
       <section className="card space-y-4">
-        <form className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
+        <form key={`${categoryFilter}:${search}:${roastFilter}`} className="flex flex-col gap-3 lg:flex-row lg:items-end">
           {categoryFilter !== 'all' ? <input type="hidden" name="category" value={categoryFilter} /> : null}
-          <input className="input" name="q" defaultValue={search} placeholder="Search by product name or SKU" />
+          <label className="min-w-0 flex-1 space-y-1.5 text-sm font-medium text-slate-700">
+            <span>Find a product</span>
+            <input className="input" name="q" defaultValue={search} placeholder="Search name, size, or SKU" />
+          </label>
+          {showRoastFilter ? <label className="space-y-1.5 text-sm font-medium text-slate-700 lg:w-52">
+            <span>Pack roast</span>
+            <select className="input" name="roast" defaultValue={roastFilter}>
+              <option value="all">All roasts</option>
+              {CATALOG_ROAST_OPTIONS.map((roast) => <option key={roast} value={roast}>{roast}</option>)}
+            </select>
+          </label> : null}
           <div className="flex flex-col gap-3 sm:flex-row">
             <button className="btn-secondary w-full sm:w-auto" type="submit">Search</button>
-            {search ? <Link className="btn-secondary w-full sm:w-auto" href={buildProductsHref(categoryFilter, '')}>Clear</Link> : null}
+            {search || roastFilter !== 'all' ? <Link className="btn-secondary w-full sm:w-auto" href={buildProductsHref(categoryFilter, '')}>Clear filters</Link> : null}
           </div>
         </form>
         <div className="flex flex-wrap gap-2">
@@ -307,7 +316,8 @@ export default async function ProductsPage(
             return (
               <Link
                 key={category.value}
-                href={buildProductsHref(category.value, search)}
+                href={buildProductsHref(category.value, search, roastFilter)}
+                aria-current={isActive ? 'page' : undefined}
                 className={`rounded-full border px-3 py-2 text-sm font-semibold transition-all duration-200 ${
                   isActive
                     ? 'border-teal-200 bg-teal-50 text-teal-800'
@@ -321,96 +331,119 @@ export default async function ProductsPage(
         </div>
       </section>
 
-      <section className="card space-y-4">
-        <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
-          <div>
-            <span className="eyebrow">QuickBooks</span>
-            <h2 className="mt-3 text-xl font-semibold text-slate-950">Product sync</h2>
-            <p className="mt-2 text-sm text-slate-500">
-              {activeUnmappedQuickBooksCount} active portal product{activeUnmappedQuickBooksCount === 1 ? '' : 's'} not linked to QuickBooks.
-              {quickBooksErrorCount ? ` ${quickBooksErrorCount} product${quickBooksErrorCount === 1 ? '' : 's'} currently need review.` : ''}
-            </p>
-          </div>
-          <form action={syncNewQuickBooksProducts}>
-            <input name="return_to" type="hidden" value={currentHref} />
-            <PendingSubmitButton
-              className="btn-primary w-full lg:w-auto"
-              disabled={!quickBooksStatus.connected || activeUnmappedQuickBooksCount === 0}
-              disabledLabel={!quickBooksStatus.connected ? 'Connect QuickBooks first' : 'No new products'}
-              label="Push new products"
-              pendingLabel="Pushing..."
-            />
-          </form>
-        </div>
-      </section>
-
-      <section className="card space-y-4">
-        <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-start">
-          <div>
-            <span className="eyebrow">Recipe Labor</span>
-            <h2 className="mt-3 text-xl font-semibold text-slate-950">Mass adjust labor</h2>
-            <p className="mt-2 text-sm text-slate-500">{recipeCount ?? 0} existing product recipe{recipeCount === 1 ? '' : 's'} will be eligible for this adjustment.</p>
-          </div>
-        </div>
-        <form action={massAdjustRecipeLabor} className="grid gap-3 lg:grid-cols-[11rem_11rem_minmax(0,1fr)_auto] lg:items-end">
-          <input name="return_to" type="hidden" value={currentHref} />
-          <label className="space-y-2 text-sm font-medium text-slate-700">
-            Labor minutes %
-            <input className="input" name="labor_minutes_percent" max="500" min="-100" placeholder="10 or -5" step="0.01" type="number" />
-          </label>
-          <label className="space-y-2 text-sm font-medium text-slate-700">
-            Labor rate %
-            <input className="input" name="labor_rate_percent" max="500" min="-100" placeholder="10 or -5" step="0.01" type="number" />
-          </label>
-          <label className="flex min-h-[3.25rem] items-center gap-3 rounded-2xl border border-slate-200 bg-white/65 px-4 py-3 text-sm font-semibold text-slate-700">
-            <input name="confirm_bulk_labor_adjustment" type="checkbox" />
-            Apply to every existing product recipe
-          </label>
-          <PendingSubmitButton className="btn-primary w-full lg:w-auto" label="Apply Adjustment" pendingLabel="Applying..." />
-        </form>
-      </section>
-
-      {!filteredProducts.length ? <div className="card text-sm text-slate-600">No products found.</div> : null}
+      <p className="text-sm text-slate-500" role="status">Showing {filteredProducts.length} of {products.length} products</p>
+      {!filteredProducts.length ? <div className="card space-y-3 text-sm text-slate-600">
+        <p>No products match these filters.</p>
+        <Link href="/admin/products" className="workspace-text-link">Show all products</Link>
+      </div> : null}
       {groupedProducts.map((group) => (
-        <section key={group.category} className="space-y-3">
-          <div className="flex items-center justify-between border-b border-slate-200 pb-2">
-            <h2 className="text-sm font-semibold uppercase tracking-[0.18em] text-slate-500">{productCategoryLabel(group.category)}</h2>
-            <span className="text-sm text-slate-500">{group.products.length}</span>
+        <details key={`${group.category}:${search}:${roastFilter}`} open className="overflow-hidden rounded-2xl border border-slate-200 bg-white/80">
+          <summary className="cursor-pointer bg-slate-50 px-4 py-3 font-semibold text-slate-900 sm:px-5">
+            {productCategoryLabel(group.category)} <span className="ml-2 text-sm font-normal text-slate-500">{group.products.length} products</span>
+          </summary>
+          <div className="border-t border-slate-200">
+            {group.roasts.map((roast) => (
+              <section key={roast.label ?? 'products'} aria-label={roast.label ? `${productCategoryLabel(group.category)} · ${roast.label}` : productCategoryLabel(group.category)}>
+                {roast.label ? <div className={`flex items-center justify-between gap-3 border-b border-slate-200 px-4 py-2.5 sm:px-5 ${roast.label === 'Medium Roast' ? 'bg-amber-50' : roast.label === 'Dark Roast' ? 'bg-slate-100' : 'bg-teal-50/60'}`}>
+                  <h2 className="text-sm font-semibold text-slate-900">{roast.label}</h2>
+                  <span className="text-xs text-slate-500">{roast.products.length} products</span>
+                </div> : null}
+                <div className="divide-y divide-slate-100">
+                  {roast.products.map((product) => {
+                    const pack = getProductPackInfo(product);
+                    return <Link className="block px-4 py-3 transition-colors hover:bg-teal-50/50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-teal-600 sm:px-5" key={product.id} href={`/admin/products/${product.id}`}>
+                      <div className="flex flex-col gap-2 xl:flex-row xl:items-center xl:justify-between xl:gap-5">
+                        <div className="min-w-0 flex-1">
+                          <p className="break-words text-sm font-semibold leading-6 text-slate-950">{productDisplayName(product)}</p>
+                          <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+                            {pack.sizeOz !== null ? <span className="font-semibold text-slate-700">{pack.sizeOz} oz / pack</span> : null}
+                            {pack.count !== null ? <span className="text-slate-600">{pack.count} packs / case</span> : null}
+                            {pack.withFilters ? <span className="rounded bg-teal-50 px-2 py-0.5 font-semibold text-teal-800">With filters</span> : null}
+                            <span className="break-all text-slate-500">SKU: {product.sku || 'No SKU'}</span>
+                          </div>
+                        </div>
+                        <div className="flex shrink-0 flex-wrap gap-1.5 xl:max-w-sm xl:justify-end">
+                          {product.shopify_variant_id ? <span className="rounded-full bg-slate-100 px-2 py-1 text-xs font-medium text-slate-600">Shopify</span> : null}
+                          {product.shopify_variant_id && (!product.product_recipes || (Array.isArray(product.product_recipes) && !product.product_recipes.length)) ? <span className="rounded-full bg-amber-50 px-2 py-1 text-xs font-medium text-amber-800">Needs COGS setup</span> : null}
+                          <span className={`rounded-full px-2 py-1 text-xs font-medium ${product.active ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>
+                            {product.active ? 'Active' : 'Inactive'}
+                          </span>
+                          <span className={`rounded-full px-2 py-1 text-xs font-medium ${
+                            product.quickbooks_item_id
+                              ? 'bg-teal-100 text-teal-700'
+                              : product.quickbooks_sync_status === 'sync_error'
+                                ? 'bg-rose-100 text-rose-700'
+                                : 'bg-slate-100 text-slate-600'
+                          }`}>
+                            {product.quickbooks_item_id ? 'QuickBooks' : product.quickbooks_sync_status === 'sync_error' ? 'QuickBooks error' : 'Not in QuickBooks'}
+                          </span>
+                        </div>
+                      </div>
+                      {product.quickbooks_sync_status === 'sync_error' && product.quickbooks_sync_error ? (
+                        <p className="mt-2 text-sm font-medium text-rose-700">{product.quickbooks_sync_error}</p>
+                      ) : null}
+                    </Link>;
+                  })}
+                </div>
+              </section>
+            ))}
           </div>
-          {group.products.map((product) => (
-            <Link className="card block transition-all duration-200 hover:-translate-y-0.5 hover:bg-white/95" key={product.id} href={`/admin/products/${product.id}`}>
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                <div className="min-w-0">
-                  <p className="break-words text-lg font-semibold text-slate-950">{productDisplayName(product)}</p>
-                  <p className="mt-2 break-all text-sm text-slate-500">SKU: {product.sku || 'No SKU'}</p>
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  {product.shopify_variant_id ? <span className="workspace-badge">Shopify</span> : null}
-                  {product.shopify_variant_id && (!product.product_recipes || (Array.isArray(product.product_recipes) && !product.product_recipes.length)) ? <span className="workspace-badge text-amber-800">Needs COGS setup</span> : null}
-                  <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold uppercase tracking-[0.14em] text-slate-600">
-                    {productCategoryLabel(product.category)}
-                  </span>
-                  <span className={`rounded-full px-3 py-1 text-xs font-semibold uppercase tracking-[0.14em] ${product.active ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>
-                    {product.active ? 'Active' : 'Inactive'}
-                  </span>
-                  <span className={`rounded-full px-3 py-1 text-xs font-semibold uppercase tracking-[0.14em] ${
-                    product.quickbooks_item_id
-                      ? 'bg-teal-100 text-teal-700'
-                      : product.quickbooks_sync_status === 'sync_error'
-                        ? 'bg-rose-100 text-rose-700'
-                        : 'bg-slate-100 text-slate-600'
-                  }`}>
-                    {product.quickbooks_item_id ? 'QuickBooks' : product.quickbooks_sync_status === 'sync_error' ? 'QuickBooks error' : 'Not in QuickBooks'}
-                  </span>
-                </div>
-              </div>
-              {product.quickbooks_sync_status === 'sync_error' && product.quickbooks_sync_error ? (
-                <p className="mt-3 text-sm font-medium text-rose-700">{product.quickbooks_sync_error}</p>
-              ) : null}
-            </Link>
-          ))}
-        </section>
+        </details>
       ))}
+
+      <details className="rounded-2xl border border-slate-200 bg-white/70" open={toast.startsWith('bulk_labor_') || toast.startsWith('quickbooks_sync_')}>
+        <summary className="cursor-pointer px-4 py-3 font-semibold text-slate-700 sm:px-5">Catalog management <span className="ml-2 text-sm font-normal text-slate-500">QuickBooks sync &amp; recipe labor</span></summary>
+        <div className="space-y-4 border-t border-slate-200 p-3 sm:p-5">
+          <section className="card space-y-4">
+            <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
+              <div>
+                <span className="eyebrow">QuickBooks</span>
+                <h2 className="mt-3 text-xl font-semibold text-slate-950">Product sync</h2>
+                <p className="mt-2 text-sm text-slate-500">
+                  {activeUnmappedQuickBooksCount} active portal product{activeUnmappedQuickBooksCount === 1 ? '' : 's'} not linked to QuickBooks.
+                  {quickBooksErrorCount ? ` ${quickBooksErrorCount} product${quickBooksErrorCount === 1 ? '' : 's'} currently need review.` : ''}
+                </p>
+              </div>
+              <form action={syncNewQuickBooksProducts}>
+                <input name="return_to" type="hidden" value={currentHref} />
+                <PendingSubmitButton
+                  className="btn-primary w-full lg:w-auto"
+                  disabled={!quickBooksStatus.connected || activeUnmappedQuickBooksCount === 0}
+                  disabledLabel={!quickBooksStatus.connected ? 'Connect QuickBooks first' : 'No new products'}
+                  label="Push new products"
+                  pendingLabel="Pushing..."
+                />
+              </form>
+            </div>
+          </section>
+
+          <section className="card space-y-4">
+            <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-start">
+              <div>
+                <span className="eyebrow">Recipe Labor</span>
+                <h2 className="mt-3 text-xl font-semibold text-slate-950">Mass adjust labor</h2>
+                <p className="mt-2 text-sm text-slate-500">{recipeCount ?? 0} existing product recipe{recipeCount === 1 ? '' : 's'} will be eligible for this adjustment.</p>
+              </div>
+            </div>
+            <form action={massAdjustRecipeLabor} className="grid gap-3 lg:grid-cols-[11rem_11rem_minmax(0,1fr)_auto] lg:items-end">
+              <input name="return_to" type="hidden" value={currentHref} />
+              <label className="space-y-2 text-sm font-medium text-slate-700">
+                Labor minutes %
+                <input className="input" name="labor_minutes_percent" max="500" min="-100" placeholder="10 or -5" step="0.01" type="number" />
+              </label>
+              <label className="space-y-2 text-sm font-medium text-slate-700">
+                Labor rate %
+                <input className="input" name="labor_rate_percent" max="500" min="-100" placeholder="10 or -5" step="0.01" type="number" />
+              </label>
+              <label className="flex min-h-[3.25rem] items-center gap-3 rounded-2xl border border-slate-200 bg-white/65 px-4 py-3 text-sm font-semibold text-slate-700">
+                <input name="confirm_bulk_labor_adjustment" type="checkbox" />
+                Apply to every existing product recipe
+              </label>
+              <PendingSubmitButton className="btn-primary w-full lg:w-auto" label="Apply Adjustment" pendingLabel="Applying..." />
+            </form>
+          </section>
+        </div>
+      </details>
     </div>
   );
 }
