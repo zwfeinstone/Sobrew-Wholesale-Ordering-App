@@ -3,8 +3,7 @@ import './workspace.css';
 import type { Metadata } from 'next';
 import { ReactNode } from 'react';
 import { Manrope } from 'next/font/google';
-import { Analytics } from '@vercel/analytics/next';
-import { SpeedInsights } from '@vercel/speed-insights/next';
+import AppTelemetry from '@/components/app-telemetry';
 import { ButtonPressLock } from '@/components/button-press-lock';
 import { NumberInputScrollGuard } from '@/components/number-input-scroll-guard';
 import { SaveScrollRestoration } from '@/components/save-scroll-restoration';
@@ -82,8 +81,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
         <NumberInputScrollGuard />
         <SaveScrollRestoration />
         {children}
-        <Analytics />
-        <SpeedInsights />
+        <AppTelemetry />
       </body>
     </html>
   );

@@ -39,6 +39,8 @@ test.describe('public login', () => {
     await expect(password).toBeFocused();
     await page.keyboard.press('Tab');
     await expect(submit).toBeFocused();
+    await page.keyboard.press('Tab');
+    await expect(page.getByRole('link', { name: 'Forgot your password?' })).toBeFocused();
 
     const hasHorizontalOverflow = await page.evaluate(
       () => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1
@@ -93,5 +95,78 @@ test.describe('public login', () => {
     const after = await page.evaluate(() => window.scrollY);
     expect(after).toBeGreaterThan(1_000);
     expect(Math.abs(after - before)).toBeLessThan(500);
+  });
+});
+
+test.describe('public password recovery', () => {
+  test('opens an accessible reset-request form from sign-in', async ({ page }) => {
+    await page.goto('/login');
+    await page.getByRole('link', { name: 'Forgot your password?' }).click();
+
+    await expect(page).toHaveURL(/\/forgot-password$/);
+    await expect(page.getByRole('heading', { name: 'Forgot your password?' })).toBeVisible();
+    await expect(page.getByLabel('Email address')).toHaveAttribute('type', 'email');
+    await expect(page.getByRole('button', { name: 'Send reset link' })).toBeVisible();
+    await expect(page.locator('meta[name="robots"]')).toHaveAttribute('content', /noindex.*nofollow/);
+
+    expect(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1)).toBe(false);
+    const { violations } = await new AxeBuilder({ page }).include('main').analyze();
+    expect(violations.filter(({ impact }) => impact === 'critical' || impact === 'serious')).toEqual([]);
+
+    await page.getByRole('link', { name: 'Back to sign in' }).click();
+    await expect(page.getByRole('heading', { name: 'Welcome back' })).toBeVisible();
+  });
+
+  test('shows a generic request confirmation without identifying an account', async ({ page }) => {
+    await page.goto('/forgot-password?sent=1');
+
+    await expect(page.getByRole('status')).toHaveText('If an account exists for that email, you’ll receive a password reset link. Check your inbox and spam folder.');
+    await expect(page.getByRole('button', { name: 'Send reset link' })).toHaveCount(0);
+    await page.getByRole('link', { name: 'Try another email' }).click();
+    await expect(page.getByLabel('Email address')).toBeVisible();
+  });
+
+  test('keeps request errors visible and offers another attempt', async ({ page }) => {
+    await page.goto('/forgot-password?error=email');
+    await expect(page.getByRole('alert')).toHaveText('Enter a valid email address.');
+    await expect(page.getByLabel('Email address')).toHaveAttribute('aria-invalid', 'true');
+
+    await page.goto('/forgot-password?error=rate_limit');
+    await expect(page.getByRole('alert')).toContainText('wait a few minutes');
+    await expect(page.getByRole('button', { name: 'Send reset link' })).toBeVisible();
+  });
+
+  test('offers a new link for invalid or expired recovery URLs', async ({ page }) => {
+    await page.goto('/reset-password?error=invalid_link');
+
+    await expect(page.getByRole('alert')).toContainText('invalid or has expired');
+    await expect(page.getByLabel('New password', { exact: true })).toHaveCount(0);
+    await expect(page.locator('meta[name="robots"]')).toHaveAttribute('content', /noindex.*nofollow/);
+    await page.getByRole('link', { name: 'Request a new reset link', exact: true }).click();
+    await expect(page).toHaveURL(/\/forgot-password$/);
+
+    await page.goto('/reset-password?token_hash=invalid');
+    await expect(page.getByRole('alert')).toContainText('invalid or has expired');
+    await expect(page.getByRole('button', { name: 'Continue to reset password' })).toHaveCount(0);
+  });
+
+  test('requires confirmation before using a recovery token and cleans its URL', async ({ page }) => {
+    const exampleToken = 'a'.repeat(64);
+    await page.goto(`/reset-password?token_hash=${exampleToken}`);
+
+    await expect(page).toHaveURL(/\/reset-password$/);
+    await expect(page.getByRole('button', { name: 'Continue to reset password' })).toBeVisible();
+    await expect(page.getByLabel('New password', { exact: true })).toHaveCount(0);
+    expect(await page.content()).not.toContain(exampleToken);
+    expect(await page.evaluate(() => document.cookie)).not.toContain(exampleToken);
+    await expect(page.locator('meta[name="referrer"]')).toHaveAttribute('content', 'no-referrer');
+  });
+
+  test('confirms a completed reset on the sign-in page', async ({ page }) => {
+    await page.goto('/login?success=password_reset');
+
+    await expect(page.getByRole('status')).toHaveText('Your password has been reset. Sign in with your new password.');
+    await expect(page.getByLabel('Password', { exact: true })).toHaveValue('');
+    await expect(page.getByRole('button', { name: /sign in/i })).toBeVisible();
   });
 });

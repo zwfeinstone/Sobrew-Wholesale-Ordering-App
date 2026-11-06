@@ -1,0 +1,12 @@
+<!doctype html>
+<html lang="en">
+  <body style="margin:0;padding:32px 16px;background:#f6f7f4;color:#17212b;font-family:Arial,sans-serif">
+    <div style="max-width:520px;margin:auto;padding:32px;border:1px solid #dfe3dc;border-radius:16px;background:#ffffff">
+      <p style="margin:0 0 24px;color:#245c4b;font-size:18px;font-weight:700">Sobrew Coffee</p>
+      <h1 style="margin:0 0 16px;font-size:26px">Reset your portal password</h1>
+      <p style="line-height:1.6">We received a request to reset your Sobrew portal password. Use the button below to choose a new password.</p>
+      <p style="margin:28px 0"><a href="{{ .SiteURL }}/auth/recovery?token_hash={{ .TokenHash }}&amp;type=recovery" style="display:inline-block;padding:14px 22px;border-radius:8px;background:#245c4b;color:#ffffff;font-weight:700;text-decoration:none">Reset password</a></p>
+      <p style="line-height:1.6">This link expires and can only be used once. If you didn’t request this, you can ignore this email. Your password won’t change unless you complete the reset.</p>
+    </div>
+  </body>
+</html>
