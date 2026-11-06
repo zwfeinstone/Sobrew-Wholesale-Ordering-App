@@ -1,6 +1,7 @@
 import { createRoot } from 'react-dom/client';
 import { UserWizard } from '@/components/user-wizard';
 import '@/app/globals.css';
+import '@/app/workspace.css';
 
 declare global {
   interface Window {

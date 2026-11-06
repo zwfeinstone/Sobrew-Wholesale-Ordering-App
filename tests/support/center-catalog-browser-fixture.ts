@@ -36,14 +36,20 @@ export async function buildCenterCatalogBrowserFixture() {
         import { createRoot } from 'react-dom/client';
         import CenterCatalogEditor from '@/components/center-catalog-editor';
         import '@/app/globals.css';
+        import '@/app/workspace.css';
         window.centerCatalogFixture = { submissions: [] };
         async function capturePricing(form) {
           window.centerCatalogFixture.submissions.push(Array.from(form.entries(), ([name, value]) => [name, String(value)]));
         }
+        const catalog = createElement(CenterCatalogEditor, { centerId: 'fixture-center', products: ${JSON.stringify(CENTER_CATALOG_FIXTURE_PRODUCTS)}, action: capturePricing });
+        // Include the customer workspace's actual style wrappers, keeping the
+        // isolated fixture focused on the catalog instead of navigation chrome.
         createRoot(document.getElementById('fixture-root')).render(
           createElement('main', { className: 'mx-auto max-w-5xl space-y-6 px-3 py-6 sm:px-6' },
             createElement('h1', { className: 'page-title' }, 'Customer account'),
-            createElement(CenterCatalogEditor, { centerId: 'fixture-center', products: ${JSON.stringify(CENTER_CATALOG_FIXTURE_PRODUCTS)}, action: capturePricing })
+            createElement('div', { className: 'customer-workspace' },
+              createElement('div', { className: 'customer-tab-panel space-y-6' }, catalog)
+            )
           )
         );`;
     },
