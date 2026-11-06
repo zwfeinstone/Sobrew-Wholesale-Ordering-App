@@ -436,7 +436,7 @@ export default async function UserDetailPage(
     }
 
     const catalogResults = await Promise.all([
-      supabase.from('products').select('id,name,category').eq('active', true).order('name', { ascending: true }),
+      supabase.from('products').select('id,name,category,sku').eq('active', true).order('name', { ascending: true }),
       supabase.from('user_products').select('product_id').eq('center_id', center.id),
       supabase.from('user_product_prices').select('product_id,price_cents,allow_zero_price').eq('center_id', center.id),
       supabase
@@ -498,7 +498,7 @@ export default async function UserDetailPage(
         </div>
       </section>
       <CustomerWorkspaceTabs key={center.id} initialTab={initialTab} panels={{
-        catalog: <CenterCatalogEditor key={center.id} centerId={center.id} action={updateCenterPricing} products={(products ?? []).map(product => ({ id: product.id, name: productDisplayName(product), category: productCategoryLabel(product.category), assigned: assignedSet.has(product.id), price: priceMap.get(product.id) ?? null, complimentary: complimentarySet.has(product.id) }))} />,
+        catalog: <CenterCatalogEditor key={center.id} centerId={center.id} action={updateCenterPricing} products={(products ?? []).map(product => ({ id: product.id, name: productDisplayName(product), sku: product.sku, category: productCategoryLabel(product.category), assigned: assignedSet.has(product.id), price: priceMap.get(product.id) ?? null, complimentary: complimentarySet.has(product.id) }))} />,
         settings: <>        <form action={updateCenter} className="space-y-6">
           <input type="hidden" name="center_id" value={center.id} />
           <section className="card space-y-4">
