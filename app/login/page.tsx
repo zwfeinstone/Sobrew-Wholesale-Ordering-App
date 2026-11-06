@@ -8,6 +8,7 @@ export default async function LoginPage(
   const credentialsError = loginError === '1';
   const profileError = loginError === 'profile';
   const inactive = typeof searchParams.inactive === 'string';
+  const passwordReset = searchParams.success === 'password_reset';
 
-  return <LoginView credentialsError={credentialsError} inactive={inactive} profileError={profileError} />;
+  return <LoginView credentialsError={credentialsError} inactive={inactive} passwordReset={passwordReset} profileError={profileError} />;
 }

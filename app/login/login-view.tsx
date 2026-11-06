@@ -36,10 +36,11 @@ const coffeePortalStructuredData = {
 type LoginViewProps = {
   credentialsError?: boolean;
   inactive?: boolean;
+  passwordReset?: boolean;
   profileError?: boolean;
 };
 
-export function LoginView({ credentialsError = false, inactive = false, profileError = false }: LoginViewProps) {
+export function LoginView({ credentialsError = false, inactive = false, passwordReset = false, profileError = false }: LoginViewProps) {
   return (
     <main className="login-shell">
       <script
@@ -64,6 +65,7 @@ export function LoginView({ credentialsError = false, inactive = false, profileE
               <p>Sign in to restock, review orders, and manage recurring shipments.</p>
             </div>
             {credentialsError ? <p className="login-alert is-error" role="alert">We couldn&apos;t sign you in with those credentials.</p> : null}
+            {passwordReset ? <p className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-3 text-sm text-emerald-900" role="status">Your password has been reset. Sign in with your new password.</p> : null}
             {profileError ? <p className="login-alert" role="alert">We couldn&apos;t load your account profile. Try again in a moment or contact Sobrew if it continues.</p> : null}
             {inactive ? <p className="login-alert" role="alert">Your account is inactive. Please contact Sobrew for access.</p> : null}
             <div className="login-fields">
@@ -77,6 +79,7 @@ export function LoginView({ credentialsError = false, inactive = false, profileE
               </div>
             </div>
             <LoginSubmitButton />
+            <Link className="text-center text-sm font-semibold text-teal-800 underline underline-offset-4" href="/forgot-password">Forgot your password?</Link>
             <div className="login-legal-links">
               <Link href="/privacy">Privacy Policy</Link>
               <span aria-hidden="true">/</span>
