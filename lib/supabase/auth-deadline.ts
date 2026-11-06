@@ -66,7 +66,11 @@ export class AuthDeadlineExceededError extends Error {
  * abortable fetch alone cannot guarantee that middleware returns before Vercel's
  * invocation limit.
  */
-export function createAuthDeadline(timeoutMs: number, baseFetch: typeof fetch = globalThis.fetch) {
+export function createAuthDeadline(
+  timeoutMs: number,
+  baseFetch: typeof fetch = globalThis.fetch,
+  { normalizeTransientStatuses = true }: { normalizeTransientStatuses?: boolean } = {},
+) {
   const controller = new AbortController();
   const composedSignalCleanups = new Set<() => void>();
   let phase: AuthNetworkPhase = 'local';
@@ -92,12 +96,15 @@ export function createAuthDeadline(timeoutMs: number, baseFetch: typeof fetch = 
 
     const response = await baseFetch(input, { ...init, signal: composed.signal });
     if (!isTransientHttpStatus(response.status)) return response;
+    upstreamStatus = response.status;
+    // Recovery requests must retain provider rate-limit codes so public
+    // responses cannot distinguish a throttled address from an unknown one.
+    if (!normalizeTransientStatuses) return response;
 
     // auth-js clears sessions for some non-standard gateway errors (for example
     // 525) because it does not classify them as retryable. Normalize temporary
     // transport/service failures before the SDK sees them so a provider outage
     // cannot sign a valid user out. The outer deadline still caps SDK retries.
-    upstreamStatus = response.status;
     return new Response(response.body, {
       headers: response.headers,
       status: 503,
@@ -116,7 +123,8 @@ export function createAuthDeadline(timeoutMs: number, baseFetch: typeof fetch = 
     diagnostics(): AuthDeadlineDiagnostics {
       return { phase, upstreamStatus };
     },
-    dispose() {
+    dispose({ abortPending = false }: { abortPending?: boolean } = {}) {
+      if (abortPending) controller.abort();
       clearTimeout(timer);
       composedSignalCleanups.forEach((cleanup) => cleanup());
       composedSignalCleanups.clear();

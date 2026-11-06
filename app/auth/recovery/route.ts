@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { isRecoveryToken, RECOVERY_COOKIE, RECOVERY_COOKIE_PATH } from '@/lib/password-recovery';
-import { createRouteClient } from '@/lib/supabase/route';
+import { isRecoveryToken, pendingRecoveryCode, RECOVERY_COOKIE, RECOVERY_COOKIE_PATH, RECOVERY_SESSION_COOKIE } from '@/lib/password-recovery';
 
 export const dynamic = 'force-dynamic';
 
@@ -18,30 +17,22 @@ export async function GET(request: NextRequest) {
   const type = request.nextUrl.searchParams.get('type');
   const invalid = request.nextUrl.searchParams.has('error') || (type !== null && type !== 'recovery');
   const response = recoveryResponse(request);
+  const pending = !invalid && isRecoveryToken(token) ? token
+    : !invalid && !request.nextUrl.searchParams.has('token_hash') && code ? pendingRecoveryCode(code) : null;
 
-  if (!invalid && isRecoveryToken(token)) {
+  if (pending) {
     // Remove the bearer token from the visible URL before rendering any page.
     // Do not consume it on GET: email security scanners can open links first.
-    response.cookies.set(RECOVERY_COOKIE, token, {
+    response.cookies.set(RECOVERY_COOKIE, pending, {
       httpOnly: true, secure: process.env.NODE_ENV === 'production', sameSite: 'lax',
       path: RECOVERY_COOKIE_PATH, maxAge: 60 * 60,
     });
+    response.cookies.set(RECOVERY_SESSION_COOKIE, '', { path: RECOVERY_COOKIE_PATH, maxAge: 0 });
     return response;
-  }
-
-  // Compatibility with Supabase's default ConfirmationURL/PKCE email template.
-  if (!invalid && !token && code && code.length <= 2048) {
-    try {
-      const supabase = createRouteClient(request, response);
-      const { data, error } = await supabase.auth.exchangeCodeForSession(code);
-      if (!error && data.user && data.session) {
-        response.cookies.set(RECOVERY_COOKIE, '', { path: RECOVERY_COOKIE_PATH, maxAge: 0 });
-        return response;
-      }
-    } catch { /* Show an actionable expired-link message without logging tokens. */ }
   }
 
   const failure = recoveryResponse(request, true);
   failure.cookies.set(RECOVERY_COOKIE, '', { path: RECOVERY_COOKIE_PATH, maxAge: 0 });
+  failure.cookies.set(RECOVERY_SESSION_COOKIE, '', { path: RECOVERY_COOKIE_PATH, maxAge: 0 });
   return failure;
 }

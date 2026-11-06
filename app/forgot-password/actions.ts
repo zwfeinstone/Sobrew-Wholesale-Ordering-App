@@ -2,10 +2,11 @@
 
 import { redirect } from 'next/navigation';
 import { recoveryRedirectUrl } from '@/lib/password-recovery';
-import { createClient } from '@/lib/supabase/server';
+import { withRecoveryClient } from '@/lib/supabase/recovery-client';
 
 export async function requestPasswordReset(formData: FormData) {
-  const email = String(formData.get('email') ?? '').trim().toLowerCase();
+  const value = formData.get('email');
+  const email = typeof value === 'string' ? value.trim().toLowerCase() : '';
   if (email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
     redirect('/forgot-password?error=email');
   }
@@ -13,8 +14,7 @@ export async function requestPasswordReset(formData: FormData) {
   let failure = false;
   try {
     const redirectTo = recoveryRedirectUrl();
-    const supabase = await createClient();
-    const { error } = await supabase.auth.resetPasswordForEmail(email, { redirectTo });
+    const { error } = await withRecoveryClient((supabase) => supabase.auth.resetPasswordForEmail(email, { redirectTo }));
     if (error) {
       // Per-address cooldowns can reveal whether an account exists. Preserve
       // the same public result for an unknown address and a throttled request.

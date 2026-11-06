@@ -131,8 +131,8 @@ test.describe('public password recovery', () => {
     await expect(page.getByRole('alert')).toHaveText('Enter a valid email address.');
     await expect(page.getByLabel('Email address')).toHaveAttribute('aria-invalid', 'true');
 
-    await page.goto('/forgot-password?error=rate_limit');
-    await expect(page.getByRole('alert')).toContainText('wait a few minutes');
+    await page.goto('/forgot-password?error=unavailable');
+    await expect(page.getByRole('alert')).toContainText('try again');
     await expect(page.getByRole('button', { name: 'Send reset link' })).toBeVisible();
   });
 
@@ -162,11 +162,53 @@ test.describe('public password recovery', () => {
     await expect(page.locator('meta[name="referrer"]')).toHaveAttribute('content', 'no-referrer');
   });
 
+  test('keeps a pending reset available after a temporary verification outage', async ({ page }) => {
+    const exampleToken = 'b'.repeat(64);
+    await page.goto(`/auth/recovery?token_hash=${exampleToken}&type=recovery`);
+    await expect(page).toHaveURL(/\/reset-password$/);
+
+    await page.goto('/reset-password?error=recovery_unavailable');
+    await expect(page.getByRole('alert')).toContainText('Please try again');
+    await expect(page.getByRole('button', { name: 'Continue to reset password' })).toBeVisible();
+    await expect(page.getByRole('link', { name: 'Request a new reset link', exact: true })).toHaveCount(0);
+    expect(await page.content()).not.toContain(exampleToken);
+    expect(await page.evaluate(() => document.cookie)).not.toContain(exampleToken);
+  });
+
+  test('disables confirmation while a verification request is pending', async ({ page }) => {
+    await page.goto(`/auth/recovery?token_hash=${'c'.repeat(64)}&type=recovery`);
+    let release = () => {};
+    const heldRequest = new Promise<void>((resolve) => { release = resolve; });
+    let submissions = 0;
+    await page.route('**/reset-password', async (route) => {
+      if (route.request().method() !== 'POST') return route.continue();
+      submissions += 1;
+      await heldRequest;
+      await route.abort('failed');
+    });
+    try {
+      await Promise.all([
+        page.waitForRequest((request) => request.method() === 'POST' && new URL(request.url()).pathname === '/reset-password'),
+        page.getByRole('button', { name: 'Continue to reset password' }).click(),
+      ]);
+      await expect(page.getByRole('button', { name: 'Opening reset link…' })).toBeDisabled();
+      expect(submissions).toBe(1);
+    } finally { release(); }
+  });
+
   test('confirms a completed reset on the sign-in page', async ({ page }) => {
     await page.goto('/login?success=password_reset');
 
     await expect(page.getByRole('status')).toHaveText('Your password has been reset. Sign in with your new password.');
     await expect(page.getByLabel('Password', { exact: true })).toHaveValue('');
     await expect(page.getByRole('button', { name: /sign in/i })).toBeVisible();
+  });
+
+  test('offers sign-in after an uncertain update without inviting another password mutation', async ({ page }) => {
+    await page.goto('/reset-password?error=update_unconfirmed');
+    await expect(page.getByRole('alert')).toContainText('couldn’t confirm the password change');
+    await expect(page.getByLabel('New password', { exact: true })).toHaveCount(0);
+    await page.getByRole('link', { name: 'Try signing in', exact: true }).click();
+    await expect(page).toHaveURL(/\/login$/);
   });
 });
