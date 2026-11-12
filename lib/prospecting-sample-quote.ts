@@ -19,8 +19,8 @@ export const SAMPLE_QUOTE_ITEMS: readonly SampleQuoteItem[] = [
   { id: 'filter-2oz', category: 'Filter Pack', description: 'Medium, Dark, Espresso, or French Roast (Ground)', packLabel: '40 x 2oz', defaultPriceCents: 5500 },
   { id: 'k-cups-regular', category: 'K Cups', description: 'Medium, Dark, Espresso, or French Roast', packLabel: '50ct', defaultPriceCents: 3800 },
   { id: 'k-cups-fourth-dimension', category: 'K Cups', description: 'Specialty Fourth Dimension Medium Roast', packLabel: '50ct', defaultPriceCents: 5000 },
-  { id: 'concentrate-regular', category: 'Bag in Box Concentrate', description: 'Regular', packLabel: '2 x 64oz', defaultPriceCents: 11500 },
-  { id: 'concentrate-decaf', category: 'Bag in Box Concentrate', description: 'Decaf', packLabel: '2 x 64oz', defaultPriceCents: 11500 },
+  { id: 'concentrate-regular', category: 'Bag in Box Concentrate', description: 'Regular', packLabel: '2 x 64oz', defaultPriceCents: 13000 },
+  { id: 'concentrate-decaf', category: 'Bag in Box Concentrate', description: 'Decaf', packLabel: '2 x 64oz', defaultPriceCents: 13000 },
 ];
 
 export type SampleQuoteLine = { id: string; priceCents: number };
@@ -127,6 +127,7 @@ export function buildSampleQuoteEmail(input: {
   const greeting = greetingName ? `Hi ${greetingName}!` : 'Hi!';
   const senderName = formatSampleQuoteSenderName(input.senderName) || 'The Sobrew Coffee Team';
   const introduction = 'Thanks for your interest in Sobrew Coffee! Looking forward to y’all trying the coffee.';
+  const sampleLidNote = 'If your sample box includes K-cups, the purple lid is Dark Roast and the orange lid is Medium Roast.';
   const pricingIntroduction = 'Please find your coffee pricing below.';
   const mission = 'A portion of every order goes back to helping recovery and mental health-focused organizations!';
   const login = 'To place an order, we’ll create a login for you on our online ordering portal.';
@@ -167,6 +168,7 @@ export function buildSampleQuoteEmail(input: {
     greeting,
     introduction,
     `Samples Tracking:\n${validated.trackingNumber}`,
+    sampleLidNote,
     pricingIntroduction,
     priceText.join('\n'),
     mission,
@@ -210,6 +212,7 @@ export function buildSampleQuoteEmail(input: {
     `<tr><td style="${EMAIL_CELL_STYLE}padding-top:5px;padding-bottom:23px;">${emailTable([
       `<tr><td data-email-section="tracking" bgcolor="${EMAIL_COLORS.paper}" style="${EMAIL_CELL_STYLE}padding:15px 18px;background-color:${EMAIL_COLORS.paper};border-radius:7px;"><p style="${emailTextStyle(12, 24, EMAIL_COLORS.muted, 600)}padding-bottom:2px;">Samples Tracking:</p><p style="${emailTextStyle(16, 24, EMAIL_COLORS.green, 600)}letter-spacing:0.3px;overflow-wrap:anywhere;word-break:break-word;">${escapeHtml(validated.trackingNumber)}</p></td></tr>`,
     ])}</td></tr>`,
+    emailRow(escapeHtml(sampleLidNote)),
     emailRow(escapeHtml(pricingIntroduction)),
     ...categoryCards,
     `<tr><td style="${EMAIL_CELL_STYLE}padding-bottom:28px;">${emailTable([

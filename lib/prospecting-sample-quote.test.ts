@@ -30,7 +30,7 @@ describe('sample quote validation', () => {
       ['fraction-1-5oz', 10000], ['fraction-2oz', 12500], ['fraction-2-5oz', 14500], ['fraction-3oz', 18000], ['fraction-decaf', 13000],
       ['filter-1-5oz', 4200], ['filter-2oz', 5500],
       ['k-cups-regular', 3800], ['k-cups-fourth-dimension', 5000],
-      ['concentrate-regular', 11500], ['concentrate-decaf', 11500],
+      ['concentrate-regular', 13000], ['concentrate-decaf', 13000],
     ]);
   });
 
@@ -73,6 +73,18 @@ describe('sample pricing and tracking email', () => {
     }
   });
 
+  it('keeps custom concentrate quotes unchanged while using the updated defaults for new quotes', () => {
+    const email = buildSampleQuoteEmail({ contactName: 'Ron', senderName: 'Zach', trackingNumber: tracking, lines: [
+      { id: 'concentrate-regular', priceCents: 11000 },
+      { id: 'concentrate-decaf', priceCents: 12000 },
+    ] });
+    for (const body of [email.text, visibleHtmlText(email.html)]) {
+      expect(body).toContain('$110.00');
+      expect(body).toContain('$120.00');
+      expect(body).not.toContain('$130.00');
+    }
+  });
+
   it('renders all sizes, roast descriptions and custom prices consistently in both formats', () => {
     const email = buildSampleQuoteEmail({
       contactName: 'Ron', senderName: 'Haskins', trackingNumber: tracking,
@@ -97,6 +109,7 @@ describe('sample pricing and tracking email', () => {
     const email = buildSampleQuoteEmail({ contactName: 'Ron Buyer', senderName: 'Haskins', trackingNumber: tracking, lines: [bulkLine] });
     const approvedCopy = [
       'Thanks for your interest in Sobrew Coffee! Looking forward to y’all trying the coffee.',
+      'If your sample box includes K-cups, the purple lid is Dark Roast and the orange lid is Medium Roast.',
       'Please find your coffee pricing below.',
       'To place an order, we’ll create a login for you on our online ordering portal.',
       'We built this to make ordering as simple and hands-off as possible. Most of our partners love the ability to set it and forget it:',
