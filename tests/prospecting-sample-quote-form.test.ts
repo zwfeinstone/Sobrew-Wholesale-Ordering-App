@@ -20,7 +20,7 @@ describe('sample quote review form', () => {
     expect((html.match(/type="checkbox" checked=""/g) || []).length).toBe(0);
     expect(html).toContain('value="42.50"');
     expect(html).toContain('value="60.00"');
-    expect((html.match(/value="115.00"/g) || []).length).toBe(2);
+    expect((html.match(/value="130.00"/g) || []).length).toBe(3); // Decaf fraction packs and both concentrates.
     expect(html).toContain('Bag in Box Concentrate');
     expect(html).toContain('2 x 64oz');
     expect(html).toContain('name="greeting_name"');
