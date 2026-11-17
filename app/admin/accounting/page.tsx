@@ -427,6 +427,7 @@ function AccountingNav({
             {view.label}
           </Link>
         ))}
+        <Link href={`/admin/accounting/shopify?${new URLSearchParams({ start, end })}`} className="rounded-xl border border-slate-200 bg-white/70 px-4 py-3 text-sm font-semibold text-slate-700 hover:border-teal-200 hover:text-teal-800">Shopify reconciliation</Link>
       </div>
     </section>
   );

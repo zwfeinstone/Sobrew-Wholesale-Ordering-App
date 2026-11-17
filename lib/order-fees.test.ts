@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { donationCogsCentsForOrder, processingFeeCentsForRevenue, shopifyDonationCogsCentsForBags } from './order-fees';
+import { donationCogsCentsForOrder, processingFeeCentsForOrder, processingFeeCentsForRevenue, shopifyDonationCogsCentsForBags } from './order-fees';
 
 describe('order donation rules', () => {
   it('counts every Shopify bag regardless of price or discount', () => {
@@ -23,5 +23,20 @@ describe('order donation rules', () => {
   it('keeps processing at 2.99 percent plus 30 cents per order', () => {
     expect(processingFeeCentsForRevenue(3600)).toBe(138);
     expect(processingFeeCentsForRevenue(8000)).toBe(269);
+  });
+});
+
+describe('order processing fee estimate', () => {
+  it('includes paid shipping and sales tax in the Shopify payment fee base', () => {
+    expect(processingFeeCentsForOrder({ orderSource: 'shopify', subtotalCents: 8000, totalPaidCents: 9400 })).toBe(311);
+  });
+
+  it.each([undefined, null, '', 'invalid', -1])('falls back to merchandise for a legacy missing or invalid total (%s)', (totalPaidCents) => {
+    expect(processingFeeCentsForOrder({ orderSource: 'shopify', subtotalCents: 8000, totalPaidCents })).toBe(269);
+  });
+
+  it('keeps portal fees unchanged and accepts a known zero Shopify total', () => {
+    expect(processingFeeCentsForOrder({ orderSource: 'portal', subtotalCents: 8000, totalPaidCents: 9400 })).toBe(269);
+    expect(processingFeeCentsForOrder({ orderSource: 'shopify', subtotalCents: 8000, totalPaidCents: 0 })).toBe(30);
   });
 });

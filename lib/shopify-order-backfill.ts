@@ -23,6 +23,10 @@ type ShopifyOrder = {
   displayFinancialStatus: string | null;
   displayFulfillmentStatus: string;
   currentSubtotalPriceSet: Money;
+  currentShippingPriceSet: Money;
+  currentTotalTaxSet: Money;
+  currentTotalPriceSet: Money;
+  taxesIncluded: boolean;
   shippingAddress: {
     name: string | null;
     firstName: string | null;
@@ -64,6 +68,10 @@ const NAMED_ORDER_QUERY = `query PortalNamedOrderImport($query: String!) {
       id name createdAt email note test cancelledAt currencyCode
       displayFinancialStatus displayFulfillmentStatus
       currentSubtotalPriceSet { shopMoney { amount currencyCode } }
+      currentShippingPriceSet { shopMoney { amount currencyCode } }
+      currentTotalTaxSet { shopMoney { amount currencyCode } }
+      currentTotalPriceSet { shopMoney { amount currencyCode } }
+      taxesIncluded
       shippingAddress { name firstName lastName company address1 address2 city province provinceCode zip countryCodeV2 }
       lineItems(first: 100) {
         pageInfo { hasNextPage }
@@ -103,6 +111,7 @@ function webhookPayload(order: ShopifyOrder) {
   if (order.test !== false) throw new Error('Test orders or orders with an unknown test status cannot be imported.');
   if (order.cancelledAt) throw new Error('Cancelled orders cannot be imported.');
   if (order.currencyCode !== 'USD') throw new Error('Only USD orders are supported. Review this order in Shopify.');
+  if (order.taxesIncluded !== false) throw new Error('Tax-inclusive orders or orders with unknown tax treatment need manual review in Shopify.');
   if (!order.lineItems || order.lineItems.pageInfo?.hasNextPage !== false || order.lineItems.nodes.length > 100) {
     throw new Error('Orders with more than 100 line items need manual review.');
   }
@@ -122,6 +131,10 @@ function webhookPayload(order: ShopifyOrder) {
     financial_status: order.displayFinancialStatus.toLowerCase(),
     fulfillment_status: null,
     current_subtotal_price: usdAmount(order.currentSubtotalPriceSet, 'Order subtotal'),
+    current_total_tax: usdAmount(order.currentTotalTaxSet, 'Sales tax collected'),
+    current_total_price: usdAmount(order.currentTotalPriceSet, 'Customer payment total'),
+    taxes_included: order.taxesIncluded,
+    shipping_lines: [{ discounted_price: usdAmount(order.currentShippingPriceSet, 'Discounted shipping charge') }],
     shipping_address: address ? {
       name: address.name, first_name: address.firstName, last_name: address.lastName,
       company: address.company, address1: address.address1, address2: address.address2,

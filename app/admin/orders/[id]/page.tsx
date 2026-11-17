@@ -21,7 +21,7 @@ import { snapshotOrderCommissionForShipment } from '@/lib/commissions';
 import { sendShippedEmail } from '@/lib/email';
 import { centsFromDollars, isWholeCountQuantity, normalizeInventoryNumber, roundWholeCountQuantity } from '@/lib/inventory';
 import { snapshotOrderCogsForShipment } from '@/lib/order-cogs';
-import { donationCogsCentsForOrder, processingFeeCentsForRevenue } from '@/lib/order-fees';
+import { donationCogsCentsForOrder, processingFeeCentsForOrder } from '@/lib/order-fees';
 import { getOrderItemSummaries } from '@/lib/order-items';
 import { orderAddressLabel, orderActivityLabel } from '@/lib/order-workflow';
 import { fulfillShippedOrderBilling } from '@/lib/quickbooks';
@@ -161,7 +161,7 @@ async function shipOrder(formData: FormData) {
 
   if (orderItemsError) redirect(`/admin/orders/${id}?toast=ship_error`);
   const heldRelease = await isHeldStockReleaseForBilling(supabase, { ...order, order_items: orderItems });
-  const processingFeeCents = heldRelease ? 0 : processingFeeCentsForRevenue(order.subtotal_cents);
+  const processingFeeCents = heldRelease ? 0 : processingFeeCentsForOrder({ orderSource: order.order_source, subtotalCents: order.subtotal_cents, totalPaidCents: order.shopify_total_paid_cents });
   const donationCogsCents = heldRelease ? 0 : donationCogsCentsForOrder({
     orderSource: order.order_source,
     revenueCents: order.subtotal_cents,
@@ -561,7 +561,7 @@ export default async function AdminOrderDetail(
     id: item.id,
     label: productBoxLabel(item),
   }));
-  const processingFeePreviewCents = heldSale?.processing_fee_cents ?? (heldRelease ? 0 : processingFeeCentsForRevenue(order.subtotal_cents));
+  const processingFeePreviewCents = heldSale?.processing_fee_cents ?? (heldRelease ? 0 : processingFeeCentsForOrder({ orderSource: order.order_source, subtotalCents: order.subtotal_cents, totalPaidCents: order.shopify_total_paid_cents }));
   const donationCogsPreviewCents = heldSale?.donation_cogs_cents ?? (heldRelease ? 0 : donationCogsCentsForOrder({
     orderSource: order.order_source,
     revenueCents: order.subtotal_cents,
@@ -648,6 +648,15 @@ export default async function AdminOrderDetail(
     {order.order_source === 'shopify' ? <section className="order-detail-section space-y-2" aria-label="Shopify order">
       <p className="font-semibold">Shopify {order.shopify_order_name} <span className="workspace-badge">Paid in Shopify</span></p>
       <p className="text-sm text-slate-600">No invoice or additional payment is needed.</p>
+      <dl className="grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
+        <div><dt className="text-slate-500">Original merchandise revenue</dt><dd className="font-semibold">{usd(order.subtotal_cents)}</dd></div>
+        <div><dt className="text-slate-500">Original shipping collected (revenue)</dt><dd className="font-semibold">{order.shopify_shipping_collected_cents == null ? 'Not imported' : usd(order.shopify_shipping_collected_cents)}</dd></div>
+        <div><dt className="text-slate-500">Original sales tax collected (liability)</dt><dd className="font-semibold">{order.shopify_tax_collected_cents == null ? 'Not imported' : usd(order.shopify_tax_collected_cents)}</dd></div>
+        <div><dt className="text-slate-500">Original customer payment before refunds</dt><dd className="font-semibold">{order.shopify_total_paid_cents == null ? 'Not imported' : usd(order.shopify_total_paid_cents)}</dd></div>
+      </dl>
+      <p className="text-sm text-amber-800">Original checkout amounts only. Later refunds, returns, chargebacks and tax remittances are excluded; reconcile those adjustments in Shopify and accounting.</p>
+      <p className="text-sm text-slate-600">Customer shipping is revenue. Enter the actual carrier cost separately in fulfillment. Sales tax is excluded from revenue and COGS.</p>
+      {order.shopify_total_paid_cents == null ? <p className="text-sm text-amber-800">Checkout totals have not been imported for this older order. The processing fee estimate currently uses merchandise only.</p> : null}
       {order.status === 'Shipped' ? <p className="text-sm">{order.shopify_sync_status === 'synced' ? fulfillmentMethod === 'carrier' ? 'Shipment and tracking synced to Shopify.' : 'Local delivery / pickup fulfilled in Shopify.' : 'Fulfillment saved. Shopify sync is pending.'}</p> : null}
       {order.shopify_sync_error ? <p className="text-sm text-rose-700" role="alert">{order.shopify_sync_error}</p> : null}
       {editableDelivery ? <form action={recheckShopifyOrder}><input type="hidden" name="id" value={order.id} /><PendingSubmitButton className="btn-secondary" label="Recheck Shopify" pendingLabel="Checking Shopify..." /></form> : null}
@@ -689,7 +698,7 @@ export default async function AdminOrderDetail(
         <p className="text-sm text-slate-500 mb-4 break-all">{order.shopify_email || order.profiles?.email || 'No customer login'}</p>
         {editableDelivery ? <>
           <form action={updateStatus} className="flex gap-2 mb-5"><input type="hidden" name="id" value={order.id} /><label className="sr-only" htmlFor="order-status">Order status</label><select id="order-status" className="input" name="status" defaultValue={order.status || 'New'}><option>New</option><option>Processing</option></select><PendingSubmitButton className="btn-secondary" label="Update" pendingLabel="Saving..." /></form>
-          <div className="fulfillment-fees mb-5"><p>Processing fee <strong>{usd(processingFeePreviewCents)}</strong></p><p>Donation ({order.order_source === 'shopify' ? '$1 per bag' : '1% of revenue'}) <strong>{usd(donationCogsPreviewCents)}</strong></p></div>
+          <div className="fulfillment-fees mb-5"><p>Processing fee <strong>{usd(processingFeePreviewCents)}</strong></p><p>Donation ({order.order_source === 'shopify' ? '$1 per bag' : '1% of revenue'}) <strong>{usd(donationCogsPreviewCents)}</strong></p>{order.order_source === 'shopify' ? <p className="text-xs text-slate-500">Estimated at 2.99% + $0.30{order.shopify_total_paid_cents == null ? ' of merchandise' : ' of the original customer payment, including shipping and tax, before refunds'}. Reconcile to actual Shopify fees.</p> : null}</div>
           {shippingBoxSummary.length ? <div className="mb-4 text-sm" aria-label="Saved product boxes"><p className="font-semibold">Saved product boxes</p>{shippingBoxSummary.map(usage => <p key={usage.label}>{usage.quantity} x {usage.label}</p>)}</div> : null}
           <OrderFulfillmentForm action={shipOrder} orderId={order.id} prepaidShopify={order.order_source === 'shopify'} hasRequiredBoxLines={productBoxRequiredLines.length > 0}>
             {productBoxRequiredLines.length ? <div><h3 className="text-sm font-semibold mb-3">Product boxes</h3><ProductBoxUsageFields key={JSON.stringify(savedBoxUsages)} initialUsages={savedBoxUsages} boxItems={productBoxOptions} recipeBoxCoveredLabels={recipeBoxCoveredLabels} requiredLines={productBoxRequiredLines} /></div> : null}
