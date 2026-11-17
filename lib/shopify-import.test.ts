@@ -12,6 +12,7 @@ const order = {
   id: 123, admin_graphql_api_id: 'gid://shopify/Order/90071992547409930', name: '#1001',
   financial_status: 'paid', fulfillment_status: null, currency: 'USD', test: false, cancelled_at: null,
   created_at: '2026-10-09T10:00:00Z', email: 'buyer@example.com', current_subtotal_price: '28.99',
+  taxes_included: false, current_total_tax: '1.76', current_total_price: '36.75', shipping_lines: [{ discounted_price: '6.00' }],
   shipping_address: { name: 'Buyer', company: 'Coffee shop', address1: '1 Main', city: 'Chicago', province_code: 'IL', zip: '60601', country_code: 'US' },
   line_items: [{ id: 456, admin_graphql_api_id: 'gid://shopify/LineItem/90071992547409931', sku: 'COFFEE-1', variant_id: '90071992547409932', product_id: '123', name: 'Shopify Coffee',
     quantity: 3, current_quantity: 3, fulfillable_quantity: 3, requires_shipping: true, price: '10.00', total_discount: '0.00',
@@ -22,6 +23,7 @@ describe('Shopify paid order normalization', () => {
   it('preserves exact large IDs, discounted cents, buyer snapshots and product mappings', () => {
     const result = prepareShopifyOrder(order, 'sobrew.myshopify.com', products);
     expect(result.order).toMatchObject({ shopify_order_id: order.admin_graphql_api_id, subtotal_cents: 2899,
+      shopify_shipping_collected_cents: 600, shopify_tax_collected_cents: 176, shopify_total_paid_cents: 3675,
       shopify_email: order.email, shipping_company: 'Coffee shop', shipping_country: 'US' });
     expect(result.order.shopify_line_items).toEqual([{ line_item_id: order.line_items[0].admin_graphql_api_id, quantity: 3, product_id: products[0].id }]);
     expect(result.items[0]).toMatchObject({ qty: 3, unit_price_cents: 966, line_total_cents: 2899, product_name_snapshot: 'Shopify Coffee' });
@@ -29,7 +31,7 @@ describe('Shopify paid order normalization', () => {
     expect(result.order).not.toHaveProperty('shipping_cost_cents');
   });
   it('supports a completely discounted item without inventing a charge', () => {
-    const result = prepareShopifyOrder({ ...order, current_subtotal_price: '0.00', line_items: [{ ...order.line_items[0], discount_allocations: [{ amount: '30.00' }] }] }, 'sobrew.myshopify.com', products);
+    const result = prepareShopifyOrder({ ...order, current_subtotal_price: '0.00', current_total_tax: '0.00', current_total_price: '0.00', shipping_lines: [], line_items: [{ ...order.line_items[0], discount_allocations: [{ amount: '30.00' }] }] }, 'sobrew.myshopify.com', products);
     expect(result.items[0]).toMatchObject({ line_total_cents: 0, unit_price_cents: 0 });
   });
   it.each([
@@ -88,7 +90,7 @@ describe('durable Shopify import retry', () => {
     const db = adminStub();
     expect(await retryShopifyImport('receipt')).toEqual({ status: 'imported', orderId: 'saved-order' });
     expect(db.rpc).toHaveBeenCalledWith('import_shopify_order', expect.objectContaining({
-      p_order: expect.objectContaining({ import_id: 'receipt', subtotal_cents: 2899 }), p_items: expect.arrayContaining([expect.objectContaining({ product_id: products[0].id })]),
+      p_order: expect.objectContaining({ import_id: 'receipt', subtotal_cents: 2899, shopify_shipping_collected_cents: 600, shopify_tax_collected_cents: 176, shopify_total_paid_cents: 3675 }), p_items: expect.arrayContaining([expect.objectContaining({ product_id: products[0].id })]),
     }));
     expect(db.update).not.toHaveBeenCalled();
   });

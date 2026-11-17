@@ -9,6 +9,22 @@ export function processingFeeCentsForRevenue(revenueCents: unknown) {
   return Math.round(parsed * PROCESSING_FEE_RATE + PROCESSING_FEE_FIXED_CENTS);
 }
 
+/** Estimate the fee on the amount charged, including Shopify shipping and tax. */
+export function processingFeeCentsForOrder({
+  orderSource,
+  subtotalCents,
+  totalPaidCents,
+}: {
+  orderSource?: string | null;
+  subtotalCents: unknown;
+  totalPaidCents?: unknown;
+}) {
+  const total = totalPaidCents == null || totalPaidCents === '' ? NaN : Number(totalPaidCents);
+  const base = orderSource === 'shopify' && Number.isSafeInteger(total) && total >= 0
+    ? total : subtotalCents;
+  return processingFeeCentsForRevenue(base);
+}
+
 export function donationCogsCentsForRevenue(revenueCents: unknown) {
   const parsed = typeof revenueCents === 'number' ? revenueCents : Number.parseFloat(String(revenueCents ?? '0'));
   if (!Number.isFinite(parsed) || parsed <= 0) return 0;

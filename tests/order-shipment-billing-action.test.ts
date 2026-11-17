@@ -348,6 +348,20 @@ describe('billing after shipment', () => {
 describe('Shopify prepaid shipment', () => {
   beforeEach(() => { state.order.order_source = 'shopify'; });
 
+  it('uses the full Shopify payment for future fees while preserving separate carrier expense and tax', async () => {
+    Object.assign(state.order, { subtotal_cents: 8000, shopify_shipping_collected_cents: 700, shopify_tax_collected_cents: 700, shopify_total_paid_cents: 9400 });
+    const text = treeText(await page());
+    expect(text).toContain('Original shipping collected (revenue)$7.00');
+    expect(text).toContain('Original sales tax collected (liability)$7.00');
+    expect(text).toContain('Original customer payment before refunds$94.00');
+    expect(text).toContain('Later refunds, returns, chargebacks and tax remittances are excluded');
+    expect(text).toContain('Processing fee $3.11');
+    await expect((await action())(form())).rejects.toThrow('toast=shopify_shipped');
+    expect(state.cogs).toHaveBeenCalledWith(expect.objectContaining({ processingFeeCents: 311, shippingCostCents: 500 }));
+    expect(state.order).toMatchObject({ shopify_shipping_collected_cents: 700, shopify_tax_collected_cents: 700, shopify_total_paid_cents: 9400, shipping_cost_cents: 500 });
+    expect(state.billing).not.toHaveBeenCalled();
+  });
+
   it('previews and saves one dollar per bag while retaining the standard processing fee', async () => {
     state.order.subtotal_cents = 8000;
     state.orderItems = [

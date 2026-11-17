@@ -21,6 +21,7 @@ function order(name = '#1160') {
     test: false, cancelledAt: null as string | null, currencyCode: 'USD',
     displayFinancialStatus: 'PAID', displayFulfillmentStatus: 'UNFULFILLED',
     currentSubtotalPriceSet: money('28.99'),
+    currentShippingPriceSet: money('6.00'), currentTotalTaxSet: money('1.76'), currentTotalPriceSet: money('36.75'), taxesIncluded: false,
     shippingAddress: { name: 'A Buyer', firstName: 'A', lastName: 'Buyer', company: 'Coffee shop', address1: '1 Main St', address2: 'Unit 2', city: 'Chicago', province: 'Illinois', provinceCode: 'IL', zip: '60601', countryCodeV2: 'US' },
     lineItems: {
       pageInfo: { hasNextPage: false },
@@ -54,6 +55,7 @@ describe('explicit Shopify order backfill', () => {
     expect(shopifyGraphQL).toHaveBeenCalledWith(expect.stringMatching(/^query PortalNamedOrderImport/), { query: 'name:"#1160"' });
     expect(receiveShopifyOrder).toHaveBeenCalledWith(expect.objectContaining({
       admin_graphql_api_id: 'gid://shopify/Order/90071992547409930', current_subtotal_price: '28.99',
+      current_total_tax: '1.76', current_total_price: '36.75', taxes_included: false, shipping_lines: [{ discounted_price: '6.00' }],
       email: 'buyer@example.com', note: 'Leave at front desk', financial_status: 'paid', fulfillment_status: null,
       shipping_address: expect.objectContaining({ name: 'A Buyer', address2: 'Unit 2', province_code: 'IL', country_code: 'US' }),
       line_items: [expect.objectContaining({ admin_graphql_api_id: 'gid://shopify/LineItem/90071992547409931',
@@ -63,6 +65,7 @@ describe('explicit Shopify order backfill', () => {
     }), SHOP, 'orders/paid');
     const prepared = prepareShopifyOrder(vi.mocked(receiveShopifyOrder).mock.calls[0][0], SHOP, products);
     expect(prepared.items[0]).toMatchObject({ product_id: PRODUCT_ID, qty: 3, line_total_cents: 2899 });
+    expect(prepared.order).toMatchObject({ shopify_shipping_collected_cents: 600, shopify_tax_collected_cents: 176, shopify_total_paid_cents: 3675 });
     expect(prepared.order).not.toHaveProperty('shipping_cost_cents');
     expect(prepared.order).not.toHaveProperty('user_id');
   });
@@ -110,10 +113,13 @@ describe('explicit Shopify order backfill', () => {
     expect(receiveShopifyOrder).not.toHaveBeenCalled();
   });
 
-  it.each(['order', 'subtotal', 'price', 'discount'])('refuses non-USD %s currency without a receipt', async field => {
+  it.each(['order', 'subtotal', 'price', 'discount', 'shipping', 'tax', 'total'])('refuses non-USD %s currency without a receipt', async field => {
     const data = order();
     if (field === 'order') data.currencyCode = 'CAD';
     if (field === 'subtotal') data.currentSubtotalPriceSet = money('28.99', 'CAD');
+    if (field === 'shipping') data.currentShippingPriceSet = money('6.00', 'CAD');
+    if (field === 'tax') data.currentTotalTaxSet = money('1.76', 'CAD');
+    if (field === 'total') data.currentTotalPriceSet = money('36.75', 'CAD');
     if (field === 'price') data.lineItems.nodes[0].originalUnitPriceSet = money('10.00', 'CAD');
     if (field === 'discount') data.lineItems.nodes[0].discountAllocations[0].allocatedAmountSet = money('1.01', 'CAD');
     vi.mocked(shopifyGraphQL).mockResolvedValue(response(data));
@@ -166,6 +172,7 @@ describe('explicit Shopify order backfill', () => {
     { displayFinancialStatus: 'PENDING' }, { displayFinancialStatus: 'PARTIALLY_PAID' },
     { displayFinancialStatus: 'REFUNDED' }, { displayFinancialStatus: null },
     { test: true }, { test: undefined }, { cancelledAt: '2026-10-09T11:00:00Z' },
+    { taxesIncluded: true }, { taxesIncluded: undefined },
   ])('rejects ineligible status before it could occupy the immutable paid receipt: %j', async overrides => {
     vi.mocked(shopifyGraphQL).mockResolvedValue(response({ ...order(), ...overrides } as ReturnType<typeof order>));
     expect(await importShopifyOrdersByNames('#1160')).toMatchObject([{ status: 'error' }]);

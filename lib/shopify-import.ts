@@ -2,6 +2,7 @@ import 'server-only';
 
 import { getShopifyConfig } from '@/lib/shopify';
 import { ensureShopifyOrderProducts } from '@/lib/shopify-catalog';
+import { readShopifyFinancials } from '@/lib/shopify-financials';
 import { getSupabaseAdmin, type SupabaseAdminClient } from '@/lib/supabase/admin';
 import type { Json } from '@/lib/supabase/database.types';
 
@@ -125,8 +126,10 @@ export function prepareShopifyOrder(payload: unknown, shopDomain: string, produc
   }
   const createdAt = text(source.created_at);
   if (!createdAt || Number.isNaN(Date.parse(createdAt))) throw new Error('Shopify order has an invalid creation date.');
+  const collectedAmounts = readShopifyFinancials(source, subtotal);
   return {
     order: {
+      ...collectedAmounts,
       order_source: 'shopify', shopify_shop_domain: shopDomain, shopify_order_id: identity.orderId,
       shopify_order_name: identity.orderName, shopify_email: text(source.email) ?? text(source.contact_email),
       shopify_line_items: items.map(item => ({ line_item_id: item.shopify_line_item_id, quantity: item.qty, product_id: item.product_id })),

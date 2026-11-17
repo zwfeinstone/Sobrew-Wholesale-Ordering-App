@@ -9,6 +9,9 @@ const { PGlite } = await import(pathToFileURL(process.env.SHOPIFY_PGLITE_MODULE)
 const db = new PGlite();
 const migration = await readFile(new URL('../db/migrations/20261009132818_shopify_paid_orders.sql', import.meta.url), 'utf8');
 const localDeliveryMigration = await readFile(new URL('../db/migrations/20261009214649_shopify_local_delivery.sql', import.meta.url), 'utf8');
+const collectedAmountsMigration = await readFile(new URL('../db/migrations/20261117175505_shopify_collected_shipping_tax.sql', import.meta.url), 'utf8');
+const moneyFields = ['shopify_shipping_collected_cents', 'shopify_tax_collected_cents', 'shopify_total_paid_cents'];
+const collectedAmounts = { shopify_shipping_collected_cents: 500, shopify_tax_collected_cents: 200, shopify_total_paid_cents: 3100 };
 const productId = '10000000-0000-4000-8000-000000000001';
 const source = { financial_status: 'paid', currency: 'USD', test: false, fulfillment_status: null, cancelled_at: null };
 const item = { product_id: productId, shopify_variant_id: 'gid://shopify/ProductVariant/1', qty: 2, unit_price_cents: 1200, line_total_cents: 2400, product_name_snapshot: 'Coffee', shopify_line_item_id: 'gid://shopify/LineItem/1' };
@@ -42,7 +45,7 @@ try {
       status text default 'New', order_kind text default 'standard', fulfillment_method text not null default 'carrier'
         check(fulfillment_method in ('carrier', 'local_delivery')),
       shipping_name text, shipping_company text, shipping_address1 text, shipping_address2 text, shipping_city text,
-      shipping_state text, shipping_zip text, notes text, subtotal_cents int not null default 0,
+      shipping_state text, shipping_zip text, shipping_cost_cents int, notes text, subtotal_cents int not null default 0,
       created_at timestamptz default now(), invoice_status text not null default 'not_invoiced',
       quickbooks_invoice_id text, quickbooks_payment_id text, quickbooks_payment_charge_id text,
       constraint orders_invoice_status_check check(invoice_status in ('not_invoiced','invoicing','invoiced','invoice_error'))
@@ -97,6 +100,24 @@ try {
   assert.equal(saved.shipping_country, 'US');
   console.log('PASS atomic mapped import, immutable webhook snapshot, normal New/carrier workflow, no billing/customer attribution, duplicate receipt and replay dedupe');
 
+  // Apply the additive migration with a real imported row already in place.
+  await db.exec('reset role');
+  await db.exec(collectedAmountsMigration);
+  const migrated = (await db.query('select * from orders where id=$1', [first])).rows[0];
+  for (const field of moneyFields) assert.equal(migrated[field], null);
+  for (const [field, value] of Object.entries(saved)) assert.deepEqual(migrated[field], value);
+  assert.equal((await db.query("select relrowsecurity from pg_class where oid='public.orders'::regclass")).rows[0].relrowsecurity, true);
+  for (const signature of ['public.import_shopify_order(jsonb,jsonb)', 'public.protect_shopify_order_identity()']) {
+    assert.equal((await db.query('select prosecdef from pg_proc where oid=$1::regprocedure', [signature])).rows[0].prosecdef, false);
+    for (const role of ['anon', 'authenticated', 'outsider']) {
+      assert.equal((await db.query('select has_function_privilege($1,$2,\'EXECUTE\') as allowed', [role, signature])).rows[0].allowed, false);
+    }
+  }
+  await db.exec('set role service_role');
+  assert.equal(await importOrder(firstReceipt, collectedAmounts), first);
+  assert.deepEqual((await db.query(`select ${moneyFields.join(',')} from orders where id=$1`, [first])).rows[0], Object.fromEntries(moneyFields.map(field => [field, null])));
+  console.log('PASS additive migration preserves historical values, null unknown amounts, RLS/security invoker/execute restrictions and replay dedupe');
+
   await reject(db.query("update orders set invoice_status='invoicing' where id=$1", [first]), '23514');
   await reject(db.query("update orders set quickbooks_payment_id='payment' where id=$1", [first]), '23514');
   await reject(db.query("update orders set center_id='20000000-0000-4000-8000-000000000001' where id=$1", [first]), '23514');
@@ -120,6 +141,7 @@ try {
   assert.equal((await db.query('select status from shopify_order_imports where id=$1', [secondReceipt])).rows[0].status, 'pending');
   const second = await importOrder(secondReceipt, { shopify_order_id: 'gid://shopify/Order/2', subtotal_cents: 0 }, [{ ...item, unit_price_cents: 0, line_total_cents: 0 }]);
   assert.equal((await db.query('select subtotal_cents from orders where id=$1', [second])).rows[0].subtotal_cents, 0);
+  for (const field of moneyFields) assert.equal((await db.query('select * from orders where id=$1', [second])).rows[0][field], null);
   console.log('PASS variant identity/total validation, failed second item rolls back header and first item, retry succeeds, fully discounted Shopify lines accepted');
 
   await db.exec('reset role');
@@ -155,4 +177,66 @@ try {
   await reject(db.query('insert into order_items(order_id,product_id,qty,unit_price_cents,line_total_cents) values($1,$2,1,0,0)', [oldSnapshot.id, productId]), '22023');
   await db.exec('reset role');
   console.log('PASS API roles cannot read inbox/call import/forge identity or sync, normal admin workflow remains allowed, historical snapshots restore new defaults, portal zero-price guard retained');
+
+  await db.exec('set role service_role');
+  const paidReceipt = await receipt(3);
+  const paid = await importOrder(paidReceipt, { ...collectedAmounts, shopify_order_id: 'gid://shopify/Order/3' });
+  let paidRow = (await db.query('select * from orders where id=$1', [paid])).rows[0];
+  assert.equal(paidRow.subtotal_cents, 2400);
+  for (const field of moneyFields) assert.equal(paidRow[field], collectedAmounts[field]);
+  assert.equal(paidRow.shipping_cost_cents, null);
+  assert.equal(await importOrder(paidReceipt, { ...collectedAmounts, shopify_order_id: 'gid://shopify/Order/3' }), paid);
+
+  const badReceipt = await receipt(4);
+  const ordersBefore = await count('orders');
+  const itemsBefore = await count('order_items');
+  for (const field of moneyFields) {
+    for (const value of [null, '500', true, [], {}, -1, 1.5, 2147483648, 99999999999999]) {
+      await reject(importOrder(badReceipt, { ...collectedAmounts, [field]: value, shopify_order_id: 'gid://shopify/Order/4' }), '22023');
+    }
+    const partial = { ...collectedAmounts, shopify_order_id: 'gid://shopify/Order/4' };
+    delete partial[field];
+    await reject(importOrder(badReceipt, partial), '22023');
+    await reject(importOrder(badReceipt, { [field]: 0, shopify_order_id: 'gid://shopify/Order/4' }), '22023');
+  }
+  await reject(importOrder(badReceipt, { ...collectedAmounts, shopify_total_paid_cents: 3000, shopify_order_id: 'gid://shopify/Order/4' }), '22023');
+  await reject(importOrder(badReceipt, { shopify_shipping_collected_cents: 2147483647, shopify_tax_collected_cents: 2147483647,
+    shopify_total_paid_cents: 2147483647, shopify_order_id: 'gid://shopify/Order/4' }), '22023');
+  assert.equal(await count('orders'), ordersBefore); assert.equal(await count('order_items'), itemsBefore);
+  assert.deepEqual((await db.query('select status,order_id from shopify_order_imports where id=$1', [badReceipt])).rows[0], { status: 'pending', order_id: null });
+  const zero = await importOrder(badReceipt, { shopify_shipping_collected_cents: 0, shopify_tax_collected_cents: 0,
+    shopify_total_paid_cents: 2400, shopify_order_id: 'gid://shopify/Order/4' });
+  assert.deepEqual((await db.query(`select ${moneyFields.join(',')} from orders where id=$1`, [zero])).rows[0], {
+    shopify_shipping_collected_cents: 0, shopify_tax_collected_cents: 0, shopify_total_paid_cents: 2400,
+  });
+  const rollbackReceipt = await receipt(5);
+  const beforeRollback = await count('orders');
+  const itemsBeforeRollback = await count('order_items');
+  await reject(importOrder(rollbackReceipt, { ...collectedAmounts, subtotal_cents: 4800,
+    shopify_total_paid_cents: 5500, shopify_order_id: 'gid://shopify/Order/5' },
+  [item, { ...item, product_name_snapshot: 'Reject', shopify_line_item_id: 'gid://shopify/LineItem/2' }]));
+  assert.equal(await count('orders'), beforeRollback); assert.equal(await count('order_items'), itemsBeforeRollback);
+  assert.deepEqual((await db.query('select status,order_id from shopify_order_imports where id=$1', [rollbackReceipt])).rows[0], { status: 'pending', order_id: null });
+  console.log('PASS collected shipping/tax/paid total atomic import, free shipping/tax zero, malformed/partial/negative/fractional/overflow/reconciliation rejection, receipt/item rollback');
+
+  // Constraints also protect direct service-role writes and historical backfills.
+  for (const field of moneyFields) {
+    await reject(db.query(`update orders set ${field}=null where id=$1`, [paid]), '23514');
+    await reject(db.query(`update orders set ${field}=-1 where id=$1`, [paid]), '23514');
+  }
+  await reject(db.query('update orders set shopify_total_paid_cents=3000 where id=$1', [paid]), '23514');
+  await reject(db.query(`insert into orders(subtotal_cents,${moneyFields.join(',')}) values(0,0,0,0)`), '23514');
+  await db.exec('reset role; set role authenticated');
+  for (const field of moneyFields) {
+    await reject(db.query(`update orders set ${field}=null where id=$1`, [paid]), '42501');
+    await reject(db.query(`insert into orders(${field}) values(0)`), '42501');
+  }
+  await db.query("update orders set notes='Normal fulfillment edit',status='Processing',shipping_cost_cents=700 where id=$1", [paid]);
+  paidRow = (await db.query('select * from orders where id=$1', [paid])).rows[0];
+  assert.equal(paidRow.shipping_cost_cents, 700);
+  for (const field of moneyFields) assert.equal(paidRow[field], collectedAmounts[field]);
+  await db.exec('reset role; set role service_role');
+  await db.query(`update orders set ${moneyFields.map(field => `${field}=0`).join(',')} where id=$1`, [second]);
+  assert.deepEqual((await db.query(`select ${moneyFields.join(',')} from orders where id=$1`, [second])).rows[0], Object.fromEntries(moneyFields.map(field => [field, 0])));
+  console.log('PASS table reconciliation and Shopify-only constraints, integration-only financial writes, separate actual shipping cost, normal fulfillment edits and valid historical backfill');
 } finally { await db.close(); }

@@ -2501,6 +2501,9 @@ export type Database = {
           shipping_name: string | null
           shipping_state: string | null
           shipping_zip: string | null
+          shopify_shipping_collected_cents: number | null
+          shopify_tax_collected_cents: number | null
+          shopify_total_paid_cents: number | null
           status: string | null
           submission_id: string | null
           subtotal_cents: number
@@ -2546,6 +2549,9 @@ export type Database = {
           shipping_name?: string | null
           shipping_state?: string | null
           shipping_zip?: string | null
+          shopify_shipping_collected_cents?: number | null
+          shopify_tax_collected_cents?: number | null
+          shopify_total_paid_cents?: number | null
           status?: string | null
           submission_id?: string | null
           subtotal_cents?: number
@@ -2591,6 +2597,9 @@ export type Database = {
           shipping_name?: string | null
           shipping_state?: string | null
           shipping_zip?: string | null
+          shopify_shipping_collected_cents?: number | null
+          shopify_tax_collected_cents?: number | null
+          shopify_total_paid_cents?: number | null
           status?: string | null
           submission_id?: string | null
           subtotal_cents?: number
