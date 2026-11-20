@@ -6,6 +6,7 @@ import { adminCanView, requireAdminSectionView } from '@/lib/admin-permissions';
 import { createReportDataCache } from '@/lib/admin-report-cache';
 import { loadReportCommerce } from '@/lib/admin-report-commerce';
 import { buildBaselineRanges } from '@/lib/profitability-reporting';
+import { recentOrderGpmPageOptions } from '@/lib/recent-order-gpm-page';
 import { getReportPreloadTarget } from '@/lib/report-navigation-policy';
 import { addDays, defaultRangeForMonth, parseDateInput, parseMonthInput } from '@/lib/reporting';
 import { fetchAllByIds, fetchAllPages } from '@/lib/supabase/pagination';
@@ -31,13 +32,14 @@ export function reportPreloadCommerceOptions(target: string, centerScope: string
   const rangeEndExclusive = parsedRangeEnd && parsedRangeEnd >= rangeStart ? addDays(parsedRangeEnd, 1) : defaultRange.rangeEndExclusive;
   const baseline = buildBaselineRanges(rangeStart, rangeEndExclusive);
   const recent = params.get('report') === 'recent_order_gpm';
+  const recentPage = recentOrderGpmPageOptions(params.get('rangeStart') ?? undefined, params.get('rangeEnd') ?? undefined, params.get('gpmPage') ?? undefined);
   return {
     centerScope,
     shippedRange: recent ? undefined : {
       start: new Date(Math.min(baseline.previousStart.getTime(), baseline.trailingStart.getTime())),
       endExclusive: rangeEndExclusive,
     },
-    recentOrders: recent ? { limit: 10 } : undefined,
+    recentOrders: recent ? { ...recentPage.options, error: recentPage.error } : undefined,
   };
 }
 

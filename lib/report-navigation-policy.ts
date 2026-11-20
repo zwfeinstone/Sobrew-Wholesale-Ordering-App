@@ -19,15 +19,17 @@ export function getReportPreloadTarget(href: string): string | null {
   }
   if (url.origin !== 'https://report-navigation.invalid' || url.pathname !== '/admin/reports') return null;
   const params = url.searchParams;
+  const report = params.get('report') || 'overview';
   for (const key of params.keys()) {
     if (params.getAll(key).length !== 1) return null;
     if (PRELOAD_EMPTY_FILTER_KEYS.has(key)) {
       if (params.get(key)) return null;
+    } else if (key === 'gpmPage' && report === 'recent_order_gpm') {
+      if (!/^[1-9]\d*$/.test(params.get(key) ?? '') || !Number.isSafeInteger(Number(params.get(key)))) return null;
     } else if (key !== 'report' && !PRELOAD_DATE_KEYS.includes(key as typeof PRELOAD_DATE_KEYS[number])) {
       return null;
     }
   }
-  const report = params.get('report') || 'overview';
   if (!PRELOAD_REPORTS.has(report)) return null;
   const normalized = new URLSearchParams({ report });
   for (const key of PRELOAD_DATE_KEYS) {
@@ -36,5 +38,6 @@ export function getReportPreloadTarget(href: string): string | null {
     if (key === 'month' ? !/^\d{4}-(0[1-9]|1[0-2])$/.test(value) : !validCalendarDate(value)) return null;
     normalized.set(key, value);
   }
+  if (report === 'recent_order_gpm' && params.has('gpmPage')) normalized.set('gpmPage', params.get('gpmPage')!);
   return `/admin/reports?${normalized.toString()}`;
 }

@@ -256,7 +256,7 @@ describe('report loading scope and completeness', () => {
     expect(state.scope).toHaveBeenCalledWith(expect.objectContaining({ selectedSalesProfileId: 'rep-1' }));
     expect(state.commerce).toHaveBeenCalledWith(state.client, {
       centerScope: ['customer'], shippedRange: undefined,
-      recentOrders: { limit: 10, productId: 'coffee', centerId: 'customer' },
+      recentOrders: { limit: 25, page: 1, start: '2026-10-01T05:00:00.000Z', endExclusive: '2026-11-01T05:00:00.000Z', error: undefined, productId: 'coffee', centerId: 'customer' },
     });
   });
 
@@ -268,7 +268,7 @@ describe('report loading scope and completeness', () => {
     expect(state.scope).toHaveBeenCalledWith(expect.objectContaining({ selectedSalesProfileId: '' }));
     expect(state.commerce).toHaveBeenCalledWith(state.client, {
       centerScope: ['customer'], shippedRange: undefined,
-      recentOrders: { limit: 10, productId: undefined, centerId: undefined },
+      recentOrders: { limit: 25, page: 1, start: '2026-10-01T05:00:00.000Z', endExclusive: '2026-11-01T05:00:00.000Z', error: undefined, productId: undefined, centerId: undefined },
     });
   });
 
@@ -281,7 +281,7 @@ describe('report loading scope and completeness', () => {
     expect(stub.reads.some((read) => ['profiles', 'admin_commission_settings'].includes(read.table))).toBe(false);
     expect(markup).not.toContain('Inactive Sales Rep');
     expect(state.scope).toHaveBeenCalledWith(expect.objectContaining({ current: expect.objectContaining({ isOwner: false }), selectedSalesProfileId: '' }));
-    expect(state.commerce).toHaveBeenCalledWith(state.client, expect.objectContaining({ centerScope: ['customer'], recentOrders: { limit: 10 } }));
+    expect(state.commerce).toHaveBeenCalledWith(state.client, expect.objectContaining({ centerScope: ['customer'], recentOrders: { limit: 25, page: 1, start: '2026-10-01T05:00:00.000Z', endExclusive: '2026-11-01T05:00:00.000Z', error: undefined } }));
   });
 
   it('redirects unauthorized profitability access before any report data is queried', async () => {
@@ -471,8 +471,8 @@ describe('report data reuse and authorization', () => {
     expect(queries[0].shippedRange.start.toISOString()).not.toBe(queries[1].shippedRange.start.toISOString());
     expect(queries[2]).toEqual({ centerScope: null, shippedRange: undefined, recentOrders: undefined });
     expect(queries.slice(3).map((query) => query.recentOrders)).toEqual([
-      { limit: 10 }, { limit: 10, productId: 'coffee', centerId: undefined },
-      { limit: 10, productId: 'tea', centerId: undefined }, { limit: 10, productId: undefined, centerId: 'customer' },
+      { limit: 25, page: 1, start: '2026-10-01T05:00:00.000Z', endExclusive: '2026-11-01T05:00:00.000Z', error: undefined }, { limit: 25, page: 1, start: '2026-10-01T05:00:00.000Z', endExclusive: '2026-11-01T05:00:00.000Z', error: undefined, productId: 'coffee', centerId: undefined },
+      { limit: 25, page: 1, start: '2026-10-01T05:00:00.000Z', endExclusive: '2026-11-01T05:00:00.000Z', error: undefined, productId: 'tea', centerId: undefined }, { limit: 25, page: 1, start: '2026-10-01T05:00:00.000Z', endExclusive: '2026-11-01T05:00:00.000Z', error: undefined, productId: undefined, centerId: 'customer' },
     ]);
   });
 
@@ -652,3 +652,110 @@ describe('simulator form feature retention', () => {
     expect(submitted.get('report')).toBe('simulator');
   });
 });
+
+describe('shipped order GPM view', () => {
+  const query = (params: Record<string, string>) => renderFixture({ report: 'recent_order_gpm', ...params });
+  const renderFixture = async (params: Record<string, string>) =>
+    renderToStaticMarkup(await ReportsPage({ searchParams: Promise.resolve(params) }));
+
+  it('starts all-time when opened from Overview and explains the date fields', async () => {
+    state.client = supabaseReadStub().client;
+    const overview = await renderFixture({ report: 'overview' });
+    const href = [...overview.matchAll(/href="([^"]*report=recent_order_gpm[^"]*)"/g)][0]?.[1] ?? '';
+    expect(href).toContain('report=recent_order_gpm');
+    expect(href).not.toContain('rangeStart');
+    expect(href).not.toContain('rangeEnd');
+    const html = await query({});
+    expect(html).toContain('Shipped from');
+    expect(html).toContain('Shipped through');
+    expect(html).toContain('Central time');
+    expect(html).not.toContain('Last 10 shipped orders');
+    expect(state.commerce).toHaveBeenLastCalledWith(state.client, expect.objectContaining({
+      recentOrders: { limit: 25, page: 1, start: undefined, endExclusive: undefined, error: undefined },
+    }));
+  });
+
+  it('renders range, page count, and previous/next URLs without resetting selected filters', async () => {
+    state.client = supabaseReadStub({ tables: { products: [{ id: 'coffee', name: 'Coffee', active: true }], centers: [{ id: 'customer', name: 'Customer', is_active: true }] } }).client;
+    const filtered = { rangeStart: '2026-11-01', rangeEnd: '2026-11-08', product: 'coffee', center: 'customer' };
+    const results = (page: number) => ({
+      orders: { data: [], error: null },
+      orderItems: { data: [], error: null },
+      recentPage: { page, total: 75 },
+    });
+    state.commerce.mockResolvedValue(results(2));
+    const html = await query({ ...filtered, gpmPage: '2' });
+    expect(html).toContain('Showing 26–50 of 75 orders · Page 2 of 3');
+    for (const page of [1, 3]) {
+      const href = [...html.matchAll(/href="([^"]*gpmPage=[^"]*)"/g)]
+        .map(([, value]) => new URL(value.replaceAll('&amp;', '&'), 'https://reports.test'))
+        .find((link) => link.searchParams.get('gpmPage') === String(page));
+      expect(href?.hash).toBe('#shipped-order-gpm');
+      for (const [key, value] of Object.entries(filtered)) expect(href?.searchParams.get(key)).toBe(value);
+    }
+    expect(state.commerce).toHaveBeenCalledWith(state.client, expect.objectContaining({
+      recentOrders: { limit: 25, page: 2, start: '2026-11-01T05:00:00.000Z', endExclusive: '2026-11-09T06:00:00.000Z', error: undefined, productId: 'coffee', centerId: 'customer' },
+    }));
+  });
+
+  it('blocks a reversed date range with an actionable warning', async () => {
+    state.client = supabaseReadStub().client;
+    expect(await query({ rangeStart: '2026-11-10', rangeEnd: '2026-11-07' })).toContain('The end date must be on or after the start date.');
+  });
+});
+
+it.skipIf(process.env.SOBREW_REPORT_BROWSER_QA !== '1')('exercises GPM filter apply, pagination and browser history in Chromium', async () => {
+  const { chromium } = await import('@playwright/test');
+  state.client = supabaseReadStub().client;
+  // In-memory authorization and commerce fixture. The rendered Reports page,
+  // controls, form submission and browser navigation are real.
+  state.commerce.mockImplementation(async (_client, { recentOrders: filters }) => {
+    const total = filters?.start ? 28 : 54;
+    const page = Math.min(filters?.page ?? 1, Math.ceil(total / 25));
+    const offset = (page - 1) * 25;
+    const ids = Array.from({ length: Math.min(25, total - offset) }, (_, index) => `order-${offset + index + 1}`);
+    const time = '2026-11-16T18:00:00Z';
+    return {
+      recentPage: { page, total },
+      orders: { error: null, data: ids.map((id) => ({ id, center_id: null, status: 'Shipped', created_at: time, shipped_at: time })) },
+      orderItems: { error: null, data: ids.map((id) => ({ id: `line-${id}`, order_id: id, product_id: null, qty: 1,
+        unit_price_cents: 1000, line_total_cents: 1000, cogs_snapshot_at: time, cogs_total_cents: 400 })) },
+    };
+  });
+  const browser = await chromium.launch();
+  try {
+    const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+    await page.route('https://reports.fixture/**', async (route) => {
+      const params = Object.fromEntries(new URL(route.request().url()).searchParams);
+      try {
+        const view = await ReportsPage({ searchParams: Promise.resolve(params) });
+        await route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body: renderToStaticMarkup(view) });
+      } catch (error) {
+        await route.fulfill({ status: 500, body: String(error) });
+      }
+    });
+    await page.goto('https://reports.fixture/admin/reports?report=recent_order_gpm');
+    const section = page.locator('#shipped-order-gpm');
+    expect(await section.locator('tbody tr').count()).toBe(25);
+    expect(await section.innerText()).toContain('Showing 1–25 of 54 orders');
+    await page.getByLabel('Shipped from').fill('2026-11-15');
+    await page.getByLabel('Shipped through').fill('2026-11-17');
+    await page.getByRole('button', { name: 'Update reports' }).click();
+    await page.waitForURL('**/*rangeStart=2026-11-15*');
+    expect(await section.innerText()).toContain('Showing 1–25 of 28 orders');
+    await section.getByRole('link', { name: 'Next' }).click();
+    await page.waitForURL('**/*gpmPage=2*');
+    expect(await section.locator('tbody tr').count()).toBe(3);
+    expect(await section.innerText()).toContain('Showing 26–28 of 28 orders');
+    expect(await page.getByLabel('Shipped through').inputValue()).toBe('2026-11-17');
+    await page.goBack();
+    expect(await section.locator('tbody tr').count()).toBe(25);
+    await page.goForward();
+    expect(await section.locator('tbody tr').count()).toBe(3);
+    await section.getByRole('link', { name: 'Previous' }).click();
+    await page.waitForURL('**/*gpmPage=1*');
+    expect(await section.locator('tbody tr').count()).toBe(25);
+  } finally {
+    await browser.close();
+  }
+}, 30_000);

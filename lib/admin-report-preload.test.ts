@@ -75,12 +75,12 @@ describe('authorized report data preloading', () => {
     expect(state.scope).toHaveBeenCalledTimes(2);
   });
 
-  it('uses only ten recent orders and leaves historical fallback decisions to the actual visit', async () => {
+  it('uses one 25-row page and leaves historical fallback decisions to the actual visit', async () => {
     const stub = supabaseReadStub();
     state.createClient.mockResolvedValue(stub.client);
     await preloadAdminReport('/admin/reports?report=recent_order_gpm');
     expect(state.commerce).toHaveBeenCalledWith(stub.client, {
-      centerScope: ['center-a'], shippedRange: undefined, recentOrders: { limit: 10 },
+      centerScope: ['center-a'], shippedRange: undefined, recentOrders: { limit: 25, page: 1, start: undefined, endExclusive: undefined, error: undefined },
     });
     expect(stub.reads).toEqual([]);
   });

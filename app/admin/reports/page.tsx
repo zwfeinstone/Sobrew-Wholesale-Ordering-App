@@ -6,6 +6,7 @@ import { loadReportCommerce } from '@/lib/admin-report-commerce';
 import { loadReportSalesReps } from '@/lib/admin-report-lookups';
 import { createReportDataCache } from '@/lib/admin-report-cache';
 import { loadReportProductionRuns } from '@/lib/admin-report-preload';
+import { RECENT_ORDER_GPM_PAGE_SIZE, recentOrderGpmPageOptions } from '@/lib/recent-order-gpm-page';
 import { AdminNavigationForm, AdminNavigationLink, AdminNavigationRetry, AdminNavigationSubmit } from '@/components/admin-navigation';
 import { refreshReportData } from './actions';
 import Link from 'next/link';
@@ -1502,6 +1503,12 @@ function ReportNav({
         {reports.map((report) => {
           const params = new URLSearchParams(searchParams);
           params.set('report', report.id);
+          // Other tabs materialize their default comparison dates in their
+          // links. Don't turn those into shipment filters on first entry.
+          if (activeReport !== 'recent_order_gpm' && report.id === 'recent_order_gpm') {
+            params.delete('rangeStart');
+            params.delete('rangeEnd');
+          }
           return (
             <AdminNavigationLink
               key={report.id}
@@ -3460,6 +3467,7 @@ export default async function AdminReportsPage(
   const productsQuery = dataNeeds.coreCommerce
     ? reportData.read('products', null, () => fetchAllPages((from, to) => supabase.from('products').select('id,name,sku,category,active').order('name', { ascending: true }).order('id').range(from, to)))
     : skippedReportQuery();
+  const recentOrderPage = recentOrderGpmPageOptions(searchParams?.rangeStart, searchParams?.rangeEnd, searchParams?.gpmPage);
   const requestedProductId = stringParam(searchParams?.product);
   const requestedCenterId = stringParam(searchParams?.center);
   const loadCommerce = (recentFilters: { productId?: string; centerId?: string } = {}) => {
@@ -3467,7 +3475,7 @@ export default async function AdminReportsPage(
       centerScope,
       shippedRange: dataNeeds.salesDashboard || activeReport === 'recent_order_gpm'
         ? undefined : { start: comparisonStart, endExclusive: rangeEndExclusive },
-      recentOrders: activeReport === 'recent_order_gpm' ? { limit: 10, ...recentFilters } : undefined,
+      recentOrders: activeReport === 'recent_order_gpm' ? { ...recentOrderPage.options, ...recentFilters, error: recentOrderPage.error } : undefined,
     };
     // Overview and Center Profitability share the same source window. Product
     // and customer display filters are reapplied to these rows on every render;
@@ -3477,7 +3485,7 @@ export default async function AdminReportsPage(
     }, () => loadReportCommerce(supabase, options));
   };
   const commerceQuery = !dataNeeds.coreCommerce
-    ? Promise.resolve({ orders: { data: [], error: null }, orderItems: { data: [], error: null } })
+    ? Promise.resolve({ orders: { data: [], error: null }, orderItems: { data: [], error: null }, recentPage: undefined })
     : activeReport === 'recent_order_gpm' && (requestedProductId || requestedCenterId)
       // Preserve existing behavior: unknown or inaccessible filter IDs are ignored.
       ? Promise.all([productsQuery, centersQuery]).then(([products, centers]) => loadCommerce({
@@ -3608,6 +3616,7 @@ export default async function AdminReportsPage(
   }
 
   const { orders: ordersResult, orderItems: orderItemsResult } = commerceResult;
+  const recentPage = commerceResult.recentPage;
   let sampleOrders: SampleOrderReportRow[] = [];
   let sampleOrderItems: SampleOrderItemReportRow[] = [];
   let sampleProducts: SampleProductReportRow[] = [];
@@ -3820,7 +3829,7 @@ export default async function AdminReportsPage(
     ? buildRecentOrderGpmRows({
       centerId,
       centers,
-      limit: 10,
+      limit: RECENT_ORDER_GPM_PAGE_SIZE,
       orderItems: (orderItemsResult.data ?? []) as ProfitabilityOrderItemRow[],
       orders: (ordersResult.data ?? []) as ProfitabilityOrderRow[],
       productId,
@@ -3996,8 +4005,13 @@ export default async function AdminReportsPage(
   const navParams = new URLSearchParams();
   navParams.set('report', activeReport);
   navParams.set('month', formatMonthInput(selectedMonth));
-  navParams.set('rangeStart', formatDateInput(rangeStart));
-  navParams.set('rangeEnd', rangeEndInput);
+  if (activeReport === 'recent_order_gpm') {
+    if (parsedRangeStart) navParams.set('rangeStart', formatDateInput(parsedRangeStart));
+    if (parsedRangeEnd) navParams.set('rangeEnd', formatDateInput(parsedRangeEnd));
+  } else {
+    navParams.set('rangeStart', formatDateInput(rangeStart));
+    navParams.set('rangeEnd', rangeEndInput);
+  }
   if (activeReport === 'ai_overview') navParams.set('asOf', formatDateInput(aiOverviewAsOfDate));
   if (activeReport === 'ai_qa') {
     navParams.set('asOf', formatDateInput(aiOverviewAsOfDate));
@@ -4006,6 +4020,14 @@ export default async function AdminReportsPage(
   if (productId) navParams.set('product', productId);
   if (centerId) navParams.set('center', centerId);
   if (selectedSalesRepId) navParams.set('sales_rep', selectedSalesRepId);
+  const recentOrderTotal = recentPage?.total ?? 0;
+  const recentOrderPageNumber = recentPage?.page ?? 1;
+  const recentOrderPageCount = Math.max(1, Math.ceil(recentOrderTotal / RECENT_ORDER_GPM_PAGE_SIZE));
+  const recentOrderPageHref = (page: number) => {
+    const params = new URLSearchParams(navParams);
+    params.set('gpmPage', String(page));
+    return `/admin/reports?${params.toString()}#shipped-order-gpm`;
+  };
   const simulatorResetParams = new URLSearchParams(navParams);
   simulatorResetParams.set('report', 'simulator');
   const simulatorResetHref = `/admin/reports?${simulatorResetParams.toString()}`;
@@ -4038,11 +4060,24 @@ export default async function AdminReportsPage(
           <AdminNavigationForm key={navParams.toString()} className={activeReport === 'ai_overview' || activeReport === 'ai_qa' ? 'hidden' : 'rounded-xl border border-slate-200/70 bg-white/60 p-4'}>
             <input type="hidden" name="report" value={activeReport} />
             <div className="grid gap-3 sm:grid-cols-2">
-              <ReportDateRangeFields
-                monthValue={formatMonthInput(selectedMonth)}
-                rangeEndValue={rangeEndInput}
-                rangeStartValue={formatDateInput(rangeStart)}
-              />
+              {activeReport === 'recent_order_gpm' ? (
+                <>
+                  <label className="space-y-2 text-sm font-medium text-slate-700">
+                    Shipped from
+                    <input className="input" type="date" name="rangeStart" defaultValue={parsedRangeStart ? formatDateInput(parsedRangeStart) : ''} />
+                  </label>
+                  <label className="space-y-2 text-sm font-medium text-slate-700">
+                    Shipped through
+                    <input className="input" type="date" name="rangeEnd" defaultValue={parsedRangeEnd ? formatDateInput(parsedRangeEnd) : ''} />
+                  </label>
+                </>
+              ) : (
+                <ReportDateRangeFields
+                  monthValue={formatMonthInput(selectedMonth)}
+                  rangeEndValue={rangeEndInput}
+                  rangeStartValue={formatDateInput(rangeStart)}
+                />
+              )}
               {activeReport !== 'prospecting' && activeReport !== 'sample_spend' && activeReport !== 'ai_overview' && activeReport !== 'ai_qa' && activeReport !== 'inventory_adjustments' && activeReport !== 'labor_paid_gpm' ? (
                 <>
                   <label className="space-y-2 text-sm font-medium text-slate-700">
@@ -4089,7 +4124,7 @@ export default async function AdminReportsPage(
                 : activeReport === 'inventory_adjustments'
                   ? `${REPORTS.find((report) => report.id === activeReport)?.label}. Using ${dateLabel(rangeStart)} through ${dateLabel(addDays(rangeEndExclusive, -1))}.`
                 : activeReport === 'recent_order_gpm'
-                  ? `${REPORTS.find((report) => report.id === activeReport)?.label}. Showing the last 10 shipped orders with saved or estimated COGS.`
+                  ? `Shipment dates are inclusive and use Central time. Leave either date blank for an open-ended range, or both blank for all time.`
                 : activeReport === 'labor_paid_gpm'
                   ? `${REPORTS.find((report) => report.id === activeReport)?.label}. Using ${dateLabel(rangeStart)} through ${dateLabel(addDays(rangeEndExclusive, -1))}; payroll labor is date-range based.`
                 : activeReport === 'margin'
@@ -4102,7 +4137,7 @@ export default async function AdminReportsPage(
 
       <ReportNav activeReport={activeReport} reports={allowedReports} searchParams={navParams} />
 
-      {dataNeeds.coreCommerce && !hasCommerceOrders ? (
+      {dataNeeds.coreCommerce && activeReport !== 'recent_order_gpm' && !hasCommerceOrders ? (
         <section className="card">
           <EmptyState message="No orders were found for this report." />
         </section>
@@ -4392,13 +4427,35 @@ export default async function AdminReportsPage(
       ) : null}
 
       {activeReport === 'recent_order_gpm' ? (
-        <section className="card space-y-5">
+        <section id="shipped-order-gpm" className="card space-y-5">
           <SectionHeading
             eyebrow="Recent Order GPM"
-            title="Last 10 shipped orders"
+            title="Shipped orders"
             subtitle="Gross profit margin is revenue minus product, shipping, processing, and donation COGS, shown in dollars and as a percent of revenue."
           />
-          <RecentOrderGpmTable rows={recentOrderGpmRows} />
+          {recentOrderPage.error ? (
+            <p role="alert" className="rounded-lg bg-rose-50 p-3 text-sm font-semibold text-rose-800">{recentOrderPage.error}</p>
+          ) : (
+            <>
+              <RecentOrderGpmTable rows={recentOrderGpmRows} />
+              {recentOrderTotal > 0 ? (
+                <nav aria-label="Shipped orders pagination" className="flex flex-wrap items-center justify-between gap-3">
+                  <p className="text-sm text-slate-600">
+                    Showing {number((recentOrderPageNumber - 1) * RECENT_ORDER_GPM_PAGE_SIZE + 1)}–{number(Math.min(recentOrderTotal, recentOrderPageNumber * RECENT_ORDER_GPM_PAGE_SIZE))} of {number(recentOrderTotal)} orders
+                    {' · '}Page {number(recentOrderPageNumber)} of {number(recentOrderPageCount)}
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    {recentOrderPageNumber > 1 ? (
+                      <AdminNavigationLink href={recentOrderPageHref(recentOrderPageNumber - 1)} className="btn-secondary" label="Previous shipped orders page">Previous</AdminNavigationLink>
+                    ) : null}
+                    {recentOrderPageNumber < recentOrderPageCount ? (
+                      <AdminNavigationLink href={recentOrderPageHref(recentOrderPageNumber + 1)} className="btn-secondary" label="Next shipped orders page">Next</AdminNavigationLink>
+                    ) : null}
+                  </div>
+                </nav>
+              ) : null}
+            </>
+          )}
         </section>
       ) : null}
 

@@ -1,3 +1,4 @@
+import { compareRecentReportOrders } from '@/lib/recent-order-gpm-page';
 import { convertInventoryQuantity } from '@/lib/inventory';
 
 const DAY_IN_MS = 24 * 60 * 60 * 1000;
@@ -751,7 +752,7 @@ export function buildRecentOrderGpmRows({
         estimatedLineCount: totals.estimatedLineCount,
       };
     })
-    .sort((a, b) => b.orderDate.getTime() - a.orderDate.getTime() || b.id.localeCompare(a.id))
+    .sort((a, b) => compareRecentReportOrders(orderById.get(a.id)!, orderById.get(b.id)!))
     .slice(0, Math.max(0, limit));
 }
 

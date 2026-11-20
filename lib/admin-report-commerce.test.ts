@@ -30,10 +30,12 @@ class CommerceQuery {
   private innerItems = false;
   private ordering: Array<{ column: string; ascending: boolean }> = [];
   private columns: string[] = [];
+  private head = false;
 
   constructor(private readonly database: CommerceDatabase, private readonly table: Table) {}
 
-  select(columns: string) {
+  select(columns: string, options?: { head?: boolean }) {
+    this.head = Boolean(options?.head);
     this.innerItems = columns.includes('order_items!inner(id)');
     this.columns = columns.replace(',order_items!inner(id)', '').split(',');
     return this;
@@ -46,6 +48,14 @@ class CommerceQuery {
   gt(column: string, value: number) {
     if (!column.startsWith('order_items.')) throw new Error(`Unsupported test filter: ${column}`);
     this.itemFilters.push((row) => Number(row[column.slice('order_items.'.length)]) > value);
+    return this;
+  }
+  gte(column: string, value: string) {
+    this.filters.push((row) => Date.parse(String(row[column])) >= Date.parse(value));
+    return this;
+  }
+  lt(column: string, value: string) {
+    this.filters.push((row) => Date.parse(String(row[column])) < Date.parse(value));
     return this;
   }
   is(column: string, value: null) { this.filters.push((row) => row[column] === value); return this; }
@@ -82,8 +92,8 @@ class CommerceQuery {
     this.ordering.push({ column, ascending: options?.ascending ?? true });
     return this;
   }
-  async range(from: number, to: number) {
-    const matches = this.database.tables[this.table]
+  private matchingRows() {
+    return this.database.tables[this.table]
       .filter((row) => this.filters.every((filter) => filter(row)))
       .filter((row) => !this.innerItems || this.database.tables.order_items.some((item) => item.order_id === row.id && this.itemFilters.every((filter) => filter(item))))
       .sort((left, right) => {
@@ -93,7 +103,13 @@ class CommerceQuery {
         }
         return 0;
       });
-    const page = matches.slice(from, Math.min(to + 1, from + this.database.serverPageSize));
+  }
+  async then<T>(resolve: (result: { count: number; error: null }) => T) {
+    if (!this.head) throw new Error('Only head count queries may be awaited without a range.');
+    return resolve({ count: this.matchingRows().length, error: null });
+  }
+  async range(from: number, to: number) {
+    const page = this.matchingRows().slice(from, Math.min(to + 1, from + this.database.serverPageSize));
     const call = { table: this.table, from, to, ids: page.map((row) => String(row.id)) };
     this.database.calls.push(call);
     if (this.database.fail?.(call)) return { data: null, error: { message: `Failed ${this.table} page`, code: 'TEST_FAILURE' } };
@@ -311,8 +327,54 @@ describe('bounded recent order commerce', () => {
   it('makes no requests for an empty permission scope or a zero limit', async () => {
     const database = new CommerceDatabase({ orders: [order('denied')], order_items: [] });
     for (const options of [{ centerScope: [], recentOrders: { limit: 10 } }, { centerScope: null, recentOrders: { limit: 0 } }]) {
-      expect(await loadReportCommerce(database.client(), options)).toEqual({ orders: { data: [], error: null }, orderItems: { data: [], error: null } });
+      expect(await loadReportCommerce(database.client(), options)).toEqual({ orders: { data: [], error: null }, orderItems: { data: [], error: null }, recentPage: { total: 0, page: 1 } });
     }
     expect(database.calls).toEqual([]);
+  });
+});
+
+
+describe('paginated shipped order commerce', () => {
+  it('merges deep pages exactly and fetches lines only for the selected page', async () => {
+    const rows = Array.from({ length: 305 }, (_, i) => {
+      const timestamp = new Date(Date.UTC(2026, 9, 30, i)).toISOString();
+      return order(`order-${String(i).padStart(4, '0')}`, {
+        shipped_at: i % 3 ? timestamp : null,
+        created_at: i % 3 ? '2026-10-01T00:00:00.000Z' : timestamp,
+      });
+    });
+    const database = new CommerceDatabase({ orders: rows, order_items: itemsFor(rows, 2) });
+    const result = await loadReportCommerce(database.client(), {
+      centerScope: null, recentOrders: { limit: 25, page: 11 },
+    });
+    const expected = rows.slice().reverse().slice(250, 275).map((row) => row.id);
+    expect(result.recentPage).toEqual({ total: 305, page: 11 });
+    expect(result.orders.data.map(({ id }) => id)).toEqual(expected);
+    expect(result.orderItems.data).toHaveLength(50);
+    expect(database.calls.filter((call) => call.table === 'orders').flatMap((call) => call.ids).length).toBeLessThan(70);
+    expect(database.calls.filter((call) => call.table === 'order_items').every((call) => call.ids.every((id) => expected.some((orderId) => id.startsWith(`item-${orderId}-`))))).toBe(true);
+  });
+
+  it('counts filtered orders once, honors the date window in both streams, and clamps an out-of-range page', async () => {
+    const rows = [
+      order('just-before', { shipped_at: '2026-11-01T04:59:59.999Z' }),
+      order('at-start', { shipped_at: '2026-11-01T05:00:00.000Z' }),
+      order('legacy-before-end', { shipped_at: null, created_at: '2026-11-02T05:59:59.999Z' }),
+      order('at-end', { shipped_at: '2026-11-02T06:00:00.000Z' }),
+      order('different-rep', { shipped_at: '2026-11-01T06:15:00.000Z', center_id: 'denied' }),
+      order('sample', { shipped_at: '2026-11-01T06:15:00.000Z', order_kind: 'prospecting_sample' }),
+      order('no-eligible-line', { shipped_at: '2026-11-01T06:15:00.000Z' }),
+    ];
+    const items = itemsFor(rows, 2).map((item) => ({
+      ...item, product_id: item.order_id === 'no-eligible-line' ? 'other' : item.product_id,
+    }));
+    const database = new CommerceDatabase({ orders: rows, order_items: items });
+    const result = await loadReportCommerce(database.client(), {
+      centerScope: ['allowed'], recentOrders: { limit: 1, page: 9999, productId: 'product-1',
+        start: '2026-11-01T05:00:00.000Z', endExclusive: '2026-11-02T06:00:00.000Z' },
+    });
+    expect(result.recentPage).toEqual({ total: 2, page: 2 });
+    expect(result.orders.data.map(({ id }) => id)).toEqual(['at-start']);
+    expect(result.orderItems.data).toHaveLength(2);
   });
 });
