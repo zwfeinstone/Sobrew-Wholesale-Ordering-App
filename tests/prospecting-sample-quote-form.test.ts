@@ -16,10 +16,12 @@ const props = {
 describe('sample quote review form', () => {
   it('starts with every catalog item unchecked and a neutral prompt to select items', () => {
     const html = renderToStaticMarkup(createElement(ProspectingSampleQuoteForm, props));
-    expect((html.match(/type="checkbox"/g) || []).length).toBe(13);
+    expect((html.match(/type="checkbox"/g) || []).length).toBe(14);
     expect((html.match(/type="checkbox" checked=""/g) || []).length).toBe(0);
     expect(html).toContain('value="42.50"');
     expect(html).toContain('value="60.00"');
+    expect(html).toContain('value="90.00"');
+    expect(html).toContain('Specialty Coffee: Light, Medium, or Dark Roast');
     expect((html.match(/value="130.00"/g) || []).length).toBe(3); // Decaf fraction packs and both concentrates.
     expect(html).toContain('Bag in Box Concentrate');
     expect(html).toContain('2 x 64oz');

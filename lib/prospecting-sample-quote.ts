@@ -5,11 +5,13 @@ export type SampleQuoteItem = {
   packLabel: string;
   defaultPriceCents: number;
   pounds?: number;
+  note?: string;
 };
 
 export const SAMPLE_QUOTE_ITEMS: readonly SampleQuoteItem[] = [
   { id: 'bulk-regular', category: 'Bulk Coffee (5lb bags)', description: 'Medium or Dark Roast (Ground)', packLabel: 'per bag', defaultPriceCents: 4250, pounds: 5 },
   { id: 'bulk-decaf', category: 'Bulk Coffee (5lb bags)', description: 'Decaf Dark Roast', packLabel: 'per bag', defaultPriceCents: 6000, pounds: 5 },
+  { id: 'bulk-specialty', category: 'Bulk Coffee (5lb bags)', description: 'Specialty Coffee: Light, Medium, or Dark Roast', packLabel: 'per bag', defaultPriceCents: 9000, pounds: 5, note: 'Ask your sales rep about available origins, as they can change.' },
   { id: 'fraction-1-5oz', category: 'Fraction Pack', description: 'Medium, Dark, Espresso, or French Roast (Ground)', packLabel: '100 x 1.5oz', defaultPriceCents: 10000 },
   { id: 'fraction-2oz', category: 'Fraction Pack', description: 'Medium, Dark, Espresso, or French Roast (Ground)', packLabel: '100 x 2oz', defaultPriceCents: 12500 },
   { id: 'fraction-2-5oz', category: 'Fraction Pack', description: 'Medium, Dark, Espresso, or French Roast (Ground)', packLabel: '100 x 2.5oz', defaultPriceCents: 14500 },
@@ -161,6 +163,7 @@ export function buildSampleQuoteEmail(input: {
       lastDescription = item.description;
     }
     priceText.push(`- ${formatSampleQuotePrice(item, priceCents)}`);
+    if (item.note) priceText.push(item.note);
     const groups = categories[categories.length - 1].groups;
     groups[groups.length - 1].selections.push({ item, priceCents });
   }
@@ -185,9 +188,11 @@ export function buildSampleQuoteEmail(input: {
       `<tr><td colspan="2" style="${EMAIL_CELL_STYLE}padding-bottom:12px;"><h2 data-email-category-title style="${emailTextStyle(16, 23, EMAIL_COLORS.green, 700)}padding-bottom:10px;border-bottom:1px solid ${EMAIL_COLORS.line};">${escapeHtml(category.title)}</h2></td></tr>`,
       ...category.groups.flatMap((group, groupIndex) => [
         `<tr><td colspan="2" style="${EMAIL_CELL_STYLE}padding-top:${groupIndex ? 13 : 0}px;padding-bottom:4px;"><p style="${emailTextStyle(14, 21, EMAIL_COLORS.muted)}">${escapeHtml(group.description)}</p></td></tr>`,
-        ...group.selections.map(({ item, priceCents }) => item.pounds
+        ...group.selections.flatMap(({ item, priceCents }) => [item.pounds
           ? `<tr data-email-quote-item="${escapeHtml(item.id)}"><td colspan="2" style="${EMAIL_CELL_STYLE}padding:5px 0;">${emailStrong(formatSampleQuotePrice(item, priceCents), 14, 22)}</td></tr>`
-          : `<tr data-email-quote-item="${escapeHtml(item.id)}"><td style="${emailTextStyle(14, 22)}border:0;text-align:left;vertical-align:top;padding:5px 8px 5px 0;">${escapeHtml(item.packLabel)}</td><td width="84" style="${emailTextStyle(14, 22)}width:84px;border:0;text-align:right;vertical-align:top;padding:5px 0;">${emailStrong(money(priceCents), 14, 22, EMAIL_COLORS.ink, 'font-variant-numeric:tabular-nums;')}</td></tr>`),
+          : `<tr data-email-quote-item="${escapeHtml(item.id)}"><td style="${emailTextStyle(14, 22)}border:0;text-align:left;vertical-align:top;padding:5px 8px 5px 0;">${escapeHtml(item.packLabel)}</td><td width="84" style="${emailTextStyle(14, 22)}width:84px;border:0;text-align:right;vertical-align:top;padding:5px 0;">${emailStrong(money(priceCents), 14, 22, EMAIL_COLORS.ink, 'font-variant-numeric:tabular-nums;')}</td></tr>`,
+          ...(item.note ? [`<tr><td colspan="2" style="${EMAIL_CELL_STYLE}padding-bottom:5px;"><p style="${emailTextStyle(14, 21, EMAIL_COLORS.muted)}">${escapeHtml(item.note)}</p></td></tr>`] : []),
+        ]),
       ]),
     ];
     return `<tr><td style="${EMAIL_CELL_STYLE}padding-bottom:${categoryIndex === categories.length - 1 ? 22 : 12}px;">${emailTable([

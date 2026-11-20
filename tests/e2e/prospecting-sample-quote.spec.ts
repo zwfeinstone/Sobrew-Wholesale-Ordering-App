@@ -78,7 +78,7 @@ test('requires tracking, previews only the selected custom quote, and fits the s
 
   const boxes = page.getByRole('checkbox');
   for (let index = 0; index < await boxes.count(); index++) await boxes.nth(index).check();
-  expect(await page.getByRole('checkbox', { checked: true }).count()).toBe(13);
+  expect(await page.getByRole('checkbox', { checked: true }).count()).toBe(14);
   for (const category of ['Bulk Coffee (5lb bags)', 'Fraction Pack', 'Filter Pack', 'K Cups', 'Bag in Box Concentrate']) await expect(preview).toContainText(category);
   await expect(preview).toContainText('Specialty Fourth Dimension Medium Roast');
   const specialty = preview.locator('[data-email-quote-item="k-cups-fourth-dimension"]');
@@ -87,7 +87,7 @@ test('requires tracking, previews only the selected custom quote, and fits the s
   for (const id of ['concentrate-regular', 'concentrate-decaf']) {
     const concentrate = preview.locator(`[data-email-quote-item="${id}"]`);
     await expect(concentrate.locator('td').first()).toHaveText('2 x 64oz');
-    await expect(concentrate.locator('td').last()).toHaveText('$115.00');
+    await expect(concentrate.locator('td').last()).toHaveText('$130.00');
   }
   await expectEmailTypography(page);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
@@ -122,6 +122,34 @@ test('requires tracking, previews only the selected custom quote, and fits the s
   expect(await calls(page)).toHaveLength(0);
 });
 
+test('specialty coffee is opt-in, editable, and adds the origin note only to selected previews', async ({ page }) => {
+  await openFixture(page);
+  await bulkQuote(page);
+  const bulk = page.getByRole('group', { name: 'Bulk Coffee (5lb bags)', exact: true });
+  const include = bulk.getByRole('checkbox', { name: /Specialty Coffee: Light, Medium, or Dark Roast/ });
+  const price = bulk.getByRole('spinbutton', { name: /Specialty Coffee: Light, Medium, or Dark Roast/ });
+  const preview = page.getByTestId('sample-quote-email-preview');
+  const note = 'Ask your sales rep about available origins, as they can change.';
+  await expect(include).not.toBeChecked();
+  await expect(price).toHaveValue('90.00');
+  await expect(price).toBeDisabled();
+  await expect(preview).not.toContainText(note);
+  await include.check();
+  await expect(preview).toContainText('Specialty Coffee: Light, Medium, or Dark Roast');
+  await expect(preview.locator('[data-email-quote-item="bulk-specialty"]')).toHaveText('$90.00 per bag ($18.00/lb)');
+  await expect(preview.locator('[data-email-quote-item="bulk-specialty"] + tr')).toHaveText(note);
+  await price.fill('95.00');
+  await expect(preview).toContainText('$95.00 per bag ($19.00/lb)');
+  page.on('dialog', dialog => dialog.accept());
+  await page.reload();
+  await expect(include).toBeChecked();
+  await expect(price).toHaveValue('95.00');
+  await include.uncheck();
+  await expect(preview).not.toContainText(note);
+  await expect(preview).not.toContainText('Specialty Coffee');
+  expect(await calls(page)).toHaveLength(0);
+});
+
 test('restores an unsent quote from before catalog additions and keeps it when finishing later', async ({ page }) => {
   await openFixture(page);
   await bulkQuote(page);
@@ -129,6 +157,7 @@ test('restores an unsent quote from before catalog additions and keeps it when f
   await page.evaluate(() => {
     const key = 'prospecting-sample-quote-v1:sample-order-1';
     const draft = JSON.parse(sessionStorage.getItem(key)!);
+    delete draft.prices['bulk-specialty'];
     delete draft.prices['concentrate-regular'];
     delete draft.prices['concentrate-decaf'];
     sessionStorage.setItem(key, JSON.stringify(draft));
@@ -142,9 +171,11 @@ test('restores an unsent quote from before catalog additions and keeps it when f
   await expect(page.getByLabel('CC (optional)', { exact: true })).toHaveValue('lisa@example.test; buyer@example.test');
   await expect(page.getByRole('region', { name: 'Email preview', exact: true })).toContainText('lisa@example.test, buyer@example.test');
   expect(await page.getByRole('checkbox', { checked: true }).count()).toBe(1);
+  await expect(page.getByRole('checkbox', { name: /Specialty Coffee: Light, Medium, or Dark Roast/ })).not.toBeChecked();
+  await expect(page.getByRole('spinbutton', { name: /Specialty Coffee: Light, Medium, or Dark Roast/ })).toHaveValue('90.00');
   const concentrateOptions = page.getByRole('group', { name: 'Bag in Box Concentrate', exact: true });
-  await expect(concentrateOptions.getByRole('spinbutton').nth(0)).toHaveValue('115.00');
-  await expect(concentrateOptions.getByRole('spinbutton').nth(1)).toHaveValue('115.00');
+  await expect(concentrateOptions.getByRole('spinbutton').nth(0)).toHaveValue('130.00');
+  await expect(concentrateOptions.getByRole('spinbutton').nth(1)).toHaveValue('130.00');
   await expect(concentrateOptions.getByRole('checkbox', { checked: true })).toHaveCount(0);
   await page.getByRole('link', { name: 'Finish later', exact: true }).click();
   await expect(page.getByRole('dialog')).toContainText('Keep this email draft for later?');

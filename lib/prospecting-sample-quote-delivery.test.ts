@@ -203,6 +203,20 @@ describe('sample quote authorized context', () => {
 });
 
 describe('sample quote delivery and immutable retries', () => {
+  it('stores and sends the specialty origin note in both MIME formats when selected', async () => {
+    const { db, options, send } = setup();
+    const lines = [...LINES, { id: 'bulk-specialty', priceCents: 9500 }];
+    expect(await sendSampleQuote({ ...options, lines })).toMatchObject({ sentAt: NOW.toISOString() });
+    const sent = send.mock.calls[0][0];
+    const note = 'Ask your sales rep about available origins, as they can change.';
+    for (const body of [sent.text, sent.html]) {
+      expect(body).toContain('Specialty Coffee: Light, Medium, or Dark Roast');
+      expect(body).toContain('$95.00 per bag ($19.00/lb)');
+      expect(body).toContain(note);
+    }
+    expect(db.tables.prospecting_sample_quotes[0]).toMatchObject({ lines, body_text: sent.text, body_html: sent.html });
+  });
+
   afterEach(() => vi.restoreAllMocks());
 
   it('saves normalized CC recipients and sends them as visible carbon copies while keeping the owner BCC', async () => {

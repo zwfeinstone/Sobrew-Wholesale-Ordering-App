@@ -24,9 +24,9 @@ describe('sample quote greeting name', () => {
 });
 
 describe('sample quote validation', () => {
-  it('uses the approved quote prices and keeps all thirteen independently selectable items', () => {
+  it('uses the approved quote prices and keeps all fourteen independently selectable items', () => {
     expect(SAMPLE_QUOTE_ITEMS.map(item => [item.id, item.defaultPriceCents])).toEqual([
-      ['bulk-regular', 4250], ['bulk-decaf', 6000],
+      ['bulk-regular', 4250], ['bulk-decaf', 6000], ['bulk-specialty', 9000],
       ['fraction-1-5oz', 10000], ['fraction-2oz', 12500], ['fraction-2-5oz', 14500], ['fraction-3oz', 18000], ['fraction-decaf', 13000],
       ['filter-1-5oz', 4200], ['filter-2oz', 5500],
       ['k-cups-regular', 3800], ['k-cups-fourth-dimension', 5000],
@@ -73,6 +73,23 @@ describe('sample pricing and tracking email', () => {
     }
   });
 
+  it('renders the optional specialty roast, custom per-pound price, and adjacent origin note only when selected', () => {
+    const input = { contactName: 'Ron', senderName: 'Zach', trackingNumber: tracking };
+    const note = 'Ask your sales rep about available origins, as they can change.';
+    const originalQuote = buildSampleQuoteEmail({ ...input, lines: [bulkLine] });
+    for (const body of [originalQuote.text, originalQuote.html]) {
+      expect(body).not.toContain('Specialty Coffee');
+      expect(body).not.toContain(note);
+    }
+    const specialtyQuote = buildSampleQuoteEmail({ ...input, lines: [bulkLine, { id: 'bulk-specialty', priceCents: 9500 }, { id: 'fraction-1-5oz', priceCents: 10000 }] });
+    expect(specialtyQuote.text).toContain(`Specialty Coffee: Light, Medium, or Dark Roast\n- $95.00 per bag ($19.00/lb)\n${note}\n\nFraction Pack`);
+    expect(specialtyQuote.html).toMatch(/data-email-quote-item="bulk-specialty"[^>]*>[^]*?\$95\.00 per bag \(\$19\.00\/lb\)[^]*?<\/tr>\s*<tr>[^]*?Ask your sales rep about available origins, as they can change\./);
+    for (const body of [specialtyQuote.text, visibleHtmlText(specialtyQuote.html)]) {
+      expect(body.split(note)).toHaveLength(2);
+      expect(body).not.toContain('$90.00');
+    }
+  });
+
   it('keeps custom concentrate quotes unchanged while using the updated defaults for new quotes', () => {
     const email = buildSampleQuoteEmail({ contactName: 'Ron', senderName: 'Zach', trackingNumber: tracking, lines: [
       { id: 'concentrate-regular', priceCents: 11000 },
@@ -96,7 +113,7 @@ describe('sample pricing and tracking email', () => {
       expect(body).toContain('Specialty Fourth Dimension Medium Roast');
       expect(body).toContain('Haskins');
     }
-    expect(email.html.match(/data-email-quote-item=/g)).toHaveLength(13);
+    expect(email.html.match(/data-email-quote-item=/g)).toHaveLength(14);
     for (const item of SAMPLE_QUOTE_ITEMS) {
       expect(email.text).toContain(formatSampleQuotePrice(item, item.defaultPriceCents));
       const priceRow = email.html.match(new RegExp(`<tr data-email-quote-item="${item.id}">[\\s\\S]*?<\\/tr>`))?.[0] ?? '';
