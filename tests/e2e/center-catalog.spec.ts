@@ -119,3 +119,14 @@ test('retains assignment changes, resolves zero-price review with complimentary 
   expect(Object.fromEntries(submission)).toMatchObject({ 'price_medium-1-5-100': '0', 'complimentary_medium-1-5-100': 'on' });
   expect(submission.some(([key]) => key === 'price_medium-1-5-72')).toBe(false);
 });
+
+test('groups the Colombian concentrate in its own category without assigning it', async ({ page }) => {
+  await openFixture(page);
+  const filter = page.getByRole('combobox', { name: 'Product category', exact: true });
+  await filter.selectOption({ label: 'Concentrate' });
+  const group = categoryGroup(page, 'Concentrate');
+  await expect(group.locator('summary')).toContainText('0 selected');
+  await expect(group.locator('strong')).toHaveText([productName('colombian-concentrate')]);
+  await expect(assignment(page, 'colombian-concentrate')).not.toBeChecked();
+  await expect(group.getByRole('heading', { level: 3 })).toHaveCount(0);
+});

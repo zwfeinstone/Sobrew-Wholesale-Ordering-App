@@ -132,4 +132,17 @@ describe('products catalog page', () => {
     expect(management!.index).toBeGreaterThan(markup.indexOf('href="/admin/products/product-tea"'));
     expect(markup.slice(management!.index)).toMatch(/<summary\b[^>]*>Catalog management/);
   });
+
+  it('shows the Colombian case in the Concentrate category without including uncategorized products', async () => {
+    state.client = supabaseReadStub({ tables: { products: [
+      ...products,
+      product('colombian-concentrate', 'Colombian Blend Coffee Concentrate 30:1 (2 x 64 oz Case)', 'concentrate', 'CB-LCC-COL-30-1-2X64'),
+      product('other-concentrate', 'Existing Cold Brew Concentrate', 'uncategorized'),
+    ] }, maxRows: 3 }).client;
+    const markup = await render({ category: 'concentrate' });
+    expect(productLinks(markup)).toEqual(['colombian-concentrate']);
+    expect(markup).toContain('aria-label="Concentrate"');
+    expect(markup).toContain('CB-LCC-COL-30-1-2X64');
+  });
+
 });
