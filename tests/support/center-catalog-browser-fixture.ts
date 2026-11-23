@@ -19,6 +19,7 @@ export const CENTER_CATALOG_FIXTURE_PRODUCTS = [
   { id: 'medium-sku', name: 'Meeting Medium Roast Special Case', sku: 'MTC-FP-MED-100X2.5OZ', category: 'fraction_packs', assigned: false, price: 14500, complimentary: false },
   { id: 'filter-medium', name: 'Meeting Medium Roast Filter Pack 40 x 1.4 oz', category: 'filter_packs', assigned: false, price: 4200, complimentary: false },
   { id: 'k-cups', name: 'Meeting K-Cups 50 count', category: 'K-Cups', assigned: true, price: 4200, complimentary: false },
+  { id: 'colombian-concentrate', name: 'Colombian Blend Coffee Concentrate 30:1 (2 x 64 oz Case)', sku: 'CB-LCC-COL-30-1-2X64', category: 'concentrate', assigned: false, price: null, complimentary: false },
   { id: 'unknown', name: 'Special Customer Product', category: 'Legacy category', assigned: false, price: null, complimentary: false },
 ];
 

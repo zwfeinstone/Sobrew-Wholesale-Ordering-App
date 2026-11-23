@@ -6,6 +6,7 @@ export const PRODUCT_CATEGORY_OPTIONS = [
   { value: 'ground', label: 'Ground' },
   { value: 'retail', label: 'Retail' },
   { value: 'tea', label: 'Tea' },
+  { value: 'concentrate', label: 'Concentrate' },
   { value: 'sample_boxes', label: 'Sample Boxes' },
 ] as const;
 
