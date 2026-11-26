@@ -69,7 +69,7 @@ async function preparePayment(snapshot: PayrollPaymentSnapshot, start: Date, end
   const context = payrollOvertimeContextRange(start, end);
   const [entryResult, spiffResult] = await Promise.all([
     fetchAllPages<Entry>((from, to) => supabase.from('admin_time_entries')
-      .select('id,profile_id,clock_in_at,clock_out_at,hourly_rate_cents_snapshot,status,updated_at,admin_time_breaks(break_start_at,break_end_at,status)')
+      .select('id,profile_id,clock_in_at,clock_out_at,hourly_rate_cents_snapshot,status,manual_reason,updated_at,admin_time_breaks(break_start_at,break_end_at,status)')
       .eq('profile_id', snapshot.profileId)
       .or(`clock_in_at.gte.${context.start.toISOString()},clock_out_at.gt.${context.start.toISOString()}`)
       .lt('clock_in_at', context.endExclusive.toISOString()).order('id').range(from, to)),

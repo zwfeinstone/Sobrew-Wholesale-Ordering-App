@@ -14,17 +14,18 @@ type Row = Record<string, any>;
 type Operation = { table: string; payload: Row; kind: string };
 function database(tables: Record<string, Row[]>, failWrite?: (operation: Operation) => boolean) {
   const writes: Operation[] = [];
-  const reads: string[] = [];
+  const reads: { table: string; columns: string }[] = [];
   const client = {
     from(table: string) {
       const filters: ((row: Row) => boolean)[] = [];
       let kind = 'read';
+      let columns = '*';
       let payload: Row = {};
       let start = 0;
       let end = Infinity;
       let single = false;
       const query = {
-        select: () => query,
+        select: (value = '*') => { columns = value; return query; },
         eq: (key: string, value: unknown) => { filters.push((row) => row[key] === value); return query; },
         is: (key: string, value: unknown) => { filters.push((row) => row[key] === value); return query; },
         in: (key: string, values: unknown[]) => { filters.push((row) => values.includes(row[key])); return query; },
@@ -38,7 +39,7 @@ function database(tables: Record<string, Row[]>, failWrite?: (operation: Operati
         update: (value: Row) => { kind = 'update'; payload = value; return query; },
         insert: (value: Row) => { kind = 'insert'; payload = value; return query; },
         then(resolve: (result: { data: Row[] | Row | null; error: { message: string } | null }) => unknown) {
-          if (kind === 'read') reads.push(table);
+          if (kind === 'read') reads.push({ table, columns });
           if (kind !== 'read') {
             const operation = { table, payload, kind };
             writes.push(operation);
@@ -142,6 +143,15 @@ describe('recording consolidated payroll', () => {
     const db = database({ admin_time_entries: [entry({ id: 'paid-earlier', status: 'locked', clock_in_at: '2026-10-12T05:00:00.000Z',
       clock_out_at: '2026-10-13T21:00:00.000Z' }), entry({ clock_in_at: '2026-10-14T14:00:00.000Z', clock_out_at: '2026-10-14T15:00:00.000Z' })] });
     expect(await run(db, [snapshot({ wagesCents: 3000 })])).toEqual({ recordedCount: 1, completedEmployees: 1 });
+  });
+
+  it('settles approved PTO at straight time after forty worked hours', async () => {
+    const db = database({ admin_time_entries: [
+      entry({ id: 'earlier-work', status: 'locked', clock_in_at: '2026-10-12T05:00:00.000Z', clock_out_at: '2026-10-13T21:00:00.000Z' }),
+      entry({ manual_reason: 'Holiday PTO', clock_in_at: '2026-10-15T13:00:00.000Z', clock_out_at: '2026-10-15T21:00:00.000Z' }),
+    ] });
+    expect(await run(db, [snapshot({ wagesCents: 16000 })])).toEqual({ recordedCount: 1, completedEmployees: 1 });
+    expect(db.reads.find((read) => read.table === 'admin_time_entries')?.columns.split(',')).toContain('manual_reason');
   });
 
   it('allows reviewed zero-dollar salary shifts without inventing hourly wages', async () => {

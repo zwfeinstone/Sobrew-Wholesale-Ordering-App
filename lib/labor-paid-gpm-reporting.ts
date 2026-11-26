@@ -2,18 +2,13 @@ import {
   normalizeMoneyCents,
   normalizeSalaryLaborWorkType,
   normalizeWorkType,
-  type TimeClockBreakRow,
-  type TimeClockEntryRow,
   type TimeEntryWorkType,
 } from './time-clock';
 import type { ProfitabilityTotals } from './profitability-reporting';
-import { calculatePayrollWages, distributePayrollWages } from './payroll-wages';
+import { calculatePayrollWages, distributePayrollWages, type PayrollWageEntry } from './payroll-wages';
 
-export type LaborPaidGpmTimeEntryRow = TimeClockEntryRow & {
-  admin_time_breaks?: TimeClockBreakRow[] | null;
-  id: string;
+export type LaborPaidGpmTimeEntryRow = PayrollWageEntry & {
   locked_at?: string | null;
-  profile_id: string | null;
 };
 
 export type LaborPaidGpmAllocationRow = {

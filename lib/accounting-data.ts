@@ -86,7 +86,7 @@ export async function loadAccountingPnlInputs({
     payrollSupabase
       ? fetchAllPages<AccountingPayrollTimeEntryRow>(async (from, to) => payrollSupabase
         .from('admin_time_entries')
-        .select('id,profile_id,clock_in_at,clock_out_at,hourly_rate_cents_snapshot,status,work_type,admin_time_breaks(break_start_at,break_end_at,status)')
+        .select('id,profile_id,clock_in_at,clock_out_at,hourly_rate_cents_snapshot,status,manual_reason,work_type,admin_time_breaks(break_start_at,break_end_at,status)')
         .or(`clock_in_at.gte.${overtimeContext.start.toISOString()},clock_out_at.gt.${overtimeContext.start.toISOString()}`)
         .lt('clock_in_at', overtimeContext.endExclusive.toISOString())
         .order('id', { ascending: true })
