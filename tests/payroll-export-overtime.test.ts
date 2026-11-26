@@ -34,6 +34,23 @@ function csvRows(csv: string) {
 }
 
 describe('payroll export overtime', () => {
+  it('exports PTO as paid regular hours and only pays overtime on worked hours above 40', async () => {
+    state.client = supabaseReadStub({ tables: {
+      admin_time_entries: [
+        ...['06', '07', '08'].map((day) => entry(day, `2026-07-${day}`, 10)),
+        entry('pto', '2026-07-09', 8, { manual_reason: 'Holiday PTO' }),
+        entry('friday', '2026-07-10', 12),
+      ],
+    } }).client;
+    const response = await GET(new NextRequest('https://example.com/api/export/time-entries?from=2026-07-09&to=2026-07-10'));
+    const { rows } = csvRows(await response.text());
+    expect(rows).toHaveLength(2);
+    expect(rows).toEqual(expect.arrayContaining([
+      expect.objectContaining({ manual_reason: 'Holiday PTO', paid_hours: '8.00', regular_hours: '8.00', overtime_hours: '0.00', estimated_wages: '$160.00' }),
+      expect.objectContaining({ paid_hours: '12.00', regular_hours: '10.00', overtime_hours: '2.00', estimated_wages: '$260.00' }),
+    ]));
+  });
+
   it('uses all paginated weekly work before narrowing dates and work types', async () => {
     const stub = supabaseReadStub({
       maxRows: 1,

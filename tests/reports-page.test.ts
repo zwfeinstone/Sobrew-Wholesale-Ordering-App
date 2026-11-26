@@ -128,13 +128,15 @@ describe('deferred payroll report integration', () => {
   });
 
   it('adds only the production share to the GPM comparison and keeps the existing trend explicit', async () => {
-    state.client = supabaseReadStub({ tables: { admin_time_entries: entries, products: [{ id: 'product', name: 'Coffee', active: true }] } }).client;
+    const stub = supabaseReadStub({ tables: { admin_time_entries: entries, products: [{ id: 'product', name: 'Coffee', active: true }] } });
+    state.client = stub.client;
     state.deferred.mockResolvedValue({ data: summary(), error: null });
     state.commerce.mockResolvedValue({
       orders: { data: [{ id: 'order', center_id: null, status: 'Shipped', subtotal_cents: 100000, created_at: '2026-10-07T14:00:00Z', shipped_at: '2026-10-07T18:00:00Z' }], error: null },
       orderItems: { data: [{ id: 'item', order_id: 'order', product_id: 'product', qty: 1, unit_price_cents: 100000, line_total_cents: 100000, cogs_snapshot_at: '2026-10-07T18:00:00Z', cogs_material_cents: 20000, cogs_labor_cents: 10000, cogs_product_cents: 30000, cogs_total_cents: 30000 }], error: null },
     });
     const html = await render('labor_paid_gpm');
+    expect(stub.reads.find((read) => read.table === 'admin_time_entries')?.columns.split(',')).toContain('manual_reason');
     expect(html).toContain('Completed Payroll Labor');
     expect(html).toContain('shifts awaiting approval or payment');
     expect(html).toContain('before deferred pay accrual');

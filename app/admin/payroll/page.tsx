@@ -1980,7 +1980,7 @@ function ManualEntriesPanel({
         {returnToInput(returnTo)}
         <div>
           <h2 className="text-xl font-semibold text-slate-950">Add manual shift</h2>
-          <p className="mt-1 text-sm text-slate-500">Use this for missed punches or approved corrections.</p>
+          <p className="mt-1 text-sm text-slate-500">Record missed punches, approved corrections, or paid time off.</p>
         </div>
         <label className="space-y-2 text-sm font-medium text-slate-700">
           Employee
@@ -2011,7 +2011,15 @@ function ManualEntriesPanel({
             <WorkTypeSelect />
           </label>
         </div>
-        <textarea className="input min-h-20" name="reason" required placeholder="Manual entry reason" />
+        <label className="block space-y-2 text-sm font-medium text-slate-700">
+          Manual entry reason
+          <input className="input" name="reason" list="manual-shift-reasons" required aria-describedby="manual-shift-pto-help" />
+        </label>
+        <datalist id="manual-shift-reasons">
+          <option value="PTO" />
+          <option value="Holiday PTO" />
+        </datalist>
+        <p id="manual-shift-pto-help" className="text-xs text-slate-500">For paid leave, choose PTO or Holiday PTO. Add any details in the notes.</p>
         <textarea className="input min-h-20" name="notes" placeholder="Optional notes" />
         <PendingSubmitButton className="btn-primary w-full sm:w-auto" label="Add Manual Shift" pendingLabel="Adding..." />
       </form>
@@ -2822,7 +2830,7 @@ export default async function PayrollPage(
         <section className="card space-y-5">
           <div>
             <h2 className="text-xl font-semibold text-slate-950">Entries & corrections</h2>
-            <p className="mt-1 text-sm text-slate-500">Correct times, tags, rate snapshots, approve entries, void bad punches, and split labor across work types.</p><p className="mt-2 text-xs text-slate-500">Overtime included: hours over 40 per employee each Monday–Sunday week (Central time) are paid at 1.5× the shift’s hourly rate. Unpaid breaks are excluded; all labor tags count.</p>
+            <p className="mt-1 text-sm text-slate-500">Correct times, tags, rate snapshots, approve entries, void bad punches, and split labor across work types.</p><p className="mt-2 text-xs text-slate-500">Overtime starts after 40 worked hours per employee each Monday–Sunday week (Central time) and pays 1.5× the shift’s hourly rate. PTO stays at the regular rate. PTO and unpaid breaks are excluded from the 40 worked hours.</p>
           </div>
           <fieldset disabled={!canEditPayroll} className="min-w-0"><EntriesTable allocationsByEntry={allocationsByEntry} entries={entries} returnTo={timeReturnUrl} wagesByEntry={wagesByEntry} /></fieldset>
         </section>

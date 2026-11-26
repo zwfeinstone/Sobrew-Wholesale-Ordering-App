@@ -51,6 +51,30 @@ describe('calculatePayrollWages', () => {
     });
   });
 
+  it.each(['PTO', 'Holiday PTO', '  PaId TiMe OfF (PtO) ', 'paid time off'])(
+    'pays %s at straight time before and after the worked-hours threshold',
+    (manual_reason) => {
+      const wages = calculatePayrollWages([
+        ...week(8, { status: 'locked' }).slice(0, 4), // 32 hours worked
+        shift('friday-pto', '2026-09-25T08:00:00-05:00', 8, { manual_reason }),
+        shift('saturday-work', '2026-09-26T08:00:00-05:00', 10),
+        shift('sunday-pto', '2026-09-27T08:00:00-05:00', 8, { manual_reason, hourly_rate_cents_snapshot: 3000 }),
+      ]);
+
+      expect(wages.get('friday-pto')).toMatchObject({ regularMinutes: 480, overtimeMinutes: 0, wageCents: 16_000 });
+      expect(wages.get('saturday-work')).toMatchObject({ regularMinutes: 480, overtimeMinutes: 120, wageCents: 22_000 });
+      expect(wages.get('sunday-pto')).toMatchObject({ regularMinutes: 480, overtimeMinutes: 0, wageCents: 24_000 });
+    },
+  );
+
+  it.each(['Holiday Pay', 'Covered a PTO shift'])('preserves overtime eligibility for the distinct reason "%s"', (manual_reason) => {
+    const wages = calculatePayrollWages([
+      ...week(8),
+      shift('saturday', '2026-09-26T08:00:00-05:00', 2, { manual_reason }),
+    ]);
+    expect(wages.get('saturday')).toMatchObject({ overtimeMinutes: 120, wageCents: 6000 });
+  });
+
   it('is deterministic for unsorted input and tied clock-in times', () => {
     const entries = [...week(9)];
     const reversed = [...entries].reverse();

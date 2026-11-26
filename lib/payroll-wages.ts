@@ -9,10 +9,12 @@ import {
 const WEEKLY_REGULAR_MINUTES = 40 * 60;
 const MINUTE_MS = 60_000;
 const DAY_MS = 24 * 60 * MINUTE_MS;
+const PTO_REASONS = new Set(['pto', 'holiday pto', 'paid time off', 'paid time off (pto)']);
 
 export type PayrollWageEntry = TimeClockEntryRow & {
   id: string;
   profile_id: string | null;
+  manual_reason?: string | null;
   admin_time_breaks?: TimeClockBreakRow[] | null;
 };
 
@@ -84,9 +86,9 @@ function paidIntervals(entry: PayrollWageEntry): Interval[] {
 }
 
 /**
- * Calculate hourly pay with a 50% premium after 40 paid hours per employee,
+ * Calculate hourly pay with a 50% premium after 40 worked hours per employee,
  * Monday–Sunday in Central time. Supply the full workweek before filtering rows.
- * Each entry keeps its snapshotted rate; paid/locked entries still use up hours.
+ * PTO stays at its snapshotted base rate. Paid/locked worked shifts still count.
  */
 export function calculatePayrollWages(entries: readonly PayrollWageEntry[]): Map<string, PayrollEntryWages> {
   const wages = new Map<string, PayrollEntryWages>();
@@ -100,12 +102,20 @@ export function calculatePayrollWages(entries: readonly PayrollWageEntry[]): Map
 
   for (const entry of ordered) {
     const pay = emptyWages();
+    const isPaidTimeOff = PTO_REASONS.has(entry.manual_reason?.trim().toLowerCase() ?? '');
     // Missing identities cannot safely be combined into one employee's week.
     const employeeKey = entry.profile_id ? `profile:${entry.profile_id}` : `entry:${entry.id}`;
     const weeks = employeeWeeks.get(employeeKey) ?? new Map<string, number>();
     employeeWeeks.set(employeeKey, weeks);
 
     for (const interval of paidIntervals(entry)) {
+      if (isPaidTimeOff) {
+        const minutes = (interval.end - interval.start) / MINUTE_MS;
+        pay.minutes += minutes;
+        pay.regularMinutes += minutes;
+        continue;
+      }
+
       let cursor = interval.start;
       while (cursor < interval.end) {
         const week = mondayDateInput(new Date(cursor));

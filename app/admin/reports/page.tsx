@@ -3687,7 +3687,7 @@ export default async function AdminReportsPage(
     const [timeEntriesResult, salaryPaymentsResult] = await Promise.all([
       fetchAllPages((from, to) => payrollSupabase
         .from('admin_time_entries')
-        .select('id,profile_id,clock_in_at,clock_out_at,hourly_rate_cents_snapshot,status,locked_at,work_type,admin_time_breaks(break_start_at,break_end_at,status)')
+        .select('id,profile_id,clock_in_at,clock_out_at,hourly_rate_cents_snapshot,status,manual_reason,locked_at,work_type,admin_time_breaks(break_start_at,break_end_at,status)')
         .or(`clock_in_at.gte.${overtimeContext.start.toISOString()},clock_out_at.gt.${overtimeContext.start.toISOString()}`)
         .lt('clock_in_at', overtimeContext.endExclusive.toISOString()).order('id').range(from, to)),
       fetchAllPages((from, to) => payrollSupabase

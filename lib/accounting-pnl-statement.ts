@@ -14,12 +14,10 @@ import {
   salaryLaborWorkTypeLabel,
   workTypeLabel,
   type SalaryLaborWorkType,
-  type TimeClockBreakRow,
-  type TimeClockEntryRow,
   type TimeEntryWorkType,
 } from '@/lib/time-clock';
 import { fetchAllPages } from '@/lib/supabase/pagination';
-import { calculatePayrollWages, distributePayrollWages } from '@/lib/payroll-wages';
+import { calculatePayrollWages, distributePayrollWages, type PayrollWageEntry } from '@/lib/payroll-wages';
 import type { DeferredPayAccountingSummary } from '@/lib/deferred-pay-accounting';
 
 export const ACCOUNTING_PNL_PAGE_SIZE = 1000;
@@ -68,11 +66,7 @@ export type ProductionRunLaborRow = {
   status: string | null;
 };
 
-export type AccountingPayrollTimeEntryRow = TimeClockEntryRow & {
-  admin_time_breaks?: TimeClockBreakRow[] | null;
-  id: string;
-  profile_id: string | null;
-};
+export type AccountingPayrollTimeEntryRow = PayrollWageEntry;
 
 export type AccountingPayrollAllocationRow = {
   minutes: number | string | null;

@@ -48,7 +48,9 @@ describe('complete accounting inputs', () => {
       { operator: 'gte', column: 'transaction_date', value: '2026-07-01' },
       { operator: 'lt', column: 'transaction_date', value: '2026-08-01' },
     ]);
-    expect(stub.reads.find((read) => read.table === 'admin_time_entries')?.filters).toEqual([
+    const payrollRead = stub.reads.find((read) => read.table === 'admin_time_entries');
+    expect(payrollRead?.columns.split(',')).toContain('manual_reason');
+    expect(payrollRead?.filters).toEqual([
       { operator: 'or', column: '', value: 'clock_in_at.gte.2026-06-29T05:00:00.000Z,clock_out_at.gt.2026-06-29T05:00:00.000Z' },
       { operator: 'lt', column: 'clock_in_at', value: '2026-08-03T05:00:00.000Z' },
     ]);
